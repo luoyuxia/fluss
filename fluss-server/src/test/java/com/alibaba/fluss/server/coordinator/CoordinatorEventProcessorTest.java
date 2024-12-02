@@ -58,7 +58,6 @@ import com.alibaba.fluss.types.DataTypes;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
@@ -546,7 +545,6 @@ class CoordinatorEventProcessorTest {
     }
 
     @Test
-    @Disabled
     void testCreateAndDropPartition() throws Exception {
         CoordinatorContext coordinatorContext = eventProcessor.getCoordinatorContext();
         // make sure all request to gateway should be successful
