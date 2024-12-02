@@ -642,6 +642,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         coordinatorContext.removeOfflineBucketInServer(tabletServerId);
         coordinatorContext.addLiveTabletServer(serverNode);
+        LOG.info(
+                "New tablet server {} is added, current servers are {}.",
+                tabletServerId,
+                coordinatorContext.getLiveTabletServers());
         coordinatorChannelManager.addTabletServer(serverNode);
 
         // update server metadata cache.
@@ -972,6 +976,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private void updateServerMetadataCache(
             Optional<ServerNode> coordinatorServer, Set<ServerNode> aliveTabletServers) {
         // 1. update local metadata cache.
+        LOG.info("Update updateServerMetadataCache {}", aliveTabletServers);
         serverMetadataCache.updateMetadata(
                 new ClusterMetadataInfo(coordinatorServer, aliveTabletServers));
 
