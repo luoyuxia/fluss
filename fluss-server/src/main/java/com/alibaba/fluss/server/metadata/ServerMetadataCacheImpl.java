@@ -36,9 +36,15 @@ public class ServerMetadataCacheImpl extends AbstractServerMetadataCache {
     private static final Logger LOG = LoggerFactory.getLogger(ServerMetadataCacheImpl.class);
 
     private final Lock bucketMetadataLock = new ReentrantLock();
+    private final int serverId;
 
     public ServerMetadataCacheImpl() {
+        this(Integer.MIN_VALUE);
+    }
+
+    public ServerMetadataCacheImpl(int severId) {
         super();
+        this.serverId = severId;
     }
 
     @Override
@@ -55,7 +61,10 @@ public class ServerMetadataCacheImpl extends AbstractServerMetadataCache {
                     HashMap<Integer, ServerNode> newAliveTableServers = new HashMap<>();
                     Set<ServerNode> aliveTabletServers =
                             clusterMetadataInfo.getAliveTabletServers();
-                    LOG.info("Update alive table servers: {}", aliveTabletServers);
+                    LOG.info(
+                            "Update alive table servers: {} for server {}",
+                            aliveTabletServers,
+                            serverId);
                     for (ServerNode tabletServer : aliveTabletServers) {
                         newAliveTableServers.put(tabletServer.id(), tabletServer);
                     }
