@@ -253,7 +253,7 @@
                                         <exclude>com.alibaba.fluss.fs.hdfs.HadoopFsPlugin
                                         </exclude>
                                         <exclude>com.alibaba.fluss.fs.hdfs.HadoopSecurityTokenReceiver</exclude>
-                                        <exclude>com.alibaba.fluss.fs.oss.OSSFileSystem</exclude>
+                                        <exclude>com.alibaba.fluss.fs.oss.*</exclude>
                                         <exclude>com.alibaba.fluss.fs.s3.*</exclude>
                                         <exclude>com.amazonaws.services.s3.model.transform.XmlResponsesSaxParser*</exclude>
                                         <exclude>com.alibaba.fluss.rocksdb.RocksIteratorWrapper
