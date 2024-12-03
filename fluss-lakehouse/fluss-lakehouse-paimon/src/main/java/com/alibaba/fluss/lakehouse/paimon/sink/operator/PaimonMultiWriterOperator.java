@@ -141,6 +141,7 @@ public class PaimonMultiWriterOperator
         int bucket = tableBucket.getBucket();
 
         CdcRecord cdcRecord = multiplexCdcRecord.getCdcRecord();
+        LOG.info("process record: {}", cdcRecord);
 
         FileStoreTable table = getTable(tableId, multiplexCdcRecord.getTablePath());
 
@@ -185,6 +186,7 @@ public class PaimonMultiWriterOperator
     }
 
     private void updateCurrentLogOffset(MultiplexCdcRecord multiplexCdcRecord) throws Exception {
+        LOG.info("update current log offset: {}", multiplexCdcRecord);
         TableBucket tableBucket = multiplexCdcRecord.getTableBucket();
         TablePath tablePath = multiplexCdcRecord.getTablePath();
         long offset = multiplexCdcRecord.getOffset();
@@ -221,6 +223,7 @@ public class PaimonMultiWriterOperator
                 partitionNameById.put(partitionId, rowData.getString(partitionColIndex).toString());
             }
         }
+        LOG.info("current log offset: {}", currentLogEndOffsets);
     }
 
     @Override

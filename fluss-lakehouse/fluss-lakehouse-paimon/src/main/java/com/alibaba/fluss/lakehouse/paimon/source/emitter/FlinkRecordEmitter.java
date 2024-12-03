@@ -60,6 +60,7 @@ public class FlinkRecordEmitter
         } else if (splitState.isLogSplitState()) {
             splitState.asLogSplitState().setOffset(recordAndPos.record().getOffset() + 1);
             sourceOutput.collect(recordAndPos.record());
+            LOG.info("Emit record: {}", recordAndPos.record());
         } else {
             LOG.warn("Unknown split state type: {}", splitState.getClass());
         }
