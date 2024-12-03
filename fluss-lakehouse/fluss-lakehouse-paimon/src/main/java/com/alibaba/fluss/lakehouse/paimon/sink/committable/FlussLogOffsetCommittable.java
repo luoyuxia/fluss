@@ -116,4 +116,16 @@ public class FlussLogOffsetCommittable {
             return partitionNameById;
         }
     }
+
+    @Override
+    public String toString() {
+        return "FlussLogOffsetCommittable{"
+                + "tableId="
+                + tableId
+                + ", partitionNameById="
+                + partitionNameById
+                + ", bucketLogEndOffsets="
+                + bucketLogEndOffsets
+                + '}';
+    }
 }

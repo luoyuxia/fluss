@@ -275,6 +275,8 @@ public class PaimonMultiWriterOperator
                                             bucketLogEndOffsets))));
         }
 
+        LOG.info("committables: {}", committables);
+
         currentLogEndOffsets.clear();
         return committables;
     }
