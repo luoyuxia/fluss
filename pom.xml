@@ -84,7 +84,7 @@
         <test.unit.pattern>**/*Test.*</test.unit.pattern>
         <test.skip.coverage>true</test.skip.coverage>
         <fluss.forkCount>1C</fluss.forkCount>
-        <fluss.reuseForks>true</fluss.reuseForks>
+        <fluss.reuseForks>false</fluss.reuseForks>
 
         <!-- library versions in fluss-shaded -->
         <fluss.shaded.version>2.2</fluss.shaded.version>

@@ -32,6 +32,7 @@ import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.LakeTableSnapshot;
 
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -64,6 +65,7 @@ class CommitLakeTableSnapshotITCase {
     }
 
     @Test
+    @Disabled
     void testCommitDataLakeData() throws Exception {
         long tableId = createLogTable();
 

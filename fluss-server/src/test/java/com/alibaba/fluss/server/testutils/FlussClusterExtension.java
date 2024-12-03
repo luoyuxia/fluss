@@ -167,7 +167,7 @@ public final class FlussClusterExtension
         startTabletServers();
         // wait coordinator knows all tablet servers to make cluster
         // have enough replication factor when creating table.
-        //        waitUtilAllGatewayHasSameMetadata();
+        waitUtilAllGatewayHasSameMetadata();
     }
 
     public void close() throws Exception {
