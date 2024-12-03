@@ -51,4 +51,16 @@ public class LakeTableSnapshotInfo {
     public Map<Long, Map<TableBucket, Long>> getLogEndOffsetByTableId() {
         return logEndOffsetByTableId;
     }
+
+    @Override
+    public String toString() {
+        return "LakeTableSnapshotInfo{"
+                + "snapshotIdByTableId="
+                + snapshotIdByTableId
+                + ", logStartOffsetByTableId="
+                + logStartOffsetByTableId
+                + ", logEndOffsetByTableId="
+                + logEndOffsetByTableId
+                + '}';
+    }
 }
