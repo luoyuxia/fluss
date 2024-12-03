@@ -458,8 +458,6 @@ class TableManagerITCase {
             FLUSS_CLUSTER_EXTENSION.waitUtilAllReplicaReady(new TableBucket(tableId, i));
         }
 
-        // retry to check metadata.
-        FLUSS_CLUSTER_EXTENSION.waitUtilAllGatewayHasSameMetadata();
         MetadataResponse metadataResponse =
                 gateway.metadata(newMetadataRequest(Collections.singletonList(tablePath))).get();
         // should be no tablet server as we only create tablet service.

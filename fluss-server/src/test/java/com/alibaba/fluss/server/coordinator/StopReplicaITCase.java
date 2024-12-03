@@ -71,10 +71,6 @@ public class StopReplicaITCase {
         TablePath tablePath = isPkTable ? DATA1_TABLE_PATH_PK : DATA1_TABLE_PATH;
         TableInfo tableInfo = isPkTable ? DATA1_TABLE_INFO_PK : DATA1_TABLE_INFO;
 
-        // wait until all the gateway has same metadata because the follower fetcher manager need
-        // to get the leader address from server metadata while make follower.
-        FLUSS_CLUSTER_EXTENSION.waitUtilAllGatewayHasSameMetadata();
-
         long tableId =
                 RpcMessageTestUtils.createTable(
                         FLUSS_CLUSTER_EXTENSION, tablePath, tableInfo.getTableDescriptor());

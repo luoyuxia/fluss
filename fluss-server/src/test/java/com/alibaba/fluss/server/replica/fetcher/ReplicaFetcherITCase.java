@@ -98,10 +98,6 @@ public class ReplicaFetcherITCase {
                                 .build(),
                         1);
 
-        // wait until all the gateway has same metadata because the follower fetcher manager need
-        // to get the leader address from server metadata while make follower.
-        FLUSS_CLUSTER_EXTENSION.waitUtilAllGatewayHasSameMetadata();
-
         long tableId =
                 RpcMessageTestUtils.createTable(
                         FLUSS_CLUSTER_EXTENSION,
@@ -179,10 +175,6 @@ public class ReplicaFetcherITCase {
     void testPutKvNeedAck() throws Exception {
         // set bucket count to 1 to easy for debug.
         TableInfo data1PkTableInfo = createPkTable();
-
-        // wait until all the gateway has same metadata because the follower fetcher manager need
-        // to get the leader address from server metadata while make follower.
-        FLUSS_CLUSTER_EXTENSION.waitUtilAllGatewayHasSameMetadata();
 
         long tableId =
                 RpcMessageTestUtils.createTable(
