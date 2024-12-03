@@ -121,7 +121,7 @@ public class PaimonSyncTestBase extends FlinkPaimonTestBase {
 
         TableDescriptor.Builder tableBuilder =
                 TableDescriptor.builder()
-                        .distributedBy(bucketNum)
+                        .distributedBy(bucketNum, "a")
                         .property(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true");
 
         if (isPartitioned) {
