@@ -30,9 +30,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.run_id }}
   cancel-in-progress: true
 
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -42,10 +43,10 @@ jobs:
           java-version: ${{ env.JDK_VERSION }}
           distribution: 'adopt'
       - name: Build
-        run: mvn -T 1C -B clean install -DskipTests
+        run: /usr/local/apache-maven-3.8.8/bin/mvn -T 1C -B clean install -DskipTests
       - name: Test1
         run: |
-          mvn -B verify -Ptest-coverage -Dmaven.test.failure.ignore=true -Dautoconfig.skip
+          /usr/local/apache-maven-3.8.8/bin/mvn -B verify -Ptest-coverage -Dmaven.test.failure.ignore=true -Dautoconfig.skip
         if: always()
         env:
           MAVEN_OPTS: -Xmx4096m
