@@ -39,8 +39,6 @@ import org.apache.paimon.table.sink.CommitMessage;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.InnerTableScan;
 import org.apache.paimon.table.source.Split;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -63,8 +61,6 @@ import static com.alibaba.fluss.utils.Preconditions.checkArgument;
  */
 public class PaimonStoreMultiCommitter
         implements Committer<MultiTableCommittable, PaimonWrapperManifestCommittable> {
-
-    private static final Logger LOG = LoggerFactory.getLogger(PaimonStoreMultiCommitter.class);
 
     private final Catalog catalog;
     private final String commitUser;
@@ -189,9 +185,7 @@ public class PaimonStoreMultiCommitter
         }
 
         // key by table id
-        LOG.warn("Committing committables: {}", committables);
         PaimonAndFlussCommittable paimonAndFlussCommittable = toCommittable(committables);
-        LOG.warn("Committing PaimonAndFlussCommittable: {}", paimonAndFlussCommittable);
         Map<Identifier, List<ManifestCommittable>> committableMap =
                 paimonAndFlussCommittable.paimonManifestCommittable;
         committableMap.keySet().forEach(this::getStoreCommitter);
@@ -381,7 +375,6 @@ public class PaimonStoreMultiCommitter
 
     private PaimonAndFlussCommittable toCommittable(
             List<PaimonWrapperManifestCommittable> committables) {
-
         Map<Identifier, List<ManifestCommittable>> paimonManifestCommittable = new HashMap<>();
 
         Map<Long, Map<TableBucket, Long>> flussLogEndOffsetByTableId = new HashMap<>();
@@ -471,16 +464,6 @@ public class PaimonStoreMultiCommitter
             this.paimonManifestCommittable = paimonManifestCommittable;
             this.flussCommittable = flussCommittable;
         }
-
-        @Override
-        public String toString() {
-            return "PaimonAndFlussCommittable{"
-                    + "paimonManifestCommittable="
-                    + paimonManifestCommittable
-                    + ", flussCommittable="
-                    + flussCommittable
-                    + '}';
-        }
     }
 
     private static class FlussCommittable {
@@ -495,18 +478,6 @@ public class PaimonStoreMultiCommitter
             this.tableIdByPaimonIdentifier = tableIdByPaimonIdentifier;
             this.partitionNameById = partitionNameById;
             this.flussLogEndOffsetByTableId = flussLogEndOffsetByTableId;
-        }
-
-        @Override
-        public String toString() {
-            return "FlussCommittable{"
-                    + "tableIdByPaimonIdentifier="
-                    + tableIdByPaimonIdentifier
-                    + ", partitionNameById="
-                    + partitionNameById
-                    + ", flussLogEndOffsetByTableId="
-                    + flussLogEndOffsetByTableId
-                    + '}';
         }
     }
 }

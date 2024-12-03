@@ -141,7 +141,6 @@ public class PaimonMultiWriterOperator
         int bucket = tableBucket.getBucket();
 
         CdcRecord cdcRecord = multiplexCdcRecord.getCdcRecord();
-        LOG.info("process record: {}", cdcRecord);
 
         FileStoreTable table = getTable(tableId, multiplexCdcRecord.getTablePath());
 

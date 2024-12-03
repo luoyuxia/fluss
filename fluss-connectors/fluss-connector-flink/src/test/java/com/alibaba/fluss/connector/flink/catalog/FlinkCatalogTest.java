@@ -19,6 +19,7 @@ package com.alibaba.fluss.connector.flink.catalog;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
+import com.alibaba.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
@@ -120,8 +121,12 @@ class FlinkCatalogTest {
 
     @BeforeEach
     void beforeEach() throws Exception {
-        if (catalog != null) {
+        try {
             catalog.createDatabase(DEFAULT_DB, null, true);
+        } catch (CatalogException e) {
+            if (!(e.getCause() instanceof KeeperException.NodeExistsException)) {
+                throw e;
+            }
         }
     }
 

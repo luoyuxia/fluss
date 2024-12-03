@@ -30,8 +30,6 @@ import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.ExceptionUtils;
 
 import org.apache.flink.metrics.MetricGroup;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -40,9 +38,6 @@ import java.util.Map;
 
 /** A {@link LakeTableSnapshotCommitter} to commit snapshot of tables in lake to Fluss. */
 public class FlussLakeTableSnapshotCommitter implements LakeTableSnapshotCommitter {
-
-    private static final Logger LOG =
-            LoggerFactory.getLogger(FlussLakeTableSnapshotCommitter.class);
 
     private static final long serialVersionUID = 1L;
 
@@ -62,7 +57,6 @@ public class FlussLakeTableSnapshotCommitter implements LakeTableSnapshotCommitt
 
     @Override
     public void commit(LakeTableSnapshotInfo lakeTableSnapshotInfo) throws IOException {
-        LOG.info("Committing lake table snapshot info: {}", lakeTableSnapshotInfo);
         Map<Long, Map<TableBucket, Long>> logEndOffsetByTableId =
                 lakeTableSnapshotInfo.getLogEndOffsetByTableId();
         // no log end offset to commit, return directly
