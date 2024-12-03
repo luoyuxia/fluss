@@ -140,7 +140,11 @@ class KvReplicaRestoreITCase {
                     return false;
                 },
                 Duration.ofMinutes(2),
-                "Fail to wait for the replica to restore in another server");
+                "Fail to wait for the replica to restore in another server. "
+                        + "Previous leader is "
+                        + leaderServer
+                        + ", restored leader is "
+                        + newLeaderServer.get());
         // wait the new replica become leader
         TabletServerGateway leaderGateway =
                 FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(newLeaderServer.get());
