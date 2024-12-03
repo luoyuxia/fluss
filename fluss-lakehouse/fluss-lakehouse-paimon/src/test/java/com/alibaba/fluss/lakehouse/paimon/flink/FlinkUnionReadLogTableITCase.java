@@ -26,7 +26,6 @@ import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -51,7 +50,6 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
 
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
-    @Disabled
     void testReadLogTable(boolean isPartitioned) throws Exception {
         // first of all, start database sync job
         PaimonDataBaseSyncSinkBuilder builder = getDatabaseSyncSinkBuilder(execEnv);
