@@ -189,9 +189,9 @@ public class PaimonStoreMultiCommitter
         }
 
         // key by table id
-        LOG.info("Committing committables: {}", committables);
+        LOG.warn("Committing committables: {}", committables);
         PaimonAndFlussCommittable paimonAndFlussCommittable = toCommittable(committables);
-        LOG.info("Committing PaimonAndFlussCommittable: {}", paimonAndFlussCommittable);
+        LOG.warn("Committing PaimonAndFlussCommittable: {}", paimonAndFlussCommittable);
         Map<Identifier, List<ManifestCommittable>> committableMap =
                 paimonAndFlussCommittable.paimonManifestCommittable;
         committableMap.keySet().forEach(this::getStoreCommitter);

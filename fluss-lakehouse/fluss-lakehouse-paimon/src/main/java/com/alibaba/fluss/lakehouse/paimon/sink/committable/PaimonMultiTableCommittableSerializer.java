@@ -25,6 +25,8 @@ import org.apache.paimon.flink.sink.LogOffsetCommittable;
 import org.apache.paimon.flink.sink.MultiTableCommittable;
 import org.apache.paimon.table.sink.CommitMessage;
 import org.apache.paimon.table.sink.CommitMessageSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 
@@ -42,6 +44,9 @@ import static org.apache.paimon.flink.sink.Committable.Kind.LOG_OFFSET;
  */
 public class PaimonMultiTableCommittableSerializer
         implements SimpleVersionedSerializer<MultiTableCommittable> {
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(PaimonMultiTableCommittableSerializer.class);
 
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
@@ -66,6 +71,7 @@ public class PaimonMultiTableCommittableSerializer
 
         serializeCommittable(committable, out);
         final byte[] result = out.getCopyOfBuffer();
+
         out.clear();
         return result;
     }

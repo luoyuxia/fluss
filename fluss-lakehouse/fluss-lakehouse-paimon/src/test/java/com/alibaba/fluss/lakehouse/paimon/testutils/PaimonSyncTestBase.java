@@ -87,9 +87,10 @@ public class PaimonSyncTestBase extends FlinkPaimonTestBase {
 
         DataStreamSource<MultiplexCdcRecord> input =
                 execEnv.fromSource(
-                        flussDatabaseSyncSource,
-                        WatermarkStrategy.noWatermarks(),
-                        "flinkSycDatabaseSource");
+                                flussDatabaseSyncSource,
+                                WatermarkStrategy.noWatermarks(),
+                                "flinkSycDatabaseSource")
+                        .setParallelism(1);
 
         Map<String, String> paimonCatalogConf = FlinkPaimonTestBase.getPaimonCatalogConf();
 
