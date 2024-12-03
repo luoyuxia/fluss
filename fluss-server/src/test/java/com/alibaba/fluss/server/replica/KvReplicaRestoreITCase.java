@@ -41,6 +41,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_INFO_PK;
@@ -80,7 +81,7 @@ class KvReplicaRestoreITCase {
         int bucketNum = 3;
         List<TableBucket> tableBuckets = new ArrayList<>();
         for (int i = 0; i < tableNum; i++) {
-            TablePath tablePath = TablePath.of("test_db", "test_table_" + i);
+            TablePath tablePath = TablePath.of("test_db", "test_table_" + UUID.randomUUID() + i);
             long tableId =
                     createTable(
                             FLUSS_CLUSTER_EXTENSION,
@@ -116,7 +117,7 @@ class KvReplicaRestoreITCase {
         final int leaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tableBucket);
         Replica replica = FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(tableBucket);
 
-        int recordsNum = 3000;
+        int recordsNum = 10000;
         // create pretty many records to make can flush to file
         List<KvRecord> records = new ArrayList<>(recordsNum);
         for (int i = 0; i < recordsNum; i++) {

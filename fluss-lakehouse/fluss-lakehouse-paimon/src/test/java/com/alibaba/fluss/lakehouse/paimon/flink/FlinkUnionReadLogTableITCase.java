@@ -17,8 +17,10 @@
 package com.alibaba.fluss.lakehouse.paimon.flink;
 
 import com.alibaba.fluss.lakehouse.paimon.sink.PaimonDataBaseSyncSinkBuilder;
+import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.server.replica.Replica;
 import com.alibaba.fluss.types.DataTypes;
 import com.alibaba.fluss.types.RowType;
 
@@ -32,6 +34,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -60,7 +63,10 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
 
         TablePath t1 = TablePath.of(DEFAULT_DB, tableName);
         List<Row> writtenRows = new ArrayList<>();
-        long tableId = prepareLogTable(t1, DEFAULT_BUCKET_NUM, isPartitioned, writtenRows);
+        Map<TableBucket, Long> bucketLogEndOffset = new HashMap<>();
+        long tableId =
+                prepareLogTable(
+                        t1, DEFAULT_BUCKET_NUM, isPartitioned, writtenRows, bucketLogEndOffset);
         // wait until records has has been synced
         waitUtilBucketSynced(t1, tableId, DEFAULT_BUCKET_NUM, isPartitioned);
 
@@ -96,8 +102,23 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
         assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
     }
 
+    private Map<TableBucket, Long> getBucketLogEndOffset(
+            long tableId, int bucketNum, Long partitionId) {
+        Map<TableBucket, Long> bucketLogEndOffsets = new HashMap<>();
+        for (int i = 0; i < bucketNum; i++) {
+            TableBucket tableBucket = new TableBucket(tableId, partitionId, i);
+            Replica replica = getLeaderReplica(tableBucket);
+            bucketLogEndOffsets.put(tableBucket, replica.getLocalLogEndOffset());
+        }
+        return bucketLogEndOffsets;
+    }
+
     private long prepareLogTable(
-            TablePath tablePath, int bucketNum, boolean isPartitioned, List<Row> flinkRows)
+            TablePath tablePath,
+            int bucketNum,
+            boolean isPartitioned,
+            List<Row> flinkRows,
+            Map<TableBucket, Long> bucketLogEndOffset)
             throws Exception {
         long t1Id = createLogTable(tablePath, bucketNum, isPartitioned);
         if (isPartitioned) {
@@ -107,10 +128,14 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
                     flinkRows.addAll(writeRows(tablePath, 10, partition));
                 }
             }
+            for (Long partitionId : partitionNameById.keySet()) {
+                bucketLogEndOffset.putAll(getBucketLogEndOffset(t1Id, bucketNum, partitionId));
+            }
         } else {
             for (int i = 0; i < 3; i++) {
                 flinkRows.addAll(writeRows(tablePath, 10, null));
             }
+            bucketLogEndOffset.putAll(getBucketLogEndOffset(t1Id, bucketNum, null));
         }
         return t1Id;
     }
