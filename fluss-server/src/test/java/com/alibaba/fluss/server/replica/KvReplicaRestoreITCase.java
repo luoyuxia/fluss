@@ -41,7 +41,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_INFO_PK;
@@ -81,7 +80,7 @@ class KvReplicaRestoreITCase {
         int bucketNum = 3;
         List<TableBucket> tableBuckets = new ArrayList<>();
         for (int i = 0; i < tableNum; i++) {
-            TablePath tablePath = TablePath.of("test_db", "test_table_" + UUID.randomUUID() + i);
+            TablePath tablePath = TablePath.of("test_db", "test_table_" + i);
             long tableId =
                     createTable(
                             FLUSS_CLUSTER_EXTENSION,

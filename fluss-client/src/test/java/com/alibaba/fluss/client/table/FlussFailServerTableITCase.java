@@ -26,7 +26,6 @@ import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.indexed.IndexedRow;
 
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -106,7 +105,6 @@ class FlussFailServerTableITCase extends ClientToServerITCaseBase {
     }
 
     @Test
-    @Disabled
     void testLogScan() throws Exception {
         createTable(DATA1_TABLE_PATH, DATA1_TABLE_INFO.getTableDescriptor(), false);
         // append one row.
