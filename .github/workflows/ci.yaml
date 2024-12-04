@@ -38,13 +38,6 @@ jobs:
           distribution: 'adopt'
       - name: Test
         run: |
-          mvn -B verify -Dmaven.test.failure.ignore=true
+          mvn -B verify
         env:
           MAVEN_OPTS: -Xmx4096m
-          ARTIFACTS_OSS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}
-          ARTIFACTS_OSS_REGION: ${{ secrets.ARTIFACTS_OSS_REGION }}
-          ARTIFACTS_OSS_BUCKET: ${{ secrets.ARTIFACTS_OSS_BUCKET }}
-          ARTIFACTS_OSS_ACCESS_KEY: ${{ secrets.ARTIFACTS_OSS_ACCESS_KEY }}
-          ARTIFACTS_OSS_SECRET_KEY: ${{ secrets.ARTIFACTS_OSS_SECRET_KEY }}
-          ARTIFACTS_OSS_STS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_STS_ENDPOINT }}
-          ARTIFACTS_OSS_ROLE_ARN: ${{ secrets.ARTIFACTS_OSS_ROLE_ARN }}
