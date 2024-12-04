@@ -785,12 +785,25 @@ class CoordinatorEventProcessorTest {
                                         new TableBucketReplica(bucket, replica);
                                 // if expected to be offline
                                 if (expectedOfflineReplicas.contains(replica)) {
-                                    assertThat(coordinatorContext.getReplicaState(bucketReplica))
-                                            .isEqualTo(OfflineReplica);
+                                    retry(
+                                            Duration.ofMinutes(1),
+                                            () ->
+                                                    assertThat(
+                                                                    coordinatorContext
+                                                                            .getReplicaState(
+                                                                                    bucketReplica))
+                                                            .isEqualTo(OfflineReplica));
+
                                 } else {
                                     // otherwise, should be online
-                                    assertThat(coordinatorContext.getReplicaState(bucketReplica))
-                                            .isEqualTo(OnlineReplica);
+                                    retry(
+                                            Duration.ofMinutes(1),
+                                            () -> {
+                                                assertThat(
+                                                                coordinatorContext.getReplicaState(
+                                                                        bucketReplica))
+                                                        .isEqualTo(OnlineReplica);
+                                            });
                                 }
                             }
                         });

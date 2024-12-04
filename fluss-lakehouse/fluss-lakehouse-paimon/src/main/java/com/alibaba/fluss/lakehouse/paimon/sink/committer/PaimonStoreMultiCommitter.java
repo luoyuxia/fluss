@@ -196,6 +196,7 @@ public class PaimonStoreMultiCommitter
         FlussCommittable flussCommittable = paimonAndFlussCommittable.flussCommittable;
         Map<Long, Long> snapshotIdByTableId = new HashMap<>();
         Map<Long, Map<TableBucket, Long>> logStartOffsetByTableId = new HashMap<>();
+
         for (Map.Entry<Identifier, StoreCommitter> entry : tableCommitters.entrySet()) {
             List<ManifestCommittable> committableList = committableMap.get(entry.getKey());
             StoreCommitter committer = entry.getValue();
