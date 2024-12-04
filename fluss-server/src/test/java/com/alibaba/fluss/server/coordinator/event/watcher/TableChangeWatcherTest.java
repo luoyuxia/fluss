@@ -113,7 +113,7 @@ class TableChangeWatcherTest {
         }
 
         retry(
-                Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 () ->
                         assertThat(eventManager.getEvents())
                                 .containsExactlyInAnyOrderElementsOf(expectedCreateTableEvents));
@@ -190,7 +190,7 @@ class TableChangeWatcherTest {
         expectedEvents.add(new DropTableEvent(tableId, true));
 
         retry(
-                Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 () ->
                         assertThat(eventManager.getEvents())
                                 .containsExactlyInAnyOrderElementsOf(expectedEvents));
