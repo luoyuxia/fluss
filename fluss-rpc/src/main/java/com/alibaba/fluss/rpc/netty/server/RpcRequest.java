@@ -122,7 +122,7 @@ public final class RpcRequest {
             return 1;
         }
 
-        if (apiKey == ApiKeys.GET_METADATA.id) {
+        if (apiKey == ApiKeys.GET_METADATA.id || apiKey == ApiKeys.UPDATE_METADATA.id) {
             return 1;
         }
 
