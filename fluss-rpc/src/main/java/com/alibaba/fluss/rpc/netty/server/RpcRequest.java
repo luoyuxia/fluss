@@ -117,13 +117,12 @@ public final class RpcRequest {
      * stability of the cluster when the network load is high.
      */
     public int getPriority() {
-        if (apiKey == ApiKeys.UPDATE_METADATA.id || apiKey == ApiKeys.GET_METADATA.id) {
+        if (apiKey == ApiKeys.GET_METADATA.id) {
             return 2;
         }
-
         if (apiKey == ApiKeys.FETCH_LOG.id
                 && ((FetchLogRequest) message).getFollowerServerId() >= 0) {
-            return 0;
+            return 1;
         }
 
         return 0;
