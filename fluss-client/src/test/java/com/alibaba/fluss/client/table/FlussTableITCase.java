@@ -604,9 +604,10 @@ class FlussTableITCase extends ClientToServerITCaseBase {
                         .column("d", DataTypes.BIGINT())
                         .build();
         TableDescriptor tableDescriptor = TableDescriptor.builder().schema(schema).build();
-        createTable(DATA1_TABLE_PATH, tableDescriptor, false);
+        TablePath tablePath = TablePath.of("test_db_1", "test_append_and_project");
+        createTable(tablePath, tableDescriptor, false);
 
-        try (Table table = conn.getTable(DATA1_TABLE_PATH)) {
+        try (Table table = conn.getTable(tablePath)) {
             AppendWriter appendWriter = table.getAppendWriter();
             int expectedSize = 30;
             for (int i = 0; i < expectedSize; i++) {
