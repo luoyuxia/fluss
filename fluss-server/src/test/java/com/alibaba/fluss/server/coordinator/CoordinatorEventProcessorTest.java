@@ -242,7 +242,7 @@ class CoordinatorEventProcessorTest {
         waitUtil(
                 () -> coordinatorContext.getTablePathById(t1Id) != null,
                 Duration.ofMinutes(1),
-                "Fail to wait for coordinator handling create table event for table %s" + t1Id);
+                "Fail to wait for coordinator handling create table event for table " + t1Id);
 
         // drop the table;
         metaDataManager.dropTable(t1, false);
@@ -462,8 +462,14 @@ class CoordinatorEventProcessorTest {
 
         // check the changed leader and isr info
         CoordinatorTestUtils.checkLeaderAndIsr(zookeeperClient, t1Bucket0, 1, 1);
-        assertThat(coordinatorContext.getBucketState(t1Bucket0)).isEqualTo(OnlineBucket);
-        assertThat(coordinatorContext.getBucketState(t1Bucket1)).isEqualTo(OnlineBucket);
+        retry(
+                Duration.ofMinutes(1),
+                () -> {
+                    assertThat(coordinatorContext.getBucketState(t1Bucket0))
+                            .isEqualTo(OnlineBucket);
+                    assertThat(coordinatorContext.getBucketState(t1Bucket1))
+                            .isEqualTo(OnlineBucket);
+                });
         // only replica0 will be offline
         verifyReplicaOnlineOrOffline(
                 coordinatorContext, table1Id, tableAssignment, Collections.singleton(failedServer));
