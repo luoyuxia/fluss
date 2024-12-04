@@ -25,10 +25,7 @@ import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
-/**
- * An RPC request message sent from client to server which encapsulating the API key, API version
- * and message.
- */
+/** An RPC request message sent from client to server whing the API key, API version and message. */
 public final class RpcRequest {
     public static final RpcRequest SHUTDOWN_REQUEST =
             new RpcRequest((short) -1, (short) -1, -1, null);
