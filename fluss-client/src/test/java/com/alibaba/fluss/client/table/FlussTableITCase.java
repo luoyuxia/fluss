@@ -321,7 +321,8 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         try (Table table = conn.getTable(tablePath)) {
             UpsertWriter upsertWriter = table.getUpsertWriter();
             // put data.
-            upsertWriter.upsert(row).get();
+            upsertWriter.upsert(row);
+            upsertWriter.flush();
         }
         // lookup this key.
         IndexedRow keyRow = keyRow(tableSchema, fields);
