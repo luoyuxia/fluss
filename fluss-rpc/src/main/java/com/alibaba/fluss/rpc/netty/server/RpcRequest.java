@@ -123,7 +123,7 @@ public final class RpcRequest {
 
         if (apiKey == ApiKeys.FETCH_LOG.id
                 && ((FetchLogRequest) message).getFollowerServerId() >= 0) {
-            return 1;
+            return 0;
         }
 
         return 0;
