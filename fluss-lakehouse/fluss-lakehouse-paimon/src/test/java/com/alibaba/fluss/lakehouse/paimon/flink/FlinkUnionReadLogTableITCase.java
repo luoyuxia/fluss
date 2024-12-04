@@ -67,6 +67,7 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
         long tableId =
                 prepareLogTable(
                         t1, DEFAULT_BUCKET_NUM, isPartitioned, writtenRows, bucketLogEndOffset);
+        System.out.println(bucketLogEndOffset);
         // wait until records has has been synced
         waitUtilBucketSynced(t1, tableId, DEFAULT_BUCKET_NUM, isPartitioned);
 

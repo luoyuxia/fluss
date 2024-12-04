@@ -117,7 +117,7 @@ public final class RpcRequest {
      * stability of the cluster when the network load is high.
      */
     public int getPriority() {
-        if (apiKey == ApiKeys.UPDATE_METADATA.id) {
+        if (apiKey == ApiKeys.UPDATE_METADATA.id || apiKey == ApiKeys.GET_METADATA.id) {
             return 2;
         }
 

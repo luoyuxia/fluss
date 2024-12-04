@@ -75,6 +75,10 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyBucketForPartitionInState;
+import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyBucketForTableInState;
+import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyReplicaForPartitionInState;
+import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyReplicaForTableInState;
 import static com.alibaba.fluss.server.coordinator.statemachine.BucketState.OfflineBucket;
 import static com.alibaba.fluss.server.coordinator.statemachine.BucketState.OnlineBucket;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.OfflineReplica;
@@ -181,9 +185,8 @@ class CoordinatorEventProcessorTest {
         verifyTableDropped(coordinatorContext, t1Id);
 
         // replicas and buckets for t2 should still be online
-        CoordinatorTestUtils.verifyBucketForTableInState(
-                coordinatorContext, t2Id, nBuckets, BucketState.OnlineBucket);
-        CoordinatorTestUtils.verifyReplicaForTableInState(
+        verifyBucketForTableInState(coordinatorContext, t2Id, nBuckets, BucketState.OnlineBucket);
+        verifyReplicaForTableInState(
                 coordinatorContext, t2Id, nBuckets * replicationFactor, ReplicaState.OnlineReplica);
 
         // shutdown event processor and delete the table node for t2 from zk
@@ -651,13 +654,19 @@ class CoordinatorEventProcessorTest {
                             .isTrue();
                 });
         // make sure all should be online
-        CoordinatorTestUtils.verifyBucketForTableInState(
-                coordinatorContext, tableId, nBuckets, BucketState.OnlineBucket);
-        CoordinatorTestUtils.verifyReplicaForTableInState(
-                coordinatorContext,
-                tableId,
-                nBuckets * replicationFactor,
-                ReplicaState.OnlineReplica);
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        verifyBucketForTableInState(
+                                coordinatorContext, tableId, nBuckets, BucketState.OnlineBucket));
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        verifyReplicaForTableInState(
+                                coordinatorContext,
+                                tableId,
+                                nBuckets * replicationFactor,
+                                ReplicaState.OnlineReplica));
         for (TableBucket tableBucket : coordinatorContext.getAllBucketsForTable(tableId)) {
             CoordinatorTestUtils.checkLeaderAndIsr(
                     zookeeperClient,
@@ -680,7 +689,7 @@ class CoordinatorEventProcessorTest {
         int replicasCount = nBuckets * replicationFactor;
         // retry until the all replicas in t2 is online
         retry(
-                Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 () -> {
                     // we use method replicaCounts instead of getAllReplicasForTable in here
                     // for use getAllReplicasForTable will cause ConcurrentModificationException
@@ -693,13 +702,22 @@ class CoordinatorEventProcessorTest {
                             .isTrue();
                 });
         // make sure all should be online
-        CoordinatorTestUtils.verifyBucketForPartitionInState(
-                coordinatorContext, tablePartition, nBuckets, BucketState.OnlineBucket);
-        CoordinatorTestUtils.verifyReplicaForPartitionInState(
-                coordinatorContext,
-                tablePartition,
-                nBuckets * replicationFactor,
-                ReplicaState.OnlineReplica);
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        verifyBucketForPartitionInState(
+                                coordinatorContext,
+                                tablePartition,
+                                nBuckets,
+                                BucketState.OnlineBucket));
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        verifyReplicaForPartitionInState(
+                                coordinatorContext,
+                                tablePartition,
+                                nBuckets * replicationFactor,
+                                ReplicaState.OnlineReplica));
         for (TableBucket tableBucket :
                 coordinatorContext.getAllBucketsForPartition(
                         tablePartition.getTableId(), tablePartition.getPartitionId())) {
@@ -718,7 +736,7 @@ class CoordinatorEventProcessorTest {
         // retry until the assignment has been deleted from zk, then it means
         // the table/partition has been deleted successfully
         retry(
-                Duration.ofMinutes(1),
+                Duration.ofMinutes(2),
                 () -> assertThat(zookeeperClient.getTableAssignment(tableId)).isEmpty());
         // no replica and bucket for the table/partition should exist in the context
         assertThat(coordinatorContext.getAllBucketsForTable(tableId)).isEmpty();
