@@ -288,10 +288,14 @@ public class RpcMessageUtils {
         for (NotifyLeaderAndIsrResultForBucket bucketResult : bucketsResult) {
             PbNotifyLeaderAndIsrRespForBucket respForBucket =
                     new PbNotifyLeaderAndIsrRespForBucket();
-            respForBucket
-                    .setTableBucket()
-                    .setTableId(bucketResult.getTableId())
-                    .setBucketId(bucketResult.getBucketId());
+            PbTableBucket pbTableBucket =
+                    respForBucket
+                            .setTableBucket()
+                            .setTableId(bucketResult.getTableId())
+                            .setBucketId(bucketResult.getBucketId());
+            if (bucketResult.getTableBucket().getPartitionId() != null) {
+                pbTableBucket.setPartitionId(bucketResult.getTableBucket().getPartitionId());
+            }
             if (bucketResult.failed()) {
                 respForBucket.setError(bucketResult.getErrorCode(), bucketResult.getErrorMessage());
             }

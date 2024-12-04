@@ -565,6 +565,11 @@ class CoordinatorEventProcessorTest {
         long tableId =
                 metaDataManager.createTable(tablePath, tablePartitionTableDescriptor, null, false);
 
+        retry(
+                Duration.ofMinutes(1),
+                // retry util the table has been put into context
+                () -> assertThat(coordinatorContext.getTablePathById(tableId)).isNotNull());
+
         // create partition
         long partition1Id = zookeeperClient.getPartitionIdAndIncrement();
         long partition2Id = zookeeperClient.getPartitionIdAndIncrement();

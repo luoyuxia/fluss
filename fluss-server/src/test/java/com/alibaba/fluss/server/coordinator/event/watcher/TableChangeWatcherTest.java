@@ -181,6 +181,12 @@ class TableChangeWatcherTest {
         expectedEvents.add(
                 new CreatePartitionEvent(tablePath, tableId, 2L, "2022", partitionAssignment));
 
+        retry(
+                Duration.ofMinutes(2),
+                () ->
+                        assertThat(eventManager.getEvents())
+                                .containsExactlyInAnyOrderElementsOf(expectedEvents));
+
         metaDataManager.dropTable(tablePath, false);
 
         // drop partitions event

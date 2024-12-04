@@ -102,7 +102,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
-    @Disabled
+    @Disabled("TODO, fix me in #116")
     void testAppendWithSmallBuffer(boolean indexedFormat) throws Exception {
         TableDescriptor desc =
                 indexedFormat
