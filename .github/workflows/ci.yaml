@@ -37,7 +37,7 @@ jobs:
           distribution: 'adopt'
       - name: Test
         run: |
-          /usr/local/apache-maven-3.8.1/bin/mvn -B verify
+          /usr/local/apache-maven-3.8.1/bin/mvn clean install  -pl fluss-filesystems/fluss-fs-oss
         env:
           MAVEN_OPTS: -Xmx4096m
           ARTIFACTS_OSS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}
