@@ -15,7 +15,6 @@
 ################################################################################
 name: Tests on JDK 8
 on:
-  push:
   pull_request:
     paths-ignore:
       - 'docs/**'
@@ -31,8 +30,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
+      - name: Set up JDK ${{ env.JDK_VERSION }}
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ env.JDK_VERSION }}
+          distribution: 'adopt'
       - name: Test
         run: |
-          mvn -B verify
+          /usr/local/apache-maven-3.8.1/bin/mvn -B verify
         env:
           MAVEN_OPTS: -Xmx4096m

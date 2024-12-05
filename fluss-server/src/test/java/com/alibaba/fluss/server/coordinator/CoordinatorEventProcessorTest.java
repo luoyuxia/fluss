@@ -165,7 +165,7 @@ class CoordinatorEventProcessorTest {
         CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
                 eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
         // create a table,
-        TablePath t1 = TablePath.of(defaultDatabase, "t1");
+        TablePath t1 = TablePath.of(defaultDatabase, "t11");
         TableDescriptor tableDescriptor = TEST_TABLE;
         int nBuckets = 3;
         int replicationFactor = 3;
@@ -174,7 +174,7 @@ class CoordinatorEventProcessorTest {
                         nBuckets, replicationFactor, new int[] {0, 1, 2});
         long t1Id = metaDataManager.createTable(t1, tableDescriptor, tableAssignment, false);
 
-        TablePath t2 = TablePath.of(defaultDatabase, "t2");
+        TablePath t2 = TablePath.of(defaultDatabase, "t22");
         long t2Id = metaDataManager.createTable(t2, tableDescriptor, tableAssignment, false);
 
         verifyTableCreated(coordinatorContext, t2Id, tableAssignment, nBuckets, replicationFactor);
@@ -363,8 +363,10 @@ class CoordinatorEventProcessorTest {
         retry(
                 Duration.ofMinutes(1),
                 () ->
-                        assertThat(coordinatorContext.getLiveTabletServers())
-                                .containsKey(newlyServerId));
+                        assertThat(
+                                        new HashSet<>(
+                                                coordinatorContext.getLiveTabletServers().keySet()))
+                                .contains(newlyServerId));
 
         // make sure the bucket that remains in offline should be online again
         // since the server become online
@@ -425,7 +427,7 @@ class CoordinatorEventProcessorTest {
                         .add(0, BucketAssignment.of(0, 1, 2))
                         .add(1, BucketAssignment.of(1, 2, 0))
                         .build();
-        TablePath tablePath = TablePath.of(defaultDatabase, "t1");
+        TablePath tablePath = TablePath.of(defaultDatabase, "t_restart");
         long table1Id = metaDataManager.createTable(tablePath, TEST_TABLE, tableAssignment, false);
 
         // let's restart
