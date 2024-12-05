@@ -188,8 +188,9 @@ class FlussTableITCase extends ClientToServerITCaseBase {
 
     @Test
     void testPutAndLookup() throws Exception {
-        createTable(DATA1_TABLE_PATH_PK, DATA1_TABLE_INFO_PK.getTableDescriptor(), false);
-        verifyPutAndLookup(DATA1_TABLE_PATH_PK, DATA1_SCHEMA_PK, new Object[] {1, "a"});
+        TablePath tablePath = TablePath.of("test_db_1", "test_put_and_lookup_table");
+        createTable(tablePath, DATA1_TABLE_INFO_PK.getTableDescriptor(), false);
+        verifyPutAndLookup(tablePath, DATA1_SCHEMA_PK, new Object[] {1, "a"});
 
         // test put/lookup data for primary table with pk index is not 0
         Schema schema =
