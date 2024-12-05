@@ -19,23 +19,32 @@ on:
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
+env:
+  JDK_VERSION: 8
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.run_id }}
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    environment: dev
     steps:
-      - name: Check out code
+      - name: Checkout code
         uses: actions/checkout@v2
-      - name: Set env as secret
-        env:
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-          TEST: ${{ vars.JDK_VERSION }}
+      - name: Set up JDK ${{ env.JDK_VERSION }}
+        uses: actions/setup-java@v2
+        with:
+          java-version: ${{ env.JDK_VERSION }}
+          distribution: 'adopt'
+      - name: Test
         run: |
-          import os
-          for q in (os.getenv("FIREBASE_PROJECT_ID")):
-            print(q)
-          for q in (os.getenv("TEST")):
-            print(q)
-        shell: python
+          /usr/local/apache-maven-3.8.1/bin/mvn -B verify
+        env:
+          MAVEN_OPTS: -Xmx4096m
+          ARTIFACTS_OSS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}
+          ARTIFACTS_OSS_REGION: ${{ secrets.ARTIFACTS_OSS_REGION }}
+          ARTIFACTS_OSS_BUCKET: ${{ secrets.ARTIFACTS_OSS_BUCKET }}
+          ARTIFACTS_OSS_ACCESS_KEY: ${{ secrets.ARTIFACTS_OSS_ACCESS_KEY }}
+          ARTIFACTS_OSS_SECRET_KEY: ${{ secrets.ARTIFACTS_OSS_SECRET_KEY }}
+          ARTIFACTS_OSS_STS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_STS_ENDPOINT }}
+          ARTIFACTS_OSS_ROLE_ARN: ${{ secrets.ARTIFACTS_OSS_ROLE_ARN }}
