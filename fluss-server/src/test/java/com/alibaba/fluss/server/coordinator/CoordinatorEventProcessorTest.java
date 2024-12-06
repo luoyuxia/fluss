@@ -696,7 +696,7 @@ class CoordinatorEventProcessorTest {
         int replicasCount = nBuckets * replicationFactor;
         // retry until the all replicas in t2 is online
         retry(
-                Duration.ofMinutes(2),
+                Duration.ofMinutes(1),
                 () -> {
                     // we use method replicaCounts instead of getAllReplicasForTable in here
                     // for use getAllReplicasForTable will cause ConcurrentModificationException
@@ -743,7 +743,7 @@ class CoordinatorEventProcessorTest {
         // retry until the assignment has been deleted from zk, then it means
         // the table/partition has been deleted successfully
         retry(
-                Duration.ofMinutes(2),
+                Duration.ofMinutes(1),
                 () -> assertThat(zookeeperClient.getTableAssignment(tableId)).isEmpty());
         // no replica and bucket for the table/partition should exist in the context
         assertThat(coordinatorContext.getAllBucketsForTable(tableId)).isEmpty();

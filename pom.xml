@@ -83,7 +83,7 @@
         <maven.compiler.target>${target.java.version}</maven.compiler.target>
         <test.unit.pattern>**/*Test.*</test.unit.pattern>
         <test.skip.coverage>true</test.skip.coverage>
-        <fluss.forkCount>0.5C</fluss.forkCount>
+        <fluss.forkCount>1C</fluss.forkCount>
         <fluss.reuseForks>true</fluss.reuseForks>
 
         <!-- library versions in fluss-shaded -->

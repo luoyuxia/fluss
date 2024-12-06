@@ -113,7 +113,7 @@ class TableChangeWatcherTest {
         }
 
         retry(
-                Duration.ofMinutes(2),
+                Duration.ofMinutes(1),
                 () ->
                         assertThat(eventManager.getEvents())
                                 .containsExactlyInAnyOrderElementsOf(expectedCreateTableEvents));
@@ -182,7 +182,7 @@ class TableChangeWatcherTest {
                 new CreatePartitionEvent(tablePath, tableId, 2L, "2022", partitionAssignment));
 
         retry(
-                Duration.ofMinutes(2),
+                Duration.ofMinutes(1),
                 () ->
                         assertThat(eventManager.getEvents())
                                 .containsExactlyInAnyOrderElementsOf(expectedEvents));
@@ -196,7 +196,7 @@ class TableChangeWatcherTest {
         expectedEvents.add(new DropTableEvent(tableId, true));
 
         retry(
-                Duration.ofMinutes(2),
+                Duration.ofMinutes(1),
                 () ->
                         assertThat(eventManager.getEvents())
                                 .containsExactlyInAnyOrderElementsOf(expectedEvents));
