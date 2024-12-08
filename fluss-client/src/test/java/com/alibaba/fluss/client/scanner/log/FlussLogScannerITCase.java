@@ -319,6 +319,7 @@ public class FlussLogScannerITCase extends ClientToServerITCaseBase {
                 appendWriter.append(row).get();
             }
 
+            // sleep a while to avoid secondStartTimestamp is same with firstStartTimestamp
             Thread.sleep(10);
 
             // record second batch start timestamp, we move this before first scan to make it

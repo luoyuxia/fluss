@@ -70,7 +70,6 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
         TablePath t1 = TablePath.of(DEFAULT_DB, tableName);
         Map<TableBucket, Long> bucketLogEndOffset = new HashMap<>();
         long tableId = preparePkTable(t1, DEFAULT_BUCKET_NUM, isPartitioned, bucketLogEndOffset);
-        System.out.println(bucketLogEndOffset);
 
         // wait unit records has has been synced
         waitUtilBucketSynced(t1, tableId, DEFAULT_BUCKET_NUM, isPartitioned);

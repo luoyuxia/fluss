@@ -91,7 +91,7 @@ public class PaimonSyncTestBase extends FlinkPaimonTestBase {
                                 WatermarkStrategy.noWatermarks(),
                                 "flinkSycDatabaseSource")
                         // limit resource usage
-                        .setParallelism(1);
+                        .setParallelism(2);
         Map<String, String> paimonCatalogConf = FlinkPaimonTestBase.getPaimonCatalogConf();
 
         return new PaimonDataBaseSyncSinkBuilder(paimonCatalogConf, configuration).withInput(input);

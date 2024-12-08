@@ -36,7 +36,6 @@ import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -135,7 +134,6 @@ final class NettyClientTest {
     }
 
     @Test
-    @Disabled
     void testServerDisconnection() throws Exception {
         ApiVersionsRequest request =
                 new ApiVersionsRequest()
@@ -156,7 +154,6 @@ final class NettyClientTest {
                 .isInstanceOf(ExecutionException.class)
                 .hasMessageContaining("Disconnected from node")
                 .hasRootCauseMessage("Connection refused");
-        // "拒绝连接"
         assertThat(nettyClient.connections().size()).isEqualTo(0);
 
         // restart the netty server.

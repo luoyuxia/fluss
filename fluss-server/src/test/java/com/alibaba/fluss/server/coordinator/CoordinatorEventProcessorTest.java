@@ -165,7 +165,7 @@ class CoordinatorEventProcessorTest {
         CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
                 eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
         // create a table,
-        TablePath t1 = TablePath.of(defaultDatabase, "t11");
+        TablePath t1 = TablePath.of(defaultDatabase, "create_drop_t1");
         TableDescriptor tableDescriptor = TEST_TABLE;
         int nBuckets = 3;
         int replicationFactor = 3;
@@ -174,7 +174,7 @@ class CoordinatorEventProcessorTest {
                         nBuckets, replicationFactor, new int[] {0, 1, 2});
         long t1Id = metaDataManager.createTable(t1, tableDescriptor, tableAssignment, false);
 
-        TablePath t2 = TablePath.of(defaultDatabase, "t22");
+        TablePath t2 = TablePath.of(defaultDatabase, "create_drop_t2");
         long t2Id = metaDataManager.createTable(t2, tableDescriptor, tableAssignment, false);
 
         verifyTableCreated(coordinatorContext, t2Id, tableAssignment, nBuckets, replicationFactor);

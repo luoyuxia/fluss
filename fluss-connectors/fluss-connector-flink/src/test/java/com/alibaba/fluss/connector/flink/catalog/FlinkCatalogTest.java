@@ -124,6 +124,8 @@ class FlinkCatalogTest {
         try {
             catalog.createDatabase(DEFAULT_DB, null, true);
         } catch (CatalogException e) {
+            // the auto partitioned manager may create the db zk node
+            // in an another thread, so if throw NodeExistsException, just ignore
             if (!(e.getCause() instanceof KeeperException.NodeExistsException)) {
                 throw e;
             }
