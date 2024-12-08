@@ -33,7 +33,7 @@ jobs:
       - name: Test
         timeout-minutes: 60
         run: |
-          mvn -B verify -Ptest-coverage
+          mvn -B -Duser.language=en -Duser.country=US verify -Ptest-coverage
         env:
           MAVEN_OPTS: -Xmx4096m
           ARTIFACTS_OSS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}
