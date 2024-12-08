@@ -30,6 +30,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
       - name: Test
+        timeout-minutes: 60
         run: |
           mvn -B verify -Ptest-coverage
         env:
