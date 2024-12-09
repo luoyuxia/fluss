@@ -28,7 +28,7 @@ permissions: read-all
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}
         uses: actions/checkout@v2
