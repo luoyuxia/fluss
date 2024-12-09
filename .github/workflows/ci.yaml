@@ -23,16 +23,19 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.run_id }}
   cancel-in-progress: true
+
+permissions: read-all
+
 jobs:
   build:
     runs-on: self-hosted
     steps:
-      - name: Checkout code
+      - name: Checkout code ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}
         uses: actions/checkout@v2
       - name: Test
         timeout-minutes: 60
         run: |
-          mvn -B verify -Ptest-coverage
+          mvn -B verify -pl fluss-filesystems/fluss-fs-oss -am
         env:
           MAVEN_OPTS: -Xmx4096m
           ARTIFACTS_OSS_ENDPOINT: ${{ secrets.ARTIFACTS_OSS_ENDPOINT }}
