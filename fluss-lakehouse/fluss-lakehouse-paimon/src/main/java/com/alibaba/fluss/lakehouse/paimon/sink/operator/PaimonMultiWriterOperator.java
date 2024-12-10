@@ -26,9 +26,13 @@ import com.alibaba.fluss.utils.concurrent.ExecutorThreadFactory;
 
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
+import org.apache.flink.streaming.api.operators.StreamOperator;
+import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
+import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.data.RowData;
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogLoader;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.flink.sink.Committable;
@@ -37,6 +41,7 @@ import org.apache.paimon.flink.sink.PrepareCommitOperator;
 import org.apache.paimon.flink.sink.StateUtils;
 import org.apache.paimon.flink.sink.StoreSinkWrite;
 import org.apache.paimon.flink.sink.StoreSinkWriteState;
+import org.apache.paimon.flink.sink.StoreSinkWriteStateImpl;
 import org.apache.paimon.flink.sink.cdc.CdcRecordStoreMultiWriteOperator;
 import org.apache.paimon.memory.HeapMemorySegmentPool;
 import org.apache.paimon.memory.MemoryPoolFactory;
@@ -44,6 +49,8 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -71,7 +78,8 @@ public class PaimonMultiWriterOperator
 
     private final StoreSinkWrite.WithWriteBufferProvider storeSinkWriteProvider;
     private final String initialCommitUser;
-    private final Catalog.Loader catalogLoader;
+    private final CatalogLoader catalogLoader;
+    private final String branch;
 
     private MemoryPoolFactory memoryPoolFactory;
 
@@ -93,14 +101,17 @@ public class PaimonMultiWriterOperator
     private ExecutorService compactExecutor;
 
     public PaimonMultiWriterOperator(
-            Catalog.Loader catalogLoader,
+            StreamOperatorParameters<MultiTableCommittable> parameters,
+            CatalogLoader catalogLoader,
             StoreSinkWrite.WithWriteBufferProvider storeSinkWriteProvider,
             String initialCommitUser,
-            Options options) {
-        super(options);
+            Options options,
+            @Nullable String branch) {
+        super(parameters, options);
         this.catalogLoader = catalogLoader;
         this.storeSinkWriteProvider = storeSinkWriteProvider;
         this.initialCommitUser = initialCommitUser;
+        this.branch = branch;
     }
 
     @Override
@@ -117,7 +128,7 @@ public class PaimonMultiWriterOperator
                         context, "commit_user_state", String.class, initialCommitUser);
 
         // TODO: should use CdcRecordMultiChannelComputer to filter
-        state = new StoreSinkWriteState(context, (tableName, partition, bucket) -> true);
+        state = new StoreSinkWriteStateImpl(context, (tableName, partition, bucket) -> true);
         tables = new HashMap<>();
         writes = new HashMap<>();
         tablePathById = new HashMap<>();
@@ -172,7 +183,7 @@ public class PaimonMultiWriterOperator
         updateCurrentLogOffset(multiplexCdcRecord);
         try {
             InternalRow paimonRow = toPaimonRow(cdcRecord);
-            if (table.bucketMode() == BucketMode.UNAWARE) {
+            if (table.bucketMode() == BucketMode.BUCKET_UNAWARE) {
                 // unaware bucket mode
                 write.write(paimonRow);
             } else {
@@ -303,6 +314,9 @@ public class PaimonMultiWriterOperator
         if (table == null) {
             Identifier paimonIdentifier = toIdentifier(tablePath);
             table = (FileStoreTable) catalog.getTable(paimonIdentifier);
+            if (branch != null) {
+                table = table.switchToBranch(branch);
+            }
             tables.put(tableId, table);
             tablePathById.put(tableId, paimonIdentifier);
         }
@@ -319,5 +333,47 @@ public class PaimonMultiWriterOperator
 
     private Identifier toIdentifier(TablePath tablePath) {
         return Identifier.create(tablePath.getDatabaseName(), tablePath.getTableName());
+    }
+
+    /** {@link StreamOperatorFactory} of {@link PaimonMultiWriterOperator}. */
+    public static class Factory
+            extends PrepareCommitOperator.Factory<MultiplexCdcRecord, MultiTableCommittable> {
+        private final StoreSinkWrite.WithWriteBufferProvider storeSinkWriteProvider;
+        private final String initialCommitUser;
+        private final CatalogLoader catalogLoader;
+        private final @Nullable String branch;
+
+        public Factory(
+                CatalogLoader catalogLoader,
+                StoreSinkWrite.WithWriteBufferProvider storeSinkWriteProvider,
+                String initialCommitUser,
+                Options options,
+                @Nullable String branch) {
+            super(options);
+            this.catalogLoader = catalogLoader;
+            this.storeSinkWriteProvider = storeSinkWriteProvider;
+            this.initialCommitUser = initialCommitUser;
+            this.branch = branch;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T extends StreamOperator<MultiTableCommittable>> T createStreamOperator(
+                StreamOperatorParameters<MultiTableCommittable> parameters) {
+            return (T)
+                    new PaimonMultiWriterOperator(
+                            parameters,
+                            catalogLoader,
+                            storeSinkWriteProvider,
+                            initialCommitUser,
+                            options,
+                            branch);
+        }
+
+        @Override
+        @SuppressWarnings("rawtypes")
+        public Class<? extends StreamOperator> getStreamOperatorClass(ClassLoader classLoader) {
+            return CdcRecordStoreMultiWriteOperator.class;
+        }
     }
 }

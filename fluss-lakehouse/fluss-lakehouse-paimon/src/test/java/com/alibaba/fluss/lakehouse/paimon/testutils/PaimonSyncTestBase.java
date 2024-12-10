@@ -75,14 +75,15 @@ public class PaimonSyncTestBase extends FlinkPaimonTestBase {
     }
 
     protected PaimonDataBaseSyncSinkBuilder getDatabaseSyncSinkBuilder(
-            StreamExecutionEnvironment execEnv) {
+            StreamExecutionEnvironment execEnv, String branch) {
         Configuration configuration = FlinkPaimonTestBase.FLUSS_CLUSTER_EXTENSION.getClientConfig();
         FlussDatabaseSyncSource flussDatabaseSyncSource =
                 FlussDatabaseSyncSource.newBuilder(configuration)
                         .withNewTableAddedListener(
                                 new NewTablesAddedPaimonListener(
                                         Configuration.fromMap(
-                                                FlinkPaimonTestBase.getPaimonCatalogConf())))
+                                                FlinkPaimonTestBase.getPaimonCatalogConf()),
+                                        branch))
                         .build();
 
         DataStreamSource<MultiplexCdcRecord> input =
@@ -94,7 +95,14 @@ public class PaimonSyncTestBase extends FlinkPaimonTestBase {
                         .setParallelism(2);
         Map<String, String> paimonCatalogConf = FlinkPaimonTestBase.getPaimonCatalogConf();
 
-        return new PaimonDataBaseSyncSinkBuilder(paimonCatalogConf, configuration).withInput(input);
+        return new PaimonDataBaseSyncSinkBuilder(paimonCatalogConf, configuration)
+                .withInput(input)
+                .withBranch(branch);
+    }
+
+    protected PaimonDataBaseSyncSinkBuilder getDatabaseSyncSinkBuilder(
+            StreamExecutionEnvironment execEnv) {
+        return getDatabaseSyncSinkBuilder(execEnv, null);
     }
 
     protected static Catalog getPaimonCatalog() {

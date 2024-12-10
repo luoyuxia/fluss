@@ -31,6 +31,10 @@ import org.apache.paimon.flink.FlinkFileIOLoader;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.types.DataTypes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -39,6 +43,8 @@ import java.util.Set;
 
 /** A paimon Listener for discovering new tables added to be synced. */
 public class NewTablesAddedPaimonListener implements NewTablesAddedListener {
+
+    private static final Logger LOG = LoggerFactory.getLogger(NewTablesAddedPaimonListener.class);
 
     private static final long serialVersionUID = 1L;
 
@@ -49,11 +55,18 @@ public class NewTablesAddedPaimonListener implements NewTablesAddedListener {
 
     private final Set<Long> addedTables;
 
+    @Nullable private final String branch;
+
     private transient Catalog paimonCatalog;
 
     public NewTablesAddedPaimonListener(Configuration configuration) {
+        this(configuration, null);
+    }
+
+    public NewTablesAddedPaimonListener(Configuration configuration, @Nullable String branch) {
         this.configuration = configuration;
         this.addedTables = new HashSet<>();
+        this.branch = branch;
     }
 
     @Override
@@ -85,10 +98,7 @@ public class NewTablesAddedPaimonListener implements NewTablesAddedListener {
     protected void createTable(TableInfo tableInfo) throws Exception {
         Identifier identifier = toPaimonIdentifier(tableInfo.getTablePath());
 
-        // if database not exists, create it
-        if (!paimonCatalog.databaseExists(identifier.getDatabaseName())) {
-            paimonCatalog.createDatabase(identifier.getDatabaseName(), true);
-        }
+        paimonCatalog.createDatabase(identifier.getDatabaseName(), true);
 
         TableDescriptor.TableDistribution tableDistribution =
                 tableInfo
@@ -108,6 +118,11 @@ public class NewTablesAddedPaimonListener implements NewTablesAddedListener {
                 identifier,
                 toPaimonSchema(tableInfo.getTableDescriptor(), bucketCount, bucketKeys),
                 true);
+
+        if (branch != null) {
+            LOG.info("Create branch {} for table {}.", branch, tableInfo.getTablePath());
+            paimonCatalog.getTable(identifier).createBranch(branch);
+        }
     }
 
     private Identifier toPaimonIdentifier(TablePath tablePath) {

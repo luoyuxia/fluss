@@ -29,7 +29,7 @@ import com.alibaba.fluss.rpc.messages.PbLakeTableSnapshotInfo;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.ExceptionUtils;
 
-import org.apache.flink.metrics.MetricGroup;
+import org.apache.paimon.flink.sink.Committer;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -44,8 +44,9 @@ public class FlussLakeTableSnapshotCommitter implements LakeTableSnapshotCommitt
     private final CoordinatorGateway coordinatorGateway;
     private final RpcClient rpcClient;
 
-    public FlussLakeTableSnapshotCommitter(Configuration flussClientConf, MetricGroup metricGroup) {
-        FlinkMetricRegistry metricRegistry = new FlinkMetricRegistry(metricGroup);
+    public FlussLakeTableSnapshotCommitter(
+            Configuration flussClientConf, Committer.Context context) {
+        FlinkMetricRegistry metricRegistry = new FlinkMetricRegistry(context.metricGroup());
         ClientMetricGroup clientMetricGroup =
                 new ClientMetricGroup(metricRegistry, "logOffsetCommiter");
         rpcClient = RpcClient.create(flussClientConf, clientMetricGroup);

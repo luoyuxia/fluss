@@ -20,10 +20,10 @@ import com.alibaba.fluss.lakehouse.paimon.sink.committable.FlussLogOffsetCommitt
 import com.alibaba.fluss.lakehouse.paimon.sink.committable.PaimonWrapperManifestCommittable;
 import com.alibaba.fluss.metadata.TableBucket;
 
-import org.apache.flink.metrics.groups.OperatorMetricGroup;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogLoader;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.flink.sink.Committer;
 import org.apache.paimon.flink.sink.LogOffsetCommittable;
@@ -32,7 +32,7 @@ import org.apache.paimon.flink.sink.StoreCommitter;
 import org.apache.paimon.flink.sink.StoreMultiCommitter;
 import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.manifest.ManifestCommittable;
-import org.apache.paimon.stats.BinaryTableStats;
+import org.apache.paimon.stats.SimpleStats;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.CommitMessage;
@@ -63,8 +63,7 @@ public class PaimonStoreMultiCommitter
         implements Committer<MultiTableCommittable, PaimonWrapperManifestCommittable> {
 
     private final Catalog catalog;
-    private final String commitUser;
-    @Nullable private final OperatorMetricGroup flinkMetricGroup;
+    private final Context context;
 
     // To make the commit behavior consistent with that of Committer,
     //    StoreMultiCommitter manages multiple committers which are
@@ -83,36 +82,38 @@ public class PaimonStoreMultiCommitter
     // start log offset in every commit to Fluss
     private final Set<TableBucket> committedBuckets;
 
+    @Nullable private final String branch;
+
     public PaimonStoreMultiCommitter(
-            Catalog.Loader catalogLoader,
-            String commitUser,
-            @Nullable OperatorMetricGroup flinkMetricGroup,
-            LakeTableSnapshotCommitter lakeTableSnapshotCommitter) {
+            CatalogLoader catalogLoader,
+            Context context,
+            LakeTableSnapshotCommitter lakeTableSnapshotCommitter,
+            @Nullable String branch) {
         this(
                 catalogLoader,
-                commitUser,
-                flinkMetricGroup,
+                context,
                 lakeTableSnapshotCommitter,
                 false,
-                Collections.emptyMap());
+                Collections.emptyMap(),
+                branch);
     }
 
     public PaimonStoreMultiCommitter(
-            Catalog.Loader catalogLoader,
-            String commitUser,
-            @Nullable OperatorMetricGroup flinkMetricGroup,
+            CatalogLoader catalogLoader,
+            Context context,
             LakeTableSnapshotCommitter lakeTableSnapshotCommitter,
             boolean ignoreEmptyCommit,
-            Map<String, String> dynamicOptions) {
+            Map<String, String> dynamicOptions,
+            @Nullable String branch) {
         this.catalog = catalogLoader.load();
-        this.commitUser = commitUser;
-        this.flinkMetricGroup = flinkMetricGroup;
+        this.context = context;
         this.lakeTableSnapshotCommitter = lakeTableSnapshotCommitter;
         this.ignoreEmptyCommit = ignoreEmptyCommit;
         this.dynamicOptions = dynamicOptions;
         this.tableCommitters = new HashMap<>();
         this.tablesById = new HashMap<>();
         this.committedBuckets = new HashSet<>();
+        this.branch = branch;
     }
 
     @Override
@@ -168,7 +169,7 @@ public class PaimonStoreMultiCommitter
                     case LOG_OFFSET:
                         LogOffsetCommittable offset =
                                 (LogOffsetCommittable) committable.wrappedCommittable();
-                        manifestCommittable.addLogOffset(offset.bucket(), offset.offset());
+                        manifestCommittable.addLogOffset(offset.bucket(), offset.offset(), true);
                         break;
                 }
             }
@@ -280,7 +281,7 @@ public class PaimonStoreMultiCommitter
         // only put log start offset for log table and is not bucket unaware mode
         // todo: find a way like inner table to record it?
         if (fileStoreTable.schema().primaryKeys().isEmpty()
-                && fileStoreTable.bucketMode() != BucketMode.UNAWARE) {
+                && fileStoreTable.bucketMode() != BucketMode.BUCKET_UNAWARE) {
             // only need put for the written table buckets
             Set<TableBucket> writtenBuckets =
                     flussCommittable
@@ -331,7 +332,7 @@ public class PaimonStoreMultiCommitter
                 DataSplit dataSplit = (DataSplit) splits.get(0);
                 List<DataFileMeta> dataFileMetas = dataSplit.dataFiles();
                 if (!dataFileMetas.isEmpty()) {
-                    BinaryTableStats binaryTableStats = dataFileMetas.get(0).valueStats();
+                    SimpleStats binaryTableStats = dataFileMetas.get(0).valueStats();
                     return binaryTableStats
                             .minValues()
                             // get min log start offset， field count - 2 is the index of log offset
@@ -434,10 +435,15 @@ public class PaimonStoreMultiCommitter
                                 "Failed to get committer for table %s", tableId.getFullName()),
                         e);
             }
+            if (branch != null) {
+                table = table.switchToBranch(branch);
+            }
             committer =
                     new StoreCommitter(
-                            table.newCommit(commitUser).ignoreEmptyCommit(ignoreEmptyCommit),
-                            flinkMetricGroup);
+                            table,
+                            table.newCommit(context.commitUser())
+                                    .ignoreEmptyCommit(ignoreEmptyCommit),
+                            context);
             tableCommitters.put(tableId, committer);
             tablesById.put(tableId, table);
         }

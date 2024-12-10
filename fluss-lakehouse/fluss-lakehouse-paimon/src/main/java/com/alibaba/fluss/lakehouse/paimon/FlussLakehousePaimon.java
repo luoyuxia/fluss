@@ -42,6 +42,7 @@ public class FlussLakehousePaimon {
     private static final String FLUSS_CONF_PREFIX = "fluss.";
     // for paimon config
     private static final String PAIMON_CATALOG_CONF_PREFIX = "paimon.catalog.";
+    private static final String PAIMON_BRANCH = "paimon.branch";
 
     public static void main(String[] args) throws Exception {
         // parse params
@@ -50,11 +51,12 @@ public class FlussLakehousePaimon {
 
         // the database to sync
         String database = paramsMap.get(DATABASE);
+        String branch = paramsMap.get(PAIMON_BRANCH);
 
         // extract fluss config
         Map<String, String> flussConfigMap = extractConfigStartWith(paramsMap, FLUSS_CONF_PREFIX);
         // we need to get bootstrap.servers
-        String bootstrapServers = paramsMap.get(ConfigOptions.BOOTSTRAP_SERVERS.key());
+        String bootstrapServers = flussConfigMap.get(ConfigOptions.BOOTSTRAP_SERVERS.key());
         if (bootstrapServers == null) {
             throw new IllegalArgumentException("bootstrap.servers is not configured");
         }
@@ -78,7 +80,7 @@ public class FlussLakehousePaimon {
                         .withTableFilter(tableFilter)
                         .withNewTableAddedListener(
                                 new NewTablesAddedPaimonListener(
-                                        Configuration.fromMap(paimonConfig)));
+                                        Configuration.fromMap(paimonConfig), branch));
         if (database != null) {
             Filter<String> databaseFilter = new DatabaseFilter(database);
             databaseSyncSourceBuilder.withDatabaseFilter(databaseFilter);
@@ -92,6 +94,9 @@ public class FlussLakehousePaimon {
 
         PaimonDataBaseSyncSinkBuilder paimonDataBaseSyncSinkBuilder =
                 new PaimonDataBaseSyncSinkBuilder(paimonConfig, flussConfig).withInput(input);
+        if (branch != null) {
+            paimonDataBaseSyncSinkBuilder.withBranch(branch);
+        }
         paimonDataBaseSyncSinkBuilder.build();
 
         System.out.println("Starting data tiering service to Paimon.....");

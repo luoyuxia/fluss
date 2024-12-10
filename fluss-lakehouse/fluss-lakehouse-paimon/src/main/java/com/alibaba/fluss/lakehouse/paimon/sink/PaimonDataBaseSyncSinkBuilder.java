@@ -20,7 +20,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.lakehouse.paimon.record.MultiplexCdcRecord;
 
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.CatalogLoader;
 import org.apache.paimon.flink.FlinkCatalogFactory;
 import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
@@ -42,6 +42,8 @@ public class PaimonDataBaseSyncSinkBuilder {
     private double committerCpu = 1;
     @Nullable private MemorySize committerMemory;
 
+    @Nullable private String branch = null;
+
     public PaimonDataBaseSyncSinkBuilder(
             Map<String, String> catalogConfig, Configuration flussClientConfig) {
         this.catalogOptions = Options.fromMap(catalogConfig);
@@ -60,6 +62,11 @@ public class PaimonDataBaseSyncSinkBuilder {
 
     public PaimonDataBaseSyncSinkBuilder withCommitterMemory(MemorySize committerMemory) {
         this.committerMemory = committerMemory;
+        return this;
+    }
+
+    public PaimonDataBaseSyncSinkBuilder withBranch(String branch) {
+        this.branch = branch;
         return this;
     }
 
@@ -88,12 +95,12 @@ public class PaimonDataBaseSyncSinkBuilder {
 
         PaimonMultiTableSink paimonMultiTableSink =
                 new PaimonMultiTableSink(
-                        catalogLoader(), flussClientConfig, committerCpu, committerMemory);
+                        catalogLoader(), flussClientConfig, committerCpu, committerMemory, branch);
 
         paimonMultiTableSink.sinkFrom(partitioned);
     }
 
-    private Catalog.Loader catalogLoader() {
+    private CatalogLoader catalogLoader() {
         // to make the workflow serializable
         Options catalogOptions = this.catalogOptions;
         return () -> FlinkCatalogFactory.createPaimonCatalog(catalogOptions);
