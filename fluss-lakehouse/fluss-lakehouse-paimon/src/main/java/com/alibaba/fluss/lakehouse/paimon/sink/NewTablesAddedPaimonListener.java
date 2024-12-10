@@ -85,10 +85,7 @@ public class NewTablesAddedPaimonListener implements NewTablesAddedListener {
     protected void createTable(TableInfo tableInfo) throws Exception {
         Identifier identifier = toPaimonIdentifier(tableInfo.getTablePath());
 
-        // if database not exists, create it
-        if (!paimonCatalog.databaseExists(identifier.getDatabaseName())) {
-            paimonCatalog.createDatabase(identifier.getDatabaseName(), true);
-        }
+        paimonCatalog.createDatabase(identifier.getDatabaseName(), true);
 
         TableDescriptor.TableDistribution tableDistribution =
                 tableInfo

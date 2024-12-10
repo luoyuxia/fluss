@@ -52,7 +52,7 @@
         <dependency>
             <groupId>org.apache.paimon</groupId>
             <artifactId>paimon-flink-${flink.major.version}</artifactId>
-            <version>${paimon.version}</version>
+            <version>1.0-SNAPSHOT</version>
         </dependency>
         <dependency>
             <groupId>org.apache.hadoop</groupId>
@@ -191,7 +191,6 @@
                             <artifactSet>
                                 <includes combine.children="append">
                                     <include>com.alibaba.fluss:fluss-client</include>
-                                    <include>org.apache.paimon:paimon-flink-${flink.major.version}</include>
                                 </includes>
                             </artifactSet>
                             <transformers>

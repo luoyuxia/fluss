@@ -54,7 +54,7 @@ public class FlussLakehousePaimon {
         // extract fluss config
         Map<String, String> flussConfigMap = extractConfigStartWith(paramsMap, FLUSS_CONF_PREFIX);
         // we need to get bootstrap.servers
-        String bootstrapServers = paramsMap.get(ConfigOptions.BOOTSTRAP_SERVERS.key());
+        String bootstrapServers = flussConfigMap.get(ConfigOptions.BOOTSTRAP_SERVERS.key());
         if (bootstrapServers == null) {
             throw new IllegalArgumentException("bootstrap.servers is not configured");
         }
