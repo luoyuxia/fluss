@@ -41,7 +41,7 @@ public class RequestChannelTest {
         List<RpcRequest> rpcRequests = new ArrayList<>();
         // push rpc requests
         for (int i = 0; i < 100; i++) {
-            RpcRequest rocRequest =
+            RpcRequest rpcRequest =
                     new RpcRequest(
                             ApiKeys.GET_TABLE.id,
                             (short) 0,
@@ -50,8 +50,8 @@ public class RequestChannelTest {
                             new GetTableRequest(),
                             new EmptyByteBuf(new UnpooledByteBufAllocator(true, true)),
                             null);
-            channel.putRequest(rocRequest);
-            rpcRequests.add(rocRequest);
+            channel.putRequest(rpcRequest);
+            rpcRequests.add(rpcRequest);
         }
         // pop rpc requests
         for (int i = 0; i < 100; i++) {
