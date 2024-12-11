@@ -42,6 +42,8 @@ public class PaimonDataBaseSyncSinkBuilder {
     private double committerCpu = 1;
     @Nullable private MemorySize committerMemory;
 
+    @Nullable private String branch = null;
+
     public PaimonDataBaseSyncSinkBuilder(
             Map<String, String> catalogConfig, Configuration flussClientConfig) {
         this.catalogOptions = Options.fromMap(catalogConfig);
@@ -60,6 +62,11 @@ public class PaimonDataBaseSyncSinkBuilder {
 
     public PaimonDataBaseSyncSinkBuilder withCommitterMemory(MemorySize committerMemory) {
         this.committerMemory = committerMemory;
+        return this;
+    }
+
+    public PaimonDataBaseSyncSinkBuilder withBranch(String branch) {
+        this.branch = branch;
         return this;
     }
 
@@ -88,7 +95,7 @@ public class PaimonDataBaseSyncSinkBuilder {
 
         PaimonMultiTableSink paimonMultiTableSink =
                 new PaimonMultiTableSink(
-                        catalogLoader(), flussClientConfig, committerCpu, committerMemory);
+                        catalogLoader(), flussClientConfig, committerCpu, committerMemory, branch);
 
         paimonMultiTableSink.sinkFrom(partitioned);
     }

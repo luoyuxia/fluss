@@ -46,6 +46,7 @@ import org.apache.paimon.schema.TableSchema;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.LinkedList;
@@ -73,6 +74,7 @@ public class PaimonMultiWriterOperator
     private final StoreSinkWrite.WithWriteBufferProvider storeSinkWriteProvider;
     private final String initialCommitUser;
     private final Catalog.Loader catalogLoader;
+    private final String branch;
 
     private MemoryPoolFactory memoryPoolFactory;
 
@@ -97,11 +99,13 @@ public class PaimonMultiWriterOperator
             Catalog.Loader catalogLoader,
             StoreSinkWrite.WithWriteBufferProvider storeSinkWriteProvider,
             String initialCommitUser,
-            Options options) {
+            Options options,
+            @Nullable String branch) {
         super(options);
         this.catalogLoader = catalogLoader;
         this.storeSinkWriteProvider = storeSinkWriteProvider;
         this.initialCommitUser = initialCommitUser;
+        this.branch = branch;
     }
 
     @Override
@@ -304,6 +308,9 @@ public class PaimonMultiWriterOperator
         if (table == null) {
             Identifier paimonIdentifier = toIdentifier(tablePath);
             table = (FileStoreTable) catalog.getTable(paimonIdentifier);
+            if (branch != null) {
+                table = table.switchToBranch(branch);
+            }
             tables.put(tableId, table);
             tablePathById.put(tableId, paimonIdentifier);
         }

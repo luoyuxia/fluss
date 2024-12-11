@@ -39,6 +39,7 @@ import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.InnerTableScan;
 import org.apache.paimon.table.source.Split;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -79,11 +80,20 @@ public class PaimonStoreMultiCommitter
     // start log offset in every commit to Fluss
     private final Set<TableBucket> committedBuckets;
 
+    @Nullable private final String branch;
+
     public PaimonStoreMultiCommitter(
             Catalog.Loader catalogLoader,
             Context context,
-            LakeTableSnapshotCommitter lakeTableSnapshotCommitter) {
-        this(catalogLoader, context, lakeTableSnapshotCommitter, false, Collections.emptyMap());
+            LakeTableSnapshotCommitter lakeTableSnapshotCommitter,
+            @Nullable String branch) {
+        this(
+                catalogLoader,
+                context,
+                lakeTableSnapshotCommitter,
+                false,
+                Collections.emptyMap(),
+                branch);
     }
 
     public PaimonStoreMultiCommitter(
@@ -91,7 +101,8 @@ public class PaimonStoreMultiCommitter
             Context context,
             LakeTableSnapshotCommitter lakeTableSnapshotCommitter,
             boolean ignoreEmptyCommit,
-            Map<String, String> dynamicOptions) {
+            Map<String, String> dynamicOptions,
+            @Nullable String branch) {
         this.catalog = catalogLoader.load();
         this.context = context;
         this.lakeTableSnapshotCommitter = lakeTableSnapshotCommitter;
@@ -100,6 +111,7 @@ public class PaimonStoreMultiCommitter
         this.tableCommitters = new HashMap<>();
         this.tablesById = new HashMap<>();
         this.committedBuckets = new HashSet<>();
+        this.branch = branch;
     }
 
     @Override
@@ -422,6 +434,9 @@ public class PaimonStoreMultiCommitter
                         String.format(
                                 "Failed to get committer for table %s", tableId.getFullName()),
                         e);
+            }
+            if (branch != null) {
+                table = table.switchToBranch(branch);
             }
             committer =
                     new StoreCommitter(

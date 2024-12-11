@@ -69,15 +69,19 @@ public class PaimonMultiTableSink implements Serializable {
     @Nullable private final MemorySize commitHeapMemory;
     private final Configuration flussClientConf;
 
+    @Nullable private final String branch;
+
     public PaimonMultiTableSink(
             Catalog.Loader catalogLoader,
             Configuration flussClientConf,
             double commitCpuCores,
-            @Nullable MemorySize commitHeapMemory) {
+            @Nullable MemorySize commitHeapMemory,
+            @Nullable String branch) {
         this.catalogLoader = catalogLoader;
         this.flussClientConf = flussClientConf;
         this.commitCpuCores = commitCpuCores;
         this.commitHeapMemory = commitHeapMemory;
+        this.branch = branch;
     }
 
     private StoreSinkWrite.WithWriteBufferProvider createWriteProvider() {
@@ -153,7 +157,7 @@ public class PaimonMultiTableSink implements Serializable {
     protected OneInputStreamOperator<MultiplexCdcRecord, MultiTableCommittable> createWriteOperator(
             StoreSinkWrite.WithWriteBufferProvider writeProvider, String commitUser) {
         return new PaimonMultiWriterOperator(
-                catalogLoader, writeProvider, commitUser, new Options());
+                catalogLoader, writeProvider, commitUser, new Options(), branch);
     }
 
     // Table committers are dynamically created at runtime
@@ -167,7 +171,8 @@ public class PaimonMultiTableSink implements Serializable {
                 new PaimonStoreMultiCommitter(
                         catalogLoader,
                         context,
-                        new FlussLakeTableSnapshotCommitter(flussClientConf, context));
+                        new FlussLakeTableSnapshotCommitter(flussClientConf, context),
+                        branch);
     }
 
     protected CommittableStateManager<PaimonWrapperManifestCommittable>
