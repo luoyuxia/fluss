@@ -297,35 +297,39 @@ public class FlinkSourceEnumerator
     }
 
     private PartitionChange getPartitionChange(Set<PartitionInfo> fetchedPartitionInfos) {
+        LOG.info("getPartitionChange: {}", fetchedPartitionInfos);
         final Set<PartitionInfo> removedPartitionIds = new HashSet<>();
 
         Consumer<PartitionInfo> dedupOrMarkAsRemoved =
                 (tp) -> {
                     if (!fetchedPartitionInfos.remove(tp)) {
+                        LOG.info("partition {} is removed", tp);
                         removedPartitionIds.add(tp);
                     }
                 };
 
+        Set<PartitionInfo> assignedOrPendingPartitions = new HashSet<>();
         assignedPartitions.forEach(
                 (partitionId, partitionName) ->
-                        dedupOrMarkAsRemoved.accept(new PartitionInfo(partitionId, partitionName)));
+                        assignedOrPendingPartitions.add(
+                                new PartitionInfo(partitionId, partitionName)));
 
-        pendingSplitAssignment.forEach(
-                (reader, splits) ->
-                        splits.forEach(
-                                split -> {
-                                    long partitionId =
-                                            checkNotNull(
-                                                    split.getTableBucket().getPartitionId(),
-                                                    "partition id shouldn't be null for the splits of partitioned table.");
-                                    String partitionName =
-                                            checkNotNull(
-                                                    split.getPartitionName(),
-                                                    "partition name shouldn't be null for the splits of partitioned table.");
-                                    PartitionInfo partitionInfo =
-                                            new PartitionInfo(partitionId, partitionName);
-                                    dedupOrMarkAsRemoved.accept(partitionInfo);
-                                }));
+        pendingSplitAssignment.values().stream()
+                .flatMap(Collection::stream)
+                .forEach(
+                        split -> {
+                            long partitionId =
+                                    checkNotNull(
+                                            split.getTableBucket().getPartitionId(),
+                                            "partition id shouldn't be null for the splits of partitioned table.");
+                            String partitionName =
+                                    checkNotNull(
+                                            split.getPartitionName(),
+                                            "partition name shouldn't be null for the splits of partitioned table.");
+                            assignedOrPendingPartitions.add(
+                                    new PartitionInfo(partitionId, partitionName));
+                        });
+        assignedOrPendingPartitions.forEach(dedupOrMarkAsRemoved);
 
         if (!removedPartitionIds.isEmpty()) {
             LOG.info("Discovered removed partitions: {}", removedPartitionIds);
