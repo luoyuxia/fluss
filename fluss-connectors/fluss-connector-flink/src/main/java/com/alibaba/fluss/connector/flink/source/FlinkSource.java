@@ -103,8 +103,8 @@ public class FlinkSource implements Source<RowData, SourceSplitBase, SourceEnume
         return new FlinkSourceEnumerator(
                 tablePath,
                 flussConf,
-                hasPrimaryKey,
                 isPartitioned,
+                hasPrimaryKey,
                 splitEnumeratorContext,
                 sourceEnumeratorState.getAssignedBuckets(),
                 sourceEnumeratorState.getAssignedPartitions(),
