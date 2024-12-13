@@ -141,4 +141,5 @@ public class MetricNames {
     public static final String SCANNER_REMOTE_FETCH_BYTES_RATE = "remoteFetchBytesPerSecond";
     public static final String SCANNER_REMOTE_FETCH_RATE = "remoteFetchRequestsPerSecond";
     public static final String SCANNER_REMOTE_FETCH_ERROR_RATE = "remoteFetchErrorPerSecond";
+    public static final String SCANNER_CORRUPT_RECORDS = "corruptRecords";
 }

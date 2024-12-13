@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.client.scanner.log;
 
+import com.alibaba.fluss.client.metrics.ScannerMetricGroup;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.FileLogRecords;
 import com.alibaba.fluss.record.LogRecordReadContext;
@@ -40,6 +41,7 @@ class RemotePendingFetch implements PendingFetch {
     private final LogScannerStatus logScannerStatus;
     private final boolean isCheckCrc;
     private final @Nullable Projection projection;
+    private final ScannerMetricGroup scannerMetricGroup;
 
     RemotePendingFetch(
             RemoteLogSegment remoteLogSegment,
@@ -50,7 +52,8 @@ class RemotePendingFetch implements PendingFetch {
             LogRecordReadContext readContext,
             LogScannerStatus logScannerStatus,
             boolean isCheckCrc,
-            @Nullable Projection projection) {
+            @Nullable Projection projection,
+            ScannerMetricGroup scannerMetricGroup) {
         this.remoteLogSegment = remoteLogSegment;
         this.downloadFuture = downloadFuture;
         this.posInLogSegment = posInLogSegment;
@@ -60,6 +63,7 @@ class RemotePendingFetch implements PendingFetch {
         this.logScannerStatus = logScannerStatus;
         this.isCheckCrc = isCheckCrc;
         this.projection = projection;
+        this.scannerMetricGroup = scannerMetricGroup;
     }
 
     @Override
@@ -84,6 +88,7 @@ class RemotePendingFetch implements PendingFetch {
                 isCheckCrc,
                 fetchOffset,
                 projection,
-                downloadFuture.getRecycleCallback());
+                downloadFuture.getRecycleCallback(),
+                scannerMetricGroup);
     }
 }

@@ -251,6 +251,7 @@ public class LogFetchBufferTest {
                 logScannerStatus,
                 true,
                 0L,
+                null,
                 null);
     }
 

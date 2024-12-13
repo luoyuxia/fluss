@@ -254,7 +254,8 @@ class RemoteCompletedFetchTest {
                 true,
                 fetchOffset,
                 projection,
-                recycle);
+                recycle,
+                null);
     }
 
     private RemoteCompletedFetch makeCompletedFetch(

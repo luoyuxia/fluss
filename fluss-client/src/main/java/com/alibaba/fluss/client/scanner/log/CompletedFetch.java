@@ -17,7 +17,9 @@
 package com.alibaba.fluss.client.scanner.log;
 
 import com.alibaba.fluss.annotation.Internal;
+import com.alibaba.fluss.client.metrics.ScannerMetricGroup;
 import com.alibaba.fluss.client.scanner.ScanRecord;
+import com.alibaba.fluss.exception.CorruptMessageException;
 import com.alibaba.fluss.exception.CorruptRecordException;
 import com.alibaba.fluss.exception.FetchException;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -64,6 +66,8 @@ abstract class CompletedFetch {
     @Nullable protected final Projection projection;
     protected final InternalRow.FieldGetter[] fieldGetters;
 
+    private final ScannerMetricGroup scannerMetricGroup;
+
     private LogRecordBatch currentBatch;
     private LogRecord lastRecord;
     private CloseableIterator<LogRecord> records;
@@ -84,7 +88,8 @@ abstract class CompletedFetch {
             LogScannerStatus logScannerStatus,
             boolean isCheckCrcs,
             long fetchOffset,
-            @Nullable Projection projection) {
+            @Nullable Projection projection,
+            ScannerMetricGroup scannerMetricGroup) {
         this.tableBucket = tableBucket;
         this.error = error;
         this.sizeInBytes = sizeInBytes;
@@ -100,6 +105,7 @@ abstract class CompletedFetch {
         for (int i = 0; i < fieldGetters.length; i++) {
             fieldGetters[i] = InternalRow.createFieldGetter(rowType.getChildren().get(i), i);
         }
+        this.scannerMetricGroup = scannerMetricGroup;
     }
 
     protected abstract ScanRecord toScanRecord(LogRecord record);
@@ -149,11 +155,9 @@ abstract class CompletedFetch {
      */
     public List<ScanRecord> fetchRecords(int maxRecords) {
         if (corruptLastRecord) {
-            throw new FetchException(
-                    "Received exception when fetching the next record from "
-                            + tableBucket
-                            + ". If needed, please back to past the record to continue scanning.",
-                    cachedRecordException);
+            LOG.warn("Received corrupt record from {}.", tableBucket);
+            scannerMetricGroup.corruptRecords().inc();
+            return Collections.emptyList();
         }
 
         if (isConsumed) {
@@ -181,13 +185,18 @@ abstract class CompletedFetch {
                 cachedRecordException = null;
             }
         } catch (Exception e) {
-            cachedRecordException = e;
-            if (scanRecords.isEmpty()) {
-                throw new FetchException(
-                        "Received exception when fetching the next record from "
-                                + tableBucket
-                                + ". If needed, please back to past the record to continue scanning.",
-                        e);
+            if (e instanceof CorruptMessageException) {
+                LOG.warn("Received corrupt record from {}.", tableBucket, e);
+                scannerMetricGroup.corruptRecords().inc();
+            } else {
+                cachedRecordException = e;
+                if (scanRecords.isEmpty()) {
+                    throw new FetchException(
+                            "Received exception when fetching the next record from "
+                                    + tableBucket
+                                    + ". If needed, please back to past the record to continue scanning.",
+                            e);
+                }
             }
         }
 

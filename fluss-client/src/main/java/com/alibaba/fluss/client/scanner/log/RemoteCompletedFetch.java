@@ -17,6 +17,7 @@
 package com.alibaba.fluss.client.scanner.log;
 
 import com.alibaba.fluss.annotation.Internal;
+import com.alibaba.fluss.client.metrics.ScannerMetricGroup;
 import com.alibaba.fluss.client.scanner.ScanRecord;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.FileLogRecords;
@@ -53,7 +54,8 @@ class RemoteCompletedFetch extends CompletedFetch {
             boolean isCheckCrc,
             long fetchOffset,
             @Nullable Projection projection,
-            Runnable recycleCallback) {
+            Runnable recycleCallback,
+            ScannerMetricGroup scannerMetricGroup) {
         super(
                 tableBucket,
                 ApiError.NONE,
@@ -64,7 +66,8 @@ class RemoteCompletedFetch extends CompletedFetch {
                 logScannerStatus,
                 isCheckCrc,
                 fetchOffset,
-                projection);
+                projection,
+                scannerMetricGroup);
         this.fileLogRecords = fileLogRecords;
         this.recycleCallback = recycleCallback;
     }

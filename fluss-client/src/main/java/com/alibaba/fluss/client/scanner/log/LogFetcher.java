@@ -311,7 +311,8 @@ public class LogFetcher implements Closeable {
                                             logScannerStatus,
                                             isCheckCrcs,
                                             fetchOffset,
-                                            projection);
+                                            projection,
+                                            scannerMetricGroup);
                             logFetchBuffer.add(completedFetch);
                         }
                     }
@@ -348,7 +349,8 @@ public class LogFetcher implements Closeable {
                             remoteReadContext,
                             logScannerStatus,
                             isCheckCrcs,
-                            projection);
+                            projection,
+                            scannerMetricGroup);
             logFetchBuffer.pend(pendingFetch);
             downloadFuture.onComplete(logFetchBuffer::tryComplete);
         }

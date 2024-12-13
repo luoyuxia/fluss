@@ -17,6 +17,7 @@
 package com.alibaba.fluss.client.scanner.log;
 
 import com.alibaba.fluss.annotation.Internal;
+import com.alibaba.fluss.client.metrics.ScannerMetricGroup;
 import com.alibaba.fluss.client.scanner.ScanRecord;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.LogRecord;
@@ -44,7 +45,8 @@ class DefaultCompletedFetch extends CompletedFetch {
             LogScannerStatus logScannerStatus,
             boolean isCheckCrc,
             Long fetchOffset,
-            @Nullable Projection projection) {
+            @Nullable Projection projection,
+            ScannerMetricGroup scannerMetricGroup) {
         super(
                 tableBucket,
                 fetchLogResultForBucket.getError(),
@@ -55,7 +57,8 @@ class DefaultCompletedFetch extends CompletedFetch {
                 logScannerStatus,
                 isCheckCrc,
                 fetchOffset,
-                projection);
+                projection,
+                scannerMetricGroup);
     }
 
     // TODO: optimize this to avoid deep copying the record.

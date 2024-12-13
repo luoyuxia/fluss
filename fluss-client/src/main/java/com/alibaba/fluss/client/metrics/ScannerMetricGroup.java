@@ -56,6 +56,8 @@ public class ScannerMetricGroup extends AbstractMetricGroup {
     private volatile long lastPollMs;
     private volatile long pollStartMs;
 
+    private final Counter corruptRecords;
+
     public ScannerMetricGroup(ClientMetricGroup parent, TablePath tablePath) {
         super(parent.getMetricRegistry(), makeScope(parent, name), parent);
         this.tablePath = tablePath;
@@ -69,6 +71,8 @@ public class ScannerMetricGroup extends AbstractMetricGroup {
         meter(MetricNames.SCANNER_REMOTE_FETCH_RATE, new MeterView(remoteFetchRequestCount));
         remoteFetchErrorCount = new ThreadSafeSimpleCounter();
         meter(MetricNames.SCANNER_REMOTE_FETCH_ERROR_RATE, new MeterView(remoteFetchErrorCount));
+        corruptRecords = new ThreadSafeSimpleCounter();
+        meter(MetricNames.SCANNER_CORRUPT_RECORDS, new MeterView(corruptRecords));
 
         bytesPerRequest =
                 histogram(
@@ -91,6 +95,10 @@ public class ScannerMetricGroup extends AbstractMetricGroup {
 
     public Counter remoteFetchBytesCount() {
         return remoteFetchBytesCount;
+    }
+
+    public Counter corruptRecords() {
+        return corruptRecords;
     }
 
     public Counter remoteFetchRequestCount() {

@@ -181,7 +181,8 @@ public class DefaultCompletedFetchTest {
                 logScannerStatus,
                 true,
                 offset,
-                projection);
+                projection,
+                null);
     }
 
     private MemoryLogRecords createMemoryLogRecords(List<Object[]> objects) throws Exception {
