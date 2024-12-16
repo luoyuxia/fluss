@@ -150,6 +150,12 @@ public class FlussLogScanner implements LogScanner {
                 Map<TableBucket, List<ScanRecord>> fetchRecords = pollForFetches();
                 if (fetchRecords.isEmpty()) {
                     if (logFetcher.awaitNotEmpty(startNanos + timeoutNanos)) {
+                        LOG.info("try sleep 1s");
+                        try {
+                            Thread.sleep(1000);
+                        } catch (Exception e) {
+                            LOG.error("sleep error", e);
+                        }
                         return new ScanRecords(fetchRecords);
                     }
                 } else {

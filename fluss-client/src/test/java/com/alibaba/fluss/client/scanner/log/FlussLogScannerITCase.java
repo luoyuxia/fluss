@@ -56,6 +56,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class FlussLogScannerITCase extends ClientToServerITCaseBase {
 
     @Test
+    void t1() throws Exception {
+        createTable(DATA1_TABLE_PATH, DATA1_TABLE_INFO.getTableDescriptor(), false);
+        try (Table table = conn.getTable(DATA1_TABLE_PATH)) {
+            LogScanner logScanner = createLogScanner(table);
+            subscribeFromBeginning(logScanner, table);
+            System.out.println(System.currentTimeMillis());
+            ScanRecords scanRecords = logScanner.poll(Duration.ofMinutes(1));
+            System.out.println(System.currentTimeMillis());
+            assertThat(scanRecords).isEqualTo(ScanRecords.EMPTY);
+        }
+    }
+
+    @Test
     void testPoll() throws Exception {
         createTable(DATA1_TABLE_PATH, DATA1_TABLE_INFO.getTableDescriptor(), false);
 
