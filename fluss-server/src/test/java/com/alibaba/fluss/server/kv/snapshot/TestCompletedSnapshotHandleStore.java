@@ -25,7 +25,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
-/** A implementation of {@link CompletedSnapshotStore} for test purpose. */
+/** An implementation of {@link CompletedSnapshotStore} for test purpose. */
 public class TestCompletedSnapshotHandleStore implements CompletedSnapshotHandleStore {
 
     private final SupplierWithException<List<Tuple2<CompletedSnapshotHandle, String>>, Exception>

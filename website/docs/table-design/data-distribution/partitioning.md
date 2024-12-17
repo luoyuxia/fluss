@@ -10,7 +10,7 @@ In Fluss, a **Partitioned Table** organizes data based on one or more partition 
 For partitioned tables, Fluss supports auto partitioning creation. Partitions can be automatically created based on the auto partitioning rules configured at the time of table creation, and expired partitions are automatically removed, ensuring data not expanding unlimited.
 
 ### Key Benefits of Partitioned Tables
-- **Improved Query Performance:** By narrowing down the query scope to specific partitions, the system reads less data, reducing query execution time.
+- **Improved Query Performance:** By narrowing down the query scope to specific partitions, the system reads fewer data, reducing query execution time.
 - **Data Organization:** Partitions help in logically organizing data, making it easier to manage and query.
 - **Scalability:** Partitioning large datasets distributes the data across smaller, manageable chunks, improving scalability.
 

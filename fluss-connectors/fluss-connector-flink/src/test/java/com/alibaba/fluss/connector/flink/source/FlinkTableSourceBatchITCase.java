@@ -270,6 +270,14 @@ class FlinkTableSourceBatchITCase extends FlinkTestBase {
                         "+I[5, name5]");
         assertThat(collected).isSubsetOf(expected);
         assertThat(collected).hasSize(3);
+
+        // test partition table.
+        String partitionTable = preparePartitionedLogTable();
+        query = String.format("SELECT id, name FROM %s limit 3", partitionTable);
+        iterRows = tEnv.executeSql(query).collect();
+        collected = assertAndCollectRecords(iterRows, 3);
+        assertThat(collected).isSubsetOf(expected);
+        assertThat(collected).hasSize(3);
     }
 
     @ParameterizedTest

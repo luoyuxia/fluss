@@ -385,7 +385,7 @@ SELECT snapshot_id, total_record_count FROM datalake_enriched_orders$lake$snapsh
 |           1 |                650 |
 +-------------+--------------------+
 ```
-**Note:** Make sure to wait for the checkpoints (~30s) to complete before querying the snapshotsm, otherwise the result will be empty.
+**Note:** Make sure to wait for the checkpoints (~30s) to complete before querying the snapshots, otherwise the result will be empty.
 
 Then, you can run the following SQL to do analytics on Paimon data:
 ```sql  title="Flink SQL Client"
@@ -441,7 +441,7 @@ docker-compose exec taskmanager tree /tmp/paimon/fluss.db
         ├── LATEST
         └── snapshot-1
 ```
-The files adhere to Paimon's standard format, enabling seamless querying with other engines such as [StartRocks](https://docs.starrocks.io/docs/data_source/catalog/paimon_catalog/).
+The files adhere to Paimon's standard format, enabling seamless querying with other engines such as [StarRocks](https://docs.starrocks.io/docs/data_source/catalog/paimon_catalog/).
 
 ## Clean up
 After finishing the tutorial, run `exit` to exit Flink SQL CLI Container and then run `docker-compose down -v` to stop all containers.

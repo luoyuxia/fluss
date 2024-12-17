@@ -55,6 +55,7 @@ import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.record.ValueRecord;
 import com.alibaba.fluss.record.ValueRecordReadContext;
+import com.alibaba.fluss.row.GenericRow;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.ProjectedRow;
 import com.alibaba.fluss.row.decode.RowDecoder;
@@ -211,17 +212,27 @@ public class FlussTable implements Table {
     @Override
     public CompletableFuture<List<ScanRecord>> limitScan(
             TableBucket tableBucket, int limit, @Nullable int[] projectedFields) {
-        // because that rocksdb is not suitable to projection, thus do it in client.
-        int leader = metadataUpdater.leaderFor(tableBucket);
+
         LimitScanRequest limitScanRequest =
                 new LimitScanRequest()
                         .setTableId(tableBucket.getTableId())
                         .setBucketId(tableBucket.getBucket())
                         .setLimit(limit);
+
         if (tableBucket.getPartitionId() != null) {
             limitScanRequest.setPartitionId(tableBucket.getPartitionId());
+            metadataUpdater.checkAndUpdateMetadata(tablePath, tableBucket);
         }
+
+        // because that rocksdb is not suitable to projection, thus do it in client.
+        int leader = metadataUpdater.leaderFor(tableBucket);
         TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(leader);
+        RowType rowType = tableInfo.getTableDescriptor().getSchema().toRowType();
+        InternalRow.FieldGetter[] fieldGetters =
+                new InternalRow.FieldGetter[rowType.getFieldCount()];
+        for (int i = 0; i < rowType.getFieldCount(); i++) {
+            fieldGetters[i] = InternalRow.createFieldGetter(rowType.getTypeAt(i), i);
+        }
 
         CompletableFuture<List<ScanRecord>> future = new CompletableFuture<>();
         gateway.limitScan(limitScanRequest)
@@ -233,7 +244,8 @@ public class FlussTable implements Table {
                                                 limit,
                                                 limitScantResponse,
                                                 projectedFields,
-                                                hasPrimaryKey));
+                                                hasPrimaryKey,
+                                                fieldGetters));
                             } else {
                                 throw ApiError.fromErrorMessage(limitScantResponse).exception();
                             }
@@ -250,7 +262,8 @@ public class FlussTable implements Table {
             int limit,
             LimitScanResponse limitScanResponse,
             @Nullable int[] projectedFields,
-            boolean hasPrimaryKey) {
+            boolean hasPrimaryKey,
+            InternalRow.FieldGetter[] fieldGetters) {
         List<ScanRecord> scanRecordList = new ArrayList<>();
         if (!limitScanResponse.hasRecords()) {
             return scanRecordList;
@@ -262,43 +275,52 @@ public class FlussTable implements Table {
             ValueRecordReadContext readContext =
                     new ValueRecordReadContext(kvValueDecoder.getRowDecoder());
             for (ValueRecord record : valueRecords.records(readContext)) {
-                InternalRow originRow = record.getRow();
-                if (projectedFields != null) {
-                    ProjectedRow row = ProjectedRow.from(projectedFields);
-                    row.replaceRow(originRow);
-                    scanRecordList.add(new ScanRecord(row));
-                } else {
-                    scanRecordList.add(new ScanRecord(originRow));
-                }
+                addScanRecord(projectedFields, scanRecordList, record.getRow(), fieldGetters);
             }
         } else {
             LogRecordReadContext readContext =
                     LogRecordReadContext.createReadContext(tableInfo, null);
             LogRecords records = MemoryLogRecords.pointToByteBuffer(recordsBuffer);
             for (LogRecordBatch logRecordBatch : records.batches()) {
-                // A batch of log record maybe little more than limit, thus we need slice the last
-                // limit number.
-                CloseableIterator<LogRecord> logRecordIterator =
-                        logRecordBatch.records(readContext);
-                while (logRecordIterator.hasNext()) {
-                    InternalRow originRow = logRecordIterator.next().getRow();
-                    if (projectedFields != null) {
-                        ProjectedRow row = ProjectedRow.from(projectedFields);
-                        row.replaceRow(originRow);
-                        scanRecordList.add(new ScanRecord(row));
-                    } else {
-                        scanRecordList.add(new ScanRecord(originRow));
+                // A batch of log record maybe little more than limit, thus we need slice the
+                // last limit number.
+                try (CloseableIterator<LogRecord> logRecordIterator =
+                        logRecordBatch.records(readContext)) {
+                    while (logRecordIterator.hasNext()) {
+                        addScanRecord(
+                                projectedFields,
+                                scanRecordList,
+                                logRecordIterator.next().getRow(),
+                                fieldGetters);
                     }
                 }
             }
-
             if (scanRecordList.size() > limit) {
                 scanRecordList =
                         scanRecordList.subList(
                                 scanRecordList.size() - limit, scanRecordList.size());
             }
         }
+
         return scanRecordList;
+    }
+
+    private void addScanRecord(
+            @Nullable int[] projectedFields,
+            List<ScanRecord> scanRecordList,
+            InternalRow originRow,
+            InternalRow.FieldGetter[] fieldGetters) {
+        GenericRow newRow = new GenericRow(fieldGetters.length);
+        for (int i = 0; i < fieldGetters.length; i++) {
+            newRow.setField(i, fieldGetters[i].getFieldOrNull(originRow));
+        }
+        if (projectedFields != null) {
+            ProjectedRow row = ProjectedRow.from(projectedFields);
+            row.replaceRow(newRow);
+            scanRecordList.add(new ScanRecord(row));
+        } else {
+            scanRecordList.add(new ScanRecord(newRow));
+        }
     }
 
     /**

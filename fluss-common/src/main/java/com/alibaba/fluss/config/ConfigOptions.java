@@ -621,7 +621,7 @@ public class ConfigOptions {
                                     + " considering a request complete. This controls the durability of records that "
                                     + "are sent. The following settings are allowed:\n"
                                     + "acks=0: If set to 0, then the writer will not wait for any acknowledgment "
-                                    + "from the server at all. No gurarantee can be mode that the server has received "
+                                    + "from the server at all. No guarantee can be mode that the server has received "
                                     + "the record in this case.\n"
                                     + "acks=1: This will mean the leader will write the record to its local log but "
                                     + "will respond without awaiting full acknowledge the record but before the followers"
@@ -1183,7 +1183,7 @@ public class ConfigOptions {
                                     + "like 9990-9999.");
 
     // ------------------------------------------------------------------------
-    //  ConfigOptions for lakehosue storage
+    //  ConfigOptions for lakehouse storage
     // ------------------------------------------------------------------------
     public static final ConfigOption<String> LAKEHOUSE_STORAGE =
             key("lakehouse.storage")

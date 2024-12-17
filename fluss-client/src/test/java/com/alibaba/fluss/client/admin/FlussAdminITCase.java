@@ -80,7 +80,7 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
             TableDescriptor.builder()
                     .schema(DEFAULT_SCHEMA)
                     .comment("test table")
-                    .distributedBy(10, "id")
+                    .distributedBy(3, "id")
                     .property(ConfigOptions.TABLE_LOG_TTL, Duration.ofDays(1))
                     .customProperty("connector", "fluss")
                     .build();
@@ -245,6 +245,7 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
 
         // assert the cluster should have tablet server number to be 3
         assertHasTabletServerNumber(3);
+        FLUSS_CLUSTER_EXTENSION.waitUtilAllGatewayHasSameMetadata();
 
         // we can create the table now
         admin.createTable(tablePath, DEFAULT_TABLE_DESCRIPTOR, false).get();
@@ -349,7 +350,7 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
                                         .column("pt", DataTypes.STRING())
                                         .build())
                         .comment("test table")
-                        .distributedBy(10, "id")
+                        .distributedBy(3, "id")
                         .partitionedBy("pt")
                         .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)
                         .property(

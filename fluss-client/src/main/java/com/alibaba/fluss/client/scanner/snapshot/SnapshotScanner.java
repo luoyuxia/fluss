@@ -117,8 +117,8 @@ public class SnapshotScanner implements AutoCloseable {
     @Nullable
     public CloseableIterator<ScanRecord> poll(Duration timeout) {
         // note: we don't throw exception if the scanner is closed since in flink access pattern,
-        // the scanner will be closed by source reader thead after finished reading all records,
-        // but the fetcher thead may still calling poll method
+        // the scanner will be closed by source reader thread after finished reading all records,
+        // but the fetcher thread may still calling poll method
         ensureNoException();
         return inLock(
                 lock,

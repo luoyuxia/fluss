@@ -34,7 +34,7 @@ import java.util.Optional;
 /**
  * A handle to a completed snapshot which contains the metadata file path to the completed snapshot.
  * It is as a wrapper around a {@link CompletedSnapshot} to make the referenced completed snapshot
- * retrievable trough a simple get call.
+ * retrievable through a simple get call.
  */
 public class CompletedSnapshotHandle {
 

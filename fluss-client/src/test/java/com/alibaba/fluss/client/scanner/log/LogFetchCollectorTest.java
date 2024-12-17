@@ -146,7 +146,7 @@ public class LogFetchCollectorTest {
 
         Map<TableBucket, List<ScanRecord>> bucketAndRecords =
                 logFetchCollector.collectFetch(logFetchBuffer);
-        // should only contains records for bucket 1
+        // should only contain records for bucket 1
         assertThat(bucketAndRecords.keySet()).containsExactly(tb1);
 
         // collect again, should be empty

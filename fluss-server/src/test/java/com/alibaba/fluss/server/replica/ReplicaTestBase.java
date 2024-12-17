@@ -501,7 +501,7 @@ public class ReplicaTestBase {
                 .collect(Collectors.toSet());
     }
 
-    /** A implementation of {@link SnapshotContext} for test purpose. */
+    /** An implementation of {@link SnapshotContext} for test purpose. */
     protected class TestSnapshotContext implements SnapshotContext {
 
         private final FsPath remoteKvTabletDir;

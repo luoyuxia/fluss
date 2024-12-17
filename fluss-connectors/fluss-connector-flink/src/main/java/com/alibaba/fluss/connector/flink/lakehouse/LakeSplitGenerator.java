@@ -80,7 +80,7 @@ public class LakeSplitGenerator {
     }
 
     public List<SourceSplitBase> generateLakeSplits() throws Exception {
-        // get the file store store
+        // get the file store
         LakeTableSnapshotInfo lakeSnapshotInfo = flussAdmin.getLakeTableSnapshot(tablePath).get();
         FileStoreTable fileStoreTable =
                 getTable(
@@ -145,7 +145,7 @@ public class LakeSplitGenerator {
         List<SourceSplitBase> splits = new ArrayList<>();
         FileStoreSourceSplitGenerator splitGenerator = new FileStoreSourceSplitGenerator();
         if (isLogTable) {
-            // it's log table, we don't care about bucket and we can't get bucket in paimon's
+            // it's log table, we don't care about bucket, and we can't get bucket in paimon's
             // dynamic bucket; so first generate split for the whole paimon snapshot,
             // then generate log split for each bucket paimon snapshot + fluss log
             splits.addAll(

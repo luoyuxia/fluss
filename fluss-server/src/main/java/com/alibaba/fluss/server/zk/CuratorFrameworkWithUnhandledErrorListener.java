@@ -23,7 +23,7 @@ import com.alibaba.fluss.utils.Preconditions;
 import java.io.Closeable;
 
 /**
- * A wrapper for curatorFramework and unHandledErrorListener which should be unregister from
+ * A wrapper for curatorFramework and unHandledErrorListener which should be unregistered from
  * curatorFramework before closing it.
  */
 public class CuratorFrameworkWithUnhandledErrorListener implements Closeable {

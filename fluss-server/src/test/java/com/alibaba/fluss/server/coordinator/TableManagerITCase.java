@@ -339,7 +339,7 @@ class TableManagerITCase {
     void testPartitionedTableManagement(AutoPartitionTimeUnit timeUnit) throws Exception {
         AdminGateway adminGateway = getAdminGateway();
         String db1 = "db1";
-        String tb1 = "tb1";
+        String tb1 = "tb1_" + timeUnit.name();
         TablePath tablePath = TablePath.of(db1, tb1);
         // first create a database
         adminGateway.createDatabase(newCreateDatabaseRequest(db1, false)).get();
@@ -649,7 +649,7 @@ class TableManagerITCase {
         return TableDescriptor.builder()
                 .schema(builder.build())
                 .comment("partitioned table")
-                .distributedBy(16)
+                .distributedBy(3)
                 .partitionedBy("dt")
                 .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED.key(), "true")
                 .property(
@@ -662,7 +662,7 @@ class TableManagerITCase {
         return TableDescriptor.builder()
                 .schema(newSchema())
                 .comment("first table")
-                .distributedBy(16, "a")
+                .distributedBy(3, "a")
                 .build();
     }
 

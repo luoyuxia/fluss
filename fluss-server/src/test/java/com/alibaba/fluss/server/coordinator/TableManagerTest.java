@@ -157,7 +157,7 @@ class TableManagerTest {
         // call method resumeDeletions, should delete the assignments from zk
         tableManager.resumeDeletions();
         assertThat(zookeeperClient.getTableAssignment(tableId)).isEmpty();
-        // the table will also removed from coordinator context
+        // the table will also be removed from coordinator context
         assertThat(coordinatorContext.getAllReplicasForTable(tableId)).isEmpty();
     }
 

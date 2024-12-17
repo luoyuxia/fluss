@@ -93,11 +93,11 @@ public class KvTestUtils {
             int expectedNewFileNum) {
         Set<String> previousNewlyFiles =
                 toNewlyLocalFiles(previousSnapshotHandle.getSharedKvFileHandles());
-        // get the newly upload files from the currently snapshot
+        // get the new upload files from the current snapshot
         int newlyUploadedFiles = 0;
         for (KvFileHandleAndLocalPath handle : currentSnapshotHandle.getSharedKvFileHandles()) {
             if (handle.getKvFileHandle() instanceof PlaceholderKvFileHandler) {
-                // if it's a place holder, it should be file in previous snapshot
+                // if it's a placeholder, it should be file in previous snapshot
                 assertThat(previousNewlyFiles).contains(handle.getLocalPath());
             } else {
                 newlyUploadedFiles += 1;

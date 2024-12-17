@@ -393,11 +393,11 @@ public final class BinaryString extends BinarySection
         if (inFirstSegment()) {
             int s = 0;
             int e = this.sizeInBytes - 1;
-            // skip all of the space (0x20) in the left side
+            // skip all the space (0x20) on the left side
             while (s < this.sizeInBytes && getByteOneSegment(s) == 0x20) {
                 s++;
             }
-            // skip all of the space (0x20) in the right side
+            // skip all the space (0x20) on the right side
             while (e >= s && getByteOneSegment(e) == 0x20) {
                 e--;
             }
@@ -417,13 +417,13 @@ public final class BinaryString extends BinarySection
         int e = this.sizeInBytes - 1;
         int segSize = segments[0].size();
         BinaryString.SegmentAndOffset front = firstSegmentAndOffset(segSize);
-        // skip all of the space (0x20) in the left side
+        // skip all the space (0x20) on the left side
         while (s < this.sizeInBytes && front.value() == 0x20) {
             s++;
             front.nextByte(segSize);
         }
         BinaryString.SegmentAndOffset behind = lastSegmentAndOffset(segSize);
-        // skip all of the space (0x20) in the right side
+        // skip all the space (0x20) on the right side
         while (e >= s && behind.value() == 0x20) {
             e--;
             behind.previousByte(segSize);

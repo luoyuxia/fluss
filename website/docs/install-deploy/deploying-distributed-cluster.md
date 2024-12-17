@@ -13,11 +13,11 @@ This page provides instructions on how to deploy a *distributed cluster* for Flu
 
 Fluss runs on all *UNIX-like environments*, e.g. **Linux**, **Mac OS X**.
 To build a distributed cluster, you need to have at least two nodes.
-This docs provides a simple example of how to deploy a distributed cluster on three nodes.
+This doc provides a simple example of how to deploy a distributed cluster on three nodes.
 
 ### Software Requirements
 
-Before you start to setup the system, make sure you have the following software installed **on each node**:
+Before you start to set up the system, make sure you have the following software installed **on each node**:
 - **Java 17** or higher (Java 8 and Java 11 are not recommended)
 - **Zookeeper 3.6.0** or higher (It is not recommended to use zookeeper versions below 3.6.0)
 
