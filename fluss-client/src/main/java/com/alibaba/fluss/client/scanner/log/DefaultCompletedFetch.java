@@ -44,6 +44,7 @@ class DefaultCompletedFetch extends CompletedFetch {
             LogRecordReadContext readContext,
             LogScannerStatus logScannerStatus,
             boolean isCheckCrc,
+            boolean ignoreCrc,
             Long fetchOffset,
             @Nullable Projection projection,
             ScannerMetricGroup scannerMetricGroup) {
@@ -56,6 +57,7 @@ class DefaultCompletedFetch extends CompletedFetch {
                 readContext,
                 logScannerStatus,
                 isCheckCrc,
+                ignoreCrc,
                 fetchOffset,
                 projection,
                 scannerMetricGroup);

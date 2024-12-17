@@ -77,6 +77,7 @@ abstract class CompletedFetch {
     private long nextFetchOffset;
     private boolean isConsumed = false;
     private boolean initialized = false;
+    private boolean ignoreCrcs;
 
     public CompletedFetch(
             TableBucket tableBucket,
@@ -87,6 +88,7 @@ abstract class CompletedFetch {
             LogRecordReadContext readContext,
             LogScannerStatus logScannerStatus,
             boolean isCheckCrcs,
+            boolean ignoreCrcs,
             long fetchOffset,
             @Nullable Projection projection,
             ScannerMetricGroup scannerMetricGroup) {
@@ -97,6 +99,7 @@ abstract class CompletedFetch {
         this.batches = batches;
         this.readContext = readContext;
         this.isCheckCrcs = isCheckCrcs;
+        this.ignoreCrcs = ignoreCrcs;
         this.logScannerStatus = logScannerStatus;
         this.projection = projection;
         this.nextFetchOffset = fetchOffset;
@@ -155,9 +158,17 @@ abstract class CompletedFetch {
      */
     public List<ScanRecord> fetchRecords(int maxRecords) {
         if (corruptLastRecord) {
-            LOG.warn("Received corrupt record from {}.", tableBucket);
-            scannerMetricGroup.corruptRecords().inc();
-            return Collections.emptyList();
+            if (ignoreCrcs) {
+                LOG.warn("Received corrupt record from {}.", tableBucket);
+                scannerMetricGroup.corruptRecords().inc();
+                return Collections.emptyList();
+            } else {
+                throw new FetchException(
+                        "Received exception when fetching the next record from "
+                                + tableBucket
+                                + ". If needed, please back to past the record to continue scanning.",
+                        cachedRecordException);
+            }
         }
 
         if (isConsumed) {
@@ -185,7 +196,7 @@ abstract class CompletedFetch {
                 cachedRecordException = null;
             }
         } catch (Exception e) {
-            if (e instanceof CorruptMessageException) {
+            if (e instanceof CorruptMessageException && ignoreCrcs) {
                 LOG.warn("Received corrupt record from {}.", tableBucket, e);
                 scannerMetricGroup.corruptRecords().inc();
             } else {

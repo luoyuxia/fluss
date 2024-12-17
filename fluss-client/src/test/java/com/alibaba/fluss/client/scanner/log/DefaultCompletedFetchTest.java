@@ -180,6 +180,7 @@ public class DefaultCompletedFetchTest {
                 LogRecordReadContext.createReadContext(tableInfo, projection),
                 logScannerStatus,
                 true,
+                false,
                 offset,
                 projection,
                 null);

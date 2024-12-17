@@ -162,6 +162,7 @@ public class LogFetchCollectorTest {
                 readContext,
                 logScannerStatus,
                 true,
+                false,
                 offset,
                 null,
                 null);

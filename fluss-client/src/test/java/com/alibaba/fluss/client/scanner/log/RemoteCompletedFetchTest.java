@@ -252,6 +252,7 @@ class RemoteCompletedFetchTest {
                 LogRecordReadContext.createReadContext(tableInfo, null),
                 logScannerStatus,
                 true,
+                false,
                 fetchOffset,
                 projection,
                 recycle,

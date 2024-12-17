@@ -152,7 +152,7 @@ public class FlussLogScanner implements LogScanner {
                     if (logFetcher.awaitNotEmpty(startNanos + timeoutNanos)) {
                         LOG.info("try sleep 1s");
                         try {
-                            Thread.sleep(1000);
+                            Thread.sleep(500);
                         } catch (Exception e) {
                             LOG.error("sleep error", e);
                         }

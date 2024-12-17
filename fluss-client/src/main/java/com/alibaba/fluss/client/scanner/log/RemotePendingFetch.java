@@ -40,6 +40,7 @@ class RemotePendingFetch implements PendingFetch {
     private final LogRecordReadContext readContext;
     private final LogScannerStatus logScannerStatus;
     private final boolean isCheckCrc;
+    private final boolean ignoreCrc;
     private final @Nullable Projection projection;
     private final ScannerMetricGroup scannerMetricGroup;
 
@@ -52,6 +53,7 @@ class RemotePendingFetch implements PendingFetch {
             LogRecordReadContext readContext,
             LogScannerStatus logScannerStatus,
             boolean isCheckCrc,
+            boolean ignoreCrc,
             @Nullable Projection projection,
             ScannerMetricGroup scannerMetricGroup) {
         this.remoteLogSegment = remoteLogSegment;
@@ -62,6 +64,7 @@ class RemotePendingFetch implements PendingFetch {
         this.readContext = readContext;
         this.logScannerStatus = logScannerStatus;
         this.isCheckCrc = isCheckCrc;
+        this.ignoreCrc = ignoreCrc;
         this.projection = projection;
         this.scannerMetricGroup = scannerMetricGroup;
     }
@@ -86,6 +89,7 @@ class RemotePendingFetch implements PendingFetch {
                 readContext,
                 logScannerStatus,
                 isCheckCrc,
+                ignoreCrc,
                 fetchOffset,
                 projection,
                 downloadFuture.getRecycleCallback(),

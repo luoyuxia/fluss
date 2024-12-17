@@ -743,6 +743,12 @@ public class ConfigOptions {
                             "Local directory that is used by client for"
                                     + " storing the data files (like kv snapshot, log segment files) to read temporarily");
 
+    public static final ConfigOption<Boolean> CLIENT_CRC_ERROR_IGNORE =
+            key("client.scanner.crc-error.ignore")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription("Whether ignore log crc error.");
+
     public static final ConfigOption<Integer> REMOTE_FILE_DOWNLOAD_THREAD_NUM =
             key("client.remote-file.download-thread-num")
                     .intType()

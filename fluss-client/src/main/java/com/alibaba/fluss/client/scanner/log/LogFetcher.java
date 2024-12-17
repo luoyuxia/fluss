@@ -91,6 +91,7 @@ public class LogFetcher implements Closeable {
     private final int maxFetchBytes;
     private final int maxBucketFetchBytes;
     private final boolean isCheckCrcs;
+    private final boolean ignoreCrcs;
     private final LogScannerStatus logScannerStatus;
     private final LogFetchBuffer logFetchBuffer;
     private final LogFetchCollector logFetchCollector;
@@ -126,6 +127,7 @@ public class LogFetcher implements Closeable {
         this.maxBucketFetchBytes =
                 (int) conf.get(ConfigOptions.LOG_FETCH_MAX_BYTES_FOR_BUCKET).getBytes();
         this.isCheckCrcs = conf.getBoolean(ConfigOptions.CLIENT_SCANNER_LOG_CHECK_CRC);
+        this.ignoreCrcs = conf.getBoolean(ConfigOptions.CLIENT_CRC_ERROR_IGNORE);
         this.logFetchBuffer = new LogFetchBuffer();
         this.nodesWithPendingFetchRequests = new HashSet<>();
         this.metadataUpdater = metadataUpdater;
@@ -310,6 +312,7 @@ public class LogFetcher implements Closeable {
                                             readContext,
                                             logScannerStatus,
                                             isCheckCrcs,
+                                            ignoreCrcs,
                                             fetchOffset,
                                             projection,
                                             scannerMetricGroup);
@@ -349,6 +352,7 @@ public class LogFetcher implements Closeable {
                             remoteReadContext,
                             logScannerStatus,
                             isCheckCrcs,
+                            ignoreCrcs,
                             projection,
                             scannerMetricGroup);
             logFetchBuffer.pend(pendingFetch);

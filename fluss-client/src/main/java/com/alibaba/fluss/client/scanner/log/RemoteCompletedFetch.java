@@ -52,6 +52,7 @@ class RemoteCompletedFetch extends CompletedFetch {
             LogRecordReadContext readContext,
             LogScannerStatus logScannerStatus,
             boolean isCheckCrc,
+            boolean ignoreCrc,
             long fetchOffset,
             @Nullable Projection projection,
             Runnable recycleCallback,
@@ -65,6 +66,7 @@ class RemoteCompletedFetch extends CompletedFetch {
                 readContext,
                 logScannerStatus,
                 isCheckCrc,
+                ignoreCrc,
                 fetchOffset,
                 projection,
                 scannerMetricGroup);
