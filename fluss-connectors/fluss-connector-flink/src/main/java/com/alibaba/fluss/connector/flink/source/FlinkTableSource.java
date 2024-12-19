@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.connector.flink.source;
 
+import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.connector.flink.FlinkConnectorOptions;
 import com.alibaba.fluss.connector.flink.source.enumerator.initializer.OffsetsInitializer;
@@ -104,6 +105,7 @@ public class FlinkTableSource
 
     private final long scanPartitionDiscoveryIntervalMs;
     private final boolean isDataLakeEnabled;
+    @Nullable private final ConfigOptions.MergeEngine mergeEngine;
 
     // output type after projection pushdown
     private LogicalType producedDataType;
@@ -134,7 +136,8 @@ public class FlinkTableSource
             boolean lookupAsync,
             @Nullable LookupCache cache,
             long scanPartitionDiscoveryIntervalMs,
-            boolean isDataLakeEnabled) {
+            boolean isDataLakeEnabled,
+            @Nullable ConfigOptions.MergeEngine mergeEngine) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableOutputType = tableOutputType;
@@ -151,6 +154,7 @@ public class FlinkTableSource
 
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.isDataLakeEnabled = isDataLakeEnabled;
+        this.mergeEngine = mergeEngine;
     }
 
     @Override
@@ -160,7 +164,11 @@ public class FlinkTableSource
         } else {
             if (hasPrimaryKey()) {
                 // pk table
-                return ChangelogMode.all();
+                if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+                    return ChangelogMode.insertOnly();
+                } else {
+                    return ChangelogMode.all();
+                }
             } else {
                 // append only
                 return ChangelogMode.insertOnly();
@@ -341,7 +349,8 @@ public class FlinkTableSource
                         lookupAsync,
                         cache,
                         scanPartitionDiscoveryIntervalMs,
-                        isDataLakeEnabled);
+                        isDataLakeEnabled,
+                        mergeEngine);
         source.producedDataType = producedDataType;
         source.projectedFields = projectedFields;
         source.singleRowFilter = singleRowFilter;
@@ -409,6 +418,12 @@ public class FlinkTableSource
             RowLevelModificationType rowLevelModificationType,
             @Nullable RowLevelModificationScanContext rowLevelModificationScanContext) {
         modificationScanType = rowLevelModificationType;
+        if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+            throw new UnsupportedOperationException(
+                    String.format(
+                            "%s is not supported for merge engine %s",
+                            rowLevelModificationType, mergeEngine));
+        }
         return null;
     }
 
