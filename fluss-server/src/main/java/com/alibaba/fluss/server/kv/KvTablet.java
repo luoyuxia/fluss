@@ -103,6 +103,7 @@ public final class KvTablet {
     private final ReadWriteLock kvLock = new ReentrantReadWriteLock();
     private final LogFormat logFormat;
     private final KvFormat kvFormat;
+    private final @Nullable ConfigOptions.MergeEngine mergeEngine;
 
     /**
      * The kv data in pre-write buffer whose log offset is less than the flushedLogOffset has been
@@ -123,7 +124,8 @@ public final class KvTablet {
             LogFormat logFormat,
             BufferAllocator arrowBufferAllocator,
             MemorySegmentPool memorySegmentPool,
-            KvFormat kvFormat) {
+            KvFormat kvFormat,
+            @Nullable ConfigOptions.MergeEngine mergeEngine) {
         this.physicalPath = physicalPath;
         this.tableBucket = tableBucket;
         this.logTablet = logTablet;
@@ -137,6 +139,7 @@ public final class KvTablet {
         // TODO: [FLUSS-58674883] share cache in server level when PartialUpdater is thread-safe
         this.partialUpdaterCache = new PartialUpdaterCache();
         this.kvFormat = kvFormat;
+        this.mergeEngine = mergeEngine;
     }
 
     public static KvTablet create(
@@ -145,7 +148,8 @@ public final class KvTablet {
             Configuration conf,
             BufferAllocator arrowBufferAllocator,
             MemorySegmentPool memorySegmentPool,
-            KvFormat kvFormat)
+            KvFormat kvFormat,
+            @Nullable ConfigOptions.MergeEngine mergeEngine)
             throws IOException {
         Tuple2<PhysicalTablePath, TableBucket> tablePathAndBucket =
                 FlussPaths.parseTabletDir(kvTabletDir);
@@ -157,7 +161,8 @@ public final class KvTablet {
                 conf,
                 arrowBufferAllocator,
                 memorySegmentPool,
-                kvFormat);
+                kvFormat,
+                mergeEngine);
     }
 
     public static KvTablet create(
@@ -168,7 +173,8 @@ public final class KvTablet {
             Configuration conf,
             BufferAllocator arrowBufferAllocator,
             MemorySegmentPool memorySegmentPool,
-            KvFormat kvFormat)
+            KvFormat kvFormat,
+            @Nullable ConfigOptions.MergeEngine mergeEngine)
             throws IOException {
         RocksDBKv kv = buildRocksDBKv(conf, kvTabletDir);
         return new KvTablet(
@@ -181,7 +187,8 @@ public final class KvTablet {
                 logTablet.getLogFormat(),
                 arrowBufferAllocator,
                 memorySegmentPool,
-                kvFormat);
+                kvFormat,
+                mergeEngine);
     }
 
     private static RocksDBKv buildRocksDBKv(Configuration configuration, File kvDir)
@@ -266,7 +273,7 @@ public final class KvTablet {
                             byte[] keyBytes = BytesUtils.toArray(kvRecord.getKey());
                             KvPreWriteBuffer.Key key = KvPreWriteBuffer.Key.of(keyBytes);
                             if (kvRecord.getRow() == null) {
-                                // kv tablet
+                                // it's for deletion
                                 byte[] oldValue = getFromBufferOrKv(key);
                                 if (oldValue == null) {
                                     // there might be large amount of such deletion, so we don't log
@@ -274,6 +281,10 @@ public final class KvTablet {
                                             "The specific key can't be found in kv tablet although the kv record is for deletion, "
                                                     + "ignore it directly as it doesn't exist in the kv tablet yet.");
                                 } else {
+                                    if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+                                        // if the merge engine is first row, skip the deletion
+                                        continue;
+                                    }
                                     BinaryRow oldRow = valueDecoder.decodeValue(oldValue).row;
                                     BinaryRow newRow = deleteRow(oldRow, partialUpdater);
                                     // if newRow is null, it means the row should be deleted
@@ -298,6 +309,10 @@ public final class KvTablet {
                                 byte[] oldValue = getFromBufferOrKv(key);
                                 // it's update
                                 if (oldValue != null) {
+                                    if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+                                        // if the merge engine is first row, skip the update
+                                        continue;
+                                    }
                                     BinaryRow oldRow = valueDecoder.decodeValue(oldValue).row;
                                     BinaryRow newRow =
                                             updateRow(oldRow, kvRecord.getRow(), partialUpdater);
