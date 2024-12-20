@@ -18,6 +18,7 @@ package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
 import com.alibaba.fluss.types.RowType;
@@ -167,6 +168,8 @@ public interface LogRecordBatch {
          * @return The (maybe projected) row type of the record batch.
          */
         RowType getRowType(int schemaId);
+
+        InternalRow.FieldGetter[] getFieldGetters();
 
         /**
          * Gets the Arrow {@link VectorSchemaRoot} for the given schema id. The returned schema root
