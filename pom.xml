@@ -660,6 +660,7 @@
                                 <exclude>${test.unit.pattern}</exclude>
                             </excludes>
                             <reuseForks>false</reuseForks>
+                            <forkCount>1</forkCount>
                         </configuration>
                     </execution>
                 </executions>
