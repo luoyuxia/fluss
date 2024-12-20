@@ -634,14 +634,18 @@ public final class LogTablet {
                 appendInfo.setStartOffsetOfMaxTimestamp(startOffset);
                 appendInfo.setDuplicated(true);
             } else {
-                // Append the records, and increment the local log end offset immediately after
-                // append because write to the transaction index below may fail, and we want to
-                // ensure that the offsets of future appends still grow monotonically.
-                localLog.append(
-                        appendInfo.lastOffset(),
-                        appendInfo.maxTimestamp(),
-                        appendInfo.startOffsetOfMaxTimestamp(),
-                        validRecords);
+                // if there are records to append
+                if (appendInfo.lastOffset() >= appendInfo.firstOffset()) {
+                    // Append the records, and increment the local log end offset immediately after
+                    // append because write to the transaction index below may fail, and we want to
+                    // ensure that the offsets of future appends still grow monotonically.
+                    localLog.append(
+                            appendInfo.lastOffset(),
+                            appendInfo.maxTimestamp(),
+                            appendInfo.startOffsetOfMaxTimestamp(),
+                            validRecords);
+                }
+
                 updateHighWatermarkWithLogEndOffset();
 
                 // update the writer state.
