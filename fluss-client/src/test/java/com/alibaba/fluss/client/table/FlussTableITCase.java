@@ -89,6 +89,28 @@ class FlussTableITCase extends ClientToServerITCaseBase {
     }
 
     @Test
+    void testPut() throws Exception {
+        createTable(DATA1_TABLE_PATH_PK, DATA1_TABLE_INFO_PK.getTableDescriptor(), false);
+        Table table = conn.getTable(DATA1_TABLE_PATH_PK);
+
+        TableDescriptor tableDescriptor = table.getDescriptor();
+        UpsertWriter upsertWriter = table.getUpsertWriter();
+
+        InternalRow row =
+                compactedRow(tableDescriptor.getSchema().toRowType(), new Object[] {1, "2"});
+        upsertWriter.delete(row);
+        upsertWriter.flush();
+
+        upsertWriter.upsert(row).get();
+
+        row = compactedRow(tableDescriptor.getSchema().toRowType(), new Object[] {2, "2"});
+        upsertWriter.delete(row);
+        upsertWriter.flush();
+
+        upsertWriter.upsert(row).get();
+    }
+
+    @Test
     void testAppendOnly() throws Exception {
         createTable(DATA1_TABLE_PATH, DATA1_TABLE_INFO.getTableDescriptor(), false);
         // append data.

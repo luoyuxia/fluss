@@ -31,6 +31,7 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.record.KvRecord;
 import com.alibaba.fluss.record.KvRecordBatch;
 import com.alibaba.fluss.record.KvRecordReadContext;
+import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
@@ -324,31 +325,7 @@ public final class KvTablet {
                                 }
                             }
                         }
-
-                        // if appendedRecordCount is 0, it means there is no record to append, we
-                        // should not append.
-                        if (appendedRecordCount > 0) {
-                            // now, we can build the full log.
-                            LogAppendInfo logAppendInfo =
-                                    logTablet.appendAsLeader(walBuilder.build());
-                            long logEndOffset = logAppendInfo.lastOffset();
-                            if (logEndOffset != logOffset) {
-                                LOG.warn(
-                                        "The log end offset {} is not equal to the expected log offset {}.",
-                                        logEndOffset,
-                                        logOffset);
-                            }
-                            return logAppendInfo;
-                        } else {
-                            return new LogAppendInfo(
-                                    logEndOffsetOfPrevBatch - 1,
-                                    logEndOffsetOfPrevBatch - 1,
-                                    0L,
-                                    0L,
-                                    0,
-                                    0,
-                                    false);
-                        }
+                        return logTablet.appendAsLeader(walBuilder.build());
                     } catch (Throwable t) {
                         LOG.warn("logEndOffsetOfPrevBatch: {}", logEndOffsetOfPrevBatch);
                         // While encounter error here, the CDC logs may fail writing to disk,
