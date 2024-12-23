@@ -106,6 +106,12 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
             throw new UnsupportedOperationException("Full lookup caching is not supported yet.");
         }
 
+        ConfigOptions.MergeEngine mergeEngine =
+                tableOptions.get(
+                        key(ConfigOptions.TABLE_MERGE_ENGINE.key())
+                                .enumType(ConfigOptions.MergeEngine.class)
+                                .noDefaultValue());
+
         return new FlinkTableSource(
                 toFlussTablePath(context.getObjectIdentifier()),
                 toFlussClientConfig(helper.getOptions(), context.getConfiguration()),
@@ -124,10 +130,7 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                         key(ConfigOptions.TABLE_DATALAKE_ENABLED.key())
                                 .booleanType()
                                 .defaultValue(false)),
-                tableOptions.get(
-                        key(ConfigOptions.TABLE_MERGE_ENGINE.key())
-                                .enumType(ConfigOptions.MergeEngine.class)
-                                .noDefaultValue()));
+                mergeEngine);
     }
 
     @Override
@@ -140,13 +143,20 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                         == RuntimeExecutionMode.STREAMING;
 
         RowType rowType = (RowType) context.getPhysicalRowDataType().getLogicalType();
+        ConfigOptions.MergeEngine mergeEngine =
+                helper.getOptions()
+                        .get(
+                                key(ConfigOptions.TABLE_MERGE_ENGINE.key())
+                                        .enumType(ConfigOptions.MergeEngine.class)
+                                        .noDefaultValue());
 
         return new FlinkTableSink(
                 toFlussTablePath(context.getObjectIdentifier()),
                 toFlussClientConfig(helper.getOptions(), context.getConfiguration()),
                 rowType,
                 context.getPrimaryKeyIndexes(),
-                isStreamingMode);
+                isStreamingMode,
+                mergeEngine);
     }
 
     @Override
