@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.connector.flink.sink;
 
+import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils.FieldEqual;
@@ -63,6 +64,7 @@ public class FlinkTableSink
     private final RowType tableRowType;
     private final int[] primaryKeyIndexes;
     private final boolean streaming;
+    @Nullable private final ConfigOptions.MergeEngine mergeEngine;
 
     private boolean appliedUpdates = false;
     @Nullable private GenericRow deleteRow;
@@ -72,12 +74,14 @@ public class FlinkTableSink
             Configuration flussConfig,
             RowType tableRowType,
             int[] primaryKeyIndexes,
-            boolean streaming) {
+            boolean streaming,
+            @Nullable ConfigOptions.MergeEngine mergeEngine) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableRowType = tableRowType;
         this.primaryKeyIndexes = primaryKeyIndexes;
         this.streaming = streaming;
+        this.mergeEngine = mergeEngine;
     }
 
     @Override
@@ -165,7 +169,12 @@ public class FlinkTableSink
     public DynamicTableSink copy() {
         FlinkTableSink sink =
                 new FlinkTableSink(
-                        tablePath, flussConfig, tableRowType, primaryKeyIndexes, streaming);
+                        tablePath,
+                        flussConfig,
+                        tableRowType,
+                        primaryKeyIndexes,
+                        streaming,
+                        mergeEngine);
         sink.appliedUpdates = appliedUpdates;
         sink.deleteRow = deleteRow;
         return sink;
@@ -280,6 +289,15 @@ public class FlinkTableSink
                     String.format(
                             "Table %s is a Log Table. Log Table doesn't support DELETE and UPDATE statements.",
                             tablePath));
+        }
+
+        if (mergeEngine != null && mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+            throw new UnsupportedOperationException(
+                    String.format(
+                            "Table %s is with merge engine '%s'. Table with '%s' merge engine doesn't support DELETE and UPDATE statements.",
+                            tablePath,
+                            ConfigOptions.MergeEngine.FIRST_ROW,
+                            ConfigOptions.MergeEngine.FIRST_ROW));
         }
     }
 

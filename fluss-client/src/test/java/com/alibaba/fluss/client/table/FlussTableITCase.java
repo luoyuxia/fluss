@@ -890,13 +890,13 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         RowType rowType = DATA1_SCHEMA_PK.toRowType();
         createTable(DATA1_TABLE_PATH_PK, tableDescriptor, false);
         int rows = 5;
-        int rowNum = 3;
+        int duplicateNum = 3;
         try (Table table = conn.getTable(DATA1_TABLE_PATH_PK)) {
             // first, put rows
             UpsertWriter upsertWriter = table.getUpsertWriter();
             List<InternalRow> expectedRows = new ArrayList<>(rows);
             for (int row = 0; row < rows; row++) {
-                for (int num = 0; num < rowNum; num++) {
+                for (int num = 0; num < duplicateNum; num++) {
                     upsertWriter.upsert(compactedRow(rowType, new Object[] {row, "value_" + num}));
                 }
                 expectedRows.add(compactedRow(rowType, new Object[] {row, "value_0"}));

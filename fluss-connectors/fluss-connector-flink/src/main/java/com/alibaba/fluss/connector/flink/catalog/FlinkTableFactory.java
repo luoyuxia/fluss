@@ -146,13 +146,20 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                         == RuntimeExecutionMode.STREAMING;
 
         RowType rowType = (RowType) context.getPhysicalRowDataType().getLogicalType();
+        ConfigOptions.MergeEngine mergeEngine =
+                helper.getOptions()
+                        .get(
+                                key(ConfigOptions.TABLE_MERGE_ENGINE.key())
+                                        .enumType(ConfigOptions.MergeEngine.class)
+                                        .noDefaultValue());
 
         return new FlinkTableSink(
                 toFlussTablePath(context.getObjectIdentifier()),
                 toFlussClientConfig(helper.getOptions(), context.getConfiguration()),
                 rowType,
                 context.getPrimaryKeyIndexes(),
-                isStreamingMode);
+                isStreamingMode,
+                mergeEngine);
     }
 
     @Override

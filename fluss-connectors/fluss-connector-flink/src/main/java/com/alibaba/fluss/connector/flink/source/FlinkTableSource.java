@@ -418,12 +418,6 @@ public class FlinkTableSource
             RowLevelModificationType rowLevelModificationType,
             @Nullable RowLevelModificationScanContext rowLevelModificationScanContext) {
         modificationScanType = rowLevelModificationType;
-        if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
-            throw new UnsupportedOperationException(
-                    String.format(
-                            "%s is not supported for merge engine %s",
-                            rowLevelModificationType, mergeEngine));
-        }
         return null;
     }
 
