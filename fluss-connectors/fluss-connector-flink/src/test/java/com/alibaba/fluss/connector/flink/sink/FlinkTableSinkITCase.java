@@ -37,6 +37,7 @@ import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.types.Row;
@@ -746,21 +747,22 @@ class FlinkTableSinkITCase {
     }
 
     @Test
-    void testUnsupportedDeleteAndUpdateStmtOnFirstRowMergeEngine() {
+    void testUnsupportedStmtOnFirstRowMergeEngine() {
         String t1 = "firstRowMergeEngineTable";
         TablePath tablePath = TablePath.of(DEFAULT_DB, t1);
         tBatchEnv.executeSql(
                 String.format(
                         "create table %s ("
                                 + " a int not null,"
-                                + " b bigint not null, "
+                                + " b bigint null, "
+                                + " c string null, "
                                 + " primary key (a) not enforced"
                                 + ") with ('table.merge-engine' = 'first_row')",
                         t1));
         assertThatThrownBy(() -> tBatchEnv.executeSql("DELETE FROM " + t1 + " WHERE a = 1").await())
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage(
-                        "Table %s is with merge engine 'first_row'. Table with 'first_row' merge engine doesn't support DELETE and UPDATE statements.",
+                        "Table %s uses the 'first_row' merge engine which does not support DELETE or UPDATE statements.",
                         tablePath);
 
         assertThatThrownBy(
@@ -770,7 +772,18 @@ class FlinkTableSinkITCase {
                                         .await())
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessage(
-                        "Table %s is with merge engine 'first_row'. Table with 'first_row' merge engine doesn't support DELETE and UPDATE statements.",
+                        "Table %s uses the 'first_row' merge engine which does not support DELETE or UPDATE statements.",
+                        tablePath);
+
+        assertThatThrownBy(
+                        () ->
+                                tBatchEnv
+                                        .executeSql("INSERT INTO " + t1 + "(a, c) VALUES(1, 'c1')")
+                                        .await())
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(
+                        "Table %s uses the 'first_row' merge engine which does not support partial updates."
+                                + " Please make sure the number of specified columns in INSERT INTO matches columns of the Fluss table.",
                         tablePath);
     }
 
