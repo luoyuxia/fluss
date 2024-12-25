@@ -969,11 +969,17 @@ public class ConfigOptions {
                                     + "When this option is set to ture and the datalake tiering service is up,"
                                     + " the table will be tiered and compacted into datalake format stored on lakehouse storage.");
 
-    public static final ConfigOption<MergeEngine> TABLE_MERGE_ENGINE =
+    public static final ConfigOption<MergeEngine.Type> TABLE_MERGE_ENGINE =
             key("table.merge-engine")
-                    .enumType(MergeEngine.class)
+                    .enumType(MergeEngine.Type.class)
                     .noDefaultValue()
                     .withDescription("The merge engine for the primary key table.");
+
+    public static final ConfigOption<String> TABLE_MERGE_ENGINE_VERSION_COLUMN =
+            key("table.merge-engine.version.column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The merge engine version column for the primary key table.");
 
     // ------------------------------------------------------------------------
     //  ConfigOptions for Kv

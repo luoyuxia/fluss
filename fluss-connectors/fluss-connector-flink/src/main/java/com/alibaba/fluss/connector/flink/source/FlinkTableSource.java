@@ -164,7 +164,7 @@ public class FlinkTableSource
         } else {
             if (hasPrimaryKey()) {
                 // pk table
-                if (mergeEngine == MergeEngine.FIRST_ROW) {
+                if (mergeEngine != null && mergeEngine.getType() == MergeEngine.Type.FIRST_ROW) {
                     return ChangelogMode.insertOnly();
                 } else {
                     return ChangelogMode.all();
