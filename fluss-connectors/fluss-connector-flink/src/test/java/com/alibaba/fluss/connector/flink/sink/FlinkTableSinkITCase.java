@@ -641,6 +641,8 @@ class FlinkTableSinkITCase {
     void testUnsupportedDeleteAndUpdateStmtOnLogTable(boolean isPartitionedTable) {
         String tableName =
                 isPartitionedTable ? "partitioned_log_table_delete_test" : "log_table_delete_test";
+        String partitionedTableStmt =
+                " partitioned by (c) with ('table.auto-partition.enabled' = 'true','table.auto-partition.time-unit' = 'year')";
         tBatchEnv.executeSql(
                 String.format(
                         "create table %s ("
@@ -648,9 +650,7 @@ class FlinkTableSinkITCase {
                                 + " b bigint, "
                                 + " c string"
                                 + ")"
-                                + (isPartitionedTable ? " partitioned by (c) " : "")
-                                + "with ('table.auto-partition.enabled' = 'true',"
-                                + " 'table.auto-partition.time-unit' = 'year')",
+                                + (isPartitionedTable ? partitionedTableStmt : ""),
                         tableName));
         assertThatThrownBy(
                         () ->
