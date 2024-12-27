@@ -49,7 +49,7 @@ import static com.alibaba.fluss.utils.concurrent.LockUtils.inLock;
 public class LazyMemorySegmentPool implements MemorySegmentPool, Closeable {
 
     private static final long PER_REQUEST_MEMORY_SIZE = 16 * 1024 * 1024;
-    private static final long DEFAULT_WAIT_TIMEOUT_MS = 1000 * 60 * 2;
+    private static final long DEFAULT_WAIT_TIMEOUT_MS = Long.MAX_VALUE;
 
     /** The lock to guard the memory pool. */
     private final ReentrantLock lock = new ReentrantLock();
@@ -110,25 +110,32 @@ public class LazyMemorySegmentPool implements MemorySegmentPool, Closeable {
         return inLock(
                 lock,
                 () -> {
-                    checkClosed();
-                    int freePages = freePages();
-                    if (freePages == 0) {
-                        if (waiting) {
-                            return waitForSegment();
-                        } else {
-                            return null;
+                    try {
+                        checkClosed();
+                        int freePages = freePages();
+                        if (freePages == 0) {
+                            if (waiting) {
+                                return waitForSegment();
+                            } else {
+                                return null;
+                            }
+                        }
+
+                        if (cachePages.isEmpty()) {
+                            int numPages = Math.min(freePages, perRequestPages);
+                            for (int i = 0; i < numPages; i++) {
+                                cachePages.add(MemorySegment.allocateHeapMemory(pageSize));
+                            }
+                        }
+
+                        this.pageUsage++;
+                        return cachePages.remove(this.cachePages.size() - 1);
+                    } finally {
+                        // signal any additional waiters if there is more memory left over for them
+                        if (!(freePages() <= 0 && cachePages.isEmpty()) && !waiters.isEmpty()) {
+                            waiters.peekFirst().signal();
                         }
                     }
-
-                    if (cachePages.isEmpty()) {
-                        int numPages = Math.min(freePages, perRequestPages);
-                        for (int i = 0; i < numPages; i++) {
-                            cachePages.add(MemorySegment.allocateHeapMemory(pageSize));
-                        }
-                    }
-
-                    this.pageUsage++;
-                    return cachePages.remove(this.cachePages.size() - 1);
                 });
     }
 
@@ -152,6 +159,7 @@ public class LazyMemorySegmentPool implements MemorySegmentPool, Closeable {
                 }
                 checkClosed();
             }
+            this.pageUsage++;
             return cachePages.remove(cachePages.size() - 1);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -181,11 +189,12 @@ public class LazyMemorySegmentPool implements MemorySegmentPool, Closeable {
                 lock,
                 () -> {
                     pageUsage -= memory.size();
-                    if (this.pageUsage < 0) {
-                        throw new RuntimeException("Return too more memories.");
-                    }
+                    //                    if (this.pageUsage < 0) {
+                    //                        throw new RuntimeException("Return too more
+                    // memories.");
+                    //                    }
                     cachePages.addAll(memory);
-                    for (int i = 0; i < memory.size() && !waiters.isEmpty(); i++) {
+                    for (int i = 0; i < freePages() && !waiters.isEmpty(); i++) {
                         waiters.pollFirst().signal();
                     }
                 });
