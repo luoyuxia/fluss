@@ -20,6 +20,8 @@ on:
       - main
       - release-**
       - ci-**
+  schedule:
+    - cron: '0 * * * *'
   pull_request:
     paths-ignore:
       - 'website/**'
