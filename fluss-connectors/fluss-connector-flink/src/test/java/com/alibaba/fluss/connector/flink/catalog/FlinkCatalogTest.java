@@ -19,7 +19,6 @@ package com.alibaba.fluss.connector.flink.catalog;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
-import com.alibaba.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import com.alibaba.fluss.utils.ExceptionUtils;
 
 import org.apache.flink.table.api.DataTypes;
@@ -127,7 +126,8 @@ class FlinkCatalogTest {
         } catch (CatalogException e) {
             // the auto partitioned manager may create the db zk node
             // in an another thread, so if exception is NodeExistsException, just ignore
-            if (!ExceptionUtils.findThrowable(e, KeeperException.NodeExistsException.class)
+            //            https://github.com/luoyuxia/fluss/actions/runs/12572294425/job/35044132958
+            if (!ExceptionUtils.findThrowableWithMessage(e, "KeeperErrorCode = NodeExists")
                     .isPresent()) {
                 throw e;
             }

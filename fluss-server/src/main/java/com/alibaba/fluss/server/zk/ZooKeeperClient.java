@@ -323,7 +323,7 @@ public class ZooKeeperClient implements AutoCloseable {
         } else {
             zkClient.setData().forPath(path, tableBytes);
         }
-        LOG.info(
+        LOG.error(
                 "Registered table {} for database {}",
                 tablePath.getTableName(),
                 tablePath.getDatabaseName());

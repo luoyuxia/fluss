@@ -23,6 +23,7 @@ import com.alibaba.fluss.client.scanner.log.LogScanner;
 import com.alibaba.fluss.client.scanner.log.ScanRecords;
 import com.alibaba.fluss.client.table.writer.AppendWriter;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
+import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.config.AutoPartitionTimeUnit;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.exception.PartitionNotExistException;
@@ -35,6 +36,8 @@ import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.types.DataTypes;
 
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -53,6 +56,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** IT case for Fluss partitioned table. */
 class FlussPartitionedTableITCase extends ClientToServerITCaseBase {
 
+    private static final Logger LOG = LoggerFactory.getLogger(FlussPartitionedTableITCase.class);
+
     @Test
     void testPartitionedPrimaryKeyTable() throws Exception {
         Schema schema = createPartitionedTable(DATA1_TABLE_PATH_PK, true);
@@ -61,31 +66,52 @@ class FlussPartitionedTableITCase extends ClientToServerITCaseBase {
         Table table = conn.getTable(DATA1_TABLE_PATH_PK);
         UpsertWriter upsertWriter = table.getUpsertWriter();
         int recordsPerPartition = 5;
-        // now, put some data to the partitions
-        Map<Long, List<InternalRow>> expectPutRows = new HashMap<>();
-        for (String partition : partitionIdByNames.keySet()) {
-            for (int i = 0; i < recordsPerPartition; i++) {
-                InternalRow row =
-                        compactedRow(schema.toRowType(), new Object[] {i, "a" + i, partition});
-                upsertWriter.upsert(row);
-                expectPutRows
-                        .computeIfAbsent(partitionIdByNames.get(partition), k -> new ArrayList<>())
-                        .add(row);
-            }
-        }
-        upsertWriter.flush();
 
-        // now, let's lookup the written data by look up
-        for (String partition : partitionIdByNames.keySet()) {
-            for (int i = 0; i < recordsPerPartition; i++) {
-                InternalRow actualRow =
-                        compactedRow(schema.toRowType(), new Object[] {i, "a" + i, partition});
-                InternalRow lookupRow =
-                        table.lookup(keyRow(schema, new Object[] {i, null, partition}))
-                                .get()
-                                .getRow();
-                assertThat(lookupRow).isEqualTo(actualRow);
+        Map<Long, List<InternalRow>> expectPutRows = new HashMap<>();
+        try {
+            // now, put some data to the partitions
+            for (String partition : partitionIdByNames.keySet()) {
+                for (int i = 0; i < recordsPerPartition; i++) {
+                    InternalRow row =
+                            compactedRow(schema.toRowType(), new Object[] {i, "a" + i, partition});
+                    upsertWriter.upsert(row);
+                    expectPutRows
+                            .computeIfAbsent(
+                                    partitionIdByNames.get(partition), k -> new ArrayList<>())
+                            .add(row);
+                }
             }
+            upsertWriter.flush();
+        } catch (Exception e) {
+            LOG.error(
+                    "testPartitionedPrimaryKeyTable upsert rows fail. Origin cluster info {}.",
+                    ((FlussTable) table).getMetadataUpdater().getCluster(),
+                    e);
+            throw e;
+        }
+
+        Cluster cluster = ((FlussTable) table).getMetadataUpdater().getCluster();
+
+        try {
+            // now, let's lookup the written data by look up
+            for (String partition : partitionIdByNames.keySet()) {
+                for (int i = 0; i < recordsPerPartition; i++) {
+                    InternalRow actualRow =
+                            compactedRow(schema.toRowType(), new Object[] {i, "a" + i, partition});
+                    InternalRow lookupRow =
+                            table.lookup(keyRow(schema, new Object[] {i, null, partition}))
+                                    .get()
+                                    .getRow();
+                    assertThat(lookupRow).isEqualTo(actualRow);
+                }
+            }
+        } catch (Exception e) {
+            LOG.error("testPartitionedPrimaryKeyTable fail.", e);
+            LOG.error("old cluster: {}.", cluster);
+            LOG.error(
+                    "cluster: tostring, {}.",
+                    ((FlussTable) table).getMetadataUpdater().getCluster());
+            throw e;
         }
 
         // then, let's scan and check the cdc log
