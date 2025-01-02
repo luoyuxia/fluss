@@ -46,6 +46,7 @@ import com.alibaba.fluss.types.DataTypes;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.types.StringType;
 import com.alibaba.fluss.utils.Preconditions;
+
 import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -55,6 +56,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Iterator;
