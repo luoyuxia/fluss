@@ -66,19 +66,29 @@ class FlussPartitionedTableITCase extends ClientToServerITCaseBase {
         Table table = conn.getTable(DATA1_TABLE_PATH_PK);
         UpsertWriter upsertWriter = table.getUpsertWriter();
         int recordsPerPartition = 5;
-        // now, put some data to the partitions
+
         Map<Long, List<InternalRow>> expectPutRows = new HashMap<>();
-        for (String partition : partitionIdByNames.keySet()) {
-            for (int i = 0; i < recordsPerPartition; i++) {
-                InternalRow row =
-                        compactedRow(schema.toRowType(), new Object[] {i, "a" + i, partition});
-                upsertWriter.upsert(row);
-                expectPutRows
-                        .computeIfAbsent(partitionIdByNames.get(partition), k -> new ArrayList<>())
-                        .add(row);
+        try {
+            // now, put some data to the partitions
+            for (String partition : partitionIdByNames.keySet()) {
+                for (int i = 0; i < recordsPerPartition; i++) {
+                    InternalRow row =
+                            compactedRow(schema.toRowType(), new Object[] {i, "a" + i, partition});
+                    upsertWriter.upsert(row);
+                    expectPutRows
+                            .computeIfAbsent(
+                                    partitionIdByNames.get(partition), k -> new ArrayList<>())
+                            .add(row);
+                }
             }
+            upsertWriter.flush();
+        } catch (Exception e) {
+            LOG.error(
+                    "testPartitionedPrimaryKeyTable upsert rows fail. Origin cluster info {}.",
+                    ((FlussTable) table).getMetadataUpdater().getCluster(),
+                    e);
+            throw e;
         }
-        upsertWriter.flush();
 
         Cluster cluster = ((FlussTable) table).getMetadataUpdater().getCluster();
 

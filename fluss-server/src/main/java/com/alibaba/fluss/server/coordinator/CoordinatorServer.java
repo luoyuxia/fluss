@@ -197,7 +197,7 @@ public class CoordinatorServer extends ServerBase {
     @Override
     protected CompletableFuture<Result> closeAsync(Result result) {
         if (isShutDown.compareAndSet(false, true)) {
-            LOG.info("Shutting down Coordinator server ({}).", result);
+            LOG.error("Shutting down Coordinator server ({}).", result);
             CompletableFuture<Void> serviceShutdownFuture = stopServices();
 
             serviceShutdownFuture.whenComplete(
