@@ -83,6 +83,9 @@ public class TableChangeWatcher {
         public void event(Type type, ChildData oldData, ChildData newData) {
             if (newData != null) {
                 LOG.debug("Received {} event (path: {})", type, newData.getPath());
+                if (newData.getPath().contains("table_")) {
+                    LOG.error("Received {} event (path: {})", type, newData.getPath());
+                }
             } else {
                 LOG.debug("Received {} event", type);
             }
