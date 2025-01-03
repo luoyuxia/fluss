@@ -139,7 +139,7 @@ public final class NettyServer implements RpcServer {
             try {
                 bindChannel = bootstrap.bind().syncUninterruptibly().channel();
             } catch (Exception e) {
-                LOG.debug("Failed to bind Netty server on port {}: {}", port, e.getMessage());
+                LOG.info("Failed to bind Netty server on port {}: {}", port, e.getMessage());
                 // syncUninterruptibly() throws checked exceptions via Unsafe
                 // continue if the exception is due to the port being in use, fail early
                 // otherwise
