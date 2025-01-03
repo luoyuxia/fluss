@@ -125,7 +125,7 @@ public final class NettyServer implements RpcServer {
         // --------------------------------------------------------------------
         // Start Server
         // --------------------------------------------------------------------
-        LOG.debug(
+        LOG.info(
                 "Trying to start Netty server on address: {} and port range {}",
                 hostname,
                 portRange);
@@ -133,13 +133,13 @@ public final class NettyServer implements RpcServer {
         Iterator<Integer> portsIterator = NetUtils.getPortRangeFromString(portRange);
         while (portsIterator.hasNext() && bindChannel == null) {
             Integer port = portsIterator.next();
-            LOG.debug("Trying to bind Netty server to port: {}", port);
+            LOG.info("Trying to bind Netty server to port: {}", port);
 
             bootstrap.localAddress(hostname, port);
             try {
                 bindChannel = bootstrap.bind().syncUninterruptibly().channel();
             } catch (Exception e) {
-                LOG.info("Failed to bind Netty server on port {}: {}", port, e.getMessage());
+                LOG.error("Failed to bind Netty server on port {}: {}", port, e.getMessage());
                 // syncUninterruptibly() throws checked exceptions via Unsafe
                 // continue if the exception is due to the port being in use, fail early
                 // otherwise
