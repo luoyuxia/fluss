@@ -205,7 +205,7 @@ public class Sender implements Runnable {
             // TODO The method sendWriteData is in a busy loop. If there is no data continuously, it
             // will cause the CPU to be occupied. Currently, we just sleep 1 second to avoid this.
             // In the future, we need to introduce delay logic to deal with it.
-            Thread.sleep(1);
+            Thread.sleep(50);
         }
 
         // get the list of batches prepare to send.
