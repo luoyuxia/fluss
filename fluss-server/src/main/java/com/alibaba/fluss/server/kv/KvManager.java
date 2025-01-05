@@ -24,6 +24,7 @@ import com.alibaba.fluss.fs.FsPath;
 import com.alibaba.fluss.memory.LazyMemorySegmentPool;
 import com.alibaba.fluss.memory.MemorySegmentPool;
 import com.alibaba.fluss.metadata.KvFormat;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -149,7 +150,7 @@ public final class KvManager extends TabletManagerBase {
             TableBucket tableBucket,
             LogTablet logTablet,
             KvFormat kvFormat,
-            @Nullable ConfigOptions.MergeEngine mergeEngine)
+            @Nullable MergeEngine mergeEngine)
             throws Exception {
         return inLock(
                 tabletCreationOrDeletionLock,

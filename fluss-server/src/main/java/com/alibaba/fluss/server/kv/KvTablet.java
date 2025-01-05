@@ -24,6 +24,7 @@ import com.alibaba.fluss.memory.ManagedPagedOutputView;
 import com.alibaba.fluss.memory.MemorySegmentPool;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -102,7 +103,7 @@ public final class KvTablet {
     private final ReadWriteLock kvLock = new ReentrantReadWriteLock();
     private final LogFormat logFormat;
     private final KvFormat kvFormat;
-    private final @Nullable ConfigOptions.MergeEngine mergeEngine;
+    private final @Nullable MergeEngine mergeEngine;
 
     /**
      * The kv data in pre-write buffer whose log offset is less than the flushedLogOffset has been
@@ -124,7 +125,7 @@ public final class KvTablet {
             BufferAllocator arrowBufferAllocator,
             MemorySegmentPool memorySegmentPool,
             KvFormat kvFormat,
-            @Nullable ConfigOptions.MergeEngine mergeEngine) {
+            @Nullable MergeEngine mergeEngine) {
         this.physicalPath = physicalPath;
         this.tableBucket = tableBucket;
         this.logTablet = logTablet;
@@ -148,7 +149,7 @@ public final class KvTablet {
             BufferAllocator arrowBufferAllocator,
             MemorySegmentPool memorySegmentPool,
             KvFormat kvFormat,
-            @Nullable ConfigOptions.MergeEngine mergeEngine)
+            @Nullable MergeEngine mergeEngine)
             throws IOException {
         Tuple2<PhysicalTablePath, TableBucket> tablePathAndBucket =
                 FlussPaths.parseTabletDir(kvTabletDir);
@@ -173,7 +174,7 @@ public final class KvTablet {
             BufferAllocator arrowBufferAllocator,
             MemorySegmentPool memorySegmentPool,
             KvFormat kvFormat,
-            @Nullable ConfigOptions.MergeEngine mergeEngine)
+            @Nullable MergeEngine mergeEngine)
             throws IOException {
         RocksDBKv kv = buildRocksDBKv(conf, kvTabletDir);
         return new KvTablet(
@@ -280,7 +281,7 @@ public final class KvTablet {
                                             "The specific key can't be found in kv tablet although the kv record is for deletion, "
                                                     + "ignore it directly as it doesn't exist in the kv tablet yet.");
                                 } else {
-                                    if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+                                    if (mergeEngine == MergeEngine.FIRST_ROW) {
                                         // if the merge engine is first row, skip the deletion
                                         continue;
                                     }
@@ -308,7 +309,7 @@ public final class KvTablet {
                                 byte[] oldValue = getFromBufferOrKv(key);
                                 // it's update
                                 if (oldValue != null) {
-                                    if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+                                    if (mergeEngine == MergeEngine.FIRST_ROW) {
                                         // if the merge engine is first row, skip the update
                                         continue;
                                     }

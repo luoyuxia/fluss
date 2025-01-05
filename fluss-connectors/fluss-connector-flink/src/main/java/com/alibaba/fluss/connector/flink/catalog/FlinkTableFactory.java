@@ -52,15 +52,10 @@ import java.util.HashSet;
 import java.util.Set;
 
 import static com.alibaba.fluss.connector.flink.catalog.FlinkCatalog.LAKE_TABLE_SPLITTER;
-import static org.apache.flink.configuration.ConfigOptions.key;
+import static com.alibaba.fluss.connector.flink.utils.FlinkConversions.toFlinkOption;
 
 /** Factory to create table source and table sink for Fluss. */
 public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTableSinkFactory {
-
-    private static final ConfigOption<ConfigOptions.MergeEngine> MERGE_ENGINE_OPTION =
-            key(ConfigOptions.TABLE_MERGE_ENGINE.key())
-                    .enumType(ConfigOptions.MergeEngine.class)
-                    .noDefaultValue();
 
     private volatile LakeTableFactory lakeTableFactory;
 
@@ -119,15 +114,10 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 tableOptions
                         .get(FlinkConnectorOptions.SCAN_PARTITION_DISCOVERY_INTERVAL)
                         .toMillis();
-        boolean isDatalakeEnabled =
-                tableOptions.get(
-                        key(ConfigOptions.TABLE_DATALAKE_ENABLED.key())
-                                .booleanType()
-                                .defaultValue(false));
 
         return new FlinkTableSource(
                 toFlussTablePath(context.getObjectIdentifier()),
-                toFlussClientConfig(helper.getOptions(), context.getConfiguration()),
+                toFlussClientConfig(tableOptions, context.getConfiguration()),
                 tableOutputType,
                 primaryKeyIndexes,
                 bucketKeyIndexes,
@@ -138,7 +128,8 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 tableOptions.get(FlinkConnectorOptions.LOOKUP_ASYNC),
                 cache,
                 partitionDiscoveryIntervalMs,
-                isDatalakeEnabled);
+                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_DATALAKE_ENABLED)),
+                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)));
     }
 
     @Override
@@ -151,14 +142,15 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                         == RuntimeExecutionMode.STREAMING;
 
         RowType rowType = (RowType) context.getPhysicalRowDataType().getLogicalType();
+        final ReadableConfig tableOptions = helper.getOptions();
 
         return new FlinkTableSink(
                 toFlussTablePath(context.getObjectIdentifier()),
-                toFlussClientConfig(helper.getOptions(), context.getConfiguration()),
+                toFlussClientConfig(tableOptions, context.getConfiguration()),
                 rowType,
                 context.getPrimaryKeyIndexes(),
                 isStreamingMode,
-                helper.getOptions().get(MERGE_ENGINE_OPTION));
+                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)));
     }
 
     @Override

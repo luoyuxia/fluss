@@ -16,13 +16,13 @@
 
 package com.alibaba.fluss.server.kv;
 
-import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidTargetColumnException;
 import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.memory.TestingMemorySegmentPool;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -135,7 +135,7 @@ class KvTabletTest {
             TableBucket tableBucket,
             LogTablet logTablet,
             File tmpKvDir,
-            ConfigOptions.MergeEngine mergeEngine)
+            MergeEngine mergeEngine)
             throws Exception {
         return KvTablet.create(
                 tablePath,
@@ -559,12 +559,7 @@ class KvTabletTest {
         LogTablet logTablet = createLogTablet(tempLogDir, 1L, tablePath);
         TableBucket tableBucket = logTablet.getTableBucket();
         KvTablet kvTablet =
-                createKvTablet(
-                        tablePath,
-                        tableBucket,
-                        logTablet,
-                        tmpKvDir,
-                        ConfigOptions.MergeEngine.FIRST_ROW);
+                createKvTablet(tablePath, tableBucket, logTablet, tmpKvDir, MergeEngine.FIRST_ROW);
 
         List<KvRecord> kvData1 =
                 Arrays.asList(

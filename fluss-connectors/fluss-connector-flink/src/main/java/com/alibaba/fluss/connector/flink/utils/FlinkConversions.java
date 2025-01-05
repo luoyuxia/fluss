@@ -251,8 +251,9 @@ public class FlinkConversions {
     }
 
     /** Convert Fluss's ConfigOption to Flink's ConfigOption. */
-    public static org.apache.flink.configuration.ConfigOption<?> toFlinkOption(
-            ConfigOption<?> flussOption) {
+    @SuppressWarnings("unchecked")
+    public static <T> org.apache.flink.configuration.ConfigOption<T> toFlinkOption(
+            ConfigOption<T> flussOption) {
         org.apache.flink.configuration.ConfigOptions.OptionBuilder builder =
                 org.apache.flink.configuration.ConfigOptions.key(flussOption.key());
         org.apache.flink.configuration.ConfigOption<?> option;
@@ -301,7 +302,7 @@ public class FlinkConversions {
         }
         option.withDescription(flussOption.description());
         // TODO: support fallback keys in the future.
-        return option;
+        return (org.apache.flink.configuration.ConfigOption<T>) option;
     }
 
     private static Map<String, String> convertFlinkOptionsToFlussTableProperties(

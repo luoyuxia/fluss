@@ -280,7 +280,7 @@ public final class TableDescriptor implements Serializable {
         return configuration().get(ConfigOptions.TABLE_DATALAKE_ENABLED);
     }
 
-    public @Nullable ConfigOptions.MergeEngine getMergeEngine() {
+    public @Nullable MergeEngine getMergeEngine() {
         return configuration().get(ConfigOptions.TABLE_MERGE_ENGINE);
     }
 

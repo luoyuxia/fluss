@@ -20,6 +20,7 @@ import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.utils.ArrayUtils;
 
 import java.time.Duration;
@@ -1320,21 +1321,5 @@ public class ConfigOptions {
         SNAPPY,
         LZ4,
         ZSTD
-    }
-
-    /** The merge engine for primary key table. */
-    public enum MergeEngine {
-        FIRST_ROW("first_row");
-
-        private final String value;
-
-        MergeEngine(String value) {
-            this.value = value;
-        }
-
-        @Override
-        public String toString() {
-            return value;
-        }
     }
 }

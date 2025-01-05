@@ -16,11 +16,11 @@
 
 package com.alibaba.fluss.connector.flink.sink;
 
-import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils.FieldEqual;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils.ValueConversion;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.GenericRow;
 
@@ -64,7 +64,7 @@ public class FlinkTableSink
     private final RowType tableRowType;
     private final int[] primaryKeyIndexes;
     private final boolean streaming;
-    @Nullable private final ConfigOptions.MergeEngine mergeEngine;
+    @Nullable private final MergeEngine mergeEngine;
 
     private boolean appliedUpdates = false;
     @Nullable private GenericRow deleteRow;
@@ -75,7 +75,7 @@ public class FlinkTableSink
             RowType tableRowType,
             int[] primaryKeyIndexes,
             boolean streaming,
-            @Nullable ConfigOptions.MergeEngine mergeEngine) {
+            @Nullable MergeEngine mergeEngine) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableRowType = tableRowType;
@@ -123,12 +123,12 @@ public class FlinkTableSink
                     throw new ValidationException(
                             "Fluss table sink does not support partial updates for table without primary key. Please make sure the "
                                     + "number of specified columns in INSERT INTO matches columns of the Fluss table.");
-                } else if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+                } else if (mergeEngine == MergeEngine.FIRST_ROW) {
                     throw new ValidationException(
                             String.format(
                                     "Table %s uses the '%s' merge engine which does not support partial updates. Please make sure the "
                                             + "number of specified columns in INSERT INTO matches columns of the Fluss table.",
-                                    tablePath, ConfigOptions.MergeEngine.FIRST_ROW));
+                                    tablePath, MergeEngine.FIRST_ROW));
                 }
             }
             int[][] targetColumns = context.getTargetColumns().get();
@@ -299,11 +299,11 @@ public class FlinkTableSink
                             tablePath));
         }
 
-        if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+        if (mergeEngine == MergeEngine.FIRST_ROW) {
             throw new UnsupportedOperationException(
                     String.format(
                             "Table %s uses the '%s' merge engine which does not support DELETE or UPDATE statements.",
-                            tablePath, ConfigOptions.MergeEngine.FIRST_ROW));
+                            tablePath, MergeEngine.FIRST_ROW));
         }
     }
 

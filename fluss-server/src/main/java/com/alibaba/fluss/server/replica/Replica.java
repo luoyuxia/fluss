@@ -30,6 +30,7 @@ import com.alibaba.fluss.exception.NotLeaderOrFollowerException;
 import com.alibaba.fluss.fs.FsPath;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -167,7 +168,7 @@ public final class Replica {
     private final Schema schema;
     private final LogFormat logFormat;
     private final KvFormat kvFormat;
-    private final @Nullable ConfigOptions.MergeEngine mergeEngine;
+    private final @Nullable MergeEngine mergeEngine;
     private final long logTTLMs;
     private final boolean dataLakeEnabled;
     private final int tieredLogLocalSegments;

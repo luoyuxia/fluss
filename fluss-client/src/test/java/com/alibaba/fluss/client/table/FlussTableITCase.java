@@ -33,6 +33,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.config.MemorySize;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -883,9 +884,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         TableDescriptor tableDescriptor =
                 TableDescriptor.builder()
                         .schema(DATA1_SCHEMA_PK)
-                        .property(
-                                ConfigOptions.TABLE_MERGE_ENGINE,
-                                ConfigOptions.MergeEngine.FIRST_ROW)
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE, MergeEngine.FIRST_ROW)
                         .build();
         RowType rowType = DATA1_SCHEMA_PK.toRowType();
         createTable(DATA1_TABLE_PATH_PK, tableDescriptor, false);
@@ -895,21 +894,21 @@ class FlussTableITCase extends ClientToServerITCaseBase {
             // first, put rows
             UpsertWriter upsertWriter = table.getUpsertWriter();
             List<InternalRow> expectedRows = new ArrayList<>(rows);
-            for (int row = 0; row < rows; row++) {
+            for (int id = 0; id < rows; id++) {
                 for (int num = 0; num < duplicateNum; num++) {
-                    upsertWriter.upsert(compactedRow(rowType, new Object[] {row, "value_" + num}));
+                    upsertWriter.upsert(compactedRow(rowType, new Object[] {id, "value_" + num}));
                 }
-                expectedRows.add(compactedRow(rowType, new Object[] {row, "value_0"}));
+                expectedRows.add(compactedRow(rowType, new Object[] {id, "value_0"}));
             }
             upsertWriter.flush();
 
             // now, get rows by lookup
-            for (int row = 0; row < rows; row++) {
+            for (int id = 0; id < rows; id++) {
                 InternalRow gotRow =
-                        table.lookup(keyRow(DATA1_SCHEMA_PK, new Object[] {row, "dumpy"}))
+                        table.lookup(keyRow(DATA1_SCHEMA_PK, new Object[] {id, "dumpy"}))
                                 .get()
                                 .getRow();
-                assertThatRow(gotRow).withSchema(rowType).isEqualTo(expectedRows.get(row));
+                assertThatRow(gotRow).withSchema(rowType).isEqualTo(expectedRows.get(id));
             }
 
             // check scan change log

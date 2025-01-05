@@ -16,7 +16,6 @@
 
 package com.alibaba.fluss.connector.flink.source;
 
-import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.connector.flink.FlinkConnectorOptions;
 import com.alibaba.fluss.connector.flink.source.enumerator.initializer.OffsetsInitializer;
@@ -27,6 +26,7 @@ import com.alibaba.fluss.connector.flink.utils.FlinkConnectorOptionsUtils;
 import com.alibaba.fluss.connector.flink.utils.FlinkConversions;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils.ValueConversion;
+import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
 
@@ -105,7 +105,7 @@ public class FlinkTableSource
 
     private final long scanPartitionDiscoveryIntervalMs;
     private final boolean isDataLakeEnabled;
-    @Nullable private final ConfigOptions.MergeEngine mergeEngine;
+    @Nullable private final MergeEngine mergeEngine;
 
     // output type after projection pushdown
     private LogicalType producedDataType;
@@ -137,7 +137,7 @@ public class FlinkTableSource
             @Nullable LookupCache cache,
             long scanPartitionDiscoveryIntervalMs,
             boolean isDataLakeEnabled,
-            @Nullable ConfigOptions.MergeEngine mergeEngine) {
+            @Nullable MergeEngine mergeEngine) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableOutputType = tableOutputType;
@@ -164,7 +164,7 @@ public class FlinkTableSource
         } else {
             if (hasPrimaryKey()) {
                 // pk table
-                if (mergeEngine == ConfigOptions.MergeEngine.FIRST_ROW) {
+                if (mergeEngine == MergeEngine.FIRST_ROW) {
                     return ChangelogMode.insertOnly();
                 } else {
                     return ChangelogMode.all();
