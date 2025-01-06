@@ -29,10 +29,12 @@ import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.Projection;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Collections;
@@ -139,11 +141,6 @@ public class FlussLogScanner implements LogScanner {
             do {
                 Map<TableBucket, List<ScanRecord>> fetchRecords = pollForFetches();
                 if (fetchRecords.isEmpty()) {
-                    try {
-                        Thread.sleep(10);
-                    } catch (Exception e) {
-                        throw new RuntimeException("xxx");
-                    }
                     if (logFetcher.awaitNotEmpty(startNanos + timeoutNanos)) {
                         return new ScanRecords(fetchRecords);
                     }
