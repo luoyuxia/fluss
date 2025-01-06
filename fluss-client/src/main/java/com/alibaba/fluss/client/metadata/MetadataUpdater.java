@@ -246,6 +246,7 @@ public class MetadataUpdater {
             @Nullable Set<TablePath> tablePaths,
             @Nullable Collection<PhysicalTablePath> tablePartitionNames,
             @Nullable Collection<Long> tablePartitionIds) {
+        long start = System.currentTimeMillis();
         try {
             synchronized (this) {
                 cluster =
@@ -263,6 +264,8 @@ public class MetadataUpdater {
             } else {
                 throw new FlussRuntimeException("Failed to update metadata", t);
             }
+        } finally {
+            LOG.info("update metadata cost {} ms", System.currentTimeMillis() - start);
         }
     }
 
