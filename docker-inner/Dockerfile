@@ -22,7 +22,7 @@ FROM registry.cn-hangzhou.aliyuncs.com/alinux/aliyunlinux:aliyun_2_1903_x64_20G_
 USER root
 RUN echo pwd
 ENV PATH=/fluss/bin:$PATH
-COPY --chown=root:root ./build-target/ /fluss/
+COPY --chown=root:root build-target/ /fluss/
 
 RUN set -e
 RUN yum install -y tar \
