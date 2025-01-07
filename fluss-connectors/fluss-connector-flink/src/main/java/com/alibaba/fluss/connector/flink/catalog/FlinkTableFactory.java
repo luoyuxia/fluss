@@ -23,7 +23,6 @@ import com.alibaba.fluss.connector.flink.lakehouse.LakeTableFactory;
 import com.alibaba.fluss.connector.flink.sink.FlinkTableSink;
 import com.alibaba.fluss.connector.flink.source.FlinkTableSource;
 import com.alibaba.fluss.connector.flink.utils.FlinkConnectorOptionsUtils;
-import com.alibaba.fluss.connector.flink.utils.FlinkConversions;
 import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.TablePath;
 
@@ -152,8 +151,7 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 rowType,
                 context.getPrimaryKeyIndexes(),
                 isStreamingMode,
-                MergeEngine.create(
-                        helper.getOptions().toMap(), FlinkConversions.toFlussRowType(rowType)));
+                MergeEngine.create(helper.getOptions().toMap()));
     }
 
     @Override

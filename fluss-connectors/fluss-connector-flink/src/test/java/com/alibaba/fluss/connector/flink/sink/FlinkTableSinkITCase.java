@@ -861,18 +861,6 @@ class FlinkTableSinkITCase {
         expectedRows = Arrays.asList("-U[3, v3, 1000]", "+U[3, v33, 1001]", "+I[4, v44, 1000]");
         assertResultsIgnoreOrder(rowIter, expectedRows, false);
 
-        // test update a=4
-        tBatchEnv
-                .executeSql("UPDATE merge_engine_with_version SET b = 'v45', ts=1001 WHERE a = 4")
-                .await();
-        expectedRows = Arrays.asList("-U[4, v44, 1000]", "+U[4, v45, 1001]");
-        assertResultsIgnoreOrder(rowIter, expectedRows, false);
-
-        // test delete a=4
-        tBatchEnv.executeSql("delete from merge_engine_with_version WHERE a = 4").await();
-        expectedRows = Arrays.asList("-D[4, v45, 1001]");
-        assertResultsIgnoreOrder(rowIter, expectedRows, false);
-
         insertJobClient.cancel().get();
     }
 

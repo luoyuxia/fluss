@@ -281,7 +281,7 @@ public final class TableDescriptor implements Serializable {
     }
 
     public @Nullable MergeEngine getMergeEngine() {
-        return MergeEngine.create(configuration(), schema.toRowType());
+        return MergeEngine.create(properties);
     }
 
     public TableDescriptor copy(Map<String, String> newProperties) {

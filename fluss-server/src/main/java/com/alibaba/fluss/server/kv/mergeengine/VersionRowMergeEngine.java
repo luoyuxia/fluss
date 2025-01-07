@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.alibaba.fluss.server.kv.mergeengine;
 
 import com.alibaba.fluss.exception.FlussRuntimeException;
@@ -23,11 +22,6 @@ import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.TimestampLtz;
 import com.alibaba.fluss.row.TimestampNtz;
-import com.alibaba.fluss.row.encode.ValueDecoder;
-import com.alibaba.fluss.server.kv.partialupdate.PartialUpdater;
-import com.alibaba.fluss.server.kv.prewrite.KvPreWriteBuffer;
-import com.alibaba.fluss.server.kv.rocksdb.RocksDBKv;
-import com.alibaba.fluss.server.kv.wal.WalBuilder;
 import com.alibaba.fluss.types.BigIntType;
 import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.IntType;
@@ -36,66 +30,29 @@ import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.types.TimeType;
 import com.alibaba.fluss.types.TimestampType;
 
-/** A wrapper for version merge engine. */
-public class VersionRowMergeEngine extends RowMergeEngine {
+/**
+ * The version row merge engine for primary key table. The update will only occur if the new value
+ * of the specified version field is greater than the old value.
+ *
+ * @since 0.6
+ */
+public class VersionRowMergeEngine implements RowMergeEngine {
 
     private final MergeEngine mergeEngine;
-    private final Schema schema;
     private final InternalRow.FieldGetter[] currentFieldGetters;
+    private final RowType rowType;
 
-    public VersionRowMergeEngine(
-            PartialUpdater partialUpdater,
-            ValueDecoder valueDecoder,
-            WalBuilder walBuilder,
-            KvPreWriteBuffer kvPreWriteBuffer,
-            RocksDBKv rocksDBKv,
-            Schema schema,
-            short schemaId,
-            int appendedRecordCount,
-            long logOffset,
-            MergeEngine mergeEngine) {
-        super(
-                partialUpdater,
-                valueDecoder,
-                walBuilder,
-                kvPreWriteBuffer,
-                rocksDBKv,
-                schema,
-                schemaId,
-                appendedRecordCount,
-                logOffset);
+    public VersionRowMergeEngine(Schema schema, MergeEngine mergeEngine) {
         this.mergeEngine = mergeEngine;
-        this.schema = schema;
-        RowType currentRowType = schema.toRowType();
-        this.currentFieldGetters = new InternalRow.FieldGetter[currentRowType.getFieldCount()];
-        for (int i = 0; i < currentRowType.getFieldCount(); i++) {
-            currentFieldGetters[i] = InternalRow.createFieldGetter(currentRowType.getTypeAt(i), i);
+        this.rowType = schema.toRowType();
+        this.currentFieldGetters = new InternalRow.FieldGetter[rowType.getFieldCount()];
+        for (int i = 0; i < rowType.getFieldCount(); i++) {
+            currentFieldGetters[i] = InternalRow.createFieldGetter(rowType.getTypeAt(i), i);
         }
     }
 
     @Override
-    protected void update(KvPreWriteBuffer.Key key, BinaryRow oldRow, BinaryRow newRow)
-            throws Exception {
-        RowType rowType = schema.toRowType();
-        if (checkVersionMergeEngine(rowType, oldRow, newRow)) {
-            return;
-        }
-        super.update(key, oldRow, newRow);
-    }
-
-    private boolean checkVersionMergeEngine(RowType rowType, BinaryRow oldRow, BinaryRow newRow) {
-        if (!checkNewRowVersion(mergeEngine, rowType, oldRow, newRow)) {
-            // When the specified field version is less
-            // than the version number of the old
-            // record, do not update
-            return true;
-        }
-        return false;
-    }
-
-    // Check row version.
-    private boolean checkNewRowVersion(
-            MergeEngine mergeEngine, RowType rowType, BinaryRow oldRow, BinaryRow newRow) {
+    public BinaryRow merge(BinaryRow oldRow, BinaryRow newRow) {
         int fieldIndex = rowType.getFieldIndex(mergeEngine.getColumn());
         if (fieldIndex == -1) {
             throw new IllegalArgumentException(
@@ -105,34 +62,40 @@ public class VersionRowMergeEngine extends RowMergeEngine {
         }
         InternalRow.FieldGetter fieldGetter = currentFieldGetters[fieldIndex];
         Object oldValue = fieldGetter.getFieldOrNull(oldRow);
-        if (oldValue == null) {
-            throw new RuntimeException(
-                    String.format(
-                            "When the merge engine is set to version, the column %s old value cannot be null.",
-                            mergeEngine.getColumn()));
-        }
         Object newValue = fieldGetter.getFieldOrNull(newRow);
-        if (newValue == null) {
-            throw new RuntimeException(
-                    String.format(
-                            "When the merge engine is set to version, the column %s new value cannot be null.",
-                            mergeEngine.getColumn()));
-        }
-
+        // If the old value is null, simply overwrite it with the new value.
+        if (oldValue == null) return newRow;
+        // If the new value is empty, ignore it directly.
+        if (newValue == null) return null;
         DataType dataType = rowType.getTypeAt(fieldIndex);
+        return getValueComparator(dataType).isGreaterThan(newValue, oldValue) ? newRow : null;
+    }
 
+    @Override
+    public boolean shouldSkipDeletion(BinaryRow newRow) {
+        return true;
+    }
+
+    private ValueComparator getValueComparator(DataType dataType) {
         if (dataType instanceof BigIntType) {
-            return (Long) newValue > (Long) oldValue;
-        } else if (dataType instanceof IntType) {
-            return (Integer) newValue > (Integer) oldValue;
-        } else if (dataType instanceof TimestampType || dataType instanceof TimeType) {
-            return ((TimestampNtz) newValue).getMillisecond()
-                    > ((TimestampNtz) oldValue).getMillisecond();
-        } else if (dataType instanceof LocalZonedTimestampType) {
-            return ((TimestampLtz) newValue).toEpochMicros()
-                    > ((TimestampLtz) oldValue).toEpochMicros();
-        } else {
-            throw new FlussRuntimeException("Unsupported data type: " + dataType.asSummaryString());
+            return (left, right) -> (Long) left > (Long) right;
         }
+        if (dataType instanceof IntType || dataType instanceof TimeType) {
+            return (left, right) -> (Integer) left > (Integer) right;
+        }
+        if (dataType instanceof TimestampType) {
+            return (left, right) ->
+                    ((TimestampNtz) left).getMillisecond()
+                            > ((TimestampNtz) right).getMillisecond();
+        }
+        if (dataType instanceof LocalZonedTimestampType) {
+            return (left, right) ->
+                    ((TimestampLtz) left).toEpochMicros() > ((TimestampLtz) right).toEpochMicros();
+        }
+        throw new FlussRuntimeException("Unsupported data type: " + dataType.asSummaryString());
+    }
+
+    interface ValueComparator {
+        boolean isGreaterThan(Object left, Object right);
     }
 }

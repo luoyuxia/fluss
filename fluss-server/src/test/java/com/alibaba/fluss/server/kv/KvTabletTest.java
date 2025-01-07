@@ -619,7 +619,7 @@ class KvTabletTest {
         Map<String, String> config = new HashMap<>();
         config.put("table.merge-engine", "version");
         config.put("table.merge-engine.version.column", "b");
-        MergeEngine mergeEngine = MergeEngine.create(config, DATA3_SCHEMA_PK.toRowType());
+        MergeEngine mergeEngine = MergeEngine.create(config);
         KvTablet kvTablet =
                 createKvTablet(tablePath, tableBucket, logTablet, tmpKvDir, mergeEngine);
 
