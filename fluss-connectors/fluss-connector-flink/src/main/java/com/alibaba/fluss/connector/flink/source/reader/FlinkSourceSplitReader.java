@@ -145,7 +145,8 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
             // may need to finish empty log splits
             if (!emptyLogSplits.isEmpty()) {
                 FlinkRecordsWithSplitIds records =
-                        new FlinkRecordsWithSplitIds(emptyLogSplits, flinkSourceReaderMetrics);
+                        new FlinkRecordsWithSplitIds(
+                                new HashSet<>(emptyLogSplits), flinkSourceReaderMetrics);
                 emptyLogSplits.clear();
                 return records;
             } else {

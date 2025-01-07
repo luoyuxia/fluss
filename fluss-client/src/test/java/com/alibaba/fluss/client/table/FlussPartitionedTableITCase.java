@@ -58,10 +58,6 @@ class FlussPartitionedTableITCase extends ClientToServerITCaseBase {
         Schema schema = createPartitionedTable(DATA1_TABLE_PATH_PK, true);
         Map<String, Long> partitionIdByNames =
                 FLUSS_CLUSTER_EXTENSION.waitUtilPartitionAllReady(DATA1_TABLE_PATH_PK);
-
-        TableDescriptor partitionTableDescriptor = TableDescriptor.builder().schema(schema).build();
-        createTable(TablePath.of("test_db_11", "tt"), partitionTableDescriptor, false);
-
         Table table = conn.getTable(DATA1_TABLE_PATH_PK);
         UpsertWriter upsertWriter = table.getUpsertWriter();
         int recordsPerPartition = 5;
