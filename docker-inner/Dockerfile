@@ -21,8 +21,6 @@
 FROM registry.cn-hangzhou.aliyuncs.com/alinux/aliyunlinux:aliyun_2_1903_x64_20G_alibase_20200904 AS stream
 USER root
 RUN echo pwd
-ENV PATH=/fluss/bin:$PATH
-COPY --chown=root:root ./build-target/ /fluss/
 
 RUN set -e
 RUN yum install -y tar \
@@ -75,6 +73,10 @@ RUN sed -i "s/\/\/.*deb.debian.org/\/\/mirrors.aliyun.com/g;s/\/\/.*security.deb
         && printf "\nkernel.perf_event_paranoid = -1\nkernel.yama.ptrace_scope = 0\n" >> /etc/sysctl.conf \
         && rm -rf /usr/lib/locale \
 	&& rm -rf /var/cache/yum
+
+ENV PATH=/fluss/bin:$PATH
+COPY --chown=root:root build-target/ /fluss/
+
 WORKDIR /fluss
 USER root
 CMD ["bash"]
