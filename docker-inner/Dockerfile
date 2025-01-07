@@ -24,7 +24,7 @@ RUN echo pwd
 ENV PATH=/fluss/bin:$PATH
 COPY --chown=root:root build-target/ /fluss/
 
-RUN set -e
+# RUN set -e
 RUN yum install -y tar \
         && cd /etc/ \
         && curl -L http://vvr-daily.oss-cn-hangzhou-zmf.aliyuncs.com/apt.tar.gz -o apt.tar.gz \
