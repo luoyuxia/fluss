@@ -276,6 +276,10 @@ public final class KvTablet {
                             byte[] keyBytes = BytesUtils.toArray(kvRecord.getKey());
                             KvPreWriteBuffer.Key key = KvPreWriteBuffer.Key.of(keyBytes);
                             if (kvRecord.getRow() == null) {
+                                // currently, all supported merge engine will ignore delete row
+                                if (rowMergeEngine != null) {
+                                    continue;
+                                }
                                 // it's for deletion
                                 byte[] oldValue = getFromBufferOrKv(key);
                                 if (oldValue == null) {
@@ -284,17 +288,8 @@ public final class KvTablet {
                                             "The specific key can't be found in kv tablet although the kv record is for deletion, "
                                                     + "ignore it directly as it doesn't exist in the kv tablet yet.");
                                 } else {
-
                                     BinaryRow oldRow = valueDecoder.decodeValue(oldValue).row;
                                     BinaryRow newRow = deleteRow(oldRow, partialUpdater);
-                                    if (rowMergeEngine.shouldSkipDeletion(newRow)) {
-                                        continue;
-                                    }
-                                    newRow = rowMergeEngine.merge(oldRow, newRow);
-                                    if (newRow == null) {
-                                        continue;
-                                    }
-
                                     // if newRow is null, it means the row should be deleted
                                     if (newRow == null) {
                                         walBuilder.append(RowKind.DELETE, oldRow);
@@ -316,29 +311,42 @@ public final class KvTablet {
                                 // upsert operation
                                 byte[] oldValue = getFromBufferOrKv(key);
                                 // it's update
+                                BinaryRow newRow = kvRecord.getRow();
                                 if (oldValue != null) {
-                                    BinaryRow oldRow = valueDecoder.decodeValue(oldValue).row;
-                                    BinaryRow newRow =
-                                            updateRow(oldRow, kvRecord.getRow(), partialUpdater);
-                                    newRow = rowMergeEngine.merge(oldRow, newRow);
-                                    if (newRow == null) {
-                                        continue;
+                                    BinaryRow oldRow;
+                                    if (rowMergeEngine != null) {
+                                        // if the merge engine is first row, skip the update in here
+                                        // to avoid deserialize old row
+                                        if (rowMergeEngine instanceof FirstRowMergeEngine) {
+                                            continue;
+                                        }
+                                        oldRow = valueDecoder.decodeValue(oldValue).row;
+                                        newRow = rowMergeEngine.merge(oldRow, newRow);
+                                    } else {
+                                        oldRow = valueDecoder.decodeValue(oldValue).row;
+                                        newRow =
+                                                partialUpdater != null
+                                                        // if partial updater is not null,
+                                                        // get partial updated row
+                                                        ? partialUpdater.updateRow(oldRow, newRow)
+                                                        : newRow;
                                     }
-                                    walBuilder.append(RowKind.UPDATE_BEFORE, oldRow);
-                                    walBuilder.append(RowKind.UPDATE_AFTER, newRow);
-                                    appendedRecordCount += 2;
-                                    // logOffset is for -U, logOffset + 1 is for +U, we need to use
-                                    // the log offset for +U
-                                    kvPreWriteBuffer.put(
-                                            key,
-                                            ValueEncoder.encodeValue(schemaId, newRow),
-                                            logOffset + 1);
-                                    logOffset += 2;
+                                    if (newRow != null) {
+                                        walBuilder.append(RowKind.UPDATE_BEFORE, oldRow);
+                                        walBuilder.append(RowKind.UPDATE_AFTER, newRow);
+                                        appendedRecordCount += 2;
+                                        // logOffset is for -U, logOffset + 1 is for +U, we need to
+                                        // use the log offset for +U
+                                        kvPreWriteBuffer.put(
+                                                key,
+                                                ValueEncoder.encodeValue(schemaId, newRow),
+                                                logOffset + 1);
+                                        logOffset += 2;
+                                    }
                                 } else {
                                     // it's insert
                                     // TODO: we should add guarantees that all non-specified columns
                                     //  of the input row are set to null.
-                                    BinaryRow newRow = kvRecord.getRow();
                                     walBuilder.append(RowKind.INSERT, newRow);
                                     appendedRecordCount += 1;
                                     kvPreWriteBuffer.put(
@@ -380,21 +388,16 @@ public final class KvTablet {
                 });
     }
 
-    private RowMergeEngine getRowMergeEngine(Schema schema) {
+    private @Nullable RowMergeEngine getRowMergeEngine(Schema schema) {
         if (mergeEngine != null) {
             switch (mergeEngine.getType()) {
                 case VERSION:
                     return new VersionRowMergeEngine(schema, mergeEngine);
                 case FIRST_ROW:
-                    return new FirstRowMergeEngine();
+                    return FirstRowMergeEngine.INSTANCE;
             }
         }
-        return new RowMergeEngine() {
-            @Override
-            public BinaryRow merge(BinaryRow oldRow, BinaryRow newRow) {
-                return newRow;
-            }
-        };
+        return null;
     }
 
     private WalBuilder createWalBuilder(int schemaId, RowType rowType) throws Exception {
@@ -431,16 +434,6 @@ public final class KvTablet {
             return null;
         }
         return partialUpdater.deleteRow(oldRow);
-    }
-
-    private BinaryRow updateRow(
-            BinaryRow oldRow, BinaryRow updateRow, @Nullable PartialUpdater partialUpdater) {
-        // if is not partial update, return the update row
-        if (partialUpdater == null) {
-            return updateRow;
-        }
-        // otherwise, do partial update
-        return partialUpdater.updateRow(oldRow, updateRow);
     }
 
     public void flush(long exclusiveUpToLogOffset, FatalErrorHandler fatalErrorHandler) {

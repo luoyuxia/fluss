@@ -17,15 +17,19 @@ package com.alibaba.fluss.server.kv.mergeengine;
 
 import com.alibaba.fluss.row.BinaryRow;
 
-/**
- * The row merge engine for primary key table.
- *
- * @since 0.6
- */
-public interface RowMergeEngine {
-    BinaryRow merge(BinaryRow oldRow, BinaryRow newRow);
+import javax.annotation.Nullable;
 
-    default boolean shouldSkipDeletion(BinaryRow newRow) {
-        return false;
-    }
+/** The row merge engine for primary key table. */
+public interface RowMergeEngine {
+
+    /**
+     * Merge the new row to the old row, return the row after merged. If the no new row is produced
+     * after merging, return null.
+     *
+     * @param oldRow the old row
+     * @param newRow the new row to be merged with old row
+     * @return the row after merge, or null if no new row is produced
+     */
+    @Nullable
+    BinaryRow merge(BinaryRow oldRow, BinaryRow newRow);
 }

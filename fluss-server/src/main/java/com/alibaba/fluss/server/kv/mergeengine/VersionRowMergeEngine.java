@@ -15,7 +15,6 @@
  */
 package com.alibaba.fluss.server.kv.mergeengine;
 
-import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.metadata.MergeEngine;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.row.BinaryRow;
@@ -29,6 +28,8 @@ import com.alibaba.fluss.types.LocalZonedTimestampType;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.types.TimeType;
 import com.alibaba.fluss.types.TimestampType;
+
+import javax.annotation.Nullable;
 
 /**
  * The version row merge engine for primary key table. The update will only occur if the new value
@@ -52,6 +53,7 @@ public class VersionRowMergeEngine implements RowMergeEngine {
     }
 
     @Override
+    @Nullable
     public BinaryRow merge(BinaryRow oldRow, BinaryRow newRow) {
         int fieldIndex = rowType.getFieldIndex(mergeEngine.getColumn());
         if (fieldIndex == -1) {
@@ -71,11 +73,6 @@ public class VersionRowMergeEngine implements RowMergeEngine {
         return getValueComparator(dataType).isGreaterThan(newValue, oldValue) ? newRow : null;
     }
 
-    @Override
-    public boolean shouldSkipDeletion(BinaryRow newRow) {
-        return true;
-    }
-
     private ValueComparator getValueComparator(DataType dataType) {
         if (dataType instanceof BigIntType) {
             return (left, right) -> (Long) left > (Long) right;
@@ -92,7 +89,7 @@ public class VersionRowMergeEngine implements RowMergeEngine {
             return (left, right) ->
                     ((TimestampLtz) left).toEpochMicros() > ((TimestampLtz) right).toEpochMicros();
         }
-        throw new FlussRuntimeException("Unsupported data type: " + dataType.asSummaryString());
+        throw new UnsupportedOperationException("Unsupported data type: " + dataType);
     }
 
     interface ValueComparator {

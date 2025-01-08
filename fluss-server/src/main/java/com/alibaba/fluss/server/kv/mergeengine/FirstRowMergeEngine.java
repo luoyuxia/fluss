@@ -17,19 +17,17 @@ package com.alibaba.fluss.server.kv.mergeengine;
 
 import com.alibaba.fluss.row.BinaryRow;
 
-/**
- * The first row merge engine for primary key table. Always retain the first row.
- *
- * @since 0.6
- */
+import javax.annotation.Nullable;
+
+/** The first row merge engine for primary key table. Always retain the first row. */
 public class FirstRowMergeEngine implements RowMergeEngine {
+
+    public static final FirstRowMergeEngine INSTANCE = new FirstRowMergeEngine();
+
+    @Nullable
     @Override
     public BinaryRow merge(BinaryRow oldRow, BinaryRow newRow) {
-        return oldRow == null ? newRow : null;
-    }
-
-    @Override
-    public boolean shouldSkipDeletion(BinaryRow newRow) {
-        return newRow == null;
+        // the new row is always be ignore, return null directly
+        return null;
     }
 }
