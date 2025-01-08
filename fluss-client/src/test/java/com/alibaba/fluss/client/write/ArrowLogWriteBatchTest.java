@@ -28,15 +28,12 @@ import com.alibaba.fluss.row.arrow.ArrowWriterPool;
 import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 import com.alibaba.fluss.utils.CloseableIterator;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 
 import static com.alibaba.fluss.record.LogRecordReadContext.createArrowReadContext;
 import static com.alibaba.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
@@ -106,65 +103,6 @@ public class ArrowLogWriteBatchTest {
         }
     }
 
-    @Test
-    void testAppendWithPreAllocatedMemorySegments() throws Exception {
-        int bucketId = 0;
-        int maxSizeInBytes = 1024;
-        int pageSize = 128;
-        List<MemorySegment> memorySegmentList = new ArrayList<>();
-        for (int i = 0; i < maxSizeInBytes / pageSize; i++) {
-            memorySegmentList.add(MemorySegment.wrap(new byte[pageSize]));
-        }
-
-        TableBucket tb = new TableBucket(DATA1_TABLE_ID, bucketId);
-        ArrowLogWriteBatch arrowLogWriteBatch =
-                new ArrowLogWriteBatch(
-                        tb,
-                        DATA1_PHYSICAL_TABLE_PATH,
-                        DATA1_TABLE_INFO.getSchemaId(),
-                        writerProvider.getOrCreateWriter(
-                                tb.getTableId(),
-                                DATA1_TABLE_INFO.getSchemaId(),
-                                maxSizeInBytes,
-                                DATA1_ROW_TYPE),
-                        memorySegmentList,
-                        new TestingMemorySegmentPool(128));
-        int count = 0;
-        while (arrowLogWriteBatch.tryAppend(
-                createWriteRecord(row(DATA1_ROW_TYPE, new Object[] {count, "a" + count})),
-                newWriteCallback())) {
-            count++;
-        }
-
-        // batch full.
-        boolean appendResult =
-                arrowLogWriteBatch.tryAppend(
-                        createWriteRecord(row(DATA1_ROW_TYPE, new Object[] {1, "a"})),
-                        newWriteCallback());
-        assertThat(appendResult).isFalse();
-
-        // close this batch.
-        arrowLogWriteBatch.close();
-        arrowLogWriteBatch.serialize();
-        BytesView bytesView = arrowLogWriteBatch.build();
-        MemoryLogRecords records =
-                MemoryLogRecords.pointToByteBuffer(bytesView.getByteBuf().nioBuffer());
-        LogRecordBatch batch = records.batches().iterator().next();
-        assertThat(batch.getRecordCount()).isEqualTo(count);
-        try (LogRecordReadContext readContext =
-                        createArrowReadContext(DATA1_ROW_TYPE, DATA1_TABLE_INFO.getSchemaId());
-                CloseableIterator<LogRecord> recordsIter = batch.records(readContext)) {
-            int readCount = 0;
-            while (recordsIter.hasNext()) {
-                LogRecord record = recordsIter.next();
-                assertThat(record.getRow().getInt(0)).isEqualTo(readCount);
-                assertThat(record.getRow().getString(1).toString()).isEqualTo("a" + readCount);
-                readCount++;
-            }
-            assertThat(readCount).isEqualTo(count);
-        }
-    }
-
     private WriteRecord createWriteRecord(IndexedRow row) {
         return new WriteRecord(DATA1_PHYSICAL_TABLE_PATH, WriteKind.APPEND, row, null);
     }
@@ -178,8 +116,9 @@ public class ArrowLogWriteBatchTest {
                         tb.getTableId(),
                         DATA1_TABLE_INFO.getSchemaId(),
                         maxSizeInBytes,
-                        DATA1_ROW_TYPE),
-                Collections.singletonList(MemorySegment.wrap(new byte[10 * 1024])),
+                        DATA1_ROW_TYPE,
+                        CompressionUtil.CodecType.NO_COMPRESSION),
+                MemorySegment.wrap(new byte[10 * 1024]),
                 new TestingMemorySegmentPool(10 * 1024));
     }
 

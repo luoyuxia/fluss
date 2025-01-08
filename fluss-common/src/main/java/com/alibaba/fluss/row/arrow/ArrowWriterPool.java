@@ -18,9 +18,11 @@ package com.alibaba.fluss.row.arrow;
 
 import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.annotation.VisibleForTesting;
+import com.alibaba.fluss.compression.FlussArrowCompressionFactory;
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.concurrent.GuardedBy;
@@ -77,8 +79,12 @@ public class ArrowWriterPool implements ArrowWriterProvider {
 
     @Override
     public ArrowWriter getOrCreateWriter(
-            long tableId, int schemaId, int maxSizeInBytes, RowType schema) {
-        final String tableSchemaId = tableId + "-" + schemaId;
+            long tableId,
+            int schemaId,
+            int maxSizeInBytes,
+            RowType schema,
+            CompressionUtil.CodecType codecType) {
+        final String writerKey = tableId + "-" + schemaId + "-" + codecType;
         return inLock(
                 lock,
                 () -> {
@@ -86,13 +92,19 @@ public class ArrowWriterPool implements ArrowWriterProvider {
                         throw new FlussRuntimeException(
                                 "Arrow VectorSchemaRoot pool closed while getting/creating root.");
                     }
-                    Deque<ArrowWriter> writers = freeWriters.get(tableSchemaId);
+                    Deque<ArrowWriter> writers = freeWriters.get(writerKey);
                     if (writers != null && !writers.isEmpty()) {
                         return initialize(writers.pollFirst(), maxSizeInBytes);
                     } else {
                         return initialize(
                                 new ArrowWriter(
-                                        tableSchemaId, maxSizeInBytes, schema, allocator, this),
+                                        writerKey,
+                                        maxSizeInBytes,
+                                        schema,
+                                        allocator,
+                                        this,
+                                        FlussArrowCompressionFactory.INSTANCE.createCodec(
+                                                codecType)),
                                 maxSizeInBytes);
                     }
                 });

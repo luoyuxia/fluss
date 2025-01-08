@@ -17,6 +17,7 @@
 package com.alibaba.fluss.server.kv;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
+import com.alibaba.fluss.compression.FlussArrowCompressionFactory;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.KvStorageException;
@@ -55,6 +56,7 @@ import com.alibaba.fluss.server.log.LogAppendInfo;
 import com.alibaba.fluss.server.log.LogTablet;
 import com.alibaba.fluss.server.utils.FatalErrorHandler;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.BytesUtils;
@@ -104,6 +106,7 @@ public final class KvTablet {
     private final LogFormat logFormat;
     private final KvFormat kvFormat;
     private final @Nullable MergeEngine mergeEngine;
+    private final CompressionUtil.CodecType arrowCodecType;
 
     /**
      * The kv data in pre-write buffer whose log offset is less than the flushedLogOffset has been
@@ -125,7 +128,8 @@ public final class KvTablet {
             BufferAllocator arrowBufferAllocator,
             MemorySegmentPool memorySegmentPool,
             KvFormat kvFormat,
-            @Nullable MergeEngine mergeEngine) {
+            @Nullable MergeEngine mergeEngine,
+            CompressionUtil.CodecType arrowCodecType) {
         this.physicalPath = physicalPath;
         this.tableBucket = tableBucket;
         this.logTablet = logTablet;
@@ -140,6 +144,7 @@ public final class KvTablet {
         this.partialUpdaterCache = new PartialUpdaterCache();
         this.kvFormat = kvFormat;
         this.mergeEngine = mergeEngine;
+        this.arrowCodecType = arrowCodecType;
     }
 
     public static KvTablet create(
@@ -188,7 +193,9 @@ public final class KvTablet {
                 arrowBufferAllocator,
                 memorySegmentPool,
                 kvFormat,
-                mergeEngine);
+                mergeEngine,
+                FlussArrowCompressionFactory.toArrowCompressionCodecType(
+                        conf.get(ConfigOptions.KV_CDC_ARROW_COMPRESSION_TYPE)));
     }
 
     private static RocksDBKv buildRocksDBKv(Configuration configuration, File kvDir)
@@ -379,7 +386,8 @@ public final class KvTablet {
                                 // we don't limit size of the arrow batch, because all the
                                 // changelogs should be in a single batch
                                 Integer.MAX_VALUE,
-                                rowType),
+                                rowType,
+                                arrowCodecType),
                         new ManagedPagedOutputView(memorySegmentPool));
             default:
                 throw new IllegalArgumentException("Unsupported log format: " + logFormat);

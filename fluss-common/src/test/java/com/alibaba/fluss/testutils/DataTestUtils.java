@@ -53,6 +53,7 @@ import com.alibaba.fluss.row.encode.ValueEncoder;
 import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.DataTypeRoot;
 import com.alibaba.fluss.types.RowType;
@@ -454,7 +455,12 @@ public class DataTestUtils {
         try (BufferAllocator allocator = new RootAllocator(Integer.MAX_VALUE);
                 ArrowWriterPool provider = new ArrowWriterPool(allocator)) {
             ArrowWriter writer =
-                    provider.getOrCreateWriter(1L, schemaId, Integer.MAX_VALUE, rowType);
+                    provider.getOrCreateWriter(
+                            1L,
+                            schemaId,
+                            Integer.MAX_VALUE,
+                            rowType,
+                            CompressionUtil.CodecType.NO_COMPRESSION);
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
                             baseLogOffset,

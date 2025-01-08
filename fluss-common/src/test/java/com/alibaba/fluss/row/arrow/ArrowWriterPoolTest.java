@@ -18,6 +18,7 @@ package com.alibaba.fluss.row.arrow;
 
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,31 +48,39 @@ public class ArrowWriterPoolTest {
     void testWriterMap() {
         ArrowWriterPool arrowWriterPool = new ArrowWriterPool(allocator);
         Map<String, Deque<ArrowWriter>> freeWritersMap = arrowWriterPool.freeWriters();
-        ArrowWriter writer1 = arrowWriterPool.getOrCreateWriter(1L, 1, 1024, DATA1_ROW_TYPE);
+        ArrowWriter writer1 =
+                arrowWriterPool.getOrCreateWriter(
+                        1L, 1, 1024, DATA1_ROW_TYPE, CompressionUtil.CodecType.NO_COMPRESSION);
         assertThat(writer1.getMaxSizeInBytes()).isEqualTo(1024);
         assertThat(freeWritersMap.isEmpty()).isTrue();
         long epoch = writer1.getEpoch();
         writer1.recycle(epoch);
         assertThat(freeWritersMap.size()).isEqualTo(1);
-        assertThat(freeWritersMap.get("1-1")).hasSize(1);
+        assertThat(freeWritersMap.get("1-1-NO_COMPRESSION")).hasSize(1);
         assertThat(writer1.getEpoch()).isEqualTo(epoch + 1);
         // recycle the same epoch again, doesn't add it to pool
         writer1.recycle(epoch);
         assertThat(freeWritersMap.size()).isEqualTo(1);
-        assertThat(freeWritersMap.get("1-1")).hasSize(1);
+        assertThat(freeWritersMap.get("1-1-NO_COMPRESSION")).hasSize(1);
 
-        ArrowWriter writer2 = arrowWriterPool.getOrCreateWriter(1L, 2, 10, DATA1_ROW_TYPE);
+        ArrowWriter writer2 =
+                arrowWriterPool.getOrCreateWriter(
+                        1L, 2, 10, DATA1_ROW_TYPE, CompressionUtil.CodecType.NO_COMPRESSION);
         assertThat(freeWritersMap.size()).isEqualTo(1);
         writer2.recycle(writer2.getEpoch());
         assertThat(freeWritersMap.size()).isEqualTo(2);
 
         // test key1: "tableId_schemaId"
-        Deque<ArrowWriter> arrowWriters = freeWritersMap.get("1-1");
+        Deque<ArrowWriter> arrowWriters = freeWritersMap.get("1-1-NO_COMPRESSION");
         assertThat(arrowWriters.size()).isEqualTo(1);
-        writer1 = arrowWriterPool.getOrCreateWriter(1L, 1, 1000, DATA1_ROW_TYPE);
+        writer1 =
+                arrowWriterPool.getOrCreateWriter(
+                        1L, 1, 1000, DATA1_ROW_TYPE, CompressionUtil.CodecType.NO_COMPRESSION);
         assertThat(arrowWriters.size()).isEqualTo(0);
         assertThat(writer1.getMaxSizeInBytes()).isEqualTo(1000);
-        ArrowWriter writer3WithKey1 = arrowWriterPool.getOrCreateWriter(1L, 1, 100, DATA1_ROW_TYPE);
+        ArrowWriter writer3WithKey1 =
+                arrowWriterPool.getOrCreateWriter(
+                        1L, 1, 100, DATA1_ROW_TYPE, CompressionUtil.CodecType.NO_COMPRESSION);
         writer3WithKey1.recycle(writer3WithKey1.getEpoch());
         writer1.recycle(writer1.getEpoch());
         assertThat(arrowWriters.size()).isEqualTo(2);

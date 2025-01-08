@@ -30,6 +30,7 @@ import com.alibaba.fluss.row.columnar.ColumnarRow;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.DataTypes;
 import com.alibaba.fluss.types.RowType;
@@ -134,7 +135,12 @@ class ArrowReaderWriterTest {
                         VectorSchemaRoot.create(ArrowUtils.toArrowSchema(rowType), allocator);
                 ArrowWriterPool provider = new ArrowWriterPool(allocator);
                 ArrowWriter writer =
-                        provider.getOrCreateWriter(1L, 1, Integer.MAX_VALUE, rowType)) {
+                        provider.getOrCreateWriter(
+                                1L,
+                                1,
+                                Integer.MAX_VALUE,
+                                rowType,
+                                CompressionUtil.CodecType.NO_COMPRESSION)) {
             for (InternalRow row : TEST_DATA) {
                 writer.writeRow(row);
             }
@@ -170,7 +176,13 @@ class ArrowReaderWriterTest {
     void testWriterExceedMaxSizeInBytes() {
         try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
                 ArrowWriterPool provider = new ArrowWriterPool(allocator);
-                ArrowWriter writer = provider.getOrCreateWriter(1L, 1, 1024, DATA1_ROW_TYPE)) {
+                ArrowWriter writer =
+                        provider.getOrCreateWriter(
+                                1L,
+                                1,
+                                1024,
+                                DATA1_ROW_TYPE,
+                                CompressionUtil.CodecType.NO_COMPRESSION)) {
             while (!writer.isFull()) {
                 writer.writeRow(row(DATA1_ROW_TYPE, DATA1.get(0)));
             }

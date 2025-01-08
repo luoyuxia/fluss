@@ -22,6 +22,7 @@ import com.alibaba.fluss.client.metrics.WriterMetricGroup;
 import com.alibaba.fluss.cluster.BucketLocation;
 import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.compression.FlussArrowCompressionFactory;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FlussRuntimeException;
@@ -40,6 +41,7 @@ import com.alibaba.fluss.row.arrow.ArrowWriter;
 import com.alibaba.fluss.row.arrow.ArrowWriterPool;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 import com.alibaba.fluss.utils.CopyOnWriteMap;
 import com.alibaba.fluss.utils.Preconditions;
 
@@ -115,6 +117,8 @@ public final class RecordAccumulator {
 
     private final IdempotenceManager idempotenceManager;
 
+    private final CompressionUtil.CodecType arrowCodecType;
+
     // TODO add retryBackoffMs to retry the produce request upon receiving an error.
     // TODO add deliveryTimeoutMs to report success or failure on record delivery.
     // TODO add nextBatchExpiryTimeMs
@@ -133,6 +137,10 @@ public final class RecordAccumulator {
                         (int) conf.get(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT).toMillis());
         this.batchSize =
                 Math.max(1, (int) conf.get(ConfigOptions.CLIENT_WRITER_BATCH_SIZE).getBytes());
+
+        this.arrowCodecType =
+                FlussArrowCompressionFactory.toArrowCompressionCodecType(
+                        conf.get(ConfigOptions.CLIENT_WRITER_ARROW_COMPRESSION_TYPE));
 
         this.writerMemoryBuffer = new WriterMemoryBuffer(conf);
         this.memorySegmentPool = LazyMemorySegmentPool.create(conf);
@@ -545,7 +553,8 @@ public final class RecordAccumulator {
                             tableInfo.getTableId(),
                             tableInfo.getSchemaId(),
                             batchSize,
-                            tableInfo.getTableDescriptor().getSchema().toRowType());
+                            tableInfo.getTableDescriptor().getSchema().toRowType(),
+                            arrowCodecType);
             batch =
                     new ArrowLogWriteBatch(
                             tb,

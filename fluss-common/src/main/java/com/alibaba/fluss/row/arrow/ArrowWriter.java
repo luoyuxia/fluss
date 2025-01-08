@@ -27,6 +27,7 @@ import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.BaseVariableWidthV
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.FieldVector;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.VectorUnloader;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionCodec;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.ipc.WriteChannel;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.ipc.message.ArrowBlock;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
@@ -79,6 +80,8 @@ public class ArrowWriter implements AutoCloseable {
 
     private final RowType schema;
 
+    private final CompressionCodec compressionCodec;
+
     private int maxSizeInBytes;
 
     private int estimatedMaxRecordsCount;
@@ -92,11 +95,13 @@ public class ArrowWriter implements AutoCloseable {
             int maxSizeInBytes,
             RowType schema,
             BufferAllocator allocator,
-            ArrowWriterProvider provider) {
+            ArrowWriterProvider provider,
+            CompressionCodec compressionCodec) {
         this.tableSchemaId = tableSchemaId;
         this.schema = schema;
         this.root = VectorSchemaRoot.create(ArrowUtils.toArrowSchema(schema), allocator);
         this.provider = Preconditions.checkNotNull(provider);
+        this.compressionCodec = compressionCodec;
         this.metadataLength = ArrowUtils.estimateArrowMetadataLength(root.getSchema());
         this.maxSizeInBytes = maxSizeInBytes;
         this.estimatedMaxRecordsCount = -1;
@@ -214,7 +219,8 @@ public class ArrowWriter implements AutoCloseable {
 
         // update row count only when we try to write records to the output.
         root.setRowCount(recordsCount);
-        try (ArrowRecordBatch arrowBatch = new VectorUnloader(root).getRecordBatch()) {
+        try (ArrowRecordBatch arrowBatch =
+                new VectorUnloader(root, true, compressionCodec, true).getRecordBatch()) {
             PagedMemorySegmentWritableChannel channel =
                     new PagedMemorySegmentWritableChannel(outputView);
             ArrowBlock block = MessageSerializer.serialize(new WriteChannel(channel), arrowBatch);

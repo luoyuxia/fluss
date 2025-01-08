@@ -30,6 +30,7 @@ import com.alibaba.fluss.row.arrow.ArrowWriterPool;
 import com.alibaba.fluss.row.arrow.ArrowWriterProvider;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.RootAllocator;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
 import com.alibaba.fluss.utils.types.Tuple2;
 
 import org.junit.jupiter.api.AfterEach;
@@ -153,7 +154,11 @@ class ArrowWalBuilderTest {
         return new ArrowWalBuilder(
                 DEFAULT_SCHEMA_ID,
                 arrowWriterProvider.getOrCreateWriter(
-                        tb.getTableId(), DEFAULT_SCHEMA_ID, maxSizeInBytes, DATA1_ROW_TYPE),
+                        tb.getTableId(),
+                        DEFAULT_SCHEMA_ID,
+                        maxSizeInBytes,
+                        DATA1_ROW_TYPE,
+                        CompressionUtil.CodecType.NO_COMPRESSION),
                 new ManagedPagedOutputView(memorySegmentPool));
     }
 }

@@ -64,6 +64,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
     private long writerId;
     private int batchSequence;
     private int sizeInBytes;
+    private int sizeInBytesAfterCompression;
     private int recordCount;
     private boolean isClosed;
     private boolean reCalculateSizeInBytes = false;
@@ -96,6 +97,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
                         + " bytes.");
         this.rowKindWriter = new RowKindVectorWriter(firstSegment, ARROW_ROWKIND_OFFSET);
         this.sizeInBytes = ARROW_ROWKIND_OFFSET;
+        this.sizeInBytesAfterCompression = sizeInBytes;
         this.recordCount = 0;
     }
 
@@ -124,11 +126,13 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
                         "Tried to build Arrow batch into memory before it is closed.");
             }
             // serialize the arrow batch to dynamically allocated memory segments
-            arrowWriter.serializeToOutputView(
-                    pagedOutputView,
-                    firstSegment,
-                    ARROW_ROWKIND_OFFSET + rowKindWriter.sizeInBytes(),
-                    true);
+            int serializeSizeInBytes =
+                    arrowWriter.serializeToOutputView(
+                            pagedOutputView,
+                            firstSegment,
+                            ARROW_ROWKIND_OFFSET + rowKindWriter.sizeInBytes(),
+                            true);
+            sizeInBytesAfterCompression += serializeSizeInBytes;
             arrowWriter.recycle(writerEpoch);
             serialized = true;
         }
@@ -144,11 +148,13 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             }
             // serialize the arrow batch to dynamically allocated memory segments, no waiting mem
             try {
-                arrowWriter.serializeToOutputView(
-                        pagedOutputView,
-                        firstSegment,
-                        ARROW_ROWKIND_OFFSET + rowKindWriter.sizeInBytes(),
-                        false);
+                int serializeSizeInBytes =
+                        arrowWriter.serializeToOutputView(
+                                pagedOutputView,
+                                firstSegment,
+                                ARROW_ROWKIND_OFFSET + rowKindWriter.sizeInBytes(),
+                                false);
+                sizeInBytesAfterCompression += serializeSizeInBytes;
                 arrowWriter.recycle(writerEpoch);
                 serialized = true;
                 return true;
@@ -252,6 +258,9 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             // make size in bytes up-to-date
             sizeInBytes =
                     ARROW_ROWKIND_OFFSET + rowKindWriter.sizeInBytes() + arrowWriter.sizeInBytes();
+            // Before serialize to channel, the sizeInBytesAfterCompression only contains batch
+            // header size and rowKind vector size.
+            sizeInBytesAfterCompression = ARROW_ROWKIND_OFFSET + rowKindWriter.sizeInBytes();
             recordCount = arrowWriter.getRecordsCount();
         }
 
@@ -267,7 +276,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         outputView.setPosition(0);
         // update header.
         outputView.writeLong(baseLogOffset);
-        outputView.writeInt(sizeInBytes - BASE_OFFSET_LENGTH - LENGTH_LENGTH);
+        outputView.writeInt(sizeInBytesAfterCompression - BASE_OFFSET_LENGTH - LENGTH_LENGTH);
         outputView.writeByte(magic);
 
         // write empty timestamp which will be overridden on server side
