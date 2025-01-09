@@ -1370,20 +1370,4 @@ public class ConfigOptions {
         LZ4,
         ZSTD
     }
-
-    /** The merge engine for primary key table. */
-    public enum MergeEngine {
-        FIRST_ROW("first_row");
-
-        private final String value;
-
-        MergeEngine(String value) {
-            this.value = value;
-        }
-
-        @Override
-        public String toString() {
-            return value;
-        }
-    }
 }
