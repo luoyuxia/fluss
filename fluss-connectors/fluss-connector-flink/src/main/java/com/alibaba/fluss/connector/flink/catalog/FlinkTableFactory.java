@@ -150,7 +150,8 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 rowType,
                 context.getPrimaryKeyIndexes(),
                 isStreamingMode,
-                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)));
+                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)),
+                tableOptions.get(FlinkConnectorOptions.SINK_DELETE_STRATEGY));
     }
 
     @Override

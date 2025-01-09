@@ -20,6 +20,7 @@ import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.connector.flink.options.DeleteStrategy;
 import com.alibaba.fluss.connector.flink.sink.FlinkTableSink;
 import com.alibaba.fluss.connector.flink.utils.FlinkConversions;
 import com.alibaba.fluss.lakehouse.paimon.record.MultiplexCdcRecord;
@@ -88,7 +89,8 @@ public class TestingDatabaseSyncSink extends RichSinkFunction<MultiplexCdcRecord
                             FlinkConversions.toFlinkRowType(rowType),
                             tableDescriptor.getSchema().getPrimaryKeyIndexes(),
                             true,
-                            null);
+                            null,
+                            DeleteStrategy.CHANGELOG_STANDARD);
 
             sinkFunction =
                     ((SinkFunctionProvider)

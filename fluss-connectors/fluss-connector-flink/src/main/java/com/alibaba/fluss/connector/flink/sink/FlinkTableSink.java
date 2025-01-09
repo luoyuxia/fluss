@@ -17,6 +17,7 @@
 package com.alibaba.fluss.connector.flink.sink;
 
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.connector.flink.options.DeleteStrategy;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils.FieldEqual;
 import com.alibaba.fluss.connector.flink.utils.PushdownUtils.ValueConversion;
@@ -68,6 +69,7 @@ public class FlinkTableSink
 
     private boolean appliedUpdates = false;
     @Nullable private GenericRow deleteRow;
+    private final DeleteStrategy deleteStrategy;
 
     public FlinkTableSink(
             TablePath tablePath,
@@ -75,13 +77,15 @@ public class FlinkTableSink
             RowType tableRowType,
             int[] primaryKeyIndexes,
             boolean streaming,
-            @Nullable MergeEngine mergeEngine) {
+            @Nullable MergeEngine mergeEngine,
+            DeleteStrategy deleteStrategy) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableRowType = tableRowType;
         this.primaryKeyIndexes = primaryKeyIndexes;
         this.streaming = streaming;
         this.mergeEngine = mergeEngine;
+        this.deleteStrategy = deleteStrategy;
     }
 
     @Override
@@ -159,8 +163,13 @@ public class FlinkTableSink
         FlinkSinkFunction sinkFunction =
                 primaryKeyIndexes.length > 0
                         ? new UpsertSinkFunction(
-                                tablePath, flussConfig, tableRowType, targetColumnIndexes)
-                        : new AppendSinkFunction(tablePath, flussConfig, tableRowType);
+                                tablePath,
+                                flussConfig,
+                                tableRowType,
+                                targetColumnIndexes,
+                                deleteStrategy)
+                        : new AppendSinkFunction(
+                                tablePath, flussConfig, tableRowType, deleteStrategy);
 
         return SinkFunctionProvider.of(sinkFunction);
     }
@@ -182,7 +191,8 @@ public class FlinkTableSink
                         tableRowType,
                         primaryKeyIndexes,
                         streaming,
-                        mergeEngine);
+                        mergeEngine,
+                        deleteStrategy);
         sink.appliedUpdates = appliedUpdates;
         sink.deleteRow = deleteRow;
         return sink;

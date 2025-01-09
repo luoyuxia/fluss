@@ -32,7 +32,6 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.record.KvRecord;
 import com.alibaba.fluss.record.KvRecordBatch;
 import com.alibaba.fluss.record.KvRecordReadContext;
-import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
