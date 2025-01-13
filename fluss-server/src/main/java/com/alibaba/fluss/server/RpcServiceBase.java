@@ -130,6 +130,8 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
 
     private @Nullable final LakeStorageInfo lakeStorageInfo;
 
+    private final Map<TableBucket, LeaderAndIsr> bucketLeaderAndIsr = new HashMap<>();
+
     public RpcServiceBase(
             Configuration config,
             FileSystem remoteFileSystem,
@@ -567,17 +569,19 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                                 new ServerNode(replicas.get(i), "", -1, ServerType.TABLET_SERVER));
             }
 
+            LeaderAndIsr leaderAndIsr = bucketLeaderAndIsr.get(tableBucket);
+            if (leaderAndIsr == null) {
+                leaderAndIsr = zkClient.getLeaderAndIsr(tableBucket).orElse(null);
+                if (leaderAndIsr != null) {
+                    bucketLeaderAndIsr.put(tableBucket, leaderAndIsr);
+                }
+            }
+
             // now get the leader
-            Optional<LeaderAndIsr> optLeaderAndIsr = zkClient.getLeaderAndIsr(tableBucket);
-            ServerNode leader;
-            leader =
-                    optLeaderAndIsr
-                            .map(
-                                    leaderAndIsr ->
-                                            metadataCache
-                                                    .getAllAliveTabletServers()
-                                                    .get(leaderAndIsr.leader()))
-                            .orElse(null);
+            ServerNode leader = null;
+            if (leaderAndIsr != null) {
+                leader = metadataCache.getAllAliveTabletServers().get(leaderAndIsr.leader());
+            }
             bucketLocations.add(
                     new BucketLocation(physicalTablePath, tableBucket, leader, replicaNode));
         }

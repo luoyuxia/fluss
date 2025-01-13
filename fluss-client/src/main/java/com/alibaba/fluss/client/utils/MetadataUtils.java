@@ -37,6 +37,9 @@ import com.alibaba.fluss.rpc.messages.PbServerNode;
 import com.alibaba.fluss.rpc.messages.PbTableMetadata;
 import com.alibaba.fluss.rpc.messages.PbTablePath;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -53,6 +56,8 @@ import java.util.concurrent.TimeoutException;
 public class MetadataUtils {
 
     private static final Random randOffset = new Random();
+
+    private static final Logger LOG = LoggerFactory.getLogger(MetadataUtils.class);
 
     /**
      * full update cluster, means we will rebuild the cluster by clearing all cached table in
@@ -78,11 +83,13 @@ public class MetadataUtils {
             @Nullable Collection<PhysicalTablePath> tablePartitionNames,
             @Nullable Collection<Long> tablePartitionIds)
             throws ExecutionException, InterruptedException, TimeoutException {
+        long start = System.currentTimeMillis();
         AdminReadOnlyGateway gateway =
                 GatewayClientProxy.createGatewayProxy(
                         () -> getOneAvailableTabletServerNode(cluster),
                         client,
                         AdminReadOnlyGateway.class);
+        LOG.info("get gateway for metadata cost : {}", System.currentTimeMillis() - start);
         return sendMetadataRequestAndRebuildCluster(
                 gateway, true, cluster, tablePaths, tablePartitionNames, tablePartitionIds);
     }
@@ -99,9 +106,15 @@ public class MetadataUtils {
         MetadataRequest metadataRequest =
                 ClientRpcMessageUtils.makeMetadataRequest(
                         tablePaths, tablePartitions, tablePartitionIds);
+        long start = System.currentTimeMillis();
         return gateway.metadata(metadataRequest)
                 .thenApply(
                         response -> {
+                            LOG.info(
+                                    "metadata response cost: {}ms",
+                                    System.currentTimeMillis() - start);
+
+                            long buildMetadataStart = System.currentTimeMillis();
                             ServerNode coordinatorServer = getCoordinatorServer(response);
 
                             // Update the alive table servers.
@@ -144,13 +157,20 @@ public class MetadataUtils {
                                 newPartitionIdByPath = newTableMetadata.partitionIdByPath;
                             }
 
-                            return new Cluster(
-                                    newAliveTabletServers,
-                                    coordinatorServer,
-                                    newBucketLocations,
-                                    newTablePathToTableId,
-                                    newPartitionIdByPath,
-                                    newTablePathToTableInfo);
+                            Cluster cluster =
+                                    new Cluster(
+                                            newAliveTabletServers,
+                                            coordinatorServer,
+                                            newBucketLocations,
+                                            newTablePathToTableId,
+                                            newPartitionIdByPath,
+                                            newTablePathToTableInfo);
+
+                            LOG.info(
+                                    "metadata build cost: {}ms",
+                                    System.currentTimeMillis() - buildMetadataStart);
+
+                            return cluster;
                         })
                 .get();
     }

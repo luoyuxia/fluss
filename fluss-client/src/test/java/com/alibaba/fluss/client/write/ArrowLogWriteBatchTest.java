@@ -16,7 +16,6 @@
 
 package com.alibaba.fluss.client.write;
 
-import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.memory.TestingMemorySegmentPool;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.LogRecord;
@@ -118,7 +117,7 @@ public class ArrowLogWriteBatchTest {
                         maxSizeInBytes,
                         DATA1_ROW_TYPE,
                         CompressionUtil.CodecType.NO_COMPRESSION),
-                MemorySegment.wrap(new byte[10 * 1024]),
+                null,
                 new TestingMemorySegmentPool(10 * 1024));
     }
 

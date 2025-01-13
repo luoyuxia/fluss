@@ -64,7 +64,11 @@ public class RequestsMetrics {
     public static RequestsMetrics createTabletServerRequestMetrics(MetricGroup serverMetricsGroup) {
         List<ApiKeys> apiKeys =
                 Arrays.asList(
-                        ApiKeys.PRODUCE_LOG, ApiKeys.PUT_KV, ApiKeys.LOOKUP, ApiKeys.FETCH_LOG);
+                        ApiKeys.PRODUCE_LOG,
+                        ApiKeys.PUT_KV,
+                        ApiKeys.LOOKUP,
+                        ApiKeys.FETCH_LOG,
+                        ApiKeys.GET_METADATA);
         return new RequestsMetrics(serverMetricsGroup, apiKeys);
     }
 
