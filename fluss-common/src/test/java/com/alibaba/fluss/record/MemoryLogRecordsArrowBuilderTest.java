@@ -38,8 +38,8 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -272,7 +272,12 @@ public class MemoryLogRecordsArrowBuilderTest {
     @Test
     void testOverrideLastOffset() throws Exception {
         ArrowWriter writer =
-                provider.getOrCreateWriter(1L, DEFAULT_SCHEMA_ID, 1024 * 10, DATA1_ROW_TYPE);
+                provider.getOrCreateWriter(
+                        1L,
+                        DEFAULT_SCHEMA_ID,
+                        1024 * 10,
+                        DATA1_ROW_TYPE,
+                        CompressionUtil.CodecType.NO_COMPRESSION);
         MemoryLogRecordsArrowBuilder builder =
                 createMemoryLogRecordsArrowBuilder(writer, 10, 1024 * 10);
         List<RowKind> rowKinds =
@@ -314,7 +319,12 @@ public class MemoryLogRecordsArrowBuilderTest {
 
         // test empty record batch.
         ArrowWriter writer2 =
-                provider.getOrCreateWriter(1L, DEFAULT_SCHEMA_ID, 1024 * 10, DATA1_ROW_TYPE);
+                provider.getOrCreateWriter(
+                        1L,
+                        DEFAULT_SCHEMA_ID,
+                        1024 * 10,
+                        DATA1_ROW_TYPE,
+                        CompressionUtil.CodecType.NO_COMPRESSION);
         MemoryLogRecordsArrowBuilder builder2 =
                 createMemoryLogRecordsArrowBuilder(writer2, 10, 1024 * 10);
         builder2.overrideLastLogOffset(0);
