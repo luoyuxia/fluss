@@ -977,7 +977,6 @@ public final class Replica {
             long leaderLogEndOffset)
             throws IOException {
         long prevFollowerEndOffset = followerReplica.stateSnapshot().getLogEndOffset();
-
         // Apply read lock here to avoid the race between ISR updates and the fetch requests from
         // rebooted follower. It could break the tablet server epoch checks in the ISR expansion.
         inReadLock(

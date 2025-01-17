@@ -79,12 +79,23 @@ public class TableChangeWatcher {
     /** A listener to monitor the changes of table nodes in zookeeper. */
     private final class TablePathChangeListener implements CuratorCacheListener {
 
+        private boolean isInitialized = false;
+
+        @Override
+        public void initialized() {
+            isInitialized = true;
+            LOG.info("TablePathChangeListener initialized.");
+        }
+
         @Override
         public void event(Type type, ChildData oldData, ChildData newData) {
+            if (!isInitialized) {
+                return;
+            }
             if (newData != null) {
-                LOG.debug("Received {} event (path: {})", type, newData.getPath());
+                LOG.info("Received {} event (path: {})", type, newData.getPath());
             } else {
-                LOG.debug("Received {} event", type);
+                LOG.info("Received {} event", type);
             }
             switch (type) {
                 case NODE_CREATED:
@@ -224,6 +235,7 @@ public class TableChangeWatcher {
                         e);
                 return;
             }
+            LOG.info("processCreatePartition: {}, partition {}", tablePath, partitionName);
             eventManager.put(
                     new CreatePartitionEvent(
                             tablePath, tableId, partitionId, partitionName, partitionAssignment));

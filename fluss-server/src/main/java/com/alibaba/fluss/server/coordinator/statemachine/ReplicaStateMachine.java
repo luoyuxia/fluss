@@ -213,7 +213,7 @@ public class ReplicaStateMachine {
                                     if (partitionName == null) {
                                         LOG.error(
                                                 "Can't find partition name for partition: {}.",
-                                                tableBucket.getBucket());
+                                                tableBucket.getPartitionId());
                                         logFailedSateChange(replica, currentState, targetState);
                                         return;
                                     }

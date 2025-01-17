@@ -67,8 +67,18 @@ public class TabletServerChangeWatcher {
 
     private final class TabletServerChangeListener implements CuratorCacheListener {
 
+        private boolean isInitialized = false;
+
+        @Override
+        public void initialized() {
+            isInitialized = true;
+        }
+
         @Override
         public void event(Type type, ChildData oldData, ChildData newData) {
+            if (!isInitialized) {
+                return;
+            }
             if (newData != null) {
                 LOG.debug("Received {} event (path: {})", type, newData.getPath());
             } else {

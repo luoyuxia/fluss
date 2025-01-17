@@ -121,7 +121,7 @@
                                 <configuration>
                                     <executable>rm</executable>
                                     <arguments>
-                                        <argument>-f</argument>
+                                        <argument>-rf</argument>
                                         <argument>${project.basedir}/../build-target</argument>
                                     </arguments>
                                 </configuration>

@@ -115,7 +115,7 @@ public class TableManager {
             String partitionName,
             PartitionAssignment partitionAssignment) {
         LOG.info(
-                "New partition {} with assignment {} for table {}.",
+                "New partitio22n {} with assignment {} for table {}.",
                 partitionName,
                 partitionAssignment,
                 tablePath);

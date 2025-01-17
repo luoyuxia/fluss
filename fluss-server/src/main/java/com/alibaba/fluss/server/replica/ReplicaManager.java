@@ -800,23 +800,23 @@ public class ReplicaManager {
         Map<TableBucket, InitialFetchStatus> bucketAndStatus = new HashMap<>();
         for (Replica replica : replicas) {
             Integer leaderId = replica.getLeaderId();
+            TableBucket tableBucket = replica.getTableBucket();
             if (leaderId == null) {
                 throw new NotLeaderOrFollowerException(
                         String.format(
                                 "Could not find leader for follower replica %s while make leader for table bucket %s",
-                                serverId, replica.getTableBucket()));
+                                serverId, tableBucket));
             }
 
             ServerNode leader = metadataCache.getTabletServer(leaderId);
             if (leader == null) {
                 throw new NotLeaderOrFollowerException(
                         String.format(
-                                "Could not find leader in server metadata by id for replica %s while make follower",
-                                replica));
+                                "Could not find leader server %s in server metadata for follower replica %s while make follower for table bucket %s",
+                                leaderId, serverId, tableBucket));
             }
 
             LogTablet logTablet = replica.getLogTablet();
-            TableBucket tableBucket = logTablet.getTableBucket();
             bucketAndStatus.put(
                     tableBucket,
                     new InitialFetchStatus(
@@ -1381,7 +1381,7 @@ public class ReplicaManager {
     private void truncateToHighWatermark(List<Replica> replicas) {
         for (Replica replica : replicas) {
             LOG.info(
-                    "Truncating the log end offset fot replica id {} of table bucket {} to local high watermark as it becomes the follower",
+                    "Truncating the log end offset for replica id {} of table bucket {} to local high watermark as it becomes the follower",
                     serverId,
                     replica.getTableBucket());
             replica.truncateTo(replica.getLogTablet().getHighWatermark());
