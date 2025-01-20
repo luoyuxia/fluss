@@ -59,7 +59,6 @@ import javax.annotation.concurrent.GuardedBy;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -270,7 +269,7 @@ public class LogFetcher implements Closeable {
                 // if is invalid metadata exception, we need to clear table bucket meta
                 // to enable another round of log fetch to request new medata
                 if (e instanceof InvalidMetadataException) {
-                    Collection<PhysicalTablePath> physicalTablePaths =
+                    Set<PhysicalTablePath> physicalTablePaths =
                             metadataUpdater.getPhysicalTablePathByIds(
                                     tableOrPartitionsInFetchRequest.tableIds,
                                     tableOrPartitionsInFetchRequest.tablePartitions);
