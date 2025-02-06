@@ -271,9 +271,11 @@ public class FlinkSourceEnumerator
             List<PartitionInfo> partitionInfos = flussAdmin.listPartitionInfos(tablePath).get();
             return new HashSet<>(partitionInfos);
         } catch (Exception e) {
-            throw new FlinkRuntimeException(
-                    String.format("Failed to list partitions for %s", tablePath),
-                    ExceptionUtils.stripCompletionException(e));
+            LOG.error("Failed to list partitions for {}", tablePath, e);
+            //            throw new FlinkRuntimeException(
+            //                    String.format("Failed to list partitions for %s", tablePath),
+            //                    ExceptionUtils.stripCompletionException(e));
+            return Collections.emptySet();
         }
     }
 

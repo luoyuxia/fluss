@@ -144,8 +144,9 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
         } else {
             // may need to finish empty log splits
             if (!emptyLogSplits.isEmpty()) {
+                Set<String> finishedLogSplits = new HashSet<>(emptyLogSplits);
                 emptyLogSplits.clear();
-                return new FlinkRecordsWithSplitIds(emptyLogSplits, flinkSourceReaderMetrics);
+                return new FlinkRecordsWithSplitIds(finishedLogSplits, flinkSourceReaderMetrics);
             } else {
                 ScanRecords scanRecords = logScanner.poll(POLL_TIMEOUT);
                 return forLogRecords(scanRecords);
@@ -162,7 +163,10 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
                             splitsChanges.getClass()));
         }
         for (SourceSplitBase sourceSplitBase : splitsChanges.splits()) {
-            LOG.info("add split {}", sourceSplitBase.splitId());
+            LOG.info(
+                    "add split {}, partition name: {}",
+                    sourceSplitBase.splitId(),
+                    sourceSplitBase.getPartitionName());
             // init table id
             if (tableId == null) {
                 tableId = sourceSplitBase.getTableBucket().getTableId();
@@ -239,7 +243,15 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
             Long partitionId = tableBucket.getPartitionId();
             int bucket = tableBucket.getBucket();
             if (partitionId != null) {
-                logScanner.subscribe(partitionId, bucket, startingOffset);
+                try {
+                    logScanner.subscribe(partitionId, bucket, startingOffset);
+                } catch (Exception e) {
+                    LOG.error(
+                            "Failed to subscribe to read log for split {} from offset {}.",
+                            split.splitId(),
+                            startingOffset,
+                            e);
+                }
             } else {
                 logScanner.subscribe(bucket, startingOffset);
             }
@@ -282,12 +294,16 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
             Map.Entry<TableBucket, String> tableBucketAndSplit =
                     subscribeTableBucketIterator.next();
             TableBucket tableBucket = tableBucketAndSplit.getKey();
+            String splitId = tableBucketAndSplit.getValue();
             if (removedPartitions.containsKey(tableBucket.getPartitionId())) {
                 logScanner.unsubscribe(
                         checkNotNull(tableBucket.getPartitionId(), "partition id must be not null"),
                         tableBucket.getBucket());
                 subscribeTableBucketIterator.remove();
                 unsubscribedTableBuckets.add(tableBucket);
+                // add the split to be removed to empty log splits, so that
+                // source reader can remove the split from split state
+                emptyLogSplits.add(splitId);
                 LOG.info(
                         "Unsubscribe to read log of split {} for non-existed partition {}.",
                         tableBucketAndSplit.getValue(),
