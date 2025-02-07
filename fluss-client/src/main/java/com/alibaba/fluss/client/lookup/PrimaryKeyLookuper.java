@@ -53,9 +53,10 @@ class PrimaryKeyLookuper implements Lookuper {
      */
     private final KeyEncoder bucketKeyEncoder;
 
-    private final int numBuckets;
+    // won't be null if the datalake type is set in the table
+    private @Nullable final LakeTableBucketAssigner lakeTableBucketAssigner;
 
-    private final @Nullable LakeTableBucketAssigner lakeTableBucketAssigner;
+    private final int numBuckets;
 
     /** a getter to extract partition from lookup key row, null when it's not a partitioned. */
     private @Nullable final PartitionGetter partitionGetter;
@@ -86,15 +87,12 @@ class PrimaryKeyLookuper implements Lookuper {
             this.bucketKeyEncoder =
                     KeyEncoder.createKeyEncoder(lookupRowType, tableInfo.getBucketKeys());
         }
-
-        if (tableInfo.getTableConfig().isDataLakeEnabled()) {
-            this.lakeTableBucketAssigner =
-                    new LakeTableBucketAssigner(
-                            lookupRowType, tableInfo.getBucketKeys(), numBuckets);
-        } else {
-            this.lakeTableBucketAssigner = null;
-        }
-
+        String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
+        this.lakeTableBucketAssigner =
+                dataLakeType == null
+                        ? null
+                        : new LakeTableBucketAssigner(
+                                dataLakeType, lookupRowType, tableInfo.getBucketKeys(), numBuckets);
         this.partitionGetter =
                 tableInfo.isPartitioned()
                         ? new PartitionGetter(lookupRowType, tableInfo.getPartitionKeys())
@@ -123,9 +121,7 @@ class PrimaryKeyLookuper implements Lookuper {
                                 partitionGetter,
                                 tableInfo.getTablePath(),
                                 metadataUpdater);
-        int bucketId =
-                getBucketId(
-                        bkBytes, lookupKey, lakeTableBucketAssigner, numBuckets, metadataUpdater);
+        int bucketId = getBucketId(bkBytes, lookupKey, lakeTableBucketAssigner, numBuckets);
         TableBucket tableBucket = new TableBucket(tableInfo.getTableId(), partitionId, bucketId);
         return lookupClient
                 .lookup(tableBucket, pkBytes)

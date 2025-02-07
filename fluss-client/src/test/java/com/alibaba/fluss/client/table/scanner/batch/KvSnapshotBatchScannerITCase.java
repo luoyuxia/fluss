@@ -22,7 +22,6 @@ import com.alibaba.fluss.client.table.Table;
 import com.alibaba.fluss.client.table.scanner.RemoteFileDownloader;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
 import com.alibaba.fluss.client.write.HashBucketAssigner;
-import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -67,7 +66,7 @@ class KvSnapshotBatchScannerITCase extends ClientToServerITCaseBase {
             new KeyEncoder(DEFAULT_SCHEMA.getRowType(), DEFAULT_SCHEMA.getPrimaryKeyIndexes());
 
     private static final HashBucketAssigner DEFAULT_BUCKET_ASSIGNER =
-            new HashBucketAssigner(DEFAULT_BUCKET_NUM);
+            new HashBucketAssigner(DEFAULT_BUCKET_NUM, DEFAULT_KEY_ENCODER);
 
     private static final String DEFAULT_DB = "test-snapshot-scan-db";
 
@@ -153,7 +152,7 @@ class KvSnapshotBatchScannerITCase extends ClientToServerITCaseBase {
 
     private static int getBucketId(InternalRow row) {
         byte[] key = DEFAULT_KEY_ENCODER.encode(row);
-        return DEFAULT_BUCKET_ASSIGNER.assignBucket(key, Cluster.empty());
+        return DEFAULT_BUCKET_ASSIGNER.assignBucket(key);
     }
 
     private void waitUtilAllSnapshotFinished(Set<TableBucket> tableBuckets, long snapshotId) {

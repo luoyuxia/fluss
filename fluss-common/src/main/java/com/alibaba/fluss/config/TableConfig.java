@@ -23,6 +23,8 @@ import com.alibaba.fluss.metadata.LogFormat;
 import com.alibaba.fluss.metadata.MergeEngineType;
 import com.alibaba.fluss.utils.AutoPartitionStrategy;
 
+import javax.annotation.Nullable;
+
 import java.util.Optional;
 
 /**
@@ -73,6 +75,14 @@ public class TableConfig {
     /** Whether the data lake is enabled. */
     public boolean isDataLakeEnabled() {
         return config.get(ConfigOptions.TABLE_DATALAKE_ENABLED);
+    }
+
+    /**
+     * Return the data lake type of the table. It'll be the lake storage configured in Fluss whiling
+     * creating the table. Return null if no lake storage configured while creating.
+     */
+    public @Nullable String getDataLakeType() {
+        return config.get(ConfigOptions.TABLE_DATALAKE_FORMAT);
     }
 
     /** Gets the optional merge engine type of the table. */

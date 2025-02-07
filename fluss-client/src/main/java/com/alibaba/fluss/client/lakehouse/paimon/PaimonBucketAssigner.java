@@ -30,6 +30,8 @@ import java.util.List;
 /** A bucket assigner to align with Paimon. */
 public class PaimonBucketAssigner {
 
+    public static final String DATA_LAKE_PAIMON = "Paimon";
+
     private final int bucketNum;
 
     private final FlussRowWrapper flussRowWrapper;

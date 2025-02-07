@@ -16,19 +16,17 @@
 
 package com.alibaba.fluss.client.table.writer;
 
+import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
+import com.alibaba.fluss.client.write.HashBucketAssigner;
+import com.alibaba.fluss.client.write.StaticBucketAssigner;
+import com.alibaba.fluss.client.write.WriteKind;
 import com.alibaba.fluss.client.write.WriteRecord;
 import com.alibaba.fluss.client.write.WriterClient;
-import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
-import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
-import com.alibaba.fluss.row.InternalRow.FieldGetter;
-import com.alibaba.fluss.row.compacted.CompactedRow;
 import com.alibaba.fluss.row.encode.KeyEncoder;
-import com.alibaba.fluss.row.encode.RowEncoder;
-import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
@@ -43,13 +41,10 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
     private static final DeleteResult DELETE_SUCCESS = new DeleteResult();
 
     private final KeyEncoder primaryKeyEncoder;
-    // same to primaryKeyEncoder if the bucket key is the same to the primary key
-    private final KeyEncoder bucketKeyEncoder;
     private final @Nullable int[] targetColumns;
 
-    private final KvFormat kvFormat;
-    private final RowEncoder rowEncoder;
-    private final FieldGetter[] fieldGetters;
+    private final boolean isDefaultBucketKey;
+    private final StaticBucketAssigner bucketAssigner;
 
     UpsertWriterImpl(
             TablePath tablePath,
@@ -65,15 +60,25 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
         // encode primary key using physical primary key
         this.primaryKeyEncoder =
                 KeyEncoder.createKeyEncoder(rowType, tableInfo.getPhysicalPrimaryKeys());
-        if (tableInfo.isDefaultBucketKey()) {
-            this.bucketKeyEncoder = primaryKeyEncoder;
-        } else {
-            this.bucketKeyEncoder = KeyEncoder.createKeyEncoder(rowType, tableInfo.getBucketKeys());
-        }
+        this.isDefaultBucketKey = tableInfo.isDefaultBucketKey();
 
-        this.kvFormat = tableInfo.getTableConfig().getKvFormat();
-        this.rowEncoder = RowEncoder.create(kvFormat, rowType);
-        this.fieldGetters = InternalRow.createFieldGetters(rowType);
+        String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
+        if (dataLakeType != null) {
+            this.bucketAssigner =
+                    new LakeTableBucketAssigner(
+                            dataLakeType,
+                            tableInfo.getRowType(),
+                            tableInfo.getBucketKeys(),
+                            tableInfo.getNumBuckets());
+        } else {
+            this.bucketAssigner =
+                    new HashBucketAssigner(
+                            tableInfo.getNumBuckets(),
+                            tableInfo.isDefaultBucketKey()
+                                    ? primaryKeyEncoder
+                                    : KeyEncoder.createKeyEncoder(
+                                            rowType, tableInfo.getBucketKeys()));
+        }
     }
 
     private static void sanityCheck(
@@ -122,14 +127,11 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
      * @return A {@link CompletableFuture} that always returns null when complete normally.
      */
     public CompletableFuture<UpsertResult> upsert(InternalRow row) {
-        checkFieldCount(row);
         byte[] key = primaryKeyEncoder.encode(row);
-        byte[] bucketKey =
-                bucketKeyEncoder == primaryKeyEncoder ? key : bucketKeyEncoder.encode(row);
-        WriteRecord record =
-                WriteRecord.forUpsert(
-                        getPhysicalPath(row), encodeRow(row), key, bucketKey, targetColumns);
-        return send(record).thenApply(ignored -> UPSERT_SUCCESS);
+        int bucketId = getBucketId(key, row);
+        return send(new WriteRecord(
+                        getPhysicalPath(row), WriteKind.PUT, key, bucketId, row, targetColumns))
+                .thenApply(ignored -> UPSERT_SUCCESS);
     }
 
     /**
@@ -140,27 +142,20 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
      * @return A {@link CompletableFuture} that always returns null when complete normally.
      */
     public CompletableFuture<DeleteResult> delete(InternalRow row) {
-        checkFieldCount(row);
         byte[] key = primaryKeyEncoder.encode(row);
-        byte[] bucketKey =
-                bucketKeyEncoder == primaryKeyEncoder ? key : bucketKeyEncoder.encode(row);
-        WriteRecord record =
-                WriteRecord.forDelete(getPhysicalPath(row), key, bucketKey, targetColumns);
-        return send(record).thenApply(ignored -> DELETE_SUCCESS);
+        int bucketId = getBucketId(key, row);
+        return send(new WriteRecord(
+                        getPhysicalPath(row), WriteKind.DELETE, key, bucketId, null, targetColumns))
+                .thenApply(ignored -> DELETE_SUCCESS);
     }
 
-    private BinaryRow encodeRow(InternalRow row) {
-        if (kvFormat == KvFormat.INDEXED && row instanceof IndexedRow) {
-            return (IndexedRow) row;
-        } else if (kvFormat == KvFormat.COMPACTED && row instanceof CompactedRow) {
-            return (CompactedRow) row;
+    private int getBucketId(byte[] keyBytes, InternalRow row) {
+        if (isDefaultBucketKey && bucketAssigner instanceof HashBucketAssigner) {
+            // is is default bucket key, and assigner is HashBucketAssAssigner,
+            // we can reuse the primary key bytes to calculate bucket id
+            return ((HashBucketAssigner) bucketAssigner).assignBucket(keyBytes);
+        } else {
+            return bucketAssigner.assignBucket(row);
         }
-
-        // encode the row to target format
-        rowEncoder.startNewRow();
-        for (int i = 0; i < fieldCount; i++) {
-            rowEncoder.encodeField(i, fieldGetters[i].getFieldOrNull(row));
-        }
-        return rowEncoder.finishRow();
     }
 }

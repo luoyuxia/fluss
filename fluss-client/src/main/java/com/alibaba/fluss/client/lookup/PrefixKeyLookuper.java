@@ -56,7 +56,8 @@ class PrefixKeyLookuper implements Lookuper {
 
     private final int numBuckets;
 
-    private final LakeTableBucketAssigner lakeTableBucketAssigner;
+    // won't be null if the datalake type is set in the table
+    private @Nullable final LakeTableBucketAssigner lakeTableBucketAssigner;
 
     /**
      * a getter to extract partition from prefix lookup key row, null when it's not a partitioned.
@@ -82,15 +83,12 @@ class PrefixKeyLookuper implements Lookuper {
         RowType lookupRowType = tableInfo.getRowType().project(lookupColumnNames);
         this.bucketKeyEncoder =
                 KeyEncoder.createKeyEncoder(lookupRowType, tableInfo.getBucketKeys());
-
-        if (tableInfo.getTableConfig().isDataLakeEnabled()) {
-            this.lakeTableBucketAssigner =
-                    new LakeTableBucketAssigner(
-                            lookupRowType, tableInfo.getBucketKeys(), numBuckets);
-        } else {
-            this.lakeTableBucketAssigner = null;
-        }
-
+        String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
+        this.lakeTableBucketAssigner =
+                dataLakeType == null
+                        ? null
+                        : new LakeTableBucketAssigner(
+                                dataLakeType, lookupRowType, tableInfo.getBucketKeys(), numBuckets);
         this.partitionGetter =
                 tableInfo.isPartitioned()
                         ? new PartitionGetter(lookupRowType, tableInfo.getPartitionKeys())
@@ -153,13 +151,7 @@ class PrefixKeyLookuper implements Lookuper {
     @Override
     public CompletableFuture<LookupResult> lookup(InternalRow prefixKey) {
         byte[] bucketKeyBytes = bucketKeyEncoder.encode(prefixKey);
-        int bucketId =
-                getBucketId(
-                        bucketKeyBytes,
-                        prefixKey,
-                        lakeTableBucketAssigner,
-                        numBuckets,
-                        metadataUpdater);
+        int bucketId = getBucketId(bucketKeyBytes, prefixKey, lakeTableBucketAssigner, numBuckets);
 
         Long partitionId = null;
         if (partitionGetter != null) {

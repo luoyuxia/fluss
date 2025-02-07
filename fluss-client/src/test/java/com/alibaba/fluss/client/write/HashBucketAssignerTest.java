@@ -16,9 +16,8 @@
 
 package com.alibaba.fluss.client.write;
 
-import com.alibaba.fluss.cluster.Cluster;
-import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.encode.KeyEncoder;
+import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.types.DataField;
 import com.alibaba.fluss.types.DataTypes;
 import com.alibaba.fluss.types.RowType;
@@ -32,8 +31,7 @@ import static com.alibaba.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link HashBucketAssigner}. */
-public class HashBucketAssignerTest {
-    private final Cluster cluster = Cluster.empty();
+class HashBucketAssignerTest {
 
     @Test
     void testBucketAssign() {
@@ -47,17 +45,17 @@ public class HashBucketAssignerTest {
         // Suppose a, b are primary keys.
         int[] pkIndices = {0, 1};
         KeyEncoder keyEncoder = new KeyEncoder(rowType, pkIndices);
-        InternalRow row1 = row(1, 1, "2", 3L);
-        InternalRow row2 = row(1, 1, "3", 4L);
-        InternalRow row3 = row(1, 2, "4", 5L);
-        InternalRow row4 = row(1, 1, "4", 5L);
+        IndexedRow row1 = row(rowType, new Object[] {1, 1, "2", 3L});
+        IndexedRow row2 = row(rowType, new Object[] {1, 1, "3", 4L});
+        IndexedRow row3 = row(rowType, new Object[] {1, 2, "4", 5L});
+        IndexedRow row4 = row(rowType, new Object[] {1, 1, "4", 5L});
 
-        HashBucketAssigner hashBucketAssigner = new HashBucketAssigner(3);
+        HashBucketAssigner hashBucketAssigner = new HashBucketAssigner(3, keyEncoder);
 
-        int bucket1 = hashBucketAssigner.assignBucket(keyEncoder.encode(row1), cluster);
-        int bucket2 = hashBucketAssigner.assignBucket(keyEncoder.encode(row2), cluster);
-        int bucket3 = hashBucketAssigner.assignBucket(keyEncoder.encode(row3), cluster);
-        int bucket4 = hashBucketAssigner.assignBucket(keyEncoder.encode(row4), cluster);
+        int bucket1 = hashBucketAssigner.assignBucket(row1);
+        int bucket2 = hashBucketAssigner.assignBucket(row2);
+        int bucket3 = hashBucketAssigner.assignBucket(row3);
+        int bucket4 = hashBucketAssigner.assignBucket(row4);
 
         assertThat(bucket1).isEqualTo(bucket2);
         assertThat(bucket1).isNotEqualTo(bucket3);
@@ -82,14 +80,18 @@ public class HashBucketAssignerTest {
         int[] pkIndices = {0, 1, 2};
         KeyEncoder keyEncoder = new KeyEncoder(rowType, pkIndices);
         for (int i = 0; i < rowCount; i++) {
-            InternalRow row = row(i, rowCount - i, String.valueOf(rowCount - i), (long) i);
+            IndexedRow row =
+                    row(
+                            rowType,
+                            new Object[] {i, rowCount - i, String.valueOf(rowCount - i), (long) i});
             keyList.add(keyEncoder.encode(row));
         }
 
         for (int bucketNumber = 3; bucketNumber < 10; bucketNumber++) {
-            HashBucketAssigner hashBucketAssigner = new HashBucketAssigner(bucketNumber);
+            HashBucketAssigner hashBucketAssigner =
+                    new HashBucketAssigner(bucketNumber, keyEncoder);
             for (byte[] key : keyList) {
-                int bucket = hashBucketAssigner.assignBucket(key, cluster);
+                int bucket = hashBucketAssigner.assignBucket(key);
                 assertThat(bucket >= 0).isTrue();
                 assertThat(bucket < bucketNumber).isTrue();
             }

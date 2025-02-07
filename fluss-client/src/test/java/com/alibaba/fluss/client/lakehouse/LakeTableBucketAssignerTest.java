@@ -17,16 +17,19 @@
 package com.alibaba.fluss.client.lakehouse;
 
 import com.alibaba.fluss.metadata.Schema;
-import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.types.DataTypes;
+import com.alibaba.fluss.types.RowType;
 
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
-import static com.alibaba.fluss.testutils.DataTestUtils.row;
+import static com.alibaba.fluss.client.lakehouse.paimon.PaimonBucketAssigner.DATA_LAKE_PAIMON;
+import static com.alibaba.fluss.testutils.DataTestUtils.compactedRow;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link LakeTableBucketAssigner} . */
@@ -42,30 +45,24 @@ class LakeTableBucketAssignerTest {
                         .column("c", DataTypes.STRING())
                         .primaryKey("a", "c")
                         .build();
-        TableDescriptor tableDescriptor =
-                TableDescriptor.builder()
-                        .schema(schema)
-                        .partitionedBy(
-                                isPartitioned
-                                        ? Collections.singletonList("c")
-                                        : Collections.emptyList())
-                        .build();
+        // bucket key
+        List<String> bucketKey =
+                isPartitioned ? Collections.singletonList("a") : Arrays.asList("a", "c");
 
-        InternalRow row1 = row(1, "2", "a");
-        InternalRow row2 = row(1, "3", "b");
-        InternalRow row3 = row(2, "4", "a");
-        InternalRow row4 = row(2, "4", "b");
+        RowType rowType = schema.getRowType();
+        InternalRow row1 = compactedRow(rowType, new Object[] {1, "2", "a"});
+        InternalRow row2 = compactedRow(rowType, new Object[] {1, "3", "b"});
+
+        InternalRow row3 = compactedRow(rowType, new Object[] {2, "4", "a"});
+        InternalRow row4 = compactedRow(rowType, new Object[] {2, "4", "b"});
 
         LakeTableBucketAssigner lakeTableBucketAssigner =
-                new LakeTableBucketAssigner(
-                        tableDescriptor.getSchema().getRowType(),
-                        tableDescriptor.getBucketKeys(),
-                        3);
+                new LakeTableBucketAssigner(DATA_LAKE_PAIMON, schema.getRowType(), bucketKey, 3);
 
-        int row1Bucket = lakeTableBucketAssigner.assignBucket(null, row1, null);
-        int row2Bucket = lakeTableBucketAssigner.assignBucket(null, row2, null);
-        int row3Bucket = lakeTableBucketAssigner.assignBucket(null, row3, null);
-        int row4Bucket = lakeTableBucketAssigner.assignBucket(null, row4, null);
+        int row1Bucket = lakeTableBucketAssigner.assignBucket(row1);
+        int row2Bucket = lakeTableBucketAssigner.assignBucket(row2);
+        int row3Bucket = lakeTableBucketAssigner.assignBucket(row3);
+        int row4Bucket = lakeTableBucketAssigner.assignBucket(row4);
 
         if (isPartitioned) {
             // bucket key is the column 'a'
@@ -88,30 +85,22 @@ class LakeTableBucketAssignerTest {
                         .column("b", DataTypes.STRING())
                         .column("c", DataTypes.STRING())
                         .build();
-        TableDescriptor tableDescriptor =
-                TableDescriptor.builder()
-                        .schema(schema)
-                        .partitionedBy(
-                                isPartitioned
-                                        ? Collections.singletonList("c")
-                                        : Collections.emptyList())
-                        .distributedBy(3, "a", "b")
-                        .build();
+        List<String> bucketKey =
+                isPartitioned ? Collections.singletonList("a") : Arrays.asList("a", "c");
         LakeTableBucketAssigner lakeTableBucketAssigner =
-                new LakeTableBucketAssigner(
-                        tableDescriptor.getSchema().getRowType(),
-                        tableDescriptor.getBucketKeys(),
-                        3);
+                new LakeTableBucketAssigner(DATA_LAKE_PAIMON, schema.getRowType(), bucketKey, 3);
 
-        InternalRow row1 = row(1, "2", "a");
-        InternalRow row2 = row(1, "2", "b");
-        InternalRow row3 = row(2, "4", "a");
-        InternalRow row4 = row(2, "4", "b");
+        RowType rowType = schema.getRowType();
+        InternalRow row1 = compactedRow(rowType, new Object[] {1, "2", "a"});
+        InternalRow row2 = compactedRow(rowType, new Object[] {1, "3", "a"});
 
-        int row1Bucket = lakeTableBucketAssigner.assignBucket(null, row1, null);
-        int row2Bucket = lakeTableBucketAssigner.assignBucket(null, row2, null);
-        int row3Bucket = lakeTableBucketAssigner.assignBucket(null, row3, null);
-        int row4Bucket = lakeTableBucketAssigner.assignBucket(null, row4, null);
+        InternalRow row3 = compactedRow(rowType, new Object[] {2, "2", "b"});
+        InternalRow row4 = compactedRow(rowType, new Object[] {2, "3", "b"});
+
+        int row1Bucket = lakeTableBucketAssigner.assignBucket(row1);
+        int row2Bucket = lakeTableBucketAssigner.assignBucket(row2);
+        int row3Bucket = lakeTableBucketAssigner.assignBucket(row3);
+        int row4Bucket = lakeTableBucketAssigner.assignBucket(row4);
 
         assertThat(row1Bucket).isEqualTo(row2Bucket);
         assertThat(row3Bucket).isEqualTo(row4Bucket);

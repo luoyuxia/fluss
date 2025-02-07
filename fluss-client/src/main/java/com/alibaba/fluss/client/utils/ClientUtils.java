@@ -136,16 +136,14 @@ public final class ClientUtils {
     }
 
     public static int getBucketId(
-            byte[] keyBytes,
+            byte[] bucketKeyBytes,
             InternalRow key,
             @Nullable LakeTableBucketAssigner lakeTableBucketAssigner,
-            int numBuckets,
-            MetadataUpdater metadataUpdater) {
+            int numBuckets) {
         if (lakeTableBucketAssigner == null) {
-            return HashBucketAssigner.bucketForRowKey(keyBytes, numBuckets);
+            return HashBucketAssigner.bucketForRowKey(bucketKeyBytes, numBuckets);
         } else {
-            return lakeTableBucketAssigner.assignBucket(
-                    keyBytes, key, metadataUpdater.getCluster());
+            return lakeTableBucketAssigner.assignBucket(key);
         }
     }
 }
