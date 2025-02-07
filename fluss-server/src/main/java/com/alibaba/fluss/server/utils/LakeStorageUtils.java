@@ -18,6 +18,7 @@ package com.alibaba.fluss.server.utils;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
 import com.alibaba.fluss.lakehouse.LakeStorageInfo;
 
 import java.util.HashMap;
@@ -26,38 +27,47 @@ import java.util.Map;
 /** Utils for Fluss lake storage. */
 public class LakeStorageUtils {
 
-    private static final String SUPPORTED_DATALAKE_STORAGE = "paimon";
-
-    private static final String CATALOG_PREFIX = "catalog.";
+    private static final String DATALAKE_PAIMON_PREFIX = "datalake.paimon.";
 
     public static LakeStorageInfo getLakeStorageInfo(Configuration configuration) {
-        String datalakeStorage = configuration.get(ConfigOptions.LAKEHOUSE_STORAGE);
-        if (datalakeStorage == null) {
+        DataLakeFormat datalakeFormat = configuration.get(ConfigOptions.DATALAKE_FORMAT);
+        if (datalakeFormat == null) {
             throw new IllegalArgumentException(
                     String.format(
                             "The lakehouse storage is not set, please set it by %s",
-                            ConfigOptions.LAKEHOUSE_STORAGE.key()));
+                            ConfigOptions.DATALAKE_FORMAT.key()));
         }
 
-        if (!datalakeStorage.equalsIgnoreCase(SUPPORTED_DATALAKE_STORAGE)) {
+        if (datalakeFormat != DataLakeFormat.PAIMON) {
             throw new UnsupportedOperationException(
                     String.format(
                             "The lakehouse storage %s "
                                     + " is not supported. Only %s is supported.",
-                            datalakeStorage, SUPPORTED_DATALAKE_STORAGE));
+                            datalakeFormat, DataLakeFormat.PAIMON));
         }
 
         // currently, extract catalog config
-        String catalogPrefix = datalakeStorage + "." + CATALOG_PREFIX;
-        Map<String, String> catalogConfig = new HashMap<>();
+        Map<String, String> datalakeConfig = new HashMap<>();
         Map<String, String> flussConfig = configuration.toMap();
         for (Map.Entry<String, String> configEntry : flussConfig.entrySet()) {
             String configKey = configEntry.getKey();
             String configValue = configEntry.getValue();
-            if (configKey.startsWith(catalogPrefix)) {
-                catalogConfig.put(configKey.substring(catalogPrefix.length()), configValue);
+            if (configKey.startsWith(DATALAKE_PAIMON_PREFIX)) {
+                datalakeConfig.put(
+                        configKey.substring(DATALAKE_PAIMON_PREFIX.length()), configValue);
             }
         }
-        return new LakeStorageInfo(datalakeStorage, catalogConfig);
+        return new LakeStorageInfo(
+                datalakeFormat.toString(), normalizeToPaimonConfigs(datalakeConfig));
+    }
+
+    private static Map<String, String> normalizeToPaimonConfigs(
+            Map<String, String> flussDataLakePaimonConfig) {
+        Map<String, String> normalizedPaimonConfig = new HashMap<>(flussDataLakePaimonConfig);
+        String catalogType = normalizedPaimonConfig.remove("catalog");
+        if (catalogType != null) {
+            normalizedPaimonConfig.put("metastore", catalogType);
+        }
+        return normalizedPaimonConfig;
     }
 }

@@ -16,13 +16,17 @@
 
 package com.alibaba.fluss.client.lookup;
 
-import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.table.getter.PartitionGetter;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.lakehouse.LakeBucketAssigner;
+import com.alibaba.fluss.lakehouse.LakeBucketAssignerFactory;
+import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.decode.RowDecoder;
+import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.row.encode.ValueDecoder;
 import com.alibaba.fluss.types.DataType;
@@ -30,6 +34,7 @@ import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
 
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static com.alibaba.fluss.client.utils.ClientUtils.getBucketId;
@@ -53,9 +58,10 @@ class PrimaryKeyLookuper implements Lookuper {
      */
     private final KeyEncoder bucketKeyEncoder;
 
-    private final int numBuckets;
+    // won't be null if the datalake type is set in the table
+    private @Nullable final LakeBucketAssigner lakeBucketAssigner;
 
-    private final @Nullable LakeTableBucketAssigner lakeTableBucketAssigner;
+    private final int numBuckets;
 
     /** a getter to extract partition from lookup key row, null when it's not a partitioned. */
     private @Nullable final PartitionGetter partitionGetter;
@@ -76,23 +82,32 @@ class PrimaryKeyLookuper implements Lookuper {
 
         // the row type of the input lookup row
         RowType lookupRowType = tableInfo.getRowType().project(tableInfo.getPrimaryKeys());
-        // the encoded primary key is the physical primary key
-        this.primaryKeyEncoder =
-                KeyEncoder.createKeyEncoder(lookupRowType, tableInfo.getPhysicalPrimaryKeys());
-        if (tableInfo.isDefaultBucketKey()) {
-            this.bucketKeyEncoder = primaryKeyEncoder;
-        } else {
-            // bucket key doesn't contain partition key, so no need exclude partition keys
-            this.bucketKeyEncoder =
-                    KeyEncoder.createKeyEncoder(lookupRowType, tableInfo.getBucketKeys());
-        }
+        Optional<DataLakeFormat> optDataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat();
 
-        if (tableInfo.getTableConfig().isDataLakeEnabled()) {
-            this.lakeTableBucketAssigner =
-                    new LakeTableBucketAssigner(
-                            lookupRowType, tableInfo.getBucketKeys(), numBuckets);
+        if (optDataLakeFormat.isPresent()) {
+            DataLakeFormat dataLakeFormat = optDataLakeFormat.get();
+            // the encoded primary key is the physical primary key
+            this.primaryKeyEncoder =
+                    LakeKeyEncoderFactory.createKeyEncoder(
+                            dataLakeFormat, lookupRowType, tableInfo.getPhysicalPrimaryKeys());
+            this.bucketKeyEncoder =
+                    tableInfo.isDefaultBucketKey()
+                            ? primaryKeyEncoder
+                            : LakeKeyEncoderFactory.createKeyEncoder(
+                                    dataLakeFormat, lookupRowType, tableInfo.getBucketKeys());
+            this.lakeBucketAssigner =
+                    LakeBucketAssignerFactory.createLakeBucketAssigner(dataLakeFormat, numBuckets);
         } else {
-            this.lakeTableBucketAssigner = null;
+            // the encoded primary key is the physical primary key
+            this.primaryKeyEncoder =
+                    CompactedKeyEncoder.createKeyEncoder(
+                            lookupRowType, tableInfo.getPhysicalPrimaryKeys());
+            this.bucketKeyEncoder =
+                    tableInfo.isDefaultBucketKey()
+                            ? primaryKeyEncoder
+                            : CompactedKeyEncoder.createKeyEncoder(
+                                    lookupRowType, tableInfo.getBucketKeys());
+            this.lakeBucketAssigner = null;
         }
 
         this.partitionGetter =
@@ -110,11 +125,11 @@ class PrimaryKeyLookuper implements Lookuper {
     public CompletableFuture<LookupResult> lookup(InternalRow lookupKey) {
         // encoding the key row using a compacted way consisted with how the key is encoded when put
         // a row
-        byte[] pkBytes = primaryKeyEncoder.encode(lookupKey);
+        byte[] pkBytes = primaryKeyEncoder.encodeKey(lookupKey);
         byte[] bkBytes =
                 bucketKeyEncoder == primaryKeyEncoder
                         ? pkBytes
-                        : bucketKeyEncoder.encode(lookupKey);
+                        : bucketKeyEncoder.encodeKey(lookupKey);
         Long partitionId =
                 partitionGetter == null
                         ? null
@@ -123,9 +138,7 @@ class PrimaryKeyLookuper implements Lookuper {
                                 partitionGetter,
                                 tableInfo.getTablePath(),
                                 metadataUpdater);
-        int bucketId =
-                getBucketId(
-                        bkBytes, lookupKey, lakeTableBucketAssigner, numBuckets, metadataUpdater);
+        int bucketId = getBucketId(bkBytes, lakeBucketAssigner, numBuckets);
         TableBucket tableBucket = new TableBucket(tableInfo.getTableId(), partitionId, bucketId);
         return lookupClient
                 .lookup(tableBucket, pkBytes)

@@ -78,7 +78,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link RecordAccumulator}. */
-public class RecordAccumulatorTest {
+class RecordAccumulatorTest {
     private static final long ZSTD_TABLE_ID = 16001L;
     private static final PhysicalTablePath ZSTD_PHYSICAL_TABLE_PATH =
             PhysicalTablePath.of(TablePath.of("test_db_1", "test_zstd_table_1"));
@@ -333,14 +333,14 @@ public class RecordAccumulatorTest {
         int expectedAppends = expectedNumAppends(row, batchSize);
 
         // Create first batch.
-        int bucketId = bucketAssigner.assignBucket(null, cluster);
+        int bucketId = bucketAssigner.assignBucket(cluster);
         accum.append(createRecord(row), writeCallback, cluster, bucketId, false);
         int appends = 1;
 
         boolean switchBucket = false;
         while (!switchBucket) {
             // Append to the first batch.
-            bucketId = bucketAssigner.assignBucket(null, cluster);
+            bucketId = bucketAssigner.assignBucket(cluster);
             RecordAccumulator.RecordAppendResult result =
                     accum.append(createRecord(row), writeCallback, cluster, bucketId, true);
             int numBatches = getBatchNumInAccum(accum);
@@ -362,14 +362,14 @@ public class RecordAccumulatorTest {
 
         // Writer would call this method in this case, make second batch.
         bucketAssigner.onNewBatch(cluster, bucketId);
-        bucketId = bucketAssigner.assignBucket(null, cluster);
+        bucketId = bucketAssigner.assignBucket(cluster);
         accum.append(createRecord(row), writeCallback, cluster, bucketId, false);
         appends++;
 
         // These append operations all go into the second batch.
         while (!switchBucket) {
             // Append to the first batch.
-            bucketId = bucketAssigner.assignBucket(null, cluster);
+            bucketId = bucketAssigner.assignBucket(cluster);
             RecordAccumulator.RecordAppendResult result =
                     accum.append(createRecord(row), writeCallback, cluster, bucketId, true);
             int numBatches = getBatchNumInAccum(accum);

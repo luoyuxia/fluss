@@ -22,6 +22,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidDatabaseException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.fs.FileSystem;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
@@ -61,7 +62,10 @@ import com.alibaba.fluss.utils.concurrent.FutureUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.UncheckedIOException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
@@ -78,6 +82,9 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private final int defaultReplicationFactor;
     private final Supplier<EventManager> eventManagerSupplier;
 
+    // null if the cluster hasn't configured datalake format
+    private final @Nullable DataLakeFormat dataLakeFormat;
+
     public CoordinatorService(
             Configuration conf,
             FileSystem remoteFileSystem,
@@ -88,6 +95,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         this.defaultBucketNumber = conf.getInt(ConfigOptions.DEFAULT_BUCKET_NUMBER);
         this.defaultReplicationFactor = conf.getInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR);
         this.eventManagerSupplier = eventManagerSupplier;
+        this.dataLakeFormat = conf.getOptional(ConfigOptions.DATALAKE_FORMAT).orElse(null);
     }
 
     @Override
@@ -133,7 +141,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         TablePath tablePath = toTablePath(request.getTablePath());
         tablePath.validate();
 
-        TableDescriptor tableDescriptor = null;
+        TableDescriptor tableDescriptor;
         try {
             tableDescriptor = TableDescriptor.fromJsonBytes(request.getTableJson());
         } catch (Exception e) {
@@ -184,6 +192,14 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         Map<String, String> properties = newDescriptor.getProperties();
         if (!properties.containsKey(ConfigOptions.TABLE_REPLICATION_FACTOR.key())) {
             newDescriptor = newDescriptor.withReplicationFactor(defaultReplicationFactor);
+        }
+
+        // if lake storage is not null, we need to add the datalake type
+        // to the property of the table
+        if (dataLakeFormat != null) {
+            properties = new HashMap<>(newDescriptor.getProperties());
+            properties.put(ConfigOptions.TABLE_DATALAKE_FORMAT.key(), dataLakeFormat.toString());
+            newDescriptor = newDescriptor.withProperties(properties);
         }
 
         return newDescriptor;

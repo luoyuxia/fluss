@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Alibaba Group Holding Ltd.
+ * Copyright (c) 2025 Alibaba Group Holding Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,31 +14,27 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.client.lakehouse.paimon;
+package com.alibaba.fluss.lakehouse.paimon;
 
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.ProjectedRow;
+import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.types.RowType;
 
-import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.serializer.InternalRowSerializer;
-import org.apache.paimon.table.sink.KeyAndBucketExtractor;
 import org.apache.paimon.types.DataType;
 
 import java.util.List;
 
-/** A bucket assigner to align with Paimon. */
-public class PaimonBucketAssigner {
-
-    private final int bucketNum;
+/** An implementation of {@link KeyEncoder} to follow Paimon's encoding strategy. */
+public class PaimonKeyEncoder implements KeyEncoder {
 
     private final FlussRowWrapper flussRowWrapper;
     private final InternalRowSerializer bucketKeyRowSerializer;
     private final ProjectedRow bucketKeyProjectedRow;
 
-    public PaimonBucketAssigner(RowType rowType, List<String> bucketKey, int bucketNum) {
-        this.bucketNum = bucketNum;
-        int[] bucketKeyIndex = getBucketKeyIndex(rowType, bucketKey);
+    public PaimonKeyEncoder(RowType rowType, List<String> keys) {
+        int[] bucketKeyIndex = getBucketKeyIndex(rowType, keys);
         this.bucketKeyProjectedRow = ProjectedRow.from(bucketKeyIndex);
         DataType[] bucketKeyDataTypes =
                 rowType.project(bucketKeyIndex).getChildren().stream()
@@ -56,16 +52,12 @@ public class PaimonBucketAssigner {
         return bucketKeyIndex;
     }
 
-    public int assignBucket(InternalRow row) {
-        BinaryRow bucketKey = getBucketRow(row);
-        return KeyAndBucketExtractor.bucket(
-                KeyAndBucketExtractor.bucketKeyHashCode(bucketKey), bucketNum);
-    }
-
-    private BinaryRow getBucketRow(InternalRow row) {
+    @Override
+    public byte[] encodeKey(InternalRow row) {
+        // todo: remove paimon dependency in #408
         InternalRow bucketRow = bucketKeyProjectedRow.replaceRow(row);
         // wrap to paimon's InternalRow
         flussRowWrapper.replace(bucketRow);
-        return bucketKeyRowSerializer.toBinaryRow(flussRowWrapper);
+        return bucketKeyRowSerializer.toBinaryRow(flussRowWrapper).toBytes();
     }
 }

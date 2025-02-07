@@ -14,13 +14,20 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.row.encode;
+package com.alibaba.fluss.lakehouse;
 
-import com.alibaba.fluss.row.InternalRow;
+/** An enum for datalake format. */
+public enum DataLakeFormat {
+    PAIMON("paimon");
 
-/** An interface for encoding key of row into bytes. */
-public interface KeyEncoder {
+    private final String value;
 
-    /** Encode the key of given row to byte array. */
-    byte[] encodeKey(InternalRow row);
+    DataLakeFormat(String value) {
+        this.value = value;
+    }
+
+    @Override
+    public String toString() {
+        return value;
+    }
 }

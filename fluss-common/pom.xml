@@ -82,6 +82,14 @@
             <artifactId>frocksdbjni</artifactId>
         </dependency>
 
+        <!-- paimon bundle -->
+        <dependency>
+            <groupId>org.apache.paimon</groupId>
+            <artifactId>paimon-bundle</artifactId>
+            <version>${paimon.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- test dependencies -->
         <dependency>
             <groupId>com.alibaba.fluss</groupId>

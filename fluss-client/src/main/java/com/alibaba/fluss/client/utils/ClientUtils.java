@@ -16,13 +16,13 @@
 
 package com.alibaba.fluss.client.utils;
 
-import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.table.getter.PartitionGetter;
 import com.alibaba.fluss.client.write.HashBucketAssigner;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
 import com.alibaba.fluss.exception.PartitionNotExistException;
+import com.alibaba.fluss.lakehouse.LakeBucketAssigner;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
@@ -136,16 +136,13 @@ public final class ClientUtils {
     }
 
     public static int getBucketId(
-            byte[] keyBytes,
-            InternalRow key,
-            @Nullable LakeTableBucketAssigner lakeTableBucketAssigner,
-            int numBuckets,
-            MetadataUpdater metadataUpdater) {
-        if (lakeTableBucketAssigner == null) {
-            return HashBucketAssigner.bucketForRowKey(keyBytes, numBuckets);
+            byte[] bucketKeyBytes,
+            @Nullable LakeBucketAssigner lakeBucketAssigner,
+            int numBuckets) {
+        if (lakeBucketAssigner == null) {
+            return HashBucketAssigner.bucketForRowKey(bucketKeyBytes, numBuckets);
         } else {
-            return lakeTableBucketAssigner.assignBucket(
-                    keyBytes, key, metadataUpdater.getCluster());
+            return lakeBucketAssigner.assignBucket(bucketKeyBytes);
         }
     }
 }

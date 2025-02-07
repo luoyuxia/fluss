@@ -17,6 +17,8 @@
 package com.alibaba.fluss.server.kv;
 
 import com.alibaba.fluss.exception.KvStorageException;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
@@ -29,6 +31,7 @@ import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.row.encode.RowEncoder;
 import com.alibaba.fluss.row.encode.ValueEncoder;
@@ -43,7 +46,7 @@ import com.alibaba.fluss.utils.function.ThrowingConsumer;
 
 import javax.annotation.Nullable;
 
-import java.util.List;
+import java.util.Optional;
 
 import static com.alibaba.fluss.server.TabletManagerBase.getTableInfo;
 
@@ -55,7 +58,6 @@ public class KvRecoverHelper {
     private final long recoverPointOffset;
     private final KvRecoverContext recoverContext;
     private final KvFormat kvFormat;
-    private final List<String> partitionedKeys;
 
     // will be initialized when first encounter a log record during recovering from log
     private Integer currentSchemaId;
@@ -71,14 +73,12 @@ public class KvRecoverHelper {
             LogTablet logTablet,
             long recoverPointOffset,
             KvRecoverContext recoverContext,
-            KvFormat kvFormat,
-            List<String> partitionedKeys) {
+            KvFormat kvFormat) {
         this.kvTablet = kvTablet;
         this.logTablet = logTablet;
         this.recoverPointOffset = recoverPointOffset;
         this.recoverContext = recoverContext;
         this.kvFormat = kvFormat;
-        this.partitionedKeys = partitionedKeys;
     }
 
     public void recover() throws Exception {
@@ -161,7 +161,7 @@ public class KvRecoverHelper {
                         LogRecord logRecord = logRecordIter.next();
                         if (logRecord.getRowKind() != RowKind.UPDATE_BEFORE) {
                             InternalRow logRow = logRecord.getRow();
-                            byte[] key = keyEncoder.encode(logRow);
+                            byte[] key = keyEncoder.encodeKey(logRow);
                             byte[] value = null;
                             if (logRecord.getRowKind() != RowKind.DELETE) {
                                 // the log row format may not compatible with kv row format,
@@ -210,8 +210,17 @@ public class KvRecoverHelper {
         DataType[] dataTypes = currentRowType.getChildren().toArray(new DataType[0]);
         currentSchemaId = schemaId;
 
-        keyEncoder =
-                KeyEncoder.createKeyEncoder(currentRowType, tableInfo.getPhysicalPrimaryKeys());
+        Optional<DataLakeFormat> optDataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat();
+        if (optDataLakeFormat.isPresent()) {
+            DataLakeFormat dataLakeFormat = optDataLakeFormat.get();
+            keyEncoder =
+                    LakeKeyEncoderFactory.createKeyEncoder(
+                            dataLakeFormat, currentRowType, tableInfo.getPhysicalPrimaryKeys());
+        } else {
+            keyEncoder =
+                    CompactedKeyEncoder.createKeyEncoder(
+                            currentRowType, tableInfo.getPhysicalPrimaryKeys());
+        }
         rowEncoder = RowEncoder.create(kvFormat, dataTypes);
         currentFieldGetters = new InternalRow.FieldGetter[currentRowType.getFieldCount()];
         for (int i = 0; i < currentRowType.getFieldCount(); i++) {

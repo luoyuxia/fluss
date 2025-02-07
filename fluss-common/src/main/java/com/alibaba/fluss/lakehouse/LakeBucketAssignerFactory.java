@@ -14,13 +14,19 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.row.encode;
+package com.alibaba.fluss.lakehouse;
 
-import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.lakehouse.paimon.PaimonBucketAssigner;
 
-/** An interface for encoding key of row into bytes. */
-public interface KeyEncoder {
+/** A factory to create {@link LakeBucketAssigner} for different datalake formats. */
+public class LakeBucketAssignerFactory {
 
-    /** Encode the key of given row to byte array. */
-    byte[] encodeKey(InternalRow row);
+    public static LakeBucketAssigner createLakeBucketAssigner(
+            DataLakeFormat dataLakeFormat, int numBuckets) {
+        if (dataLakeFormat == DataLakeFormat.PAIMON) {
+            return new PaimonBucketAssigner(numBuckets);
+        }
+        throw new UnsupportedOperationException(
+                String.format("Unsupported data lake format: %s", dataLakeFormat));
+    }
 }
