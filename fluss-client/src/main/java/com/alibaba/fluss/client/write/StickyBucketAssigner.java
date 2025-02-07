@@ -22,8 +22,6 @@ import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.utils.MathUtils;
 
-import javax.annotation.Nullable;
-
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * created in record accumulator. Otherwise, we will always return the same bucket id.
  */
 @Internal
-public class StickyBucketAssigner implements BucketAssigner {
+public class StickyBucketAssigner implements DynamicBucketAssigner {
 
     private final PhysicalTablePath physicalTablePath;
     private final AtomicInteger currentBucketId;
@@ -44,7 +42,7 @@ public class StickyBucketAssigner implements BucketAssigner {
     }
 
     @Override
-    public int assignBucket(@Nullable byte[] key, Cluster cluster) {
+    public int assignBucket(Cluster cluster) {
         int bucketId = currentBucketId.get();
         if (bucketId < 0) {
             // initialize the currentBucketId
@@ -62,9 +60,6 @@ public class StickyBucketAssigner implements BucketAssigner {
     public void onNewBatch(Cluster cluster, int prevBucketId) {
         nextBucket(cluster, prevBucketId);
     }
-
-    @Override
-    public void close() {}
 
     private int nextBucket(Cluster cluster, int preBucketId) {
         int oldBucket = currentBucketId.get();

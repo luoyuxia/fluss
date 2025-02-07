@@ -30,6 +30,8 @@ import com.alibaba.fluss.row.InternalRow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
@@ -134,17 +136,14 @@ public final class ClientUtils {
     }
 
     public static int getBucketId(
-            byte[] keyBytes,
+            byte[] bucketKeyBytes,
             InternalRow key,
-            LakeTableBucketAssigner lakeTableBucketAssigner,
-            boolean isDataLakeEnable,
-            int numBuckets,
-            MetadataUpdater metadataUpdater) {
-        if (!isDataLakeEnable) {
-            return HashBucketAssigner.bucketForRowKey(keyBytes, numBuckets);
+            @Nullable LakeTableBucketAssigner lakeTableBucketAssigner,
+            int numBuckets) {
+        if (lakeTableBucketAssigner == null) {
+            return HashBucketAssigner.bucketForRowKey(bucketKeyBytes, numBuckets);
         } else {
-            return lakeTableBucketAssigner.assignBucket(
-                    keyBytes, key, metadataUpdater.getCluster());
+            return lakeTableBucketAssigner.assignBucket(key);
         }
     }
 }

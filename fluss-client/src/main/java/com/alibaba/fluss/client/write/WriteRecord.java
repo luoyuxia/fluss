@@ -47,7 +47,10 @@ public final class WriteRecord {
     private final WriteKind writeKind;
 
     private final @Nullable byte[] key;
-    private final @Nullable byte[] bucketKey;
+
+    // the bucket id that the record should fall into, will be initialized
+    // if the table is with bucket keys, otherwise null
+    private final @Nullable Integer bucketId;
     private final @Nullable InternalRow row;
 
     // will be null if it's not for partial update
@@ -55,21 +58,24 @@ public final class WriteRecord {
     private final int estimatedSizeInBytes;
 
     public WriteRecord(
-            PhysicalTablePath tablePath, WriteKind writeKind, InternalRow row, byte[] bucketKey) {
-        this(tablePath, writeKind, null, bucketKey, row, null);
+            PhysicalTablePath tablePath,
+            WriteKind writeKind,
+            InternalRow row,
+            @Nullable Integer bucketId) {
+        this(tablePath, writeKind, null, bucketId, row, null);
     }
 
     public WriteRecord(
             PhysicalTablePath physicalTablePath,
             WriteKind writeKind,
             @Nullable byte[] key,
-            @Nullable byte[] bucketKey,
+            @Nullable Integer bucketId,
             @Nullable InternalRow row,
             @Nullable int[] targetColumns) {
         this.physicalTablePath = physicalTablePath;
         this.writeKind = writeKind;
         this.key = key;
-        this.bucketKey = bucketKey;
+        this.bucketId = bucketId;
         this.row = row;
         this.targetColumns = targetColumns;
         this.estimatedSizeInBytes =
@@ -94,8 +100,8 @@ public final class WriteRecord {
         return key;
     }
 
-    public @Nullable byte[] getBucketKey() {
-        return bucketKey;
+    public @Nullable Integer getBucketId() {
+        return bucketId;
     }
 
     public @Nullable InternalRow getRow() {

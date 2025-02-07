@@ -16,41 +16,13 @@
 
 package com.alibaba.fluss.client.write;
 
-import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.cluster.Cluster;
-import com.alibaba.fluss.row.InternalRow;
 
-import javax.annotation.Nullable;
-
-/** Bucket assigner interface. */
-@Internal
-public interface BucketAssigner {
-
-    /**
-     * Assign the bucket for the given key. The key may be null.
-     *
-     * @param key the key
-     * @param cluster the cluster
-     * @return the bucket id
-     * @deprecated use {@link #assignBucket(byte[], InternalRow, Cluster)} instead.
-     */
-    @Deprecated
-    int assignBucket(@Nullable byte[] key, Cluster cluster);
-
-    /**
-     * Assign the bucket for the given row with given key.
-     *
-     * <p>TODO: use {@link com.alibaba.fluss.row.BinaryRow} for the bucket key to replace byte[] and
-     * row parameters.
-     *
-     * @param key the key
-     * @param row the row
-     * @param cluster the cluster
-     * @return the bucket id
-     */
-    default int assignBucket(@Nullable byte[] key, InternalRow row, Cluster cluster) {
-        return assignBucket(key, cluster);
-    }
+/**
+ * A bucket assigner interface to assign a bucket dynamically. The bucket id determined during
+ * sending to Fluss cluster by the status of cluster and write batch accumulation.
+ */
+public interface DynamicBucketAssigner {
 
     /**
      * When append record to record accumulator, whether the record accumulator need to abort this
@@ -67,6 +39,11 @@ public interface BucketAssigner {
      */
     default void onNewBatch(Cluster cluster, int prevBucketId) {}
 
-    /** This is called when bucket assigner is closed. */
-    void close();
+    /**
+     * Assign a bucket.
+     *
+     * @param cluster the metadata of the cluster
+     * @return the bucket id
+     */
+    int assignBucket(Cluster cluster);
 }

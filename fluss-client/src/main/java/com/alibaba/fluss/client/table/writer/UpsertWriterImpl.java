@@ -16,7 +16,10 @@
 
 package com.alibaba.fluss.client.table.writer;
 
+import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
+import com.alibaba.fluss.client.write.HashBucketAssigner;
+import com.alibaba.fluss.client.write.StaticBucketAssigner;
 import com.alibaba.fluss.client.write.WriteKind;
 import com.alibaba.fluss.client.write.WriteRecord;
 import com.alibaba.fluss.client.write.WriterClient;
@@ -38,9 +41,10 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
     private static final DeleteResult DELETE_SUCCESS = new DeleteResult();
 
     private final KeyEncoder primaryKeyEncoder;
-    // same to primaryKeyEncoder if the bucket key is the same to the primary key
-    private final KeyEncoder bucketKeyEncoder;
     private final @Nullable int[] targetColumns;
+
+    private final boolean isDefaultBucketKey;
+    private final StaticBucketAssigner bucketAssigner;
 
     UpsertWriterImpl(
             TablePath tablePath,
@@ -56,10 +60,24 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
         // encode primary key using physical primary key
         this.primaryKeyEncoder =
                 KeyEncoder.createKeyEncoder(rowType, tableInfo.getPhysicalPrimaryKeys());
-        if (tableInfo.isDefaultBucketKey()) {
-            this.bucketKeyEncoder = primaryKeyEncoder;
+        this.isDefaultBucketKey = tableInfo.isDefaultBucketKey();
+
+        String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
+        if (dataLakeType != null) {
+            this.bucketAssigner =
+                    new LakeTableBucketAssigner(
+                            dataLakeType,
+                            tableInfo.getRowType(),
+                            tableInfo.getBucketKeys(),
+                            tableInfo.getNumBuckets());
         } else {
-            this.bucketKeyEncoder = KeyEncoder.createKeyEncoder(rowType, tableInfo.getBucketKeys());
+            this.bucketAssigner =
+                    new HashBucketAssigner(
+                            tableInfo.getNumBuckets(),
+                            tableInfo.isDefaultBucketKey()
+                                    ? primaryKeyEncoder
+                                    : KeyEncoder.createKeyEncoder(
+                                            rowType, tableInfo.getBucketKeys()));
         }
     }
 
@@ -110,10 +128,9 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
      */
     public CompletableFuture<UpsertResult> upsert(InternalRow row) {
         byte[] key = primaryKeyEncoder.encode(row);
-        byte[] bucketKey =
-                bucketKeyEncoder == primaryKeyEncoder ? key : bucketKeyEncoder.encode(row);
+        int bucketId = getBucketId(key, row);
         return send(new WriteRecord(
-                        getPhysicalPath(row), WriteKind.PUT, key, bucketKey, row, targetColumns))
+                        getPhysicalPath(row), WriteKind.PUT, key, bucketId, row, targetColumns))
                 .thenApply(ignored -> UPSERT_SUCCESS);
     }
 
@@ -126,15 +143,19 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
      */
     public CompletableFuture<DeleteResult> delete(InternalRow row) {
         byte[] key = primaryKeyEncoder.encode(row);
-        byte[] bucketKey =
-                bucketKeyEncoder == primaryKeyEncoder ? key : bucketKeyEncoder.encode(row);
+        int bucketId = getBucketId(key, row);
         return send(new WriteRecord(
-                        getPhysicalPath(row),
-                        WriteKind.DELETE,
-                        key,
-                        bucketKey,
-                        null,
-                        targetColumns))
+                        getPhysicalPath(row), WriteKind.DELETE, key, bucketId, null, targetColumns))
                 .thenApply(ignored -> DELETE_SUCCESS);
+    }
+
+    private int getBucketId(byte[] keyBytes, InternalRow row) {
+        if (isDefaultBucketKey && bucketAssigner instanceof HashBucketAssigner) {
+            // is is default bucket key, and assigner is HashBucketAssAssigner,
+            // we can reuse the primary key bytes to calculate bucket id
+            return ((HashBucketAssigner) bucketAssigner).assignBucket(keyBytes);
+        } else {
+            return bucketAssigner.assignBucket(row);
+        }
     }
 }

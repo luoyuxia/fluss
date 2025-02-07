@@ -17,41 +17,34 @@
 package com.alibaba.fluss.client.write;
 
 import com.alibaba.fluss.annotation.Internal;
-import com.alibaba.fluss.cluster.Cluster;
+import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.utils.MathUtils;
 import com.alibaba.fluss.utils.MurmurHashUtils;
 import com.alibaba.fluss.utils.Preconditions;
-
-import javax.annotation.Nullable;
 
 import static com.alibaba.fluss.utils.UnsafeUtils.BYTE_ARRAY_BASE_OFFSET;
 
 /** Hash bucket assigner. */
 @Internal
-public class HashBucketAssigner implements BucketAssigner {
+public class HashBucketAssigner implements StaticBucketAssigner {
 
-    private final Integer numBuckets;
+    private final int numBuckets;
 
-    public HashBucketAssigner(Integer numBuckets) {
-        Preconditions.checkNotNull(
-                numBuckets, "Number of buckets must not be null for hash bucket assigner !");
+    private final KeyEncoder bucketKeyEncoder;
+
+    public HashBucketAssigner(int numBuckets, KeyEncoder bucketKeyEncoder) {
         this.numBuckets = numBuckets;
+        this.bucketKeyEncoder = bucketKeyEncoder;
     }
 
     @Override
-    public int assignBucket(@Nullable byte[] key, Cluster cluster) {
-        Preconditions.checkArgument(key != null, "Key must not be null for hash bucket assigner !");
-        return bucketForRowKey(key, this.numBuckets);
+    public int assignBucket(InternalRow row) {
+        return bucketForRowKey(bucketKeyEncoder.encode(row), numBuckets);
     }
 
-    @Override
-    public boolean abortIfBatchFull() {
-        return false;
-    }
-
-    @Override
-    public void close() {
-        // do nothing now.
+    public int assignBucket(byte[] bucketKeys) {
+        return bucketForRowKey(bucketKeys, numBuckets);
     }
 
     /**

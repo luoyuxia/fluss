@@ -646,7 +646,8 @@ class FlinkSourceEnumeratorTest extends FlinkTestBase {
                 new KeyEncoder(
                         DEFAULT_PK_TABLE_SCHEMA.getRowType(),
                         DEFAULT_PK_TABLE_SCHEMA.getPrimaryKeyIndexes());
-        HashBucketAssigner hashBucketAssigner = new HashBucketAssigner(DEFAULT_BUCKET_NUM);
+        HashBucketAssigner hashBucketAssigner =
+                new HashBucketAssigner(DEFAULT_BUCKET_NUM, keyEncoder);
         Map<Integer, Integer> bucketRows = new HashMap<>();
         try (Table table = conn.getTable(tablePath)) {
             UpsertWriter upsertWriter = table.newUpsert().createWriter();
@@ -655,7 +656,7 @@ class FlinkSourceEnumeratorTest extends FlinkTestBase {
                 upsertWriter.upsert(row);
 
                 byte[] key = keyEncoder.encode(row);
-                int bucketId = hashBucketAssigner.assignBucket(key, null);
+                int bucketId = hashBucketAssigner.assignBucket(key);
 
                 bucketRows.merge(bucketId, 1, Integer::sum);
             }

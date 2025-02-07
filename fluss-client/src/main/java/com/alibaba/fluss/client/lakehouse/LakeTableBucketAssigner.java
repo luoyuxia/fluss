@@ -17,47 +17,33 @@
 package com.alibaba.fluss.client.lakehouse;
 
 import com.alibaba.fluss.client.lakehouse.paimon.PaimonBucketAssigner;
-import com.alibaba.fluss.client.write.BucketAssigner;
-import com.alibaba.fluss.cluster.Cluster;
+import com.alibaba.fluss.client.write.StaticBucketAssigner;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.types.RowType;
 
-import javax.annotation.Nullable;
-
 import java.util.List;
 
+import static com.alibaba.fluss.client.lakehouse.paimon.PaimonBucketAssigner.DATA_LAKE_PAIMON;
+import static com.alibaba.fluss.utils.Preconditions.checkArgument;
+
 /** A bucket assigner for table with data lake enabled. */
-public class LakeTableBucketAssigner implements BucketAssigner {
+public class LakeTableBucketAssigner implements StaticBucketAssigner {
 
     // the bucket extractor of bucket, fluss will use the the bucket
     // that paimon assign to align with paimon when data lake is enabled
     // todo: make it pluggable
     private final PaimonBucketAssigner paimonBucketAssigner;
 
-    public LakeTableBucketAssigner(RowType rowType, List<String> bucketKey, int bucketNum) {
+    public LakeTableBucketAssigner(
+            String lakeType, RowType rowType, List<String> bucketKey, int bucketNum) {
+        checkArgument(
+                lakeType.equalsIgnoreCase(DATA_LAKE_PAIMON),
+                "Currently, only %s is supported as the datalake type of a table.",
+                DATA_LAKE_PAIMON);
         this.paimonBucketAssigner = new PaimonBucketAssigner(rowType, bucketKey, bucketNum);
     }
 
-    @Override
-    public int assignBucket(@Nullable byte[] key, Cluster cluster) {
-        // shouldn't come in here
-        throw new UnsupportedOperationException(
-                "Method assignBucket(byte[], Cluster) is not supported in "
-                        + getClass().getSimpleName());
-    }
-
-    @Override
-    public int assignBucket(@Nullable byte[] key, InternalRow row, Cluster cluster) {
+    public int assignBucket(InternalRow row) {
         return paimonBucketAssigner.assignBucket(row);
-    }
-
-    @Override
-    public boolean abortIfBatchFull() {
-        return false;
-    }
-
-    @Override
-    public void close() {
-        // do nothing now.
     }
 }

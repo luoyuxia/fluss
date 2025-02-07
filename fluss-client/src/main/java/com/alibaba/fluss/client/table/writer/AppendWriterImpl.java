@@ -16,14 +16,18 @@
 
 package com.alibaba.fluss.client.table.writer;
 
+import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
-import com.alibaba.fluss.client.table.getter.BucketKeyGetter;
+import com.alibaba.fluss.client.write.HashBucketAssigner;
+import com.alibaba.fluss.client.write.StaticBucketAssigner;
 import com.alibaba.fluss.client.write.WriteKind;
 import com.alibaba.fluss.client.write.WriteRecord;
 import com.alibaba.fluss.client.write.WriterClient;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.row.encode.KeyEncoder;
+import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
 
@@ -34,7 +38,7 @@ import java.util.concurrent.CompletableFuture;
 class AppendWriterImpl extends AbstractTableWriter implements AppendWriter {
     private static final AppendResult APPEND_SUCCESS = new AppendResult();
 
-    private final @Nullable BucketKeyGetter bucketKeyGetter;
+    private final @Nullable StaticBucketAssigner bucketAssigner;
 
     AppendWriterImpl(
             TablePath tablePath,
@@ -43,10 +47,21 @@ class AppendWriterImpl extends AbstractTableWriter implements AppendWriter {
             WriterClient writerClient) {
         super(tablePath, tableInfo, metadataUpdater, writerClient);
         List<String> bucketKeys = tableInfo.getBucketKeys();
-        this.bucketKeyGetter =
-                bucketKeys.isEmpty()
-                        ? null
-                        : new BucketKeyGetter(tableInfo.getRowType(), bucketKeys);
+        if (bucketKeys.isEmpty()) {
+            this.bucketAssigner = null;
+        } else {
+            int bucketNum = tableInfo.getNumBuckets();
+            RowType rowType = tableInfo.getSchema().getRowType();
+            String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
+            if (dataLakeType != null) {
+                this.bucketAssigner =
+                        new LakeTableBucketAssigner(dataLakeType, rowType, bucketKeys, bucketNum);
+            } else {
+                this.bucketAssigner =
+                        new HashBucketAssigner(
+                                bucketNum, KeyEncoder.createKeyEncoder(rowType, bucketKeys));
+            }
+        }
     }
 
     /**
@@ -56,8 +71,8 @@ class AppendWriterImpl extends AbstractTableWriter implements AppendWriter {
      * @return A {@link CompletableFuture} that always returns null when complete normally.
      */
     public CompletableFuture<AppendResult> append(InternalRow row) {
-        byte[] bucketKey = bucketKeyGetter != null ? bucketKeyGetter.getBucketKey(row) : null;
-        return send(new WriteRecord(getPhysicalPath(row), WriteKind.APPEND, row, bucketKey))
+        Integer bucketId = bucketAssigner != null ? bucketAssigner.assignBucket(row) : null;
+        return send(new WriteRecord(getPhysicalPath(row), WriteKind.APPEND, row, bucketId))
                 .thenApply(r -> APPEND_SUCCESS);
     }
 }

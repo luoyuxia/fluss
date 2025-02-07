@@ -16,7 +16,6 @@
 
 package com.alibaba.fluss.client.write;
 
-import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.types.DataField;
@@ -32,8 +31,7 @@ import static com.alibaba.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link HashBucketAssigner}. */
-public class HashBucketAssignerTest {
-    private final Cluster cluster = Cluster.empty();
+class HashBucketAssignerTest {
 
     @Test
     void testBucketAssign() {
@@ -52,12 +50,12 @@ public class HashBucketAssignerTest {
         IndexedRow row3 = row(rowType, new Object[] {1, 2, "4", 5L});
         IndexedRow row4 = row(rowType, new Object[] {1, 1, "4", 5L});
 
-        HashBucketAssigner hashBucketAssigner = new HashBucketAssigner(3);
+        HashBucketAssigner hashBucketAssigner = new HashBucketAssigner(3, keyEncoder);
 
-        int bucket1 = hashBucketAssigner.assignBucket(keyEncoder.encode(row1), cluster);
-        int bucket2 = hashBucketAssigner.assignBucket(keyEncoder.encode(row2), cluster);
-        int bucket3 = hashBucketAssigner.assignBucket(keyEncoder.encode(row3), cluster);
-        int bucket4 = hashBucketAssigner.assignBucket(keyEncoder.encode(row4), cluster);
+        int bucket1 = hashBucketAssigner.assignBucket(row1);
+        int bucket2 = hashBucketAssigner.assignBucket(row2);
+        int bucket3 = hashBucketAssigner.assignBucket(row3);
+        int bucket4 = hashBucketAssigner.assignBucket(row4);
 
         assertThat(bucket1).isEqualTo(bucket2);
         assertThat(bucket1).isNotEqualTo(bucket3);
@@ -90,9 +88,10 @@ public class HashBucketAssignerTest {
         }
 
         for (int bucketNumber = 3; bucketNumber < 10; bucketNumber++) {
-            HashBucketAssigner hashBucketAssigner = new HashBucketAssigner(bucketNumber);
+            HashBucketAssigner hashBucketAssigner =
+                    new HashBucketAssigner(bucketNumber, keyEncoder);
             for (byte[] key : keyList) {
-                int bucket = hashBucketAssigner.assignBucket(key, cluster);
+                int bucket = hashBucketAssigner.assignBucket(key);
                 assertThat(bucket >= 0).isTrue();
                 assertThat(bucket < bucketNumber).isTrue();
             }

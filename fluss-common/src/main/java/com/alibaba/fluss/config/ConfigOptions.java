@@ -1004,6 +1004,15 @@ public class ConfigOptions {
                                     + "When this option is set to ture and the datalake tiering service is up,"
                                     + " the table will be tiered and compacted into datalake format stored on lakehouse storage.");
 
+    public static final ConfigOption<String> TABLE_DATALAKE_FORMAT =
+            key("table.datalake.format")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The format of the datalake that the Fluss cluster used as lake storage for the table."
+                                    + " It will be set with the Fluss's configuration 'lakehouse.storage' by Fluss while creating the table. "
+                                    + "If no null, the data distribution will follow the strategy of the corresponding datalake uses.");
+
     public static final ConfigOption<MergeEngineType> TABLE_MERGE_ENGINE =
             key("table.merge-engine")
                     .enumType(MergeEngineType.class)
