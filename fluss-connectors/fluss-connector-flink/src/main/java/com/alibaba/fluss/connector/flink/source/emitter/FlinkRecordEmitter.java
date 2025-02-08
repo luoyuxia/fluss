@@ -75,7 +75,9 @@ public class FlinkRecordEmitter implements RecordEmitter<RecordAndPos, RowData, 
             }
             emitRecord(scanRecord, sourceOutput);
         } else if (splitState.isLogSplitState()) {
-            splitState.asLogSplitState().setOffset(recordAndPosition.record().getOffset() + 1);
+            splitState
+                    .asLogSplitState()
+                    .setCurrentOffset(recordAndPosition.record().getOffset() + 1);
             emitRecord(recordAndPosition.record(), sourceOutput);
         } else if (splitState.isLakeSplit()) {
             if (lakeRecordRecordEmitter == null) {

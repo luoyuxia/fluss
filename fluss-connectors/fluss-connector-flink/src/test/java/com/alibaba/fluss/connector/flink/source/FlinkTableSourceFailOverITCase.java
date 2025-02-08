@@ -19,10 +19,12 @@ package com.alibaba.fluss.connector.flink.source;
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
+import com.alibaba.fluss.client.table.writer.UpsertWriter;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.connector.flink.source.testutils.FlinkTestBase;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
+import com.alibaba.fluss.types.RowType;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.client.program.ClusterClient;
@@ -48,9 +50,13 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.Map;
 
 import static com.alibaba.fluss.connector.flink.FlinkConnectorOptions.BOOTSTRAP_SERVERS;
+import static com.alibaba.fluss.connector.flink.source.testutils.FlinkTestBase.waitUntilPartitions;
+import static com.alibaba.fluss.testutils.DataTestUtils.compactedRow;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForAllTaskRunning;
 
 class FlinkTableSourceFailOverITCase {
@@ -62,12 +68,7 @@ class FlinkTableSourceFailOverITCase {
             FlussClusterExtension.builder()
                     .setClusterConf(
                             new com.alibaba.fluss.config.Configuration()
-                                    // set snapshot interval to 1s for testing purposes
-                                    .set(ConfigOptions.KV_SNAPSHOT_INTERVAL, Duration.ofSeconds(1))
-                                    // not to clean snapshots for test purpose
-                                    .set(
-                                            ConfigOptions.KV_MAX_RETAINED_SNAPSHOTS,
-                                            Integer.MAX_VALUE))
+                                    .set(ConfigOptions.KV_SNAPSHOT_INTERVAL, Duration.ofDays(1)))
                     .setNumOfTabletServers(3)
                     .build();
 
@@ -84,6 +85,111 @@ class FlinkTableSourceFailOverITCase {
         clientConf = FLUSS_CLUSTER_EXTENSION.getClientConfig();
         conn = ConnectionFactory.createConnection(clientConf);
         admin = conn.getAdmin();
+    }
+
+    @Test
+    void t1() throws Exception {
+        final int numTaskManagers = 2;
+        final int numSlotsPerTaskManager = 2;
+        final int parallelism = numTaskManagers * numSlotsPerTaskManager;
+
+        final MiniClusterResourceFactory clusterFactory =
+                new MiniClusterResourceFactory(
+                        numTaskManagers,
+                        numSlotsPerTaskManager,
+                        getFileBasedCheckpointsConfig(savepointDir));
+
+        StreamExecutionEnvironment execEnv = StreamExecutionEnvironment.getExecutionEnvironment();
+        execEnv.setParallelism(parallelism);
+        StreamTableEnvironment tEnv =
+                StreamTableEnvironment.create(execEnv, EnvironmentSettings.inStreamingMode());
+        String bootstrapServers = String.join(",", clientConf.get(ConfigOptions.BOOTSTRAP_SERVERS));
+        // crate catalog using sql
+        tEnv.executeSql(
+                String.format(
+                        "create catalog %s with ('type' = 'fluss-aplus', '%s' = '%s')",
+                        CATALOG_NAME, BOOTSTRAP_SERVERS.key(), bootstrapServers));
+        tEnv.executeSql("use catalog " + CATALOG_NAME);
+
+        tEnv.executeSql(
+                "create table test_partitioned("
+                        + "a int, b string, c varchar, primary key(a, c) not enforced"
+                        + ") partitioned by (c) "
+                        + "with ("
+                        + "'table.auto-partition.enabled' = 'true',"
+                        + "'table.auto-partition.time-unit' = 'day',"
+                        + "'scan.partition.discovery.interval' = '100ms',"
+                        + "'table.auto-partition.num-precreate' = '1')");
+
+        TablePath tablePath = TablePath.of("fluss", "test_partitioned");
+        Map<Long, String> partitionNameById =
+                waitUntilPartitions(FLUSS_CLUSTER_EXTENSION.getZooKeeperClient(), tablePath, 1);
+
+        Collection<String> partitions = partitionNameById.values();
+
+        // prepare table data
+        try (com.alibaba.fluss.client.table.Table table = conn.getTable(tablePath)) {
+            UpsertWriter upsertWriter = table.getUpsertWriter();
+            RowType rowType = table.getDescriptor().getSchema().toRowType();
+            for (int i = 1; i <= 3; i++) {
+                for (String partition : partitions) {
+                    Object[] values = new Object[] {i, "address" + i, partition};
+                    upsertWriter.upsert(compactedRow(rowType, values));
+                    // make sure every bucket has records
+                    upsertWriter.flush();
+                }
+            }
+        }
+
+        Table table =
+                tEnv.sqlQuery(
+                        "select * from test_partitioned /*+ OPTIONS('scan.startup.mode' = 'latest') */");
+        tEnv.toChangelogStream(table).addSink(new DiscardingSink<>());
+
+        JobGraph jobGraph = execEnv.getStreamGraph().getJobGraph();
+
+        JobID jobId = jobGraph.getJobID();
+
+        MiniClusterWithClientResource cluster = clusterFactory.get();
+        cluster.before();
+        ClusterClient<?> client = cluster.getClusterClient();
+
+        String savePointPath;
+
+        try {
+            client.submitJob(jobGraph).get();
+            waitForAllTaskRunning(cluster.getMiniCluster(), jobId, false);
+            Thread.sleep(5000);
+
+            // now, stop the job with save point
+            savePointPath =
+                    client.cancelWithSavepoint(jobId, null, SavepointFormatType.CANONICAL).get();
+
+            execEnv = StreamExecutionEnvironment.getExecutionEnvironment();
+            execEnv.setParallelism(parallelism);
+            tEnv = StreamTableEnvironment.create(execEnv, EnvironmentSettings.inStreamingMode());
+            // crate catalog using sql
+            tEnv.executeSql(
+                    String.format(
+                            "create catalog %s with ('type' = 'fluss-aplus', '%s' = '%s')",
+                            CATALOG_NAME, BOOTSTRAP_SERVERS.key(), bootstrapServers));
+            tEnv.executeSql("use catalog " + CATALOG_NAME);
+            table =
+                    tEnv.sqlQuery(
+                            "select * from test_partitioned  /*+ OPTIONS('scan.startup.mode' = 'latest') */");
+            tEnv.toChangelogStream(table).addSink(new DiscardingSink<>());
+            jobGraph = execEnv.getStreamGraph().getJobGraph();
+            SavepointRestoreSettings savepointRestoreSettings =
+                    SavepointRestoreSettings.forPath(savePointPath, false, RestoreMode.CLAIM.CLAIM);
+            jobGraph.setSavepointRestoreSettings(savepointRestoreSettings);
+            client.submitJob(jobGraph).get();
+            jobId = jobGraph.getJobID();
+
+            waitForAllTaskRunning(cluster.getMiniCluster(), jobId, false);
+            Thread.sleep(5000);
+        } finally {
+            cluster.after();
+        }
     }
 
     @Test

@@ -29,6 +29,9 @@ public class HybridSnapshotLogSplitState extends SourceSplitState {
 
     public HybridSnapshotLogSplitState(HybridSnapshotLogSplit hybridSnapshotLogSplit) {
         super(hybridSnapshotLogSplit);
+        this.recordsToSkip = hybridSnapshotLogSplit.recordsToSkip();
+        this.snapshotFinished = hybridSnapshotLogSplit.isSnapshotFinished();
+        this.offset = hybridSnapshotLogSplit.getLogStartingOffset();
     }
 
     @Override
