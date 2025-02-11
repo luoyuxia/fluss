@@ -67,7 +67,7 @@ public class FlinkRecordEmitter implements RecordEmitter<RecordAndPos, RowData, 
             if (scanRecord.logOffset() >= 0) {
                 // record is with a valid offset, means it's in incremental phase,
                 // update the log offset
-                hybridSnapshotLogSplitState.setCurrentOffset(scanRecord.logOffset() + 1);
+                hybridSnapshotLogSplitState.setNextOffset(scanRecord.logOffset() + 1);
             } else {
                 // record is with an invalid offset, means it's in snapshot phase,
                 // update the records number to skip
@@ -75,9 +75,7 @@ public class FlinkRecordEmitter implements RecordEmitter<RecordAndPos, RowData, 
             }
             emitRecord(scanRecord, sourceOutput);
         } else if (splitState.isLogSplitState()) {
-            splitState
-                    .asLogSplitState()
-                    .setCurrentOffset(recordAndPosition.record().logOffset() + 1);
+            splitState.asLogSplitState().setNextOffset(recordAndPosition.record().logOffset() + 1);
             emitRecord(recordAndPosition.record(), sourceOutput);
         } else if (splitState.isLakeSplit()) {
             if (lakeRecordRecordEmitter == null) {

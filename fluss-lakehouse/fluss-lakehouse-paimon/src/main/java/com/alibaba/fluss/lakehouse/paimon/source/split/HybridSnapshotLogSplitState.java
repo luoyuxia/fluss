@@ -26,13 +26,13 @@ public class HybridSnapshotLogSplitState extends SourceSplitState {
     private boolean snapshotFinished;
 
     /** The next log offset to read. */
-    private long currentOffset;
+    private long nextOffset;
 
     public HybridSnapshotLogSplitState(HybridSnapshotLogSplit hybridSnapshotLogSplit) {
         super(hybridSnapshotLogSplit);
         this.recordsToSkip = hybridSnapshotLogSplit.recordsToSkip();
         this.snapshotFinished = hybridSnapshotLogSplit.isSnapshotFinished();
-        this.currentOffset = hybridSnapshotLogSplit.getLogStartingOffset();
+        this.nextOffset = hybridSnapshotLogSplit.getLogStartingOffset();
     }
 
     @Override
@@ -45,16 +45,16 @@ public class HybridSnapshotLogSplitState extends SourceSplitState {
                 hybridSnapshotLogSplit.getSnapshotId(),
                 recordsToSkip,
                 snapshotFinished,
-                currentOffset);
+                nextOffset);
     }
 
     public void setRecordsToSkip(long recordsToSkip) {
         this.recordsToSkip = recordsToSkip;
     }
 
-    public void setCurrentOffset(long currentOffset) {
+    public void setNextOffset(long nextOffset) {
         // if set offset, means snapshot is finished
         snapshotFinished = true;
-        this.currentOffset = currentOffset;
+        this.nextOffset = nextOffset;
     }
 }

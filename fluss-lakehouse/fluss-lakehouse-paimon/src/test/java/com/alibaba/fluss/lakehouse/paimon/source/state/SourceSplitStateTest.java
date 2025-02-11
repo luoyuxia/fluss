@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.connector.flink.source.state;
+package com.alibaba.fluss.lakehouse.paimon.source.state;
 
-import com.alibaba.fluss.connector.flink.source.split.HybridSnapshotLogSplit;
-import com.alibaba.fluss.connector.flink.source.split.HybridSnapshotLogSplitState;
-import com.alibaba.fluss.connector.flink.source.split.LogSplit;
-import com.alibaba.fluss.connector.flink.source.split.LogSplitState;
+import com.alibaba.fluss.lakehouse.paimon.source.split.HybridSnapshotLogSplit;
+import com.alibaba.fluss.lakehouse.paimon.source.split.HybridSnapshotLogSplitState;
+import com.alibaba.fluss.lakehouse.paimon.source.split.LogSplit;
+import com.alibaba.fluss.lakehouse.paimon.source.split.LogSplitState;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.metadata.TablePath;
 
 import org.junit.jupiter.api.Test;
 
@@ -31,36 +32,32 @@ class SourceSplitStateTest {
 
     @Test
     void testLogSplitState() {
+        TablePath tablePath = new TablePath("db1", "tbl1");
         TableBucket tableBucket = new TableBucket(0, 0L, 0);
 
-        // verify if no stopping offset
-        LogSplit logSplit = new LogSplit(tableBucket, "partition1", 100L);
+        LogSplit logSplit = new LogSplit(tablePath, tableBucket, "partition1", 100L);
         LogSplitState logSplitState = new LogSplitState(logSplit);
         assertThat(logSplitState.toSourceSplit()).isEqualTo(logSplit);
 
         // advance next offset of log split state, and verify
         logSplitState.setNextOffset(200L);
-        LogSplit expectedLogSplit = new LogSplit(tableBucket, "partition1", 200L);
+        LogSplit expectedLogSplit = new LogSplit(tablePath, tableBucket, "partition1", 200L);
         assertThat(logSplitState.toSourceSplit()).isEqualTo(expectedLogSplit);
-
-        // verify with stopping offset
-        logSplit = new LogSplit(tableBucket, "partition1", 100L, 2000L);
-        logSplitState = new LogSplitState(logSplit);
-        assertThat(logSplitState.toSourceSplit()).isEqualTo(logSplit);
 
         // advance next offset of log split state, and verify
         logSplitState.setNextOffset(300L);
-        expectedLogSplit = new LogSplit(tableBucket, "partition1", 300L, 2000L);
+        expectedLogSplit = new LogSplit(tablePath, tableBucket, "partition1", 300L);
         assertThat(logSplitState.toSourceSplit()).isEqualTo(expectedLogSplit);
     }
 
     @Test
     void testHybridSnapshotLogSplitState() {
+        TablePath tablePath = new TablePath("db1", "tbl1");
         TableBucket tableBucket = new TableBucket(0, 0L, 0);
 
         // verify the split that snapshot is not finished
         HybridSnapshotLogSplit hybridSnapshotLogSplit =
-                new HybridSnapshotLogSplit(tableBucket, "partition1", 1L, 100L);
+                new HybridSnapshotLogSplit(tablePath, tableBucket, "partition1", 1L, 100L);
         HybridSnapshotLogSplitState hybridSnapshotLogSplitState =
                 new HybridSnapshotLogSplitState(hybridSnapshotLogSplit);
         assertThat(hybridSnapshotLogSplitState.toSourceSplit()).isEqualTo(hybridSnapshotLogSplit);
@@ -68,20 +65,23 @@ class SourceSplitStateTest {
         // set record to skip and verify
         hybridSnapshotLogSplitState.setRecordsToSkip(200L);
         HybridSnapshotLogSplit expectedHybridSnapshotLogSplit =
-                new HybridSnapshotLogSplit(tableBucket, "partition1", 1L, 200L, false, 100L);
+                new HybridSnapshotLogSplit(
+                        tablePath, tableBucket, "partition1", 1L, 200L, false, 100L);
         assertThat(hybridSnapshotLogSplitState.toSourceSplit())
                 .isEqualTo(expectedHybridSnapshotLogSplit);
 
         // set next offset and verify
         hybridSnapshotLogSplitState.setNextOffset(500L);
         expectedHybridSnapshotLogSplit =
-                new HybridSnapshotLogSplit(tableBucket, "partition1", 1L, 200L, true, 500L);
+                new HybridSnapshotLogSplit(
+                        tablePath, tableBucket, "partition1", 1L, 200L, true, 500L);
         assertThat(hybridSnapshotLogSplitState.toSourceSplit())
                 .isEqualTo(expectedHybridSnapshotLogSplit);
 
         // verify the split that snapshot is finished
         hybridSnapshotLogSplit =
-                new HybridSnapshotLogSplit(tableBucket, "partition1", 1L, 100L, true, 100L);
+                new HybridSnapshotLogSplit(
+                        tablePath, tableBucket, "partition1", 1L, 100L, true, 100L);
         hybridSnapshotLogSplitState = new HybridSnapshotLogSplitState(hybridSnapshotLogSplit);
         assertThat(hybridSnapshotLogSplitState.toSourceSplit()).isEqualTo(hybridSnapshotLogSplit);
 
@@ -89,7 +89,8 @@ class SourceSplitStateTest {
         hybridSnapshotLogSplitState = new HybridSnapshotLogSplitState(hybridSnapshotLogSplit);
         hybridSnapshotLogSplitState.setNextOffset(500L);
         expectedHybridSnapshotLogSplit =
-                new HybridSnapshotLogSplit(tableBucket, "partition1", 1L, 100L, true, 500L);
+                new HybridSnapshotLogSplit(
+                        tablePath, tableBucket, "partition1", 1L, 100L, true, 500L);
         assertThat(hybridSnapshotLogSplitState.toSourceSplit())
                 .isEqualTo(expectedHybridSnapshotLogSplit);
     }
