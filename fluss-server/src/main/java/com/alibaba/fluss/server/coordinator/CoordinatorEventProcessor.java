@@ -63,7 +63,6 @@ import com.alibaba.fluss.server.entity.DeleteReplicaResultForBucket;
 import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshotStore;
-import com.alibaba.fluss.server.metadata.ClusterMetadataInfo;
 import com.alibaba.fluss.server.metadata.ServerMetadataCache;
 import com.alibaba.fluss.server.metrics.group.CoordinatorMetricGroup;
 import com.alibaba.fluss.server.utils.RpcMessageUtils;
@@ -172,12 +171,18 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 new ReplicaStateMachine(
                         coordinatorContext,
                         new CoordinatorRequestBatch(
-                                coordinatorChannelManager, coordinatorEventManager));
+                                coordinatorChannelManager,
+                                coordinatorEventManager,
+                                coordinatorContext,
+                                serverMetadataCache::updateMetadata));
         this.tableBucketStateMachine =
                 new TableBucketStateMachine(
                         coordinatorContext,
                         new CoordinatorRequestBatch(
-                                coordinatorChannelManager, coordinatorEventManager),
+                                coordinatorChannelManager,
+                                coordinatorEventManager,
+                                coordinatorContext,
+                                serverMetadataCache::updateMetadata),
                         zooKeeperClient);
         this.metadataManager = new MetadataManager(zooKeeperClient);
         this.tableManager =
@@ -190,7 +195,11 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.tabletServerChangeWatcher =
                 new TabletServerChangeWatcher(zooKeeperClient, coordinatorEventManager);
         this.coordinatorRequestBatch =
-                new CoordinatorRequestBatch(coordinatorChannelManager, coordinatorEventManager);
+                new CoordinatorRequestBatch(
+                        coordinatorChannelManager,
+                        coordinatorEventManager,
+                        coordinatorContext,
+                        serverMetadataCache::updateMetadata);
         this.completedSnapshotStoreManager = completedSnapshotStoreManager;
         this.autoPartitionManager = autoPartitionManager;
         this.coordinatorMetricGroup = coordinatorMetricGroup;
@@ -231,7 +240,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
         // partitionStateMachine.startup().
         LOG.info("Sending update metadata request.");
         updateServerMetadataCache(
-                Optional.ofNullable(coordinatorServerNode),
                 new HashSet<>(coordinatorContext.getLiveTabletServers().values()));
 
         // start table manager
@@ -647,7 +655,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // update server metadata cache.
         updateServerMetadataCache(
-                Optional.ofNullable(coordinatorServerNode),
                 new HashSet<>(coordinatorContext.getLiveTabletServers().values()));
 
         // when a new tablet server comes up, we need to get all replicas of the server
@@ -685,7 +692,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
         coordinatorChannelManager.removeTabletServer(tabletServerId);
 
         updateServerMetadataCache(
-                Optional.ofNullable(coordinatorServerNode),
                 new HashSet<>(coordinatorContext.getLiveTabletServers().values()));
 
         TableBucketStateMachine tableBucketStateMachine = tableManager.getTableBucketStateMachine();
@@ -969,19 +975,11 @@ public class CoordinatorEventProcessor implements EventProcessor {
     }
 
     /** Update metadata cache for coordinator server and all remote tablet servers. */
-    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
-    private void updateServerMetadataCache(
-            Optional<ServerNode> coordinatorServer, Set<ServerNode> aliveTabletServers) {
-        // 1. update local metadata cache.
-        serverMetadataCache.updateMetadata(
-                new ClusterMetadataInfo(coordinatorServer, aliveTabletServers));
-
-        // 2. send update metadata request to all alive tablet servers
+    private void updateServerMetadataCache(Set<ServerNode> aliveTabletServers) {
+        //  send update metadata request to all alive tablet servers
         coordinatorRequestBatch.newBatch();
-        Set<Integer> serverIds =
-                aliveTabletServers.stream().map(ServerNode::id).collect(Collectors.toSet());
         coordinatorRequestBatch.addUpdateMetadataRequestForTabletServers(
-                serverIds, coordinatorServer, aliveTabletServers);
+                coordinatorServerNode, aliveTabletServers);
         coordinatorRequestBatch.sendUpdateMetadataRequest();
     }
 }

@@ -16,12 +16,19 @@
 
 package com.alibaba.fluss.server.metadata;
 
-import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.cluster.ServerType;
+import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.rpc.messages.PbBucketMetadata;
+import com.alibaba.fluss.rpc.messages.PbClusterServerMetadata;
+import com.alibaba.fluss.rpc.messages.PbServerNode;
+import com.alibaba.fluss.rpc.messages.PbTableBucketMetadata;
+import com.alibaba.fluss.rpc.messages.UpdateMetadataRequest;
 
-import java.util.Collections;
+import javax.annotation.Nullable;
+
 import java.util.HashMap;
-import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -36,31 +43,75 @@ public class ServerMetadataCacheImpl extends AbstractServerMetadataCache {
     }
 
     @Override
-    public void updateMetadata(ClusterMetadataInfo clusterMetadataInfo) {
+    public void updateMetadata(UpdateMetadataRequest updateMetadataRequest) {
         inLock(
                 bucketMetadataLock,
                 () -> {
-                    // 1. update coordinator server.
-                    ServerNode coordinatorServer =
-                            clusterMetadataInfo.getCoordinatorServer().orElse(null);
+                    MetadataSnapshot newMetadataSnapshot = metadataSnapshot;
+                    if (updateMetadataRequest.hasClusterServerMetadata()) {
+                        PbClusterServerMetadata pbClusterServerMetadata =
+                                updateMetadataRequest.getClusterServerMetadata();
+                        ServerNode coordinatorServer =
+                                pbClusterServerMetadata.hasCoordinatorServer()
+                                        ? fromPbServerNode(
+                                                pbClusterServerMetadata.getCoordinatorServer(),
+                                                ServerType.COORDINATOR)
+                                        : null;
 
-                    // 2. Update the alive table servers. We always use the new alive table servers
-                    // to replace the old alive table servers.
-                    HashMap<Integer, ServerNode> newAliveTableServers = new HashMap<>();
-                    Set<ServerNode> aliveTabletServers =
-                            clusterMetadataInfo.getAliveTabletServers();
-                    for (ServerNode tabletServer : aliveTabletServers) {
-                        newAliveTableServers.put(tabletServer.id(), tabletServer);
+                        // 2. Update the alive table servers. We always use the new alive table
+                        // servers
+                        // to replace the old alive table servers.
+                        HashMap<Integer, ServerNode> newAliveTableServers = new HashMap<>();
+                        for (PbServerNode pbServerNode :
+                                pbClusterServerMetadata.getTabletServersList()) {
+                            newAliveTableServers.put(
+                                    pbServerNode.getNodeId(),
+                                    fromPbServerNode(pbServerNode, ServerType.TABLET_SERVER));
+                        }
+                        newMetadataSnapshot =
+                                newMetadataSnapshot.updateClusterServers(
+                                        newAliveTableServers, coordinatorServer);
                     }
 
-                    clusterMetadata =
-                            new Cluster(
-                                    newAliveTableServers,
-                                    coordinatorServer,
-                                    Collections.emptyMap(),
-                                    Collections.emptyMap(),
-                                    Collections.emptyMap(),
-                                    Collections.emptyMap());
+                    Map<TableBucket, Integer> bucketLeaders = new HashMap<>();
+                    for (PbTableBucketMetadata pbTableBucketMetadata :
+                            updateMetadataRequest.getBucketMetadatasList()) {
+                        long tableId = pbTableBucketMetadata.getTableId();
+                        Long partitionId =
+                                pbTableBucketMetadata.hasPartitionId()
+                                        ? pbTableBucketMetadata.getPartitionId()
+                                        : null;
+                        for (PbBucketMetadata pbBucketMetadata :
+                                pbTableBucketMetadata.getBucketMetadatasList()) {
+                            bucketLeaders.put(
+                                    new TableBucket(
+                                            tableId, partitionId, pbBucketMetadata.getBucketId()),
+                                    pbBucketMetadata.getLeaderId());
+                        }
+                    }
+
+                    if (!bucketLeaders.isEmpty()) {
+                        newMetadataSnapshot =
+                                newMetadataSnapshot.updateBucketLeaders(bucketLeaders);
+                    }
+
+                    if (newMetadataSnapshot != metadataSnapshot) {
+                        metadataSnapshot = newMetadataSnapshot;
+                    }
                 });
+    }
+
+    @Nullable
+    @Override
+    public Integer getLeader(TableBucket tableBucket) {
+        return metadataSnapshot.getLeader(tableBucket);
+    }
+
+    private ServerNode fromPbServerNode(PbServerNode pbServerNode, ServerType serverType) {
+        return new ServerNode(
+                pbServerNode.getNodeId(),
+                pbServerNode.getHost(),
+                pbServerNode.getPort(),
+                serverType);
     }
 }

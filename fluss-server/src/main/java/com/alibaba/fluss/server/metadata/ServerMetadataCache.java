@@ -17,6 +17,10 @@
 package com.alibaba.fluss.server.metadata;
 
 import com.alibaba.fluss.cluster.MetadataCache;
+import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.rpc.messages.UpdateMetadataRequest;
+
+import javax.annotation.Nullable;
 
 /** Metadata cache for server. it only caches the cluster metadata. */
 public interface ServerMetadataCache extends MetadataCache {
@@ -26,5 +30,8 @@ public interface ServerMetadataCache extends MetadataCache {
      *
      * @param clusterMetadataInfo the metadata info.
      */
-    void updateMetadata(ClusterMetadataInfo clusterMetadataInfo);
+    void updateMetadata(UpdateMetadataRequest clusterMetadataInfo);
+
+    @Nullable
+    Integer getLeader(TableBucket tableBucket);
 }

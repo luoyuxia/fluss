@@ -45,14 +45,22 @@ import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeNotifyBucketLeaderAndIsr;
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeNotifyLakeTableOffsetForBucket;
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeStopBucketReplica;
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeTableBucketMetadata;
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeUpdateMetadataRequest;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.toTableBucket;
 
 /** A request sender for coordinator server to request to tablet server by batch. */
@@ -66,9 +74,10 @@ public class CoordinatorRequestBatch {
     // a map from tablet server to stop replica for each bucket.
     private final Map<Integer, Map<TableBucket, PbStopReplicaReqForBucket>> stopReplicaRequestMap =
             new HashMap<>();
-    // a map from tablet server to update metadata request
-    private final Map<Integer, UpdateMetadataRequest> updateMetadataRequestTabletServerSet =
-            new HashMap<>();
+
+    private ClusterServerMetadata clusterServerMetadata = null;
+    private final Map<TableBucket, Integer> tableBucketLeader = new HashMap<>();
+
     // a map from tablet server to notify remote log offsets request.
     private final Map<Integer, NotifyRemoteLogOffsetsRequest> notifyRemoteLogOffsetsRequestMap =
             new HashMap<>();
@@ -81,11 +90,19 @@ public class CoordinatorRequestBatch {
 
     private final CoordinatorChannelManager coordinatorChannelManager;
     private final EventManager eventManager;
+    private final CoordinatorContext coordinatorContext;
+
+    private final Consumer<UpdateMetadataRequest> callBackOnSendUpdateMedataRequest;
 
     public CoordinatorRequestBatch(
-            CoordinatorChannelManager coordinatorChannelManager, EventManager eventManager) {
+            CoordinatorChannelManager coordinatorChannelManager,
+            EventManager eventManager,
+            CoordinatorContext coordinatorContext,
+            Consumer<UpdateMetadataRequest> callBackOnSendUpdateMedataRequest) {
         this.coordinatorChannelManager = coordinatorChannelManager;
         this.eventManager = eventManager;
+        this.coordinatorContext = coordinatorContext;
+        this.callBackOnSendUpdateMedataRequest = callBackOnSendUpdateMedataRequest;
     }
 
     public void newBatch() {
@@ -103,12 +120,10 @@ public class CoordinatorRequestBatch {
                                     + "a new one. Some StopReplica request in %s might be lost.",
                             stopReplicaRequestMap));
         }
-        if (!updateMetadataRequestTabletServerSet.isEmpty()) {
+        if (clusterServerMetadata != null || !tableBucketLeader.isEmpty()) {
             throw new IllegalStateException(
-                    String.format(
-                            "The UpdateMetadata request from coordinator to tablet server is not empty while creating "
-                                    + "a new one. Some UpdateMetadata request in %s might be lost.",
-                            updateMetadataRequestTabletServerSet));
+                    "The metadata to update from coordinator to tablet server is not empty while creating "
+                            + "a new one. Some UpdateMetadata request might be lost.");
         }
 
         if (!notifyRemoteLogOffsetsRequestMap.isEmpty()) {
@@ -142,18 +157,21 @@ public class CoordinatorRequestBatch {
                         notifyLeaderAndIsrRequestMap,
                         t);
             }
-            if (!updateMetadataRequestTabletServerSet.isEmpty()) {
+
+            if (clusterServerMetadata != null || !tableBucketLeader.isEmpty()) {
                 LOG.error(
-                        "Haven't been able to send update metadata requests, current state of the map is {}.",
-                        updateMetadataRequestTabletServerSet,
+                        "Haven't been able to send update metadata to tablet servers {}",
+                        coordinatorContext.getLiveTabletServers().keySet(),
                         t);
             }
+
             if (!stopReplicaRequestMap.isEmpty()) {
                 LOG.error(
                         "Haven't been able to send stop replica requests, current state of the map is {}.",
                         stopReplicaRequestMap,
                         t);
             }
+
             if (!notifyRemoteLogOffsetsRequestMap.isEmpty()) {
                 LOG.error(
                         "Haven't been able to send delete log segments requests, current state of the map is {}.",
@@ -185,7 +203,7 @@ public class CoordinatorRequestBatch {
                                             notifyLeaderAndIsrRequestMap.computeIfAbsent(
                                                     id, k -> new HashMap<>());
                             PbNotifyLeaderAndIsrReqForBucket notifyLeaderAndIsrForBucket =
-                                    RpcMessageUtils.makeNotifyBucketLeaderAndIsr(
+                                    makeNotifyBucketLeaderAndIsr(
                                             new NotifyLeaderAndIsrData(
                                                     tablePath,
                                                     tableBucket,
@@ -193,6 +211,9 @@ public class CoordinatorRequestBatch {
                                                     leaderAndIsr));
                             notifyBucketLeaderAndIsr.put(tableBucket, notifyLeaderAndIsrForBucket);
                         });
+
+        // record table bucket leader
+        tableBucketLeader.put(tableBucket, leaderAndIsr.leader());
     }
 
     public void addStopReplicaRequestForTabletServers(
@@ -212,25 +233,16 @@ public class CoordinatorRequestBatch {
                                     stopBucketReplica.get(tableBucket) != null
                                             && stopBucketReplica.get(tableBucket).isDelete();
                             PbStopReplicaReqForBucket protoStopReplicaForBucket =
-                                    RpcMessageUtils.makeStopBucketReplica(
+                                    makeStopBucketReplica(
                                             tableBucket, alreadyDelete || isDelete, leaderEpoch);
                             stopBucketReplica.put(tableBucket, protoStopReplicaForBucket);
                         });
     }
 
-    @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
+    /** Send UpdateMetadataRequest to the given tablet server for the given partitions. */
     public void addUpdateMetadataRequestForTabletServers(
-            Set<Integer> tabletServers,
-            Optional<ServerNode> coordinatorServer,
-            Set<ServerNode> aliveTabletServers) {
-        tabletServers.stream()
-                .filter(s -> s >= 0)
-                .forEach(
-                        id ->
-                                updateMetadataRequestTabletServerSet.put(
-                                        id,
-                                        RpcMessageUtils.makeUpdateMetadataRequest(
-                                                coordinatorServer, aliveTabletServers)));
+            @Nullable ServerNode coordinatorServer, Set<ServerNode> aliveTabletServers) {
+        clusterServerMetadata = new ClusterServerMetadata(coordinatorServer, aliveTabletServers);
     }
 
     public void addNotifyRemoteLogOffsetsRequestForTabletServers(
@@ -276,7 +288,7 @@ public class CoordinatorRequestBatch {
                                                     id, k -> new HashMap<>());
                             notifyLakeTableOffsetReqForBucketMap.put(
                                     tableBucket,
-                                    RpcMessageUtils.makeNotifyLakeTableOffsetForBucket(
+                                    makeNotifyLakeTableOffsetForBucket(
                                             tableBucket, lakeTableSnapshot));
                         });
     }
@@ -437,22 +449,39 @@ public class CoordinatorRequestBatch {
     }
 
     public void sendUpdateMetadataRequest() {
-        for (Map.Entry<Integer, UpdateMetadataRequest> updateMetadataRequestEntry :
-                updateMetadataRequestTabletServerSet.entrySet()) {
-            Integer serverId = updateMetadataRequestEntry.getKey();
-            UpdateMetadataRequest updateMetadataRequest = updateMetadataRequestEntry.getValue();
-            coordinatorChannelManager.sendUpdateMetadataRequest(
-                    serverId,
-                    updateMetadataRequest,
-                    (response, throwable) -> {
-                        if (throwable != null) {
-                            LOG.debug("Failed to send update metadata request.", throwable);
-                        } else {
-                            LOG.debug("Update metadata for server {} success.", serverId);
-                        }
-                    });
+        UpdateMetadataRequest updateMetadataRequest = null;
+        if (clusterServerMetadata != null) {
+            updateMetadataRequest =
+                    makeUpdateMetadataRequest(
+                            Optional.ofNullable(clusterServerMetadata.coordinatorServer),
+                            clusterServerMetadata.tabletServers);
+            clusterServerMetadata = null;
+        } else {
+            if (!tableBucketLeader.isEmpty()) {
+                updateMetadataRequest = new UpdateMetadataRequest();
+                // add table bucket metadata
+                updateMetadataRequest.addAllBucketMetadatas(
+                        makeTableBucketMetadata(tableBucketLeader));
+                tableBucketLeader.clear();
+            }
         }
-        updateMetadataRequestTabletServerSet.clear();
+
+        if (updateMetadataRequest != null) {
+            callBackOnSendUpdateMedataRequest.accept(updateMetadataRequest);
+            Set<Integer> servers = coordinatorContext.getLiveTabletServers().keySet();
+            for (Integer serverId : servers) {
+                coordinatorChannelManager.sendUpdateMetadataRequest(
+                        serverId,
+                        updateMetadataRequest,
+                        (response, throwable) -> {
+                            if (throwable != null) {
+                                LOG.debug("Failed to send update metadata request.", throwable);
+                            } else {
+                                LOG.debug("Update metadata for server {} success.", serverId);
+                            }
+                        });
+            }
+        }
     }
 
     public void sendNotifyRemoteLogOffsetsRequest(int coordinatorEpoch) {
@@ -522,5 +551,16 @@ public class CoordinatorRequestBatch {
                     });
         }
         notifyLakeTableOffsetRequestMap.clear();
+    }
+
+    private static class ClusterServerMetadata {
+        private final @Nullable ServerNode coordinatorServer;
+        private final Set<ServerNode> tabletServers;
+
+        public ClusterServerMetadata(
+                @Nullable ServerNode coordinatorServer, Set<ServerNode> tabletServers) {
+            this.coordinatorServer = coordinatorServer;
+            this.tabletServers = tabletServers;
+        }
     }
 }

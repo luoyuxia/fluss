@@ -181,6 +181,10 @@ class ReplicaStateMachineTest {
                                         TestingClientMetricGroup.newInstance())),
                         (event) -> {
                             // do nothing
+                        },
+                        coordinatorContext,
+                        (request) -> {
+                            // do nothing
                         }));
     }
 
@@ -210,6 +214,10 @@ class ReplicaStateMachineTest {
                                             deleteReplicaResultForBucket.succeeded());
                                 }
                             }
+                        },
+                        coordinatorContext,
+                        (request) -> {
+                            // do nothing
                         }));
     }
 }

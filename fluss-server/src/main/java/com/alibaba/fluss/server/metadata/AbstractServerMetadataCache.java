@@ -16,7 +16,6 @@
 
 package com.alibaba.fluss.server.metadata;
 
-import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.server.coordinator.CoordinatorServer;
 import com.alibaba.fluss.server.tablet.TabletServer;
@@ -40,31 +39,31 @@ public abstract class AbstractServerMetadataCache implements ServerMetadataCache
      *
      * <p>multiple reads of this value risk getting different snapshots.
      */
-    protected volatile Cluster clusterMetadata;
+    protected volatile MetadataSnapshot metadataSnapshot;
 
     public AbstractServerMetadataCache() {
         // no coordinator server address while creating.
-        this.clusterMetadata = Cluster.empty();
+        this.metadataSnapshot = MetadataSnapshot.empty();
     }
 
     @Override
     public boolean isAliveTabletServer(int serverId) {
-        Map<Integer, ServerNode> aliveTabletServersById = clusterMetadata.getAliveTabletServers();
+        Map<Integer, ServerNode> aliveTabletServersById = metadataSnapshot.getAliveTabletServers();
         return aliveTabletServersById.containsKey(serverId);
     }
 
     @Override
     public @Nullable ServerNode getTabletServer(int serverId) {
-        return clusterMetadata.getAliveTabletServerById(serverId).orElse(null);
+        return metadataSnapshot.getAliveTabletServerById(serverId).orElse(null);
     }
 
     @Override
     public Map<Integer, ServerNode> getAllAliveTabletServers() {
-        return clusterMetadata.getAliveTabletServers();
+        return metadataSnapshot.getAliveTabletServers();
     }
 
     @Override
     public @Nullable ServerNode getCoordinatorServer() {
-        return clusterMetadata.getCoordinatorServer();
+        return metadataSnapshot.getCoordinatorServer();
     }
 }
