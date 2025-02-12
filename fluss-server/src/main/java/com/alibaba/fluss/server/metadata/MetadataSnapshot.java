@@ -32,35 +32,83 @@ public class MetadataSnapshot {
     @Nullable private final ServerNode coordinatorServer;
     private final Map<Integer, ServerNode> aliveTabletServersById;
 
-    private final Map<TableBucket, Integer> bucketLeaders;
+    // table id -> <bucket id -> leader server id>
+    private final Map<Long, Map<Integer, Integer>> tableBucketLeaders;
+    // table partition id -> <bucket id -> leader server id>
+    private final Map<Long, Map<Integer, Integer>> tablePartitionBucketLeaders;
 
     public MetadataSnapshot(
             Map<Integer, ServerNode> aliveTabletServersById,
             @Nullable ServerNode coordinatorServer) {
         this.coordinatorServer = coordinatorServer;
         this.aliveTabletServersById = Collections.unmodifiableMap(aliveTabletServersById);
-        this.bucketLeaders = new HashMap<>();
+
+        this.tableBucketLeaders = new HashMap<>();
+        this.tablePartitionBucketLeaders = new HashMap<>();
     }
 
     public MetadataSnapshot(
             Map<Integer, ServerNode> aliveTabletServersById,
             @Nullable ServerNode coordinatorServer,
-            Map<TableBucket, Integer> bucketLeaders) {
+            Map<Long, Map<Integer, Integer>> tableBucketLeaders,
+            Map<Long, Map<Integer, Integer>> tablePartitionBucketLeaders) {
         this.coordinatorServer = coordinatorServer;
         this.aliveTabletServersById = aliveTabletServersById;
-        this.bucketLeaders = bucketLeaders;
+        this.tableBucketLeaders = tableBucketLeaders;
+        this.tablePartitionBucketLeaders = tablePartitionBucketLeaders;
     }
 
-    public MetadataSnapshot updateBucketLeaders(Map<TableBucket, Integer> newBucketLeaders) {
-        Map<TableBucket, Integer> oldBucketLeaders = new HashMap<>(bucketLeaders);
-        oldBucketLeaders.putAll(newBucketLeaders);
-        return new MetadataSnapshot(aliveTabletServersById, coordinatorServer, oldBucketLeaders);
+    public MetadataSnapshot updateBucketLeaders(Map<TableBucket, Integer> bucketLeadersToUpdate) {
+        Map<Long, Map<Integer, Integer>> newTableBucketLeaders = new HashMap<>(tableBucketLeaders);
+        Map<Long, Map<Integer, Integer>> newTablePartitionBucketLeaders =
+                new HashMap<>(tablePartitionBucketLeaders);
+        for (Map.Entry<TableBucket, Integer> bucketAndLeader : bucketLeadersToUpdate.entrySet()) {
+            TableBucket tableBucket = bucketAndLeader.getKey();
+            Integer leaderServerId = bucketAndLeader.getValue();
+            if (tableBucket.getPartitionId() == null) {
+                newTableBucketLeaders
+                        .computeIfAbsent(tableBucket.getTableId(), (tableId) -> new HashMap<>())
+                        .put(tableBucket.getBucket(), leaderServerId);
+            } else {
+                newTablePartitionBucketLeaders
+                        .computeIfAbsent(
+                                tableBucket.getPartitionId(), (tablePartition) -> new HashMap<>())
+                        .put(tableBucket.getBucket(), leaderServerId);
+            }
+        }
+
+        return new MetadataSnapshot(
+                aliveTabletServersById,
+                coordinatorServer,
+                newTableBucketLeaders,
+                newTablePartitionBucketLeaders);
+    }
+
+    public MetadataSnapshot removeTableAndPartitions(long[] tableIds, long[] partitionIds) {
+        Map<Long, Map<Integer, Integer>> newTableBucketLeaders = new HashMap<>(tableBucketLeaders);
+        Map<Long, Map<Integer, Integer>> newTablePartitionBucketLeaders =
+                new HashMap<>(tablePartitionBucketLeaders);
+        for (Long tableId : tableIds) {
+            newTableBucketLeaders.remove(tableId);
+        }
+        for (Long partitionId : partitionIds) {
+            newTablePartitionBucketLeaders.remove(partitionId);
+        }
+        return new MetadataSnapshot(
+                aliveTabletServersById,
+                coordinatorServer,
+                newTableBucketLeaders,
+                newTablePartitionBucketLeaders);
     }
 
     public MetadataSnapshot updateClusterServers(
             Map<Integer, ServerNode> aliveTabletServersById,
             @Nullable ServerNode coordinatorServer) {
-        return new MetadataSnapshot(aliveTabletServersById, coordinatorServer, bucketLeaders);
+        return new MetadataSnapshot(
+                aliveTabletServersById,
+                coordinatorServer,
+                tableBucketLeaders,
+                tablePartitionBucketLeaders);
     }
 
     public Map<Integer, ServerNode> getAliveTabletServers() {
@@ -73,7 +121,14 @@ public class MetadataSnapshot {
     }
 
     public Integer getLeader(TableBucket tableBucket) {
-        return bucketLeaders.get(tableBucket);
+        if (tableBucket.getPartitionId() == null) {
+            Map<Integer, Integer> bucketLeaders = tableBucketLeaders.get(tableBucket.getTableId());
+            return bucketLeaders == null ? null : bucketLeaders.get(tableBucket.getBucket());
+        } else {
+            Map<Integer, Integer> bucketLeaders =
+                    tablePartitionBucketLeaders.get(tableBucket.getPartitionId());
+            return bucketLeaders == null ? null : bucketLeaders.get(tableBucket.getBucket());
+        }
     }
 
     @Nullable

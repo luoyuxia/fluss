@@ -98,7 +98,7 @@ class TableManagerTest {
                         testCoordinatorChannelManager,
                         testingEventManager,
                         coordinatorContext,
-                        (request) -> {
+                        (bucketLeader) -> {
                             // do nothing
                         });
         ReplicaStateMachine replicaStateMachine =

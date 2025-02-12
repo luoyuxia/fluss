@@ -183,7 +183,7 @@ class ReplicaStateMachineTest {
                             // do nothing
                         },
                         coordinatorContext,
-                        (request) -> {
+                        (bucketLeader) -> {
                             // do nothing
                         }));
     }
@@ -216,7 +216,7 @@ class ReplicaStateMachineTest {
                             }
                         },
                         coordinatorContext,
-                        (request) -> {
+                        (bucketLeader) -> {
                             // do nothing
                         }));
     }

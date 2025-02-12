@@ -85,6 +85,19 @@ class ServerMetadataCacheImplTest {
         serverMetadataCache.updateMetadata(updateMetadataRequest);
         expectedLeaderByTableBucket.putAll(newLeaderByTableBucket);
         verifyTableBucketLeader(serverMetadataCache, expectedLeaderByTableBucket);
+
+        // update with table and partition deleted
+        updateMetadataRequest =
+                new UpdateMetadataRequest()
+                        .setDeletedTableIds(new long[] {0})
+                        .setDeletedPartitionIds(new long[] {0, 1, 2});
+        serverMetadataCache.updateMetadata(updateMetadataRequest);
+        // all bucket leader info should be removed from cache
+        expectedLeaderByTableBucket
+                .keySet()
+                .forEach(
+                        (tableBucket) ->
+                                assertThat(serverMetadataCache.getLeader(tableBucket)).isNull());
     }
 
     private void verifyClusterServerMetadata(

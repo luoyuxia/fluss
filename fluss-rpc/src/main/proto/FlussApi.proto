@@ -162,6 +162,8 @@ message MetadataResponse {
 message UpdateMetadataRequest {
   optional PbClusterServerMetadata cluster_server_metadata = 1;
   repeated PbTableBucketMetadata bucket_metadata = 2;
+  repeated int64 deleted_table_id = 3;
+  repeated int64 deleted_partition_id = 4;
 }
 
 message UpdateMetadataResponse {

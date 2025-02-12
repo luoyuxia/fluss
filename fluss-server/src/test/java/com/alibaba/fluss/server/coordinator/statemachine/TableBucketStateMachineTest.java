@@ -98,7 +98,7 @@ class TableBucketStateMachineTest {
                             // do nothing
                         },
                         coordinatorContext,
-                        (request) -> {
+                        (bucketLeader) -> {
                             // do nothing
                         });
         serverMetadataCache = new ServerMetadataCacheImpl();
@@ -247,7 +247,7 @@ class TableBucketStateMachineTest {
                         testCoordinatorChannelManager,
                         eventManager,
                         coordinatorContext,
-                        (request) -> {
+                        (bucketLeader) -> {
                             // do nothing
                         });
         tableBucketStateMachine =

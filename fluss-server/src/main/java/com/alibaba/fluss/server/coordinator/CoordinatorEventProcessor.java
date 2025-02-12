@@ -85,6 +85,7 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -116,11 +117,11 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private final CoordinatorEventManager coordinatorEventManager;
     private final MetadataManager metadataManager;
     private final TableManager tableManager;
+    private final ServerMetadataCache serverMetadataCache;
     private final AutoPartitionManager autoPartitionManager;
     private final TableChangeWatcher tableChangeWatcher;
     private final CoordinatorChannelManager coordinatorChannelManager;
     private final TabletServerChangeWatcher tabletServerChangeWatcher;
-    private final ServerMetadataCache serverMetadataCache;
     private final CoordinatorRequestBatch coordinatorRequestBatch;
     private final CoordinatorMetricGroup coordinatorMetricGroup;
 
@@ -174,7 +175,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 coordinatorChannelManager,
                                 coordinatorEventManager,
                                 coordinatorContext,
-                                serverMetadataCache::updateMetadata));
+                                serverMetadataCache::updateBucketLeaders));
         this.tableBucketStateMachine =
                 new TableBucketStateMachine(
                         coordinatorContext,
@@ -182,7 +183,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 coordinatorChannelManager,
                                 coordinatorEventManager,
                                 coordinatorContext,
-                                serverMetadataCache::updateMetadata),
+                                serverMetadataCache::updateBucketLeaders),
                         zooKeeperClient);
         this.metadataManager = new MetadataManager(zooKeeperClient);
         this.tableManager =
@@ -199,7 +200,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         coordinatorChannelManager,
                         coordinatorEventManager,
                         coordinatorContext,
-                        serverMetadataCache::updateMetadata);
+                        serverMetadataCache::updateBucketLeaders);
         this.completedSnapshotStoreManager = completedSnapshotStoreManager;
         this.autoPartitionManager = autoPartitionManager;
         this.coordinatorMetricGroup = coordinatorMetricGroup;
@@ -231,6 +232,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
             throw new FlussRuntimeException("Fail to initialize coordinator context.", e);
         }
 
+        // we need to update the metadata cache of coordinator
+        // after initialized
+        updateMetadataCache();
+
         // We need to send UpdateMetadataRequest after the coordinator context is initialized and
         // before the state machines in tableManager
         // are started. The is because tablet servers need to receive the list of live tablet
@@ -239,8 +244,13 @@ public class CoordinatorEventProcessor implements EventProcessor {
         // replicaStateMachine.startup() and
         // partitionStateMachine.startup().
         LOG.info("Sending update metadata request.");
-        updateServerMetadataCache(
-                new HashSet<>(coordinatorContext.getLiveTabletServers().values()));
+        sendUpdateMetadataRequest(
+                new HashSet<>(coordinatorContext.getLiveTabletServers().keySet()),
+                Collections.emptySet(),
+                coordinatorContext.getTablesToBeDeleted(),
+                coordinatorContext.getPartitionsToBeDeleted().stream()
+                        .map(TablePartition::getPartitionId)
+                        .collect(Collectors.toSet()));
 
         // start table manager
         tableManager.startup();
@@ -248,6 +258,25 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // start the event manager which will then process the event
         coordinatorEventManager.start();
+    }
+
+    private void updateMetadataCache() {
+        // update cluster servers info
+        updateClusterServersMetadataCache();
+        // update bucket leader info
+        Map<TableBucket, Integer> bucketLeaders = new HashMap<>();
+        for (TableBucket tableBucket : coordinatorContext.bucketsWithLeaders()) {
+            coordinatorContext
+                    .getBucketLeaderAndIsr(tableBucket)
+                    .ifPresent(leader -> bucketLeaders.put(tableBucket, leader.leader()));
+        }
+        serverMetadataCache.updateBucketLeaders(bucketLeaders);
+    }
+
+    private void updateClusterServersMetadataCache() {
+        // update cluster servers info
+        serverMetadataCache.updateClusterServers(
+                coordinatorServerNode, new HashMap<>(coordinatorContext.getLiveTabletServers()));
     }
 
     public void shutdown() {
@@ -508,6 +537,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     private void processDropTable(DropTableEvent dropTableEvent) {
         coordinatorContext.queueTableDeletion(Collections.singleton(dropTableEvent.getTableId()));
+        serverMetadataCache.deleteTable(dropTableEvent.getTableId());
+        sendUpdateTableDeletedMetadataRequest(
+                new HashSet<>(coordinatorContext.getLiveTabletServers().keySet()),
+                dropTableEvent.getTableId());
         tableManager.onDeleteTable(dropTableEvent.getTableId());
         if (dropTableEvent.isAutoPartitionTable()) {
             autoPartitionManager.removeAutoPartitionTable(dropTableEvent.getTableId());
@@ -519,6 +552,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 new TablePartition(
                         dropPartitionEvent.getTableId(), dropPartitionEvent.getPartitionId());
         coordinatorContext.queuePartitionDeletion(Collections.singleton(tablePartition));
+        serverMetadataCache.deletePartition(dropPartitionEvent.getPartitionId());
+        sendUpdatePartitionDeletedMetadataRequest(
+                new HashSet<>(coordinatorContext.getLiveTabletServers().keySet()),
+                dropPartitionEvent.getPartitionId());
         tableManager.onDeletePartition(
                 dropPartitionEvent.getTableId(), dropPartitionEvent.getPartitionId());
     }
@@ -649,13 +686,23 @@ public class CoordinatorEventProcessor implements EventProcessor {
         // process new tablet server
         LOG.info("New tablet server callback for tablet server {}", tabletServerId);
 
+        Set<Integer> existingTabletServers =
+                new HashSet<>(coordinatorContext.getLiveTabletServers().keySet());
         coordinatorContext.removeOfflineBucketInServer(tabletServerId);
         coordinatorContext.addLiveTabletServer(serverNode);
         coordinatorChannelManager.addTabletServer(serverNode);
 
-        // update server metadata cache.
-        updateServerMetadataCache(
-                new HashSet<>(coordinatorContext.getLiveTabletServers().values()));
+        updateClusterServersMetadataCache();
+
+        // Send update metadata request to all the existing tablets servers in the cluster so that
+        // they know about the new tablet servers via this update. No need to include any bucket
+        // states in the request since there are
+        // no bucket state changes.
+        sendUpdateMetadataRequest(existingTabletServers, Collections.emptySet());
+        // Send update metadata request to the new tablet server including the full bucket state in
+        // the request
+        sendUpdateMetadataRequest(
+                Collections.singleton(serverNode.id()), coordinatorContext.bucketsWithLeaders());
 
         // when a new tablet server comes up, we need to get all replicas of the server
         // and transmit them to online
@@ -664,8 +711,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         .filter(
                                 // don't consider replicas to be deleted
                                 tableBucketReplica ->
-                                        !coordinatorContext.isTableQueuedForDeletion(
-                                                tableBucketReplica.getTableBucket().getTableId()))
+                                        !coordinatorContext.isToBeDeleted(
+                                                tableBucketReplica.getTableBucket()))
                         .collect(Collectors.toSet());
 
         replicaStateMachine.handleStateChanges(replicas, OnlineReplica);
@@ -691,8 +738,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
         coordinatorContext.removeLiveTabletServer(tabletServerId);
         coordinatorChannelManager.removeTabletServer(tabletServerId);
 
-        updateServerMetadataCache(
-                new HashSet<>(coordinatorContext.getLiveTabletServers().values()));
+        updateClusterServersMetadataCache();
+        sendUpdateMetadataRequest(
+                coordinatorContext.getLiveTabletServers().keySet(), Collections.emptySet());
 
         TableBucketStateMachine tableBucketStateMachine = tableManager.getTableBucketStateMachine();
         // get all table bucket whose leader is in this server and it not to be deleted
@@ -700,9 +748,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 coordinatorContext.getBucketsWithLeaderIn(tabletServerId).stream()
                         .filter(
                                 // don't consider buckets to be deleted
-                                tableBucket ->
-                                        !coordinatorContext.isTableQueuedForDeletion(
-                                                tableBucket.getTableId()))
+                                bucket -> !coordinatorContext.isToBeDeleted(bucket))
                         .collect(Collectors.toSet());
         // trigger offline state for all the table buckets whose current leader
         // is the failed tablet server
@@ -717,8 +763,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         .filter(
                                 // don't consider replicas to be deleted
                                 tableBucketReplica ->
-                                        !coordinatorContext.isTableQueuedForDeletion(
-                                                tableBucketReplica.getTableBucket().getTableId()))
+                                        !coordinatorContext.isToBeDeleted(
+                                                tableBucketReplica.getTableBucket()))
                         .collect(Collectors.toSet());
 
         // trigger OfflineReplica state change for those newly offline replicas
@@ -974,12 +1020,47 @@ public class CoordinatorEventProcessor implements EventProcessor {
         }
     }
 
-    /** Update metadata cache for coordinator server and all remote tablet servers. */
-    private void updateServerMetadataCache(Set<ServerNode> aliveTabletServers) {
-        //  send update metadata request to all alive tablet servers
+    private void sendUpdateMetadataRequest(
+            Set<Integer> serversToSend, Set<TableBucket> tableBuckets) {
+        // send update metadata request to tablet servers
         coordinatorRequestBatch.newBatch();
         coordinatorRequestBatch.addUpdateMetadataRequestForTabletServers(
-                coordinatorServerNode, aliveTabletServers);
+                serversToSend,
+                coordinatorServerNode,
+                new HashSet<>(coordinatorContext.getLiveTabletServers().values()),
+                tableBuckets);
+        coordinatorRequestBatch.sendUpdateMetadataRequest();
+    }
+
+    private void sendUpdateMetadataRequest(
+            Set<Integer> serversToSend,
+            Set<TableBucket> tableBuckets,
+            Collection<Long> deleteTableIds,
+            Collection<Long> deletePartitionIds) {
+        coordinatorRequestBatch.newBatch();
+        coordinatorRequestBatch.addUpdateMetadataRequestForTabletServers(
+                serversToSend,
+                coordinatorServerNode,
+                new HashSet<>(coordinatorContext.getLiveTabletServers().values()),
+                tableBuckets);
+        coordinatorRequestBatch.addUpdateTableDeletedMetadataRequestForTabletServers(
+                serversToSend, deleteTableIds, deletePartitionIds);
+        coordinatorRequestBatch.sendUpdateMetadataRequest();
+    }
+
+    private void sendUpdateTableDeletedMetadataRequest(
+            Set<Integer> serversToSend, long deleteTableId) {
+        coordinatorRequestBatch.newBatch();
+        coordinatorRequestBatch.addUpdateTableDeletedMetadataRequestForTabletServers(
+                serversToSend, Collections.singleton(deleteTableId), Collections.emptySet());
+        coordinatorRequestBatch.sendUpdateMetadataRequest();
+    }
+
+    private void sendUpdatePartitionDeletedMetadataRequest(
+            Set<Integer> serversToSend, long deletePartitionId) {
+        coordinatorRequestBatch.newBatch();
+        coordinatorRequestBatch.addUpdateTableDeletedMetadataRequestForTabletServers(
+                serversToSend, Collections.emptySet(), Collections.singleton(deletePartitionId));
         coordinatorRequestBatch.sendUpdateMetadataRequest();
     }
 }
