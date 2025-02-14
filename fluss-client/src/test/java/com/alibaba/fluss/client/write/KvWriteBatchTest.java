@@ -29,8 +29,8 @@ import com.alibaba.fluss.record.DefaultKvRecord;
 import com.alibaba.fluss.record.DefaultKvRecordBatch;
 import com.alibaba.fluss.record.KvRecord;
 import com.alibaba.fluss.record.KvRecordReadContext;
-import com.alibaba.fluss.row.InternalRow;
-import com.alibaba.fluss.row.encode.KeyEncoder;
+import com.alibaba.fluss.row.BinaryRow;
+import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.types.DataType;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link KvWriteBatch}. */
 class KvWriteBatchTest {
-    private InternalRow row;
+    private BinaryRow row;
     private byte[] key;
     private int estimatedSizeInBytes;
     private MemorySegmentPool memoryPool;
@@ -60,7 +60,7 @@ class KvWriteBatchTest {
     void setup() {
         row = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
         int[] pkIndex = DATA1_SCHEMA_PK.getPrimaryKeyIndexes();
-        key = new KeyEncoder(DATA1_ROW_TYPE, pkIndex).encode(row);
+        key = new CompactedKeyEncoder(DATA1_ROW_TYPE, pkIndex).encodeKey(row);
         estimatedSizeInBytes = DefaultKvRecord.sizeOf(key, row);
         Configuration config = new Configuration();
         config.setString(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE.key(), "5kb");
@@ -147,8 +147,8 @@ class KvWriteBatchTest {
     }
 
     protected WriteRecord createWriteRecord() {
-        return new WriteRecord(
-                PhysicalTablePath.of(DATA1_TABLE_PATH_PK), WriteKind.PUT, key, 0, row, null);
+        return WriteRecord.forUpsert(
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK), row, key, key, null);
     }
 
     private KvWriteBatch createKvWriteBatch(TableBucket tb) throws Exception {

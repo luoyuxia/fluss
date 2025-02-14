@@ -17,21 +17,34 @@
 package com.alibaba.fluss.client.write;
 
 import com.alibaba.fluss.annotation.Internal;
-import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.cluster.Cluster;
+
+import javax.annotation.Nullable;
+
+import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /**
- * A bucket assigner interface to assign a row to a bucket. Different from {@link
- * DynamicBucketAssigner}, the bucket id is determined during convert {@link InternalRow} to {@link
- * WriteRecord} to send to Fluss and won't be affected by status cluster and others.
+ * An abstract bucket assigner to assign a row to a bucket statically. Different from {@link
+ * DynamicBucketAssigner}, it won't be affected by status of cluster and others during sending.
  */
 @Internal
-public interface StaticBucketAssigner {
+abstract class StaticBucketAssigner implements BucketAssigner {
 
-    /**
-     * Assign a row to a bucket.
-     *
-     * @param row the row to assign
-     * @return the assigned bucket id
-     */
-    int assignBucket(InternalRow row);
+    protected abstract int assignBucket(byte[] bucketKey);
+
+    @Override
+    public int assignBucket(@Nullable byte[] bucketKey, Cluster cluster) {
+        checkNotNull(bucketKey);
+        return assignBucket(bucketKey);
+    }
+
+    @Override
+    public boolean abortIfBatchFull() {
+        return false;
+    }
+
+    @Override
+    public void onNewBatch(Cluster cluster, int prevBucketId) {
+        // do nothing
+    }
 }

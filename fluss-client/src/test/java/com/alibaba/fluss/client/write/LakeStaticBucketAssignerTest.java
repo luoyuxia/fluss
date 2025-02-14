@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Alibaba Group Holding Ltd.
+ * Copyright (c) 2025 Alibaba Group Holding Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,13 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.client.lakehouse;
+package com.alibaba.fluss.client.write;
 
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.types.DataTypes;
 import com.alibaba.fluss.types.RowType;
 
@@ -28,12 +31,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static com.alibaba.fluss.client.lakehouse.paimon.PaimonBucketAssigner.DATA_LAKE_PAIMON;
 import static com.alibaba.fluss.testutils.DataTestUtils.compactedRow;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Test for {@link LakeTableBucketAssigner} . */
-class LakeTableBucketAssignerTest {
+/** Test for {@link LakeStaticBucketAssigner} . */
+class LakeStaticBucketAssignerTest {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
@@ -55,14 +57,17 @@ class LakeTableBucketAssignerTest {
 
         InternalRow row3 = compactedRow(rowType, new Object[] {2, "4", "a"});
         InternalRow row4 = compactedRow(rowType, new Object[] {2, "4", "b"});
+        KeyEncoder keyEncoder =
+                LakeKeyEncoderFactory.createKeyEncoder(
+                        DataLakeFormat.PAIMON, schema.getRowType(), bucketKey);
 
-        LakeTableBucketAssigner lakeTableBucketAssigner =
-                new LakeTableBucketAssigner(DATA_LAKE_PAIMON, schema.getRowType(), bucketKey, 3);
+        LakeStaticBucketAssigner lakeStaticBucketAssigner =
+                new LakeStaticBucketAssigner(DataLakeFormat.PAIMON, 3);
 
-        int row1Bucket = lakeTableBucketAssigner.assignBucket(row1);
-        int row2Bucket = lakeTableBucketAssigner.assignBucket(row2);
-        int row3Bucket = lakeTableBucketAssigner.assignBucket(row3);
-        int row4Bucket = lakeTableBucketAssigner.assignBucket(row4);
+        int row1Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row1));
+        int row2Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row2));
+        int row3Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row3));
+        int row4Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row4));
 
         if (isPartitioned) {
             // bucket key is the column 'a'
@@ -87,8 +92,12 @@ class LakeTableBucketAssignerTest {
                         .build();
         List<String> bucketKey =
                 isPartitioned ? Collections.singletonList("a") : Arrays.asList("a", "c");
-        LakeTableBucketAssigner lakeTableBucketAssigner =
-                new LakeTableBucketAssigner(DATA_LAKE_PAIMON, schema.getRowType(), bucketKey, 3);
+
+        KeyEncoder keyEncoder =
+                LakeKeyEncoderFactory.createKeyEncoder(
+                        DataLakeFormat.PAIMON, schema.getRowType(), bucketKey);
+        LakeStaticBucketAssigner lakeStaticBucketAssigner =
+                new LakeStaticBucketAssigner(DataLakeFormat.PAIMON, 3);
 
         RowType rowType = schema.getRowType();
         InternalRow row1 = compactedRow(rowType, new Object[] {1, "2", "a"});
@@ -97,10 +106,10 @@ class LakeTableBucketAssignerTest {
         InternalRow row3 = compactedRow(rowType, new Object[] {2, "2", "b"});
         InternalRow row4 = compactedRow(rowType, new Object[] {2, "3", "b"});
 
-        int row1Bucket = lakeTableBucketAssigner.assignBucket(row1);
-        int row2Bucket = lakeTableBucketAssigner.assignBucket(row2);
-        int row3Bucket = lakeTableBucketAssigner.assignBucket(row3);
-        int row4Bucket = lakeTableBucketAssigner.assignBucket(row4);
+        int row1Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row1));
+        int row2Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row2));
+        int row3Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row3));
+        int row4Bucket = lakeStaticBucketAssigner.assignBucket(keyEncoder.encodeKey(row4));
 
         assertThat(row1Bucket).isEqualTo(row2Bucket);
         assertThat(row3Bucket).isEqualTo(row4Bucket);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 Alibaba Group Holding Ltd.
+ * Copyright (c) 2025 Alibaba Group Holding Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ package com.alibaba.fluss.client.table;
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
-import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.lookup.Lookuper;
 import com.alibaba.fluss.client.table.scanner.ScanRecord;
 import com.alibaba.fluss.client.table.scanner.log.LogScanner;
@@ -27,9 +26,12 @@ import com.alibaba.fluss.client.table.scanner.log.ScanRecords;
 import com.alibaba.fluss.client.table.writer.AppendWriter;
 import com.alibaba.fluss.client.table.writer.TableWriter;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
+import com.alibaba.fluss.client.write.LakeStaticBucketAssigner;
 import com.alibaba.fluss.config.AutoPartitionTimeUnit;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -37,6 +39,7 @@ import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.GenericRow;
 import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import com.alibaba.fluss.types.DataTypes;
 import com.alibaba.fluss.types.RowType;
@@ -60,11 +63,12 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.alibaba.fluss.client.lakehouse.paimon.PaimonBucketAssigner.DATA_LAKE_PAIMON;
 import static com.alibaba.fluss.testutils.DataTestUtils.compactedRow;
 import static com.alibaba.fluss.testutils.DataTestUtils.row;
 import static com.alibaba.fluss.testutils.InternalRowAssert.assertThatRow;
+import static com.alibaba.fluss.testutils.InternalRowListAssert.assertThatRows;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The IT case for lake table. Lake table is for the table that {@link
@@ -72,7 +76,6 @@ import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
  */
 class FlussLakeTableITCase {
 
-    private static final String LAKE_STORAGE = DATA_LAKE_PAIMON;
     private static final int DEFAULT_BUCKET_COUNT = 3;
     private static final int PARTITION_PRE_CREATE = 2;
 
@@ -89,7 +92,7 @@ class FlussLakeTableITCase {
 
     private static Configuration initConfig() {
         Configuration configuration = new Configuration();
-        configuration.set(ConfigOptions.LAKEHOUSE_STORAGE, LAKE_STORAGE);
+        configuration.set(ConfigOptions.DATALAKE_FORMAT, DataLakeFormat.PAIMON);
         configuration.set(ConfigOptions.DEFAULT_BUCKET_NUMBER, 3);
         return configuration;
     }
@@ -228,16 +231,15 @@ class FlussLakeTableITCase {
             TablePath tablePath, TableDescriptor tableDescriptor) throws Exception {
         TableInfo tableInfo = admin.getTableInfo(tablePath).get();
         long tableId = tableInfo.getTableId();
-        String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
+        DataLakeFormat dataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat().get();
         int rowNums = 30;
         boolean isPartitioned = tableDescriptor.isPartitioned();
         RowType rowType = tableDescriptor.getSchema().getRowType();
-        LakeTableBucketAssigner lakeTableBucketAssigner =
-                new LakeTableBucketAssigner(
-                        checkNotNull(dataLakeType),
-                        rowType,
-                        tableDescriptor.getBucketKeys(),
-                        DEFAULT_BUCKET_COUNT);
+        KeyEncoder keyEncoder =
+                LakeKeyEncoderFactory.createKeyEncoder(
+                        dataLakeFormat, rowType, tableDescriptor.getBucketKeys());
+        LakeStaticBucketAssigner lakeStaticBucketAssigner =
+                new LakeStaticBucketAssigner(checkNotNull(dataLakeFormat), DEFAULT_BUCKET_COUNT);
         Map<String, Long> partitionIdByNames = null;
         if (isPartitioned) {
             partitionIdByNames =
@@ -261,15 +263,14 @@ class FlussLakeTableITCase {
                                         ? compactedRow(
                                                 rowType,
                                                 new Object[] {i, "b" + i, "c" + i, partition})
-                                        : row(
-                                                rowType,
-                                                new Object[] {i, "b" + i, "c" + i, partition});
+                                        : row(i, "b" + i, "c" + i, partition);
                         writeRow(tableWriter, row);
                         TableBucket assignedBucket =
                                 new TableBucket(
                                         tableId,
                                         partitionIdByNames.get(partition),
-                                        lakeTableBucketAssigner.assignBucket(row));
+                                        lakeStaticBucketAssigner.assignBucket(
+                                                keyEncoder.encodeKey(row)));
                         expectedRows
                                 .computeIfAbsent(assignedBucket, (k) -> new ArrayList<>())
                                 .add(row);
@@ -281,10 +282,13 @@ class FlussLakeTableITCase {
                             tableDescriptor.hasPrimaryKey()
                                     ? compactedRow(
                                             rowType, new Object[] {i, "b" + i, "c" + i, "d" + i})
-                                    : row(rowType, new Object[] {i, "b" + i, "c" + i, "d" + i});
+                                    : row(i, "b" + i, "c" + i, "d" + i);
                     writeRow(tableWriter, row);
                     TableBucket assignedBucket =
-                            new TableBucket(tableId, lakeTableBucketAssigner.assignBucket(row));
+                            new TableBucket(
+                                    tableId,
+                                    lakeStaticBucketAssigner.assignBucket(
+                                            keyEncoder.encodeKey(row)));
                     expectedRows.computeIfAbsent(assignedBucket, (k) -> new ArrayList<>()).add(row);
                 }
             }
@@ -317,6 +321,14 @@ class FlussLakeTableITCase {
                 }
                 scanCount += scanRecords.count();
             }
+        }
+        // verify the rows fall back the buckets calculated by lake bucket assigner
+        assertThat(actualRows).hasSameSizeAs(expectedRows);
+        for (Map.Entry<TableBucket, List<InternalRow>> actualRowEntry : actualRows.entrySet()) {
+            List<InternalRow> actualRowList = actualRowEntry.getValue();
+            List<InternalRow> expectedRowList = expectedRows.get(actualRowEntry.getKey());
+            assertThat(actualRowList).hasSameSizeAs(expectedRowList);
+            assertThatRows(actualRowList).withSchema(rowType).isEqualTo(expectedRowList);
         }
         return actualRows;
     }

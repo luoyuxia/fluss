@@ -18,32 +18,18 @@ package com.alibaba.fluss.client.write;
 
 import com.alibaba.fluss.cluster.Cluster;
 
+import javax.annotation.Nullable;
+
 /**
- * A bucket assigner interface to assign a bucket dynamically. The bucket id determined during
+ * An abstract bucket assigner to assign a bucket dynamically. The bucket id determined during
  * sending to Fluss cluster by the status of cluster and write batch accumulation.
  */
-public interface DynamicBucketAssigner {
+abstract class DynamicBucketAssigner implements BucketAssigner {
 
-    /**
-     * When append record to record accumulator, whether the record accumulator need to abort this
-     * record if batch full, and this record need resend by the sender after change bucket id.
-     */
-    boolean abortIfBatchFull();
+    @Override
+    public int assignBucket(@Nullable byte[] bucketKey, Cluster cluster) {
+        return assignBucket(cluster);
+    }
 
-    /**
-     * Notifies the bucket assigner a new batch is about to be created. When using the sticky bucket
-     * assigner, this method can change the chosen sticky bucket for the new batch.
-     *
-     * @param cluster The current cluster metadata
-     * @param prevBucketId The bucket previously selected for the record that triggered a new batch
-     */
-    default void onNewBatch(Cluster cluster, int prevBucketId) {}
-
-    /**
-     * Assign a bucket.
-     *
-     * @param cluster the metadata of the cluster
-     * @return the bucket id
-     */
-    int assignBucket(Cluster cluster);
+    public abstract int assignBucket(Cluster cluster);
 }

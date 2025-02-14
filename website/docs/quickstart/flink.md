@@ -53,9 +53,9 @@ services:
         zookeeper.address: zookeeper:2181
         coordinator.host: coordinator-server
         remote.data.dir: /tmp/fluss/remote-data
-        lakehouse.storage: paimon
-        paimon.catalog.metastore: filesystem
-        paimon.catalog.warehouse: /tmp/paimon
+        datalake.format: paimon
+        datalake.paimon.catalog: filesystem
+        datalake.paimon.warehouse: /tmp/paimon
   tablet-server:
     image: fluss/fluss:0.5.0
     command: tabletServer
@@ -69,9 +69,9 @@ services:
         data.dir: /tmp/fluss/data
         remote.data.dir: /tmp/fluss/remote-data
         kv.snapshot.interval: 0s
-        lakehouse.storage: paimon
-        paimon.catalog.metastore: filesystem
-        paimon.catalog.warehouse: /tmp/paimon
+        datalake.format: paimon
+        datalake.paimon.catalog: filesystem
+        datalake.paimon.warehouse: /tmp/paimon
   zookeeper:
     restart: always
     image: zookeeper:3.9.2

@@ -16,13 +16,17 @@
 
 package com.alibaba.fluss.client.lookup;
 
-import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.table.getter.PartitionGetter;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.lakehouse.LakeBucketAssigner;
+import com.alibaba.fluss.lakehouse.LakeBucketAssignerFactory;
+import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.decode.RowDecoder;
+import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.row.encode.ValueDecoder;
 import com.alibaba.fluss.types.DataType;
@@ -33,6 +37,7 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
@@ -56,8 +61,8 @@ class PrefixKeyLookuper implements Lookuper {
 
     private final int numBuckets;
 
-    // won't be null if the datalake type is set in the table
-    private @Nullable final LakeTableBucketAssigner lakeTableBucketAssigner;
+    // won't be null if the datalake format is set in the table
+    private @Nullable final LakeBucketAssigner lakeBucketAssigner;
 
     /**
      * a getter to extract partition from prefix lookup key row, null when it's not a partitioned.
@@ -81,14 +86,21 @@ class PrefixKeyLookuper implements Lookuper {
         this.lookupClient = lookupClient;
         // the row type of the input lookup row
         RowType lookupRowType = tableInfo.getRowType().project(lookupColumnNames);
-        this.bucketKeyEncoder =
-                KeyEncoder.createKeyEncoder(lookupRowType, tableInfo.getBucketKeys());
-        String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
-        this.lakeTableBucketAssigner =
-                dataLakeType == null
-                        ? null
-                        : new LakeTableBucketAssigner(
-                                dataLakeType, lookupRowType, tableInfo.getBucketKeys(), numBuckets);
+        Optional<DataLakeFormat> optDataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat();
+
+        if (optDataLakeFormat.isPresent()) {
+            DataLakeFormat dataLakeFormat = optDataLakeFormat.get();
+            this.bucketKeyEncoder =
+                    LakeKeyEncoderFactory.createKeyEncoder(
+                            dataLakeFormat, lookupRowType, tableInfo.getBucketKeys());
+            this.lakeBucketAssigner =
+                    LakeBucketAssignerFactory.createLakeBucketAssigner(dataLakeFormat, numBuckets);
+        } else {
+            this.bucketKeyEncoder =
+                    CompactedKeyEncoder.createKeyEncoder(lookupRowType, tableInfo.getBucketKeys());
+            this.lakeBucketAssigner = null;
+        }
+
         this.partitionGetter =
                 tableInfo.isPartitioned()
                         ? new PartitionGetter(lookupRowType, tableInfo.getPartitionKeys())
@@ -150,8 +162,8 @@ class PrefixKeyLookuper implements Lookuper {
 
     @Override
     public CompletableFuture<LookupResult> lookup(InternalRow prefixKey) {
-        byte[] bucketKeyBytes = bucketKeyEncoder.encode(prefixKey);
-        int bucketId = getBucketId(bucketKeyBytes, prefixKey, lakeTableBucketAssigner, numBuckets);
+        byte[] bucketKeyBytes = bucketKeyEncoder.encodeKey(prefixKey);
+        int bucketId = getBucketId(bucketKeyBytes, lakeBucketAssigner, numBuckets);
 
         Long partitionId = null;
         if (partitionGetter != null) {

@@ -797,9 +797,9 @@ services:
         zookeeper.address: zookeeper:2181
         coordinator.host: coordinator-server
         remote.data.dir: /tmp/fluss/remote-data
-        lakehouse.storage: paimon
-        paimon.catalog.metastore: filesystem
-        paimon.catalog.warehouse: /tmp/paimon
+        datalake.format: paimon
+        datalake.paimon.catalog: filesystem
+        datalake.paimon.warehouse: /tmp/paimon
         metrics.reporters: prometheus
         metrics.reporter.prometheus.port: 9250
   tablet-server:
@@ -815,9 +815,9 @@ services:
         data.dir: /tmp/fluss/data
         remote.data.dir: /tmp/fluss/remote-data
         kv.snapshot.interval: 0s
-        lakehouse.storage: paimon
-        paimon.catalog.metastore: filesystem
-        paimon.catalog.warehouse: /tmp/paimon
+        datalake.format: paimon
+        datalake.paimon.catalog: filesystem
+        datalake.paimon.warehouse: /tmp/paimon
         metrics.reporters: prometheus
         metrics.reporter.prometheus.port: 9250
   zookeeper:

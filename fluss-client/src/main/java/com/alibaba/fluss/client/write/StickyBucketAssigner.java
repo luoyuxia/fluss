@@ -27,11 +27,11 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * The bucket assigner sticky strategy. The assigned bucket id maybe changed only if one new batch
- * created in record accumulator. Otherwise, we will always return the same bucket id.
+ * The bucket assigner with sticky strategy. The assigned bucket id maybe changed only if one new
+ * batch created in record accumulator. Otherwise, we will always return the same bucket id.
  */
 @Internal
-public class StickyBucketAssigner implements DynamicBucketAssigner {
+public class StickyBucketAssigner extends DynamicBucketAssigner {
 
     private final PhysicalTablePath physicalTablePath;
     private final AtomicInteger currentBucketId;

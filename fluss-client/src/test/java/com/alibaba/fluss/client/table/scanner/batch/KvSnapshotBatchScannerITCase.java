@@ -27,7 +27,7 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
-import com.alibaba.fluss.row.encode.KeyEncoder;
+import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.types.DataTypes;
 
 import org.junit.jupiter.api.AfterEach;
@@ -62,11 +62,12 @@ class KvSnapshotBatchScannerITCase extends ClientToServerITCaseBase {
                     .distributedBy(DEFAULT_BUCKET_NUM, "id")
                     .build();
 
-    private static final KeyEncoder DEFAULT_KEY_ENCODER =
-            new KeyEncoder(DEFAULT_SCHEMA.getRowType(), DEFAULT_SCHEMA.getPrimaryKeyIndexes());
+    private static final CompactedKeyEncoder DEFAULT_KEY_ENCODER =
+            new CompactedKeyEncoder(
+                    DEFAULT_SCHEMA.getRowType(), DEFAULT_SCHEMA.getPrimaryKeyIndexes());
 
     private static final HashBucketAssigner DEFAULT_BUCKET_ASSIGNER =
-            new HashBucketAssigner(DEFAULT_BUCKET_NUM, DEFAULT_KEY_ENCODER);
+            new HashBucketAssigner(DEFAULT_BUCKET_NUM);
 
     private static final String DEFAULT_DB = "test-snapshot-scan-db";
 
@@ -151,7 +152,7 @@ class KvSnapshotBatchScannerITCase extends ClientToServerITCaseBase {
     // -------- Utils method
 
     private static int getBucketId(InternalRow row) {
-        byte[] key = DEFAULT_KEY_ENCODER.encode(row);
+        byte[] key = DEFAULT_KEY_ENCODER.encodeKey(row);
         return DEFAULT_BUCKET_ASSIGNER.assignBucket(key);
     }
 

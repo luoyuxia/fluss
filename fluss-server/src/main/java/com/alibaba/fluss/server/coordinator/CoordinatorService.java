@@ -22,6 +22,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidDatabaseException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.fs.FileSystem;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
@@ -81,8 +82,8 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private final int defaultReplicationFactor;
     private final Supplier<EventManager> eventManagerSupplier;
 
-    // null if the cluster hasn't configured lake storage
-    private final @Nullable String lakeStorage;
+    // null if the cluster hasn't configured datalake format
+    private final @Nullable DataLakeFormat dataLakeFormat;
 
     public CoordinatorService(
             Configuration conf,
@@ -94,7 +95,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         this.defaultBucketNumber = conf.getInt(ConfigOptions.DEFAULT_BUCKET_NUMBER);
         this.defaultReplicationFactor = conf.getInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR);
         this.eventManagerSupplier = eventManagerSupplier;
-        this.lakeStorage = conf.get(ConfigOptions.LAKEHOUSE_STORAGE);
+        this.dataLakeFormat = conf.getOptional(ConfigOptions.DATALAKE_FORMAT).orElse(null);
     }
 
     @Override
@@ -195,9 +196,9 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
         // if lake storage is not null, we need to add the datalake type
         // to the property of the table
-        if (lakeStorage != null) {
+        if (dataLakeFormat != null) {
             properties = new HashMap<>(newDescriptor.getProperties());
-            properties.put(ConfigOptions.TABLE_DATALAKE_FORMAT.key(), lakeStorage);
+            properties.put(ConfigOptions.TABLE_DATALAKE_FORMAT.key(), dataLakeFormat.toString());
             newDescriptor = newDescriptor.withProperties(properties);
         }
 

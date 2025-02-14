@@ -14,13 +14,10 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.row.encode;
+package com.alibaba.fluss.lakehouse;
 
-import com.alibaba.fluss.row.InternalRow;
+/** An interface to assign a bucket according bucket key for different datalake formats. */
+public interface LakeBucketAssigner {
 
-/** An interface for encoding key of row into bytes. */
-public interface KeyEncoder {
-
-    /** Encode the key of given row to byte array. */
-    byte[] encodeKey(InternalRow row);
+    int assignBucket(byte[] bucketKey);
 }

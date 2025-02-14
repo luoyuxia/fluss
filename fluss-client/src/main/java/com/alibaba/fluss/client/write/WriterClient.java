@@ -26,6 +26,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
+import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.rpc.gateway.TabletServerGateway;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.CopyOnWriteMap;
@@ -38,6 +39,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -76,8 +78,7 @@ public class WriterClient {
     private final Sender sender;
     private final ExecutorService ioThreadPool;
     private final MetadataUpdater metadataUpdater;
-    private final Map<PhysicalTablePath, DynamicBucketAssigner> dynamicBucketAssignerMap =
-            new CopyOnWriteMap<>();
+    private final Map<PhysicalTablePath, BucketAssigner> bucketAssignerMap = new CopyOnWriteMap<>();
     private final IdempotenceManager idempotenceManager;
     private final WriterMetricGroup writerMetricGroup;
 
@@ -148,37 +149,22 @@ public class WriterClient {
             // maybe create bucket assigner.
             PhysicalTablePath physicalTablePath = record.getPhysicalTablePath();
             Cluster cluster = metadataUpdater.getCluster();
+            BucketAssigner bucketAssigner =
+                    bucketAssignerMap.computeIfAbsent(
+                            physicalTablePath,
+                            k -> createBucketAssigner(physicalTablePath, conf, cluster));
 
             // Append the record to the accumulator.
-            Integer bucketId = record.getBucketId();
-            DynamicBucketAssigner dynamicBucketAssigner = null;
-            // no bucket id, should use dynamic bucket assigner to assign a bucket
-            if (bucketId == null) {
-                // get or create a dynamic bucket assigner for the record
-                dynamicBucketAssigner =
-                        dynamicBucketAssignerMap.computeIfAbsent(
-                                physicalTablePath,
-                                k -> createDynamicBucketAssigner(physicalTablePath, conf));
-                bucketId = dynamicBucketAssigner.assignBucket(cluster);
-            }
+            int bucketId = bucketAssigner.assignBucket(record.getBucketKey(), cluster);
+
             RecordAppendResult result =
                     accumulator.append(
-                            record,
-                            callback,
-                            cluster,
-                            bucketId,
-                            dynamicBucketAssigner != null
-                                    && dynamicBucketAssigner.abortIfBatchFull());
+                            record, callback, cluster, bucketId, bucketAssigner.abortIfBatchFull());
 
             if (result.abortRecordForNewBatch) {
                 int prevBucketId = bucketId;
-                if (dynamicBucketAssigner != null) {
-                    dynamicBucketAssigner.onNewBatch(cluster, bucketId);
-                    bucketId = dynamicBucketAssigner.assignBucket(cluster);
-                } else {
-                    // still use the prev bucket id if not using dynamic bucket assigner.
-                    bucketId = prevBucketId;
-                }
+                bucketAssigner.onNewBatch(cluster, prevBucketId);
+                bucketId = bucketAssigner.assignBucket(record.getBucketKey(), cluster);
                 LOG.trace(
                         "Retrying append due to new batch creation for table {} bucket {}, the old bucket was {}.",
                         physicalTablePath,
@@ -310,18 +296,29 @@ public class WriterClient {
         return Executors.newFixedThreadPool(1, new ExecutorThreadFactory(SENDER_THREAD_PREFIX));
     }
 
-    private DynamicBucketAssigner createDynamicBucketAssigner(
-            PhysicalTablePath physicalTablePath, Configuration conf) {
-        // currently, only table without bucket keys will use dynamic bucket assigner
-        ConfigOptions.NoKeyAssigner noKeyAssigner =
-                conf.get(ConfigOptions.CLIENT_WRITER_BUCKET_NO_KEY_ASSIGNER);
-        if (noKeyAssigner == ROUND_ROBIN) {
-            return new RoundRobinBucketAssigner(physicalTablePath);
-        } else if (noKeyAssigner == STICKY) {
-            return new StickyBucketAssigner(physicalTablePath);
+    private BucketAssigner createBucketAssigner(
+            PhysicalTablePath physicalTablePath, Configuration conf, Cluster cluster) {
+        TableInfo tableInfo = cluster.getTableOrElseThrow(physicalTablePath.getTablePath());
+        int bucketNumber = tableInfo.getNumBuckets();
+        List<String> bucketKeys = tableInfo.getBucketKeys();
+        if (!bucketKeys.isEmpty()) {
+            if (tableInfo.getTableConfig().getDataLakeFormat().isPresent()) {
+                return new LakeStaticBucketAssigner(
+                        tableInfo.getTableConfig().getDataLakeFormat().get(), bucketNumber);
+            } else {
+                return new HashBucketAssigner(bucketNumber);
+            }
         } else {
-            throw new IllegalArgumentException(
-                    "Unsupported append only row bucket assigner: " + noKeyAssigner);
+            ConfigOptions.NoKeyAssigner noKeyAssigner =
+                    conf.get(ConfigOptions.CLIENT_WRITER_BUCKET_NO_KEY_ASSIGNER);
+            if (noKeyAssigner == ROUND_ROBIN) {
+                return new RoundRobinBucketAssigner(physicalTablePath);
+            } else if (noKeyAssigner == STICKY) {
+                return new StickyBucketAssigner(physicalTablePath);
+            } else {
+                throw new IllegalArgumentException(
+                        "Unsupported append only row bucket assigner: " + noKeyAssigner);
+            }
         }
     }
 }

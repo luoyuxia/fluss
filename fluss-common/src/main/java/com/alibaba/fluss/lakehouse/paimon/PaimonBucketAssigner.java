@@ -14,13 +14,23 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.row.encode;
+package com.alibaba.fluss.lakehouse.paimon;
 
-import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.lakehouse.LakeBucketAssigner;
 
-/** An interface for encoding key of row into bytes. */
-public interface KeyEncoder {
+import org.apache.paimon.utils.MurmurHashUtils;
 
-    /** Encode the key of given row to byte array. */
-    byte[] encodeKey(InternalRow row);
+/** An implementation of {@link LakeBucketAssigner} to follow Paimon's bucket assign strategy. */
+public class PaimonBucketAssigner implements LakeBucketAssigner {
+
+    private final int numBuckets;
+
+    public PaimonBucketAssigner(int numBuckets) {
+        this.numBuckets = numBuckets;
+    }
+
+    @Override
+    public int assignBucket(byte[] bucketKey) {
+        return Math.abs(MurmurHashUtils.hashBytes(bucketKey) % numBuckets);
+    }
 }

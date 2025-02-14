@@ -16,23 +16,29 @@
 
 package com.alibaba.fluss.client.table.writer;
 
-import com.alibaba.fluss.client.lakehouse.LakeTableBucketAssigner;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
-import com.alibaba.fluss.client.write.HashBucketAssigner;
-import com.alibaba.fluss.client.write.StaticBucketAssigner;
-import com.alibaba.fluss.client.write.WriteKind;
 import com.alibaba.fluss.client.write.WriteRecord;
 import com.alibaba.fluss.client.write.WriterClient;
+import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
+import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.row.InternalRow.FieldGetter;
+import com.alibaba.fluss.row.compacted.CompactedRow;
+import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.row.encode.KeyEncoder;
+import com.alibaba.fluss.row.encode.RowEncoder;
+import com.alibaba.fluss.row.indexed.IndexedRow;
 import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
 
 import java.util.BitSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /** The writer to write data to the primary key table. */
@@ -43,8 +49,12 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
     private final KeyEncoder primaryKeyEncoder;
     private final @Nullable int[] targetColumns;
 
-    private final boolean isDefaultBucketKey;
-    private final StaticBucketAssigner bucketAssigner;
+    // same to primaryKeyEncoder if the bucket key is the same to the primary key
+    private final KeyEncoder bucketKeyEncoder;
+
+    private final KvFormat kvFormat;
+    private final RowEncoder rowEncoder;
+    private final FieldGetter[] fieldGetters;
 
     UpsertWriterImpl(
             TablePath tablePath,
@@ -57,28 +67,34 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
         sanityCheck(rowType, tableInfo.getPrimaryKeys(), partialUpdateColumns);
 
         this.targetColumns = partialUpdateColumns;
-        // encode primary key using physical primary key
-        this.primaryKeyEncoder =
-                KeyEncoder.createKeyEncoder(rowType, tableInfo.getPhysicalPrimaryKeys());
-        this.isDefaultBucketKey = tableInfo.isDefaultBucketKey();
+        Optional<DataLakeFormat> optDataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat();
 
-        String dataLakeType = tableInfo.getTableConfig().getDataLakeType();
-        if (dataLakeType != null) {
-            this.bucketAssigner =
-                    new LakeTableBucketAssigner(
-                            dataLakeType,
-                            tableInfo.getRowType(),
-                            tableInfo.getBucketKeys(),
-                            tableInfo.getNumBuckets());
+        if (optDataLakeFormat.isPresent()) {
+            DataLakeFormat dataLakeFormat = optDataLakeFormat.get();
+            // encode primary key using physical primary key
+            this.primaryKeyEncoder =
+                    LakeKeyEncoderFactory.createKeyEncoder(
+                            dataLakeFormat, rowType, tableInfo.getPhysicalPrimaryKeys());
+            this.bucketKeyEncoder =
+                    tableInfo.isDefaultBucketKey()
+                            ? primaryKeyEncoder
+                            : LakeKeyEncoderFactory.createKeyEncoder(
+                                    dataLakeFormat, rowType, tableInfo.getBucketKeys());
         } else {
-            this.bucketAssigner =
-                    new HashBucketAssigner(
-                            tableInfo.getNumBuckets(),
-                            tableInfo.isDefaultBucketKey()
-                                    ? primaryKeyEncoder
-                                    : KeyEncoder.createKeyEncoder(
-                                            rowType, tableInfo.getBucketKeys()));
+            // encode primary key using physical primary key
+            this.primaryKeyEncoder =
+                    CompactedKeyEncoder.createKeyEncoder(
+                            rowType, tableInfo.getPhysicalPrimaryKeys());
+            this.bucketKeyEncoder =
+                    tableInfo.isDefaultBucketKey()
+                            ? primaryKeyEncoder
+                            : CompactedKeyEncoder.createKeyEncoder(
+                                    rowType, tableInfo.getBucketKeys());
         }
+
+        this.kvFormat = tableInfo.getTableConfig().getKvFormat();
+        this.rowEncoder = RowEncoder.create(kvFormat, rowType);
+        this.fieldGetters = InternalRow.createFieldGetters(rowType);
     }
 
     private static void sanityCheck(
@@ -127,11 +143,14 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
      * @return A {@link CompletableFuture} that always returns null when complete normally.
      */
     public CompletableFuture<UpsertResult> upsert(InternalRow row) {
-        byte[] key = primaryKeyEncoder.encode(row);
-        int bucketId = getBucketId(key, row);
-        return send(new WriteRecord(
-                        getPhysicalPath(row), WriteKind.PUT, key, bucketId, row, targetColumns))
-                .thenApply(ignored -> UPSERT_SUCCESS);
+        checkFieldCount(row);
+        byte[] key = primaryKeyEncoder.encodeKey(row);
+        byte[] bucketKey =
+                bucketKeyEncoder == primaryKeyEncoder ? key : bucketKeyEncoder.encodeKey(row);
+        WriteRecord record =
+                WriteRecord.forUpsert(
+                        getPhysicalPath(row), encodeRow(row), key, bucketKey, targetColumns);
+        return send(record).thenApply(ignored -> UPSERT_SUCCESS);
     }
 
     /**
@@ -142,20 +161,27 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
      * @return A {@link CompletableFuture} that always returns null when complete normally.
      */
     public CompletableFuture<DeleteResult> delete(InternalRow row) {
-        byte[] key = primaryKeyEncoder.encode(row);
-        int bucketId = getBucketId(key, row);
-        return send(new WriteRecord(
-                        getPhysicalPath(row), WriteKind.DELETE, key, bucketId, null, targetColumns))
-                .thenApply(ignored -> DELETE_SUCCESS);
+        checkFieldCount(row);
+        byte[] key = primaryKeyEncoder.encodeKey(row);
+        byte[] bucketKey =
+                bucketKeyEncoder == primaryKeyEncoder ? key : bucketKeyEncoder.encodeKey(row);
+        WriteRecord record =
+                WriteRecord.forDelete(getPhysicalPath(row), key, bucketKey, targetColumns);
+        return send(record).thenApply(ignored -> DELETE_SUCCESS);
     }
 
-    private int getBucketId(byte[] keyBytes, InternalRow row) {
-        if (isDefaultBucketKey && bucketAssigner instanceof HashBucketAssigner) {
-            // is is default bucket key, and assigner is HashBucketAssAssigner,
-            // we can reuse the primary key bytes to calculate bucket id
-            return ((HashBucketAssigner) bucketAssigner).assignBucket(keyBytes);
-        } else {
-            return bucketAssigner.assignBucket(row);
+    private BinaryRow encodeRow(InternalRow row) {
+        if (kvFormat == KvFormat.INDEXED && row instanceof IndexedRow) {
+            return (IndexedRow) row;
+        } else if (kvFormat == KvFormat.COMPACTED && row instanceof CompactedRow) {
+            return (CompactedRow) row;
         }
+
+        // encode the row to target format
+        rowEncoder.startNewRow();
+        for (int i = 0; i < fieldCount; i++) {
+            rowEncoder.encodeField(i, fieldGetters[i].getFieldOrNull(row));
+        }
+        return rowEncoder.finishRow();
     }
 }

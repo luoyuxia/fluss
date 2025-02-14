@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** The bucket assigner use round-robin strategy. */
 @Internal
-public class RoundRobinBucketAssigner implements DynamicBucketAssigner {
+public class RoundRobinBucketAssigner extends DynamicBucketAssigner {
     private final PhysicalTablePath physicalTablePath;
     private final AtomicInteger counter = new AtomicInteger(new Random().nextInt());
 
@@ -54,5 +54,10 @@ public class RoundRobinBucketAssigner implements DynamicBucketAssigner {
     @Override
     public boolean abortIfBatchFull() {
         return false;
+    }
+
+    @Override
+    public void onNewBatch(Cluster cluster, int prevBucketId) {
+        // do nothing
     }
 }

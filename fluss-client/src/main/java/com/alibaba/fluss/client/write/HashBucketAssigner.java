@@ -17,8 +17,6 @@
 package com.alibaba.fluss.client.write;
 
 import com.alibaba.fluss.annotation.Internal;
-import com.alibaba.fluss.row.InternalRow;
-import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.utils.MathUtils;
 import com.alibaba.fluss.utils.MurmurHashUtils;
 import com.alibaba.fluss.utils.Preconditions;
@@ -27,20 +25,12 @@ import static com.alibaba.fluss.utils.UnsafeUtils.BYTE_ARRAY_BASE_OFFSET;
 
 /** Hash bucket assigner. */
 @Internal
-public class HashBucketAssigner implements StaticBucketAssigner {
+public class HashBucketAssigner extends StaticBucketAssigner {
 
     private final int numBuckets;
 
-    private final KeyEncoder bucketKeyEncoder;
-
-    public HashBucketAssigner(int numBuckets, KeyEncoder bucketKeyEncoder) {
+    public HashBucketAssigner(int numBuckets) {
         this.numBuckets = numBuckets;
-        this.bucketKeyEncoder = bucketKeyEncoder;
-    }
-
-    @Override
-    public int assignBucket(InternalRow row) {
-        return bucketForRowKey(bucketKeyEncoder.encode(row), numBuckets);
     }
 
     public int assignBucket(byte[] bucketKeys) {

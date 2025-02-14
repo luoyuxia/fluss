@@ -156,9 +156,9 @@ during the Fluss cluster working.
 
 ### Lakehouse
 
-| Option            | Type   | Default | Description                                                                                             |
-|-------------------|--------|---------|---------------------------------------------------------------------------------------------------------|
-| lakehouse.storage | String | (None)  | The kind of lakehouse storage used by of Fluss such as Paimon, Iceberg, Hudi. Now, only support Paimon. |
+| Option          | Type   | Default | Description                                                                                                                |
+|-----------------|--------|---------|----------------------------------------------------------------------------------------------------------------------------|
+| datalake.format | ENUM | (None)  | The datalake format used by of Fluss to be as lakehouse storage, such as Paimon, Iceberg, Hudi. Now, only support Paimon.  |
 
 ## Table Configuration
 
