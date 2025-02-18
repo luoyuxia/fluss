@@ -92,6 +92,7 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -100,6 +101,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -132,6 +134,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private final ServerMetadataCache serverMetadataCache;
     private final CoordinatorRequestBatch coordinatorRequestBatch;
     private final CoordinatorMetricGroup coordinatorMetricGroup;
+    private final ScheduledExecutorService scheduledExecutorService;
 
     private final CompletedSnapshotStoreManager completedSnapshotStoreManager;
     private final ExecutorService ioExecutor;
@@ -215,6 +218,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.autoPartitionManager = autoPartitionManager;
         this.coordinatorMetricGroup = coordinatorMetricGroup;
         registerMetric();
+        this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     }
 
     private void registerMetric() {
@@ -260,6 +264,37 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // start the event manager which will then process the event
         coordinatorEventManager.start();
+        scheduledExecutorService.scheduleWithFixedDelay(
+                () ->
+                        coordinatorEventManager.put(
+                                new AccessContextEvent<>(
+                                        coordinatorContext -> {
+                                            Map<Integer, Set<TableBucket>> leaderServerToBuckets =
+                                                    new HashMap<>();
+                                            for (Integer serverId :
+                                                    coordinatorContext
+                                                            .getLiveTabletServers()
+                                                            .keySet()) {
+                                                leaderServerToBuckets.put(
+                                                        serverId,
+                                                        coordinatorContext.getBucketsWithLeaderIn(
+                                                                serverId));
+                                            }
+                                            for (Integer serverId :
+                                                    leaderServerToBuckets.keySet()) {
+                                                Set<TableBucket> tableBuckets =
+                                                        leaderServerToBuckets.get(serverId);
+                                                LOG.info(
+                                                        "server id: {}, lead buckets: {}, bucketNum: {}.",
+                                                        serverId,
+                                                        tableBuckets,
+                                                        tableBuckets.size());
+                                            }
+                                            return null;
+                                        })),
+                5,
+                5,
+                TimeUnit.MINUTES);
     }
 
     public void shutdown() {
@@ -626,6 +661,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 offlineReplicas.add(
                         new TableBucketReplica(
                                 notifyLeaderAndIsrResultForBucket.getTableBucket(), serverId));
+                LOG.warn(
+                        "Fail for {} due to {}",
+                        notifyLeaderAndIsrResultForBucket.getTableBucket(),
+                        notifyLeaderAndIsrResultForBucket.getError().exception());
             }
         }
         if (!offlineReplicas.isEmpty()) {
@@ -635,7 +674,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
     }
 
     private void onReplicaBecomeOffline(Set<TableBucketReplica> offlineReplicas) {
-
         LOG.info("The replica {} become offline.", offlineReplicas);
         for (TableBucketReplica offlineReplica : offlineReplicas) {
             coordinatorContext.addOfflineBucketInServer(
@@ -784,6 +822,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
             LeaderAndIsr tryAdjustLeaderAndIsr = entry.getValue();
 
             try {
+                LOG.info(
+                        "Try process adjust ISR for {} to {}.", tableBucket, tryAdjustLeaderAndIsr);
                 validateLeaderAndIsr(tableBucket, tryAdjustLeaderAndIsr);
             } catch (Exception e) {
                 result.add(new AdjustIsrResultForBucket(tableBucket, ApiError.fromThrowable(e)));
@@ -856,7 +896,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         "The coordinator is no longer the active coordinator.");
             } else if (newLeaderAndIsr.leaderEpoch() < currentLeaderAndIsr.leaderEpoch()) {
                 throw new FencedLeaderEpochException(
-                        "The request leader epoch in adjust isr request is lower than current leader epoch in coordinator.");
+                        String.format(
+                                "The request leader epoch %s in adjust isr request is lower than current leader epoch %s in coordinator.",
+                                newLeaderAndIsr.leaderEpoch(), currentLeaderAndIsr.leaderEpoch()));
             } else if (newLeaderAndIsr.bucketEpoch() < currentLeaderAndIsr.bucketEpoch()) {
                 // If the replica leader has a lower bucket epoch, then it is likely
                 // that this node is not the leader.
@@ -1042,11 +1084,16 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // 2. send update metadata request to all alive tablet servers
         coordinatorRequestBatch.newBatch();
+        LOG.info("try update serve metadata cache..");
         Set<Integer> serverIds =
                 aliveTabletServers.stream().map(ServerNode::id).collect(Collectors.toSet());
         coordinatorRequestBatch.addUpdateMetadataRequestForTabletServers(
                 serverIds, coordinatorServer, aliveTabletServers);
         coordinatorRequestBatch.sendUpdateMetadataRequest();
+        LOG.info(
+                "update serve metadata cache for servers {}, alive servers {}",
+                serverIds,
+                aliveTabletServers);
     }
 
     @VisibleForTesting

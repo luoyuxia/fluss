@@ -95,11 +95,13 @@ public abstract class ShutdownableThread extends Thread {
                 doWork();
             }
         } catch (Error e) {
+            log.info("Stop shutdown thread", e);
             shutdownInitiated.countDown();
             shutdownComplete.countDown();
             log.info("Stopped");
             System.exit(-1);
         } catch (Throwable e) {
+            log.info("Stop shutdown thread due to throwable.", e);
             if (isRunning()) {
                 log.error("Error due to", e);
             }

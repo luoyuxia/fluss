@@ -597,6 +597,7 @@ public final class RecordAccumulator {
                     break;
                 } else {
                     if (shouldStopDrainBatchesForBucket(first, tableBucket)) {
+                        LOG.info("should stop drain batches for bucket {}", tableBucket);
                         break;
                     }
                 }
@@ -656,6 +657,7 @@ public final class RecordAccumulator {
             if (!idempotenceManager.canSendMortRequests(tableBucket)) {
                 // we have reached the max inflight requests for this table bucket, so we need stop
                 // drain this batch.
+                LOG.info("can't send more requests for {}", tableBucket);
                 return true;
             }
 

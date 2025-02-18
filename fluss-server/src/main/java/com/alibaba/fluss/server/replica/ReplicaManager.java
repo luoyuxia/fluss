@@ -17,7 +17,6 @@
 package com.alibaba.fluss.server.replica;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
-import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FencedLeaderEpochException;
@@ -114,10 +113,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -137,6 +140,7 @@ public class ReplicaManager {
     public static final String HIGH_WATERMARK_CHECKPOINT_FILE_NAME = "high-watermark-checkpoint";
     private final Configuration conf;
     private final Scheduler scheduler;
+    private final ScheduledExecutorService scheduledExecutorService;
     private final LogManager logManager;
     private final KvManager kvManager;
     private final ZooKeeperClient zkClient;
@@ -257,7 +261,8 @@ public class ReplicaManager {
                         serverId,
                         conf.getInt(ConfigOptions.LOG_REPLICA_FETCH_OPERATION_PURGE_NUMBER));
 
-        this.replicaFetcherManager = new ReplicaFetcherManager(conf, rpcClient, serverId, this);
+        this.replicaFetcherManager =
+                new ReplicaFetcherManager(conf, rpcClient, serverId, this, metadataCache);
         this.adjustIsrManager = new AdjustIsrManager(scheduler, coordinatorGateway, serverId);
         this.fatalErrorHandler = fatalErrorHandler;
 
@@ -270,6 +275,7 @@ public class ReplicaManager {
         this.serverMetricGroup = serverMetricGroup;
         this.clock = clock;
         registerMetrics();
+        this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     }
 
     public void startup() {
@@ -281,6 +287,27 @@ public class ReplicaManager {
                 this::maybeShrinkIsr,
                 0L,
                 conf.get(ConfigOptions.LOG_REPLICA_MAX_LAG_TIME).toMillis() / 2);
+        scheduledExecutorService.scheduleWithFixedDelay(
+                this::printOnlineReplica, 5, 5, TimeUnit.MINUTES);
+    }
+
+    private void printOnlineReplica() {
+        LOG.info("Start to print printOnlineReplica");
+        Set<TableBucket> leaderReplicas = new HashSet<>();
+        allReplicas
+                .values()
+                .forEach(
+                        t -> {
+                            if (t instanceof OnlineReplica) {
+                                OnlineReplica onlineReplica = (OnlineReplica) t;
+                                Replica replica = onlineReplica.replica;
+                                if (replica.isLeader()) {
+                                    leaderReplicas.add(replica.getTableBucket());
+                                }
+                            }
+                        });
+        LOG.info("Leader replicas are {}, size is {}", leaderReplicas, leaderReplicas.size());
+        LOG.info("End to print printOnlineReplica");
     }
 
     public RemoteLogManager getRemoteLogManager() {
@@ -324,7 +351,8 @@ public class ReplicaManager {
             int requestCoordinatorEpoch,
             List<NotifyLeaderAndIsrData> notifyLeaderAndIsrDataList,
             Consumer<List<NotifyLeaderAndIsrResultForBucket>> responseCallback) {
-        List<NotifyLeaderAndIsrResultForBucket> result = new ArrayList<>();
+        Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result = new HashMap<>();
+        LOG.info("becomeLeaderOrFollower: {}", notifyLeaderAndIsrDataList);
         inLock(
                 replicaStateChangeLock,
                 () -> {
@@ -338,12 +366,15 @@ public class ReplicaManager {
                         try {
                             boolean becomeLeader = validateAndGetIsBecomeLeader(data);
                             if (becomeLeader) {
+                                LOG.info("tb become leader");
                                 replicasToBeLeader.add(data);
                             } else {
+                                LOG.info("tb become follower");
                                 replicasToBeFollower.add(data);
                             }
                         } catch (Exception e) {
-                            result.add(
+                            result.put(
+                                    tb,
                                     new NotifyLeaderAndIsrResultForBucket(
                                             tb, ApiError.fromThrowable(e)));
                         }
@@ -359,7 +390,7 @@ public class ReplicaManager {
                     replicaFetcherManager.shutdownIdleFetcherThreads();
                 });
 
-        responseCallback.accept(result);
+        responseCallback.accept(new ArrayList<>(result.values()));
     }
 
     /**
@@ -699,7 +730,7 @@ public class ReplicaManager {
      */
     private void makeLeaders(
             List<NotifyLeaderAndIsrData> replicasToBeLeader,
-            List<NotifyLeaderAndIsrResultForBucket> result) {
+            Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result) {
         if (replicasToBeLeader.isEmpty()) {
             return;
         }
@@ -718,10 +749,11 @@ public class ReplicaManager {
                 }
                 // start the remote log tiering tasks for leaders
                 remoteLogManager.startLogTiering(replica);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb));
+                result.put(tb, new NotifyLeaderAndIsrResultForBucket(tb));
             } catch (Exception e) {
                 LOG.error("Error make replica {} to leader", tb, e);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
+                result.put(
+                        tb, new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
             }
         }
     }
@@ -758,7 +790,7 @@ public class ReplicaManager {
      */
     private void makeFollowers(
             List<NotifyLeaderAndIsrData> replicasToBeFollower,
-            List<NotifyLeaderAndIsrResultForBucket> result) {
+            Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result) {
         if (replicasToBeFollower.isEmpty()) {
             return;
         }
@@ -772,11 +804,11 @@ public class ReplicaManager {
                 }
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb));
-                replicasBecomeFollower.add(replica);
+                result.put(tb, new NotifyLeaderAndIsrResultForBucket(tb));
             } catch (Exception e) {
                 LOG.error("Error make replica {} to follower", tb, e);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
+                result.put(
+                        tb, new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
             }
         }
 
@@ -800,34 +832,37 @@ public class ReplicaManager {
         truncateToHighWatermark(replicasBecomeFollower);
 
         // add fetcher for those follower replicas.
-        addFetcherForReplicas(replicasBecomeFollower);
+        addFetcherForReplicas(replicasBecomeFollower, result);
     }
 
-    private void addFetcherForReplicas(List<Replica> replicas) {
+    private void addFetcherForReplicas(
+            List<Replica> replicas, Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result) {
         Map<TableBucket, InitialFetchStatus> bucketAndStatus = new HashMap<>();
         for (Replica replica : replicas) {
             Integer leaderId = replica.getLeaderId();
-            if (leaderId == null) {
-                throw new NotLeaderOrFollowerException(
-                        String.format(
-                                "Could not find leader for follower replica %s while make leader for table bucket %s",
-                                serverId, replica.getTableBucket()));
-            }
-
-            ServerNode leader = metadataCache.getTabletServer(leaderId);
-            if (leader == null) {
-                throw new NotLeaderOrFollowerException(
-                        String.format(
-                                "Could not find leader in server metadata by id for replica %s while make follower",
-                                replica));
-            }
-
+            TableBucket tb = replica.getTableBucket();
             LogTablet logTablet = replica.getLogTablet();
-            TableBucket tableBucket = logTablet.getTableBucket();
-            bucketAndStatus.put(
-                    tableBucket,
-                    new InitialFetchStatus(
-                            tableBucket.getTableId(), leader, logTablet.localLogEndOffset()));
+            boolean error = false;
+            if (leaderId == null) {
+                result.put(
+                        tb,
+                        new NotifyLeaderAndIsrResultForBucket(
+                                tb,
+                                ApiError.fromThrowable(
+                                        new NotLeaderOrFollowerException(
+                                                String.format(
+                                                        "Could not find leader for follower replica %s while make "
+                                                                + "leader for table bucket %s",
+                                                        serverId, tb)))));
+                error = true;
+            }
+
+            if (!error) {
+                bucketAndStatus.put(
+                        tb,
+                        new InitialFetchStatus(
+                                tb.getTableId(), leaderId, logTablet.localLogEndOffset()));
+            }
         }
         replicaFetcherManager.addFetcherForBuckets(bucketAndStatus);
     }

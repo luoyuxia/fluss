@@ -368,8 +368,8 @@ public final class Replica {
 
                             int requestLeaderEpoch = data.getLeaderEpoch();
                             if (requestLeaderEpoch > leaderEpoch) {
-                                onBecomeNewLeader();
                                 leaderEpoch = requestLeaderEpoch;
+                                onBecomeNewLeader();
                                 leaderReplicaIdOpt.set(localTabletServerId);
                                 LOG.info(
                                         "TabletServer {} becomes leader for bucket {}",
@@ -542,7 +542,9 @@ public final class Replica {
 
     private void dropKv() {
         // close any closeable registry for kv
+        LOG.info("Dropping kv for {}", tableBucket);
         if (closeableRegistry.unregisterCloseable(closeableRegistryForKv)) {
+            LOG.info("Close closeableRegistry due to dropping kv for {}.", tableBucket);
             IOUtils.closeQuietly(closeableRegistryForKv);
         }
         if (kvTablet != null) {
@@ -1591,6 +1593,12 @@ public final class Replica {
             case INVALID_UPDATE_VERSION_EXCEPTION:
                 LOG.debug(
                         "Failed to adjust isr to {} because the request is invalid. Replica state may be out of sync, "
+                                + "awaiting new the latest metadata.",
+                        proposedIsrState);
+                return false;
+            case FENCED_LEADER_EPOCH_EXCEPTION:
+                LOG.debug(
+                        "Failed to adjust isr to {} because the leader epoch is stale. Replica state may be out of sync, "
                                 + "awaiting new the latest metadata.",
                         proposedIsrState);
                 return false;

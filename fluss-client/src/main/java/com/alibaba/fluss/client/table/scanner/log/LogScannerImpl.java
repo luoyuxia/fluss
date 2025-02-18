@@ -141,10 +141,12 @@ public class LogScannerImpl implements LogScanner {
             do {
                 Map<TableBucket, List<ScanRecord>> fetchRecords = pollForFetches();
                 if (fetchRecords.isEmpty()) {
+                    LOG.info("fetch records is empty.");
                     if (logFetcher.awaitNotEmpty(startNanos + timeoutNanos)) {
                         return new ScanRecords(fetchRecords);
                     }
                 } else {
+                    LOG.info("fetch records isnot empty.");
                     // before returning the fetched records, we can send off the next round of
                     // fetches and avoid block waiting for their responses to enable pipelining
                     // while the user is handling the fetched records.
@@ -224,6 +226,9 @@ public class LogScannerImpl implements LogScanner {
     private Map<TableBucket, List<ScanRecord>> pollForFetches() {
         Map<TableBucket, List<ScanRecord>> fetchedRecords = logFetcher.collectFetch();
         if (!fetchedRecords.isEmpty()) {
+            LOG.info("fetch records size: {}", fetchedRecords.size());
+            TableBucket tableBucket = fetchedRecords.keySet().iterator().next();
+            LOG.info("scan records size: {}.", fetchedRecords.get(tableBucket).size());
             return fetchedRecords;
         }
 

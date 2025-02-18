@@ -16,7 +16,6 @@
 
 package com.alibaba.fluss.server.replica.fetcher;
 
-import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -30,17 +29,18 @@ import com.alibaba.fluss.server.log.ListOffsetsParam;
 import com.alibaba.fluss.server.utils.RpcMessageUtils;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeListOffsetsRequest;
+
 /** Facilitates fetches from a remote replica leader in one tablet server. */
 final class RemoteLeaderEndpoint implements LeaderEndpoint {
     private final int followerServerId;
-    private final ServerNode remoteNode;
+    private final int remoteNode;
     private final TabletServerGateway tabletServerGateway;
     /** The max size for the fetch response. */
     private final int maxFetchSize;
@@ -53,7 +53,7 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
     RemoteLeaderEndpoint(
             Configuration conf,
             int followerServerId,
-            ServerNode remoteNode,
+            int remoteNode,
             TabletServerGateway tabletServerGateway) {
         this.followerServerId = followerServerId;
         this.remoteNode = remoteNode;
@@ -67,7 +67,7 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
-    public ServerNode leaderNode() {
+    public int leaderNode() {
         return remoteNode;
     }
 
@@ -158,11 +158,12 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
     private CompletableFuture<Long> fetchLogOffset(TableBucket tableBucket, int offsetType) {
         return tabletServerGateway
                 .listOffsets(
-                        RpcMessageUtils.makeListOffsetsRequest(
+                        makeListOffsetsRequest(
                                 followerServerId,
                                 offsetType,
                                 tableBucket.getTableId(),
-                                Collections.singletonList(tableBucket.getBucket())))
+                                tableBucket.getPartitionId(),
+                                tableBucket.getBucket()))
                 .thenApply(
                         response -> {
                             PbListOffsetsRespForBucket respForBucket =

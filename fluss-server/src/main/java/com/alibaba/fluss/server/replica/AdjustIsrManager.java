@@ -82,6 +82,7 @@ public class AdjustIsrManager {
             // start send adjust isr request to coordinator.
             maybePropagateIsrAdjust();
         } else {
+            LOG.info("There is already a pending change isr request for bucket {}.", tableBucket);
             future.completeExceptionally(
                     new OperationNotAttemptedException(
                             String.format(
@@ -136,10 +137,11 @@ public class AdjustIsrManager {
                             if (errors == Errors.NONE) {
                                 maybePropagateIsrAdjust();
                             } else {
+                                LOG.info("adjust isr with error, sleep 500 ms,  {}", errors);
                                 // If we received a top-level error from the coordinator, retry
                                 // the request in near future.
                                 scheduler.scheduleOnce(
-                                        "send-adjust-isr", this::maybePropagateIsrAdjust, 50);
+                                        "send-adjust-isr", this::maybePropagateIsrAdjust, 500);
                             }
                         });
     }

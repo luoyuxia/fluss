@@ -23,6 +23,7 @@ import com.alibaba.fluss.client.metrics.ScannerMetricGroup;
 import com.alibaba.fluss.client.table.scanner.RemoteFileDownloader;
 import com.alibaba.fluss.client.table.scanner.ScanRecord;
 import com.alibaba.fluss.cluster.BucketLocation;
+import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidMetadataException;
@@ -165,9 +166,10 @@ public class LogFetcher implements Closeable {
      */
     public synchronized void sendFetches() {
         Map<Integer, FetchLogRequest> fetchRequestMap = prepareFetchLogRequests();
+        LOG.info("Sending fetches for nodes {}", fetchRequestMap.keySet());
         fetchRequestMap.forEach(
                 (nodeId, fetchLogRequest) -> {
-                    LOG.debug("Adding pending request for node id {}", nodeId);
+                    LOG.info("Adding pending request for node id {}", nodeId);
                     nodesWithPendingFetchRequests.add(nodeId);
                     sendFetchRequest(nodeId, fetchLogRequest);
                 });
@@ -193,11 +195,16 @@ public class LogFetcher implements Closeable {
 
     private void sendFetchRequest(int destination, FetchLogRequest fetchLogRequest) {
         // TODO cache the tablet server gateway.
+        ServerNode serverNode = metadataUpdater.getTabletServer(destination);
+        if (serverNode == null) {
+            metadataUpdater.updateServers();
+            LOG.debug("Removing pending request for node: {}", destination);
+            nodesWithPendingFetchRequests.remove(destination);
+            return;
+        }
         TabletServerGateway gateway =
                 GatewayClientProxy.createGatewayProxy(
-                        () -> metadataUpdater.getTabletServer(destination),
-                        rpcClient,
-                        TabletServerGateway.class);
+                        () -> serverNode, rpcClient, TabletServerGateway.class);
 
         final long requestStartTime = System.currentTimeMillis();
         scannerMetricGroup.fetchRequestCount().inc();
@@ -302,7 +309,7 @@ public class LogFetcher implements Closeable {
                     // if the offset is null, it means the bucket has been unsubscribed,
                     // we just set a Long.MAX_VALUE as the next fetch offset
                     if (fetchOffset == null) {
-                        LOG.debug(
+                        LOG.info(
                                 "Ignoring fetch log response for bucket {} because the bucket has been "
                                         + "unsubscribed.",
                                 tb);
@@ -328,6 +335,8 @@ public class LogFetcher implements Closeable {
                                                 isCheckCrcs,
                                                 fetchOffset);
                                 logFetchBuffer.add(completedFetch);
+                            } else {
+                                LOG.info("records is empty.");
                             }
                         }
                     }
@@ -379,7 +388,7 @@ public class LogFetcher implements Closeable {
             }
             Long offset = logScannerStatus.getBucketOffset(tb);
             if (offset == null) {
-                LOG.debug(
+                LOG.info(
                         "Skipping fetch request for bucket {} because the bucket has been "
                                 + "unsubscribed.",
                         tb);
@@ -390,14 +399,14 @@ public class LogFetcher implements Closeable {
 
             Integer leader = getTableBucketLeader(tb);
             if (leader == null) {
-                LOG.trace(
+                LOG.info(
                         "Skipping fetch request for bucket {} because leader is not available.",
                         tb);
                 // try to get the latest metadata info of this table because the leader for this
                 // bucket is unknown.
                 metadataUpdater.updateTableOrPartitionMetadata(tablePath, tb.getPartitionId());
             } else if (nodesWithPendingFetchRequests.contains(leader)) {
-                LOG.trace(
+                LOG.info(
                         "Skipping fetch request for bucket {} because previous request "
                                 + "to server {} has not been processed.",
                         tb,

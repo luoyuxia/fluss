@@ -84,4 +84,18 @@ public final class NotifyLeaderAndIsrData {
     public LeaderAndIsr getLeaderAndIsr() {
         return leaderAndIsr;
     }
+
+    @Override
+    public String toString() {
+        return "NotifyLeaderAndIsrData{"
+                + "physicalTablePath="
+                + physicalTablePath
+                + ", tableBucket="
+                + tableBucket
+                + ", replicas="
+                + replicas
+                + ", leaderAndIsr="
+                + leaderAndIsr
+                + '}';
+    }
 }

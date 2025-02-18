@@ -143,8 +143,11 @@ public class Sender implements Runnable {
         // main loop, runs until close is called.
         while (running) {
             try {
+                LOG.info("run once.");
                 runOnce();
             } catch (Throwable t) {
+                // if an unexpected error occurs, we first to try to reinitialize the metadata.
+                metadataUpdater.updateServers();
                 LOG.error("Uncaught error in Fluss write sender thread: ", t);
             }
         }
@@ -194,10 +197,10 @@ public class Sender implements Runnable {
 
         // if there are any buckets whose leaders are not known yet, force metadata update
         if (!readyCheckResult.unknownLeaderTables.isEmpty()) {
-            metadataUpdater.updatePhysicalTableMetadata(readyCheckResult.unknownLeaderTables);
-            LOG.debug(
+            LOG.info(
                     "Client update metadata due to unknown leader tables from the batched records: {}",
                     readyCheckResult.unknownLeaderTables);
+            metadataUpdater.updatePhysicalTableMetadata(readyCheckResult.unknownLeaderTables);
         }
 
         Set<ServerNode> readyNodes = readyCheckResult.readyNodes;
@@ -212,6 +215,8 @@ public class Sender implements Runnable {
         // get the list of batches prepare to send.
         Map<Integer, List<WriteBatch>> batches =
                 accumulator.drain(metadataUpdater.getCluster(), readyNodes, maxRequestSize);
+
+        LOG.info("batches is empty {}", batches.isEmpty());
 
         if (!batches.isEmpty()) {
             addToInflightBatches(batches);
@@ -458,6 +463,7 @@ public class Sender implements Runnable {
     private Set<PhysicalTablePath> handleWriteBatchException(
             WriteBatch writeBatch, ApiError error) {
         Set<PhysicalTablePath> invalidMetadataTables = new HashSet<>();
+        LOG.info("handlewrite batch exception: {}.", error.formatErrMsg());
         if (canRetry(writeBatch, error.error())) {
             // if batch failed because of retrievable exception, we need to retry send all those
             // batches.

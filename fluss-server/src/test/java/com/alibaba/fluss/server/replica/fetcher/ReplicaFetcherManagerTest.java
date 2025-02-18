@@ -27,6 +27,7 @@ import com.alibaba.fluss.server.replica.ReplicaManager;
 import com.alibaba.fluss.server.replica.ReplicaTestBase;
 import com.alibaba.fluss.server.replica.fetcher.ReplicaFetcherManager.ServerIdAndFetcherId;
 import com.alibaba.fluss.server.tablet.TestTabletServerGateway;
+import com.alibaba.fluss.server.testutils.TestingMetadataCache;
 import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -58,7 +59,10 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
                         "test-fetcher-thread",
                         replicaManager,
                         new RemoteLeaderEndpoint(
-                                conf, TABLET_SERVER_ID, leader, new TestTabletServerGateway(false)),
+                                conf,
+                                TABLET_SERVER_ID,
+                                leader.id(),
+                                new TestTabletServerGateway(false)),
                         (int)
                                 conf.get(ConfigOptions.LOG_REPLICA_FETCH_BACKOFF_INTERVAL)
                                         .toMillis());
@@ -91,7 +95,7 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
                 result -> {});
 
         InitialFetchStatus initialFetchStatus =
-                new InitialFetchStatus(DATA1_TABLE_ID, leader, fetchOffset);
+                new InitialFetchStatus(DATA1_TABLE_ID, leader.id(), fetchOffset);
 
         Map<TableBucket, InitialFetchStatus> initialFetchStateMap = new HashMap<>();
         initialFetchStateMap.put(tb, initialFetchStatus);
@@ -122,12 +126,12 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
 
         public TestingReplicaFetcherManager(
                 int serverId, ReplicaManager replicaManager, ReplicaFetcherThread fetcherThread) {
-            super(new Configuration(), null, serverId, replicaManager);
+            super(new Configuration(), null, serverId, replicaManager, new TestingMetadataCache(3));
             this.fetcherThread = fetcherThread;
         }
 
         @Override
-        public ReplicaFetcherThread createFetcherThread(int fetcherId, ServerNode remoteNode) {
+        public ReplicaFetcherThread createFetcherThread(int fetcherId, int remoteNode) {
             return fetcherThread;
         }
     }

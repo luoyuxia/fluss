@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.server.log;
 
+import com.alibaba.fluss.exception.DuplicateSequenceException;
 import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.LogRecordBatch;
@@ -68,6 +69,12 @@ public class WriterAppendInfo {
                 !updatedEntry.isEmpty()
                         ? updatedEntry.lastBatchSequence()
                         : currentEntry.lastBatchSequence();
+        if (currentLastSeq >= appendFirstSeq) {
+            throw new DuplicateSequenceException(
+                    String.format(
+                            "Found duplicated batch, current last seq: %d, append first seq: %d ",
+                            currentLastSeq, appendFirstSeq));
+        }
         // must be in sequence, even for the first batch should start from 0
         if (!inSequence(currentLastSeq, appendFirstSeq)) {
             throw new OutOfOrderSequenceException(

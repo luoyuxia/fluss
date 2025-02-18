@@ -60,7 +60,7 @@ public class TableBucketStateMachine {
         initializeBucketState();
         LOG.info("Triggering online table bucket changes");
         triggerOnlineBucketStateChange();
-        LOG.debug(
+        LOG.info(
                 "Started bucket state machine with initial state {}.",
                 coordinatorContext.getBucketStates());
     }
@@ -95,6 +95,7 @@ public class TableBucketStateMachine {
         Set<TableBucket> buckets =
                 coordinatorContext.bucketsInStates(
                         Sets.newHashSet(BucketState.NewBucket, BucketState.OfflineBucket));
+        LOG.info("triggerOnlineBucketStateChange for buckets {}", buckets);
 
         buckets =
                 buckets.stream()
@@ -379,11 +380,21 @@ public class TableBucketStateMachine {
     }
 
     private String stringifyBucket(TableBucket tableBucket) {
-        return String.format(
-                "TableBucket{tableId=%d, bucket=%d, tablePath=%s}",
-                tableBucket.getTableId(),
-                tableBucket.getBucket(),
-                coordinatorContext.getTablePathById(tableBucket.getTableId()));
+        if (tableBucket.getPartitionId() == null) {
+            return String.format(
+                    "TableBucket{tableId=%d, bucket=%d, tablePath=%s}",
+                    tableBucket.getTableId(),
+                    tableBucket.getBucket(),
+                    coordinatorContext.getTablePathById(tableBucket.getTableId()));
+        } else {
+            return String.format(
+                    "TableBucket{tableId=%d, partitionId=%d, bucket=%d, tablePath=%s, partition=%s}",
+                    tableBucket.getTableId(),
+                    tableBucket.getPartitionId(),
+                    tableBucket.getBucket(),
+                    coordinatorContext.getTablePathById(tableBucket.getTableId()),
+                    coordinatorContext.getPartitionName(tableBucket.getPartitionId()));
+        }
     }
 
     /**

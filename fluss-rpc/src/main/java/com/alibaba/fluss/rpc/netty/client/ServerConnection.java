@@ -86,10 +86,10 @@ final class ServerConnection {
     ServerConnection(Bootstrap bootstrap, ServerNode node, ClientMetricGroup clientMetricGroup) {
         this.node = node;
         this.state = ConnectionState.CONNECTING;
+        this.connectionMetricGroup = clientMetricGroup.createConnectionMetricGroup(node.uid());
         bootstrap
                 .connect(node.host(), node.port())
                 .addListener((ChannelFutureListener) this::establishConnection);
-        this.connectionMetricGroup = clientMetricGroup.createConnectionMetricGroup(node.uid());
     }
 
     public ServerNode getServerNode() {
@@ -318,8 +318,12 @@ final class ServerConnection {
                 return responseFuture;
             }
 
-            connectionMetricGroup.updateMetricsBeforeSendRequest(apiKey, rawRequest.totalSize());
-
+            if (connectionMetricGroup == null) {
+                LOG.error("connectionMetricGroup is null...");
+            } else {
+                connectionMetricGroup.updateMetricsBeforeSendRequest(
+                        apiKey, rawRequest.totalSize());
+            }
             channel.writeAndFlush(byteBuf)
                     .addListener(
                             (ChannelFutureListener)

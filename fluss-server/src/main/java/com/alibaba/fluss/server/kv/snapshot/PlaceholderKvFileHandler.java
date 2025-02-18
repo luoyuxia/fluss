@@ -27,4 +27,8 @@ public class PlaceholderKvFileHandler extends KvFileHandle {
     public PlaceholderKvFileHandler(KvFileHandle kvFileHandle) {
         super(kvFileHandle.getFilePath(), kvFileHandle.getSize());
     }
+
+    public void discard() throws Exception {
+        // do nothing
+    }
 }

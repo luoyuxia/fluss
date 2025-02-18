@@ -91,6 +91,7 @@ public class LogFetchCollector {
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed()) {
                     CompletedFetch completedFetch = logFetchBuffer.peek();
                     if (completedFetch == null) {
+                        LOG.info("completedFetch is null");
                         break;
                     }
 

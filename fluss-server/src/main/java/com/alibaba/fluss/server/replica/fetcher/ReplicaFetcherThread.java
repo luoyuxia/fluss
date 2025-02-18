@@ -127,7 +127,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                                         leader.buildFetchLogRequest(
                                                 fairBucketStatusMap.bucketStatusMap());
                                 if (!fetchLogRequest.isPresent()) {
-                                    LOG.trace(
+                                    LOG.info(
                                             "There are no active buckets. Back off for {} ms before "
                                                     + "sending a fetch fetchLogRequest",
                                             fetchBackOffMs);
@@ -210,13 +210,28 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     "Sending fetch log request {} to leader {}", fetchRequest, leader.leaderNode());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            responseData = leader.fetchLog(fetchRequest).get();
+            //            LOG.info("Begin to fetch from leader node {}", leader.leaderNode());
+            long startTime = System.currentTimeMillis();
+            try {
+                responseData = leader.fetchLog(fetchRequest).get(1, TimeUnit.MINUTES);
+                //                LOG.info(
+                //                        "Fetch from leader node {} cost {} ms",
+                //                        leader.leaderNode(),
+                //                        System.currentTimeMillis() - startTime);
+            } catch (Throwable t) {
+                //                LOG.info(
+                //                        "fetch from leader node {} exception with time {}",
+                //                        leader.leaderNode(),
+                //                        System.currentTimeMillis() - startTime,
+                //                        t);
+            }
         } catch (Throwable t) {
             if (isRunning()) {
                 LOG.warn("Error in response for fetch log request {}", fetchRequest, t);
-                inLock(
-                        bucketStatusMapLock,
-                        () -> bucketsWithError.addAll(fairBucketStatusMap.bucketSet()));
+                //                inLock(
+                //                        bucketStatusMapLock,
+                //                        () ->
+                // bucketsWithError.addAll(fairBucketStatusMap.bucketSet()));
             }
         }
 
@@ -358,7 +373,13 @@ final class ReplicaFetcherThread extends ShutdownableThread {
          * <p>There is a potential for a mismatch between the logs of the two replicas here. We
          * don't fix this mismatch as of now.
          */
-        long leaderEndOffset = leader.fetchLocalLogEndOffset(tableBucket).get();
+        long leaderEndOffset;
+        try {
+            leaderEndOffset = leader.fetchLocalLogEndOffset(tableBucket).get(1, TimeUnit.MINUTES);
+        } catch (Exception t) {
+            LOG.error("fetchLocalLogEndOffset exception.", t);
+            throw t;
+        }
         if (leaderEndOffset < replicaEndOffset) {
             LOG.warn(
                     "Reset fetch offset for bucket {} from {} to current leader's latest offset {}",
@@ -391,7 +412,14 @@ final class ReplicaFetcherThread extends ShutdownableThread {
              * needs to be set for both tablet servers and producers.
              *
              * */
-            long leaderStartOffset = leader.fetchLocalLogStartOffset(tableBucket).get();
+            long leaderStartOffset;
+            try {
+                leaderStartOffset =
+                        leader.fetchLocalLogStartOffset(tableBucket).get(1, TimeUnit.MINUTES);
+            } catch (Exception e) {
+                LOG.error("fetchLocalLogStartOffset exception.", e);
+                throw e;
+            }
             LOG.warn(
                     "Reset fetch offset for bucket {} from {} to current leader's start offset {}",
                     tableBucket,

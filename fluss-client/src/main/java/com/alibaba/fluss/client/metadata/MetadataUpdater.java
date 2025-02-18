@@ -17,7 +17,6 @@
 package com.alibaba.fluss.client.metadata;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
-import com.alibaba.fluss.client.utils.ClientUtils;
 import com.alibaba.fluss.cluster.BucketLocation;
 import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
@@ -53,6 +52,7 @@ import java.util.Set;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.client.utils.ClientUtils.parseAndValidateAddresses;
 import static com.alibaba.fluss.client.utils.MetadataUtils.sendMetadataRequestAndRebuildCluster;
 
 /** The updater to initialize and update client metadata. */
@@ -61,16 +61,18 @@ public class MetadataUpdater {
 
     private static final int MAX_RETRY_TIMES = 5;
 
+    private final Configuration conf;
     private final RpcClient rpcClient;
     protected volatile Cluster cluster;
 
     public MetadataUpdater(Configuration configuration, RpcClient rpcClient) {
-        this(rpcClient, initializeCluster(configuration, rpcClient));
+        this(rpcClient, configuration, initializeCluster(configuration, rpcClient));
     }
 
     @VisibleForTesting
-    public MetadataUpdater(RpcClient rpcClient, Cluster cluster) {
+    public MetadataUpdater(RpcClient rpcClient, Configuration conf, Cluster cluster) {
         this.rpcClient = rpcClient;
+        this.conf = conf;
         this.cluster = cluster;
     }
 
@@ -263,10 +265,44 @@ public class MetadataUpdater {
             Throwable t = ExceptionUtils.stripExecutionException(e);
             if (t instanceof RetriableException || t instanceof TimeoutException) {
                 LOG.warn("Failed to update metadata, but the exception is re-triable.", t);
+            } else if (ExceptionUtils.findThrowableWithMessage(t, "no alive tablet").isPresent()) {
+                LOG.warn("no alive tablet server in cluster, is re-triable", t);
+                Cluster newCluster = updateServersWhenNoAliveTabletServers(cluster);
+                if (newCluster != null) {
+                    cluster = newCluster;
+                    LOG.warn("update metadata success to new cluster when no alive tablet servers");
+                } else {
+                    LOG.warn(
+                            "not update metadata success to new cluster since new cluster is null");
+                }
             } else {
                 throw new FlussRuntimeException("Failed to update metadata", t);
             }
         }
+    }
+
+    public Cluster updateServersWhenNoAliveTabletServers(Cluster cluster) {
+        List<InetSocketAddress> inetSocketAddresses =
+                parseAndValidateAddresses(conf.get(ConfigOptions.BOOTSTRAP_SERVERS));
+        for (InetSocketAddress address : inetSocketAddresses) {
+            ServerNode serverNode =
+                    new ServerNode(
+                            -1, address.getHostString(), address.getPort(), ServerType.COORDINATOR);
+            try {
+                AdminReadOnlyGateway adminReadOnlyGateway =
+                        GatewayClientProxy.createGatewayProxy(
+                                () -> serverNode, rpcClient, AdminReadOnlyGateway.class);
+                return sendMetadataRequestAndRebuildCluster(
+                        adminReadOnlyGateway, true, cluster, null, null, null);
+            } catch (Exception e) {
+                LOG.error(
+                        "Failed to initialize fluss client connection to bootstrap server: {}",
+                        address,
+                        e);
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
@@ -275,7 +311,7 @@ public class MetadataUpdater {
      */
     private static Cluster initializeCluster(Configuration conf, RpcClient rpcClient) {
         List<InetSocketAddress> inetSocketAddresses =
-                ClientUtils.parseAndValidateAddresses(conf.get(ConfigOptions.BOOTSTRAP_SERVERS));
+                parseAndValidateAddresses(conf.get(ConfigOptions.BOOTSTRAP_SERVERS));
         Cluster cluster = null;
         for (InetSocketAddress address : inetSocketAddresses) {
             cluster = tryToInitializeCluster(rpcClient, address);
@@ -294,6 +330,17 @@ public class MetadataUpdater {
         }
 
         return cluster;
+    }
+
+    /** Re-initialize the cluster. */
+    public void reInitializeCluster() {
+        synchronized (this) {
+            cluster = initializeCluster(conf, rpcClient);
+        }
+    }
+
+    public void updateServers() {
+        updateMetadata(null, null, null);
     }
 
     private static @Nullable Cluster tryToInitializeCluster(
