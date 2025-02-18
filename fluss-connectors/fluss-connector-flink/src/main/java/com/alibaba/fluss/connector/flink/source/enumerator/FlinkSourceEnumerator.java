@@ -487,8 +487,14 @@ public class FlinkSourceEnumerator
 
     private void handleSplitsAdd(List<SourceSplitBase> splits, Throwable t) {
         if (t != null) {
-            throw new FlinkRuntimeException(
-                    String.format("Failed to list splits for %s to read due to ", tablePath), t);
+            if (isPartitioned && streaming && scanPartitionDiscoveryIntervalMs > 0) {
+                LOG.error("Failed to list splits for %s to read due to {}.", tablePath, t);
+                return;
+            } else {
+                throw new FlinkRuntimeException(
+                        String.format("Failed to list splits for %s to read due to ", tablePath),
+                        t);
+            }
         }
         if (isPartitioned) {
             if (!streaming || scanPartitionDiscoveryIntervalMs <= 0) {
