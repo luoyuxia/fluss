@@ -142,6 +142,42 @@ public class CoordinatorServer extends ServerBase {
 
             this.metadataCache = new ServerMetadataCacheImpl();
 
+            this.clientMetricGroup = new ClientMetricGroup(metricRegistry, SERVER_NAME);
+            this.rpcClient = RpcClient.create(conf, clientMetricGroup);
+
+            this.coordinatorChannelManager = new CoordinatorChannelManager(rpcClient);
+
+            CompletedSnapshotStoreManager bucketSnapshotManager =
+                    new CompletedSnapshotStoreManager(
+                            conf.getInt(ConfigOptions.KV_MAX_RETAINED_SNAPSHOTS),
+                            conf.getInt(ConfigOptions.COORDINATOR_IO_POOL_SIZE),
+                            zkClient);
+
+            this.autoPartitionManager = new AutoPartitionManager(metadataCache, zkClient, conf);
+            autoPartitionManager.start();
+
+            registerCoordinatorLeader();
+            // start coordinator event processor after we register coordinator leader to zk
+            // so that the event processor can get the coordinator leader node from zk during start
+            // up.
+            // in HA for coordinator server, the processor also need to know the leader node during
+            // start up
+            this.coordinatorEventProcessor =
+                    new CoordinatorEventProcessor(
+                            zkClient,
+                            metadataCache,
+                            coordinatorChannelManager,
+                            bucketSnapshotManager,
+                            autoPartitionManager,
+                            serverMetricGroup);
+            coordinatorEventProcessor.startup();
+            // wait coordinator event processor initialized
+            coordinatorEventProcessor.awaitInitialized();
+
+            // then, after coordinator processor initialized,
+            // start coordinator service to handle user's request
+            // so that event, e.g., CreateTableEvent, won't be missed by
+            // coordinatorEventProcessor
             this.coordinatorService =
                     new CoordinatorService(
                             conf,
@@ -159,37 +195,6 @@ public class CoordinatorServer extends ServerBase {
                             RequestsMetrics.createCoordinatorServerRequestMetrics(
                                     serverMetricGroup));
             rpcServer.start();
-
-            registerCoordinatorLeader();
-
-            this.clientMetricGroup = new ClientMetricGroup(metricRegistry, SERVER_NAME);
-            this.rpcClient = RpcClient.create(conf, clientMetricGroup);
-
-            this.coordinatorChannelManager = new CoordinatorChannelManager(rpcClient);
-
-            CompletedSnapshotStoreManager bucketSnapshotManager =
-                    new CompletedSnapshotStoreManager(
-                            conf.getInt(ConfigOptions.KV_MAX_RETAINED_SNAPSHOTS),
-                            conf.getInt(ConfigOptions.COORDINATOR_IO_POOL_SIZE),
-                            zkClient);
-
-            this.autoPartitionManager = new AutoPartitionManager(metadataCache, zkClient, conf);
-            autoPartitionManager.start();
-
-            // start coordinator event processor after we register coordinator leader to zk
-            // so that the event processor can get the coordinator leader node from zk during start
-            // up.
-            // in HA for coordinator server, the processor also need to know the leader node during
-            // start up
-            this.coordinatorEventProcessor =
-                    new CoordinatorEventProcessor(
-                            zkClient,
-                            metadataCache,
-                            coordinatorChannelManager,
-                            bucketSnapshotManager,
-                            autoPartitionManager,
-                            serverMetricGroup);
-            coordinatorEventProcessor.startup();
 
             createDefaultDatabase();
         }
@@ -241,6 +246,22 @@ public class CoordinatorServer extends ServerBase {
     CompletableFuture<Void> stopServices() {
         synchronized (lock) {
             Throwable exception = null;
+            final Collection<CompletableFuture<Void>> terminationFutures = new ArrayList<>(2);
+            try {
+                if (rpcServer != null) {
+                    terminationFutures.add(rpcServer.closeAsync());
+                }
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
+
+            try {
+                if (coordinatorService != null) {
+                    coordinatorService.shutdown();
+                }
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
 
             try {
                 if (serverMetricGroup != null) {
@@ -250,7 +271,6 @@ public class CoordinatorServer extends ServerBase {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
 
-            final Collection<CompletableFuture<Void>> terminationFutures = new ArrayList<>(2);
             try {
                 if (metricRegistry != null) {
                     terminationFutures.add(metricRegistry.closeAsync());
@@ -278,22 +298,6 @@ public class CoordinatorServer extends ServerBase {
             try {
                 if (coordinatorChannelManager != null) {
                     coordinatorChannelManager.close();
-                }
-            } catch (Throwable t) {
-                exception = ExceptionUtils.firstOrSuppressed(t, exception);
-            }
-
-            try {
-                if (rpcServer != null) {
-                    terminationFutures.add(rpcServer.closeAsync());
-                }
-            } catch (Throwable t) {
-                exception = ExceptionUtils.firstOrSuppressed(t, exception);
-            }
-
-            try {
-                if (coordinatorService != null) {
-                    coordinatorService.shutdown();
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);

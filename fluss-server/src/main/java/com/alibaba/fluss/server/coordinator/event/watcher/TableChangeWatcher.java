@@ -42,6 +42,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
 
 /** A watcher to watch the table changes(create/delete) in zookeeper. */
 public class TableChangeWatcher {
@@ -54,12 +55,15 @@ public class TableChangeWatcher {
     private final EventManager eventManager;
     private final ZooKeeperClient zooKeeperClient;
 
+    private final CountDownLatch tableChangeListenerInitialized;
+
     public TableChangeWatcher(ZooKeeperClient zooKeeperClient, EventManager eventManager) {
         this.zooKeeperClient = zooKeeperClient;
         this.curatorCache =
                 CuratorCache.build(zooKeeperClient.getCuratorClient(), DatabasesZNode.path());
         this.eventManager = eventManager;
         this.curatorCache.listenable().addListener(new TablePathChangeListener());
+        this.tableChangeListenerInitialized = new CountDownLatch(1);
     }
 
     public void start() {
@@ -76,11 +80,28 @@ public class TableChangeWatcher {
         curatorCache.close();
     }
 
+    public void awaitInitialized() throws InterruptedException {
+        tableChangeListenerInitialized.await();
+    }
+
     /** A listener to monitor the changes of table nodes in zookeeper. */
     private final class TablePathChangeListener implements CuratorCacheListener {
 
+        private volatile boolean isInitialized = false;
+
+        @Override
+        public void initialized() {
+            isInitialized = true;
+            tableChangeListenerInitialized.countDown();
+        }
+
         @Override
         public void event(Type type, ChildData oldData, ChildData newData) {
+            // if the listener is not initialized, we don't need to process the event
+            // since it's still in the phase of loading existing zookeeper nodes to cache
+            if (!isInitialized) {
+                return;
+            }
             if (newData != null) {
                 LOG.debug("Received {} event (path: {})", type, newData.getPath());
             } else {

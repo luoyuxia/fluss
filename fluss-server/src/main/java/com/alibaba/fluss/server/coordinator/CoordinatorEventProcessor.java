@@ -248,6 +248,11 @@ public class CoordinatorEventProcessor implements EventProcessor {
         onShutdown();
     }
 
+    public void awaitInitialized() throws InterruptedException {
+        // currently, we'll wait for the table change watcher to be initialized
+        tableChangeWatcher.awaitInitialized();
+    }
+
     private ServerNode getCoordinatorServerNode() {
         try {
             return zooKeeperClient
