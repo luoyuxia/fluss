@@ -479,6 +479,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     private void processCreateTable(CreateTableEvent createTableEvent) {
         long tableId = createTableEvent.getTableInfo().getTableId();
+        // skip the table if it already exists
         if (coordinatorContext.containsTableId(tableId)) {
             return;
         }
@@ -495,6 +496,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     private void processCreatePartition(CreatePartitionEvent createPartitionEvent) {
         long partitionId = createPartitionEvent.getPartitionId();
+        // skip the partition if it already exists
         if (coordinatorContext.containsPartitionId(partitionId)) {
             return;
         }

@@ -75,7 +75,9 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.checkLeaderAndIsr;
 import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess;
+import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.makeSendLeaderAndStopRequestFailContext;
 import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyBucketForPartitionInState;
 import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyBucketForTableInState;
 import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyReplicaForPartitionInState;
@@ -228,7 +230,7 @@ class CoordinatorEventProcessorTest {
         // make request to some server should fail, but delete will still be successful
         // finally with retry logic
         int failedServer = 0;
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestFailContext(
+        makeSendLeaderAndStopRequestFailContext(
                 testCoordinatorChannelManager,
                 Arrays.stream(zookeeperClient.getSortedTabletServerList())
                         .boxed()
@@ -354,7 +356,7 @@ class CoordinatorEventProcessorTest {
         // should change the leader for bucket2 of t1 should change since the leader fail
         assertThat(coordinatorContext.getBucketState(t1Bucket1)).isEqualTo(OnlineBucket);
         // leader should change to replica2, leader epoch should be 1
-        CoordinatorTestUtils.checkLeaderAndIsr(zookeeperClient, t1Bucket1, 1, 2);
+        checkLeaderAndIsr(zookeeperClient, t1Bucket1, 1, 2);
 
         // the bucket with no any other available servers should be still offline,
         // t2 bucket0 should still be offline
@@ -447,7 +449,7 @@ class CoordinatorEventProcessorTest {
                         TestingMetricGroups.COORDINATOR_METRICS);
         CoordinatorContext coordinatorContext = eventProcessor.getCoordinatorContext();
         int failedServer = 0;
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestFailContext(
+        makeSendLeaderAndStopRequestFailContext(
                 testCoordinatorChannelManager,
                 Arrays.stream(zookeeperClient.getSortedTabletServerList())
                         .boxed()
@@ -469,7 +471,7 @@ class CoordinatorEventProcessorTest {
                 });
 
         // check the changed leader and isr info
-        CoordinatorTestUtils.checkLeaderAndIsr(zookeeperClient, t1Bucket0, 1, 1);
+        checkLeaderAndIsr(zookeeperClient, t1Bucket0, 1, 1);
         retry(
                 Duration.ofMinutes(1),
                 () -> {
@@ -581,7 +583,6 @@ class CoordinatorEventProcessorTest {
                 preparePartitionAssignment(
                         tablePath, tableId, coordinatorContext, partitionAssignment);
 
-        // create partition
         long partition1Id = partitionIdAndNameTuple2.f0.partitionId;
         String partition1Name = partitionIdAndNameTuple2.f0.partitionName;
         long partition2Id = partitionIdAndNameTuple2.f1.partitionId;
@@ -763,7 +764,7 @@ class CoordinatorEventProcessorTest {
                                 nBuckets * replicationFactor,
                                 ReplicaState.OnlineReplica));
         for (TableBucket tableBucket : coordinatorContext.getAllBucketsForTable(tableId)) {
-            CoordinatorTestUtils.checkLeaderAndIsr(
+            checkLeaderAndIsr(
                     zookeeperClient,
                     tableBucket,
                     0,
@@ -816,7 +817,7 @@ class CoordinatorEventProcessorTest {
         for (TableBucket tableBucket :
                 coordinatorContext.getAllBucketsForPartition(
                         tablePartition.getTableId(), tablePartition.getPartitionId())) {
-            CoordinatorTestUtils.checkLeaderAndIsr(
+            checkLeaderAndIsr(
                     zookeeperClient,
                     tableBucket,
                     0,
