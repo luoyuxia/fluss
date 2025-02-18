@@ -248,11 +248,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
         onShutdown();
     }
 
-    public void awaitInitialized() throws InterruptedException {
-        // currently, we'll wait for the table change watcher to be initialized
-        tableChangeWatcher.awaitInitialized();
-    }
-
     private ServerNode getCoordinatorServerNode() {
         try {
             return zooKeeperClient
@@ -483,6 +478,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
     }
 
     private void processCreateTable(CreateTableEvent createTableEvent) {
+        long tableId = createTableEvent.getTableInfo().getTableId();
+        if (coordinatorContext.containsTableId(tableId)) {
+            return;
+        }
         TableInfo tableInfo = createTableEvent.getTableInfo();
         coordinatorContext.putTableInfo(tableInfo);
         tableManager.onCreateNewTable(
@@ -495,6 +494,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
     }
 
     private void processCreatePartition(CreatePartitionEvent createPartitionEvent) {
+        long partitionId = createPartitionEvent.getPartitionId();
+        if (coordinatorContext.containsPartitionId(partitionId)) {
+            return;
+        }
         tableManager.onCreateNewPartition(
                 createPartitionEvent.getTablePath(),
                 createPartitionEvent.getTableId(),

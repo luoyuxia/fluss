@@ -30,10 +30,7 @@ import com.alibaba.fluss.metadata.TablePartition;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.messages.CommitKvSnapshotResponse;
 import com.alibaba.fluss.server.coordinator.event.CommitKvSnapshotEvent;
-import com.alibaba.fluss.server.coordinator.event.CoordinatorEvent;
 import com.alibaba.fluss.server.coordinator.event.CoordinatorEventManager;
-import com.alibaba.fluss.server.coordinator.event.CreatePartitionEvent;
-import com.alibaba.fluss.server.coordinator.event.DropPartitionEvent;
 import com.alibaba.fluss.server.coordinator.statemachine.BucketState;
 import com.alibaba.fluss.server.coordinator.statemachine.ReplicaState;
 import com.alibaba.fluss.server.entity.CommitKvSnapshotData;
@@ -56,6 +53,7 @@ import com.alibaba.fluss.server.zk.data.ZkData.PartitionIdsZNode;
 import com.alibaba.fluss.server.zk.data.ZkData.TableIdsZNode;
 import com.alibaba.fluss.testutils.common.AllCallbackWrapper;
 import com.alibaba.fluss.types.DataTypes;
+import com.alibaba.fluss.utils.types.Tuple2;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -77,6 +75,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess;
 import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyBucketForPartitionInState;
 import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyBucketForTableInState;
 import static com.alibaba.fluss.server.coordinator.CoordinatorTestUtils.verifyReplicaForPartitionInState;
@@ -166,7 +165,7 @@ class CoordinatorEventProcessorTest {
     void testCreateAndDropTable() throws Exception {
         CoordinatorContext coordinatorContext = eventProcessor.getCoordinatorContext();
         // make sure all request to gateway should be successful
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
+        makeSendLeaderAndStopRequestAlwaysSuccess(
                 eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
         // create a table,
         TablePath t1 = TablePath.of(defaultDatabase, "create_drop_t1");
@@ -208,7 +207,7 @@ class CoordinatorEventProcessorTest {
                         completedSnapshotStoreManager,
                         autoPartitionManager,
                         TestingMetricGroups.COORDINATOR_METRICS);
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
+        makeSendLeaderAndStopRequestAlwaysSuccess(
                 testCoordinatorChannelManager,
                 Arrays.stream(zookeeperClient.getSortedTabletServerList())
                         .boxed()
@@ -265,7 +264,7 @@ class CoordinatorEventProcessorTest {
     void testServerBecomeOnlineAndOfflineLine() throws Exception {
         CoordinatorContext coordinatorContext = eventProcessor.getCoordinatorContext();
         // make sure all request to gateway should be successful
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
+        makeSendLeaderAndStopRequestAlwaysSuccess(
                 eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
         // assume a new server become online;
         // check the server has been added into coordinator context
@@ -285,7 +284,7 @@ class CoordinatorEventProcessorTest {
                         assertThat(coordinatorContext.getLiveTabletServers())
                                 .containsKey(newlyServerId));
 
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
+        makeSendLeaderAndStopRequestAlwaysSuccess(
                 eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
         verifyTabletServer(coordinatorContext, newlyServerId, tabletServerRegistration);
 
@@ -402,7 +401,7 @@ class CoordinatorEventProcessorTest {
 
         // in this test case, so make requests to gateway should always be
         // successful for when start up, it will send request to tablet servers
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
+        makeSendLeaderAndStopRequestAlwaysSuccess(
                 testCoordinatorChannelManager,
                 Arrays.stream(zookeeperClient.getSortedTabletServerList())
                         .boxed()
@@ -435,7 +434,7 @@ class CoordinatorEventProcessorTest {
         long table1Id = metadataManager.createTable(tablePath, TEST_TABLE, tableAssignment, false);
 
         // let's restart
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
+        makeSendLeaderAndStopRequestAlwaysSuccess(
                 eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
         eventProcessor.shutdown();
         eventProcessor =
@@ -561,44 +560,32 @@ class CoordinatorEventProcessorTest {
 
     @Test
     void testCreateAndDropPartition() throws Exception {
+        TablePath tablePath = TablePath.of(defaultDatabase, "test_create_drop_partition");
         CoordinatorContext coordinatorContext = eventProcessor.getCoordinatorContext();
         // make sure all request to gateway should be successful
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
-                eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
+        makeSendLeaderAndStopRequestAlwaysSuccess(
+                coordinatorContext, testCoordinatorChannelManager);
         // create a partitioned table
-        TablePath tablePath = TablePath.of(defaultDatabase, "partition_table");
         TableDescriptor tablePartitionTableDescriptor = getPartitionedTable();
         long tableId =
                 metadataManager.createTable(tablePath, tablePartitionTableDescriptor, null, false);
 
-        retry(
-                Duration.ofMinutes(1),
-                // retry util the table has been put into context
-                () -> assertThat(coordinatorContext.getTablePathById(tableId)).isNotNull());
-
-        // create partition
-        long partition1Id = zookeeperClient.getPartitionIdAndIncrement();
-        long partition2Id = zookeeperClient.getPartitionIdAndIncrement();
         int nBuckets = 3;
         int replicationFactor = 3;
-        String partition1Name = "2024";
-        String partition2Name = "2025";
         Map<Integer, BucketAssignment> assignments =
                 TableAssignmentUtils.generateAssignment(
                                 nBuckets, replicationFactor, new int[] {0, 1, 2})
                         .getBucketAssignments();
         PartitionAssignment partitionAssignment = new PartitionAssignment(tableId, assignments);
-        zookeeperClient.registerPartitionAssignment(partition1Id, partitionAssignment);
-        zookeeperClient.registerPartitionAssignment(partition2Id, partitionAssignment);
+        Tuple2<PartitionIdName, PartitionIdName> partitionIdAndNameTuple2 =
+                preparePartitionAssignment(
+                        tablePath, tableId, coordinatorContext, partitionAssignment);
 
-        CoordinatorEvent createPartitionEvent =
-                new CreatePartitionEvent(
-                        tablePath, tableId, partition1Id, partition1Name, partitionAssignment);
-        eventProcessor.process(createPartitionEvent);
-        createPartitionEvent =
-                new CreatePartitionEvent(
-                        tablePath, tableId, partition2Id, partition2Name, partitionAssignment);
-        eventProcessor.process(createPartitionEvent);
+        // create partition
+        long partition1Id = partitionIdAndNameTuple2.f0.partitionId;
+        String partition1Name = partitionIdAndNameTuple2.f0.partitionName;
+        long partition2Id = partitionIdAndNameTuple2.f1.partitionId;
+
         verifyPartitionCreated(
                 coordinatorContext,
                 new TablePartition(tableId, partition1Id),
@@ -613,9 +600,7 @@ class CoordinatorEventProcessorTest {
                 replicationFactor);
 
         // drop the partition
-        DropPartitionEvent dropPartitionEvent = new DropPartitionEvent(tableId, partition1Id);
-        eventProcessor.process(dropPartitionEvent);
-
+        zookeeperClient.deletePartition(tablePath, partition1Name);
         verifyPartitionDropped(coordinatorContext, tableId, partition1Id);
 
         // now, drop the table and restart the coordinator event processor,
@@ -632,16 +617,115 @@ class CoordinatorEventProcessorTest {
                         completedSnapshotStoreManager,
                         autoPartitionManager,
                         TestingMetricGroups.COORDINATOR_METRICS);
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
+        makeSendLeaderAndStopRequestAlwaysSuccess(
                 testCoordinatorChannelManager,
                 Arrays.stream(zookeeperClient.getSortedTabletServerList())
                         .boxed()
                         .collect(Collectors.toSet()));
         eventProcessor.startup();
-        verifyPartitionDropped(coordinatorContext, tableId, partition2Id);
+        verifyPartitionDropped(eventProcessor.getCoordinatorContext(), tableId, partition2Id);
     }
 
-    // todo: add test resume drop partition
+    @Test
+    void testRestartResumeDropPartition() throws Exception {
+        TablePath tablePath = TablePath.of(defaultDatabase, "test_resume_drop_partition");
+        CoordinatorContext coordinatorContext = eventProcessor.getCoordinatorContext();
+        // make sure all request to gateway should be successful
+        makeSendLeaderAndStopRequestAlwaysSuccess(
+                coordinatorContext, testCoordinatorChannelManager);
+        // create a partitioned table
+        TableDescriptor tablePartitionTableDescriptor = getPartitionedTable();
+        long tableId =
+                metadataManager.createTable(tablePath, tablePartitionTableDescriptor, null, false);
+
+        int nBuckets = 3;
+        int replicationFactor = 3;
+        Map<Integer, BucketAssignment> assignments =
+                TableAssignmentUtils.generateAssignment(
+                                nBuckets, replicationFactor, new int[] {0, 1, 2})
+                        .getBucketAssignments();
+        PartitionAssignment partitionAssignment = new PartitionAssignment(tableId, assignments);
+        Tuple2<PartitionIdName, PartitionIdName> partitionIdAndNameTuple2 =
+                preparePartitionAssignment(
+                        tablePath, tableId, coordinatorContext, partitionAssignment);
+
+        long partition1Id = partitionIdAndNameTuple2.f0.partitionId;
+        String partition2Name = partitionIdAndNameTuple2.f1.partitionName;
+        long partition2Id = partitionIdAndNameTuple2.f1.partitionId;
+
+        verifyPartitionCreated(
+                coordinatorContext,
+                new TablePartition(tableId, partition1Id),
+                partitionAssignment,
+                nBuckets,
+                replicationFactor);
+        verifyPartitionCreated(
+                coordinatorContext,
+                new TablePartition(tableId, partition2Id),
+                partitionAssignment,
+                nBuckets,
+                replicationFactor);
+
+        // now, drop partition2 and restart the coordinator event processor,
+        // the partition2 should be dropped
+        eventProcessor.shutdown();
+        zookeeperClient.deletePartition(tablePath, partition2Name);
+
+        // start the coordinator
+        eventProcessor =
+                new CoordinatorEventProcessor(
+                        zookeeperClient,
+                        serverMetadataCache,
+                        testCoordinatorChannelManager,
+                        completedSnapshotStoreManager,
+                        autoPartitionManager,
+                        TestingMetricGroups.COORDINATOR_METRICS);
+        makeSendLeaderAndStopRequestAlwaysSuccess(
+                eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
+        makeSendLeaderAndStopRequestAlwaysSuccess(
+                testCoordinatorChannelManager,
+                Arrays.stream(zookeeperClient.getSortedTabletServerList())
+                        .boxed()
+                        .collect(Collectors.toSet()));
+        eventProcessor.startup();
+
+        CoordinatorContext newContext = eventProcessor.getCoordinatorContext();
+        // verify partition2 is dropped
+        verifyPartitionDropped(newContext, tableId, partition2Id);
+        // verify the status of partition1
+        verifyPartitionCreated(
+                newContext,
+                new TablePartition(tableId, partition1Id),
+                partitionAssignment,
+                nBuckets,
+                replicationFactor);
+    }
+
+    private Tuple2<PartitionIdName, PartitionIdName> preparePartitionAssignment(
+            TablePath tablePath,
+            long tableId,
+            CoordinatorContext coordinatorContext,
+            PartitionAssignment partitionAssignment)
+            throws Exception {
+        retry(
+                Duration.ofMinutes(1),
+                // retry util the table has been put into context
+                () -> assertThat(coordinatorContext.getTablePathById(tableId)).isNotNull());
+
+        // create partition
+        long partition1Id = zookeeperClient.getPartitionIdAndIncrement();
+        long partition2Id = zookeeperClient.getPartitionIdAndIncrement();
+        String partition1Name = "2024";
+        String partition2Name = "2025";
+        zookeeperClient.registerPartitionAssignment(partition1Id, partitionAssignment);
+        zookeeperClient.registerPartition(tablePath, tableId, partition1Name, partition1Id);
+        zookeeperClient.registerPartitionAssignment(partition2Id, partitionAssignment);
+        zookeeperClient.registerPartition(tablePath, tableId, partition2Name, partition2Id);
+
+        return Tuple2.of(
+                new PartitionIdName(partition1Id, partition1Name),
+                new PartitionIdName(partition2Id, partition2Name));
+    }
 
     private void verifyTableCreated(
             CoordinatorContext coordinatorContext,
@@ -851,7 +935,19 @@ class CoordinatorEventProcessorTest {
                 .partitionedBy("b")
                 .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED.key(), "true")
                 .property(ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT.key(), "DAY")
+                // set to 0 to disable pre-create partition
+                .property(ConfigOptions.TABLE_AUTO_PARTITION_NUM_PRECREATE, 0)
                 .build()
                 .withReplicationFactor(REPLICATION_FACTOR);
+    }
+
+    private static class PartitionIdName {
+        private final long partitionId;
+        private final String partitionName;
+
+        private PartitionIdName(long partitionId, String partitionName) {
+            this.partitionId = partitionId;
+            this.partitionName = partitionName;
+        }
     }
 }

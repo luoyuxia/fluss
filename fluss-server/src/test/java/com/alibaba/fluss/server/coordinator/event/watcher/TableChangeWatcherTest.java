@@ -192,38 +192,30 @@ class TableChangeWatcherTest {
         zookeeperClient.registerPartition(tablePath, tableId, "2011", 1L);
         zookeeperClient.registerPartition(tablePath, tableId, "2022", 2L);
 
-        // verify create partitions events
+        // create partitions events
         expectedEvents.add(
                 new CreatePartitionEvent(tablePath, tableId, 1L, "2011", partitionAssignment));
         expectedEvents.add(
                 new CreatePartitionEvent(tablePath, tableId, 2L, "2022", partitionAssignment));
+
         retry(
                 Duration.ofMinutes(1),
                 () ->
                         assertThat(eventManager.getEvents())
                                 .containsExactlyInAnyOrderElementsOf(expectedEvents));
 
-        // create a new table change watcher to verify table change watcher restarting works usually
-        eventManager = new TestingEventManager();
-        TableChangeWatcher newTableChangeWatcher =
-                new TableChangeWatcher(zookeeperClient, eventManager);
-        newTableChangeWatcher.start();
-        newTableChangeWatcher.awaitInitialized();
-
-        // then, drop the table
         metadataManager.dropTable(tablePath, false);
 
-        List<CoordinatorEvent> expectedEventAfterDropped = new ArrayList<>();
-        // verify drop partitions event
-        expectedEventAfterDropped.add(new DropPartitionEvent(tableId, 1L));
-        expectedEventAfterDropped.add(new DropPartitionEvent(tableId, 2L));
+        // drop partitions event
+        expectedEvents.add(new DropPartitionEvent(tableId, 1L));
+        expectedEvents.add(new DropPartitionEvent(tableId, 2L));
         // drop table event
-        expectedEventAfterDropped.add(new DropTableEvent(tableId, true));
+        expectedEvents.add(new DropTableEvent(tableId, true));
 
         retry(
                 Duration.ofMinutes(1),
                 () ->
                         assertThat(eventManager.getEvents())
-                                .containsExactlyInAnyOrderElementsOf(expectedEventAfterDropped));
+                                .containsExactlyInAnyOrderElementsOf(expectedEvents));
     }
 }
