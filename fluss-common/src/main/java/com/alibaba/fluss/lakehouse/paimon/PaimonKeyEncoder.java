@@ -16,32 +16,40 @@
 
 package com.alibaba.fluss.lakehouse.paimon;
 
+import com.alibaba.fluss.record.RowKind;
 import com.alibaba.fluss.row.InternalRow;
-import com.alibaba.fluss.row.ProjectedRow;
 import com.alibaba.fluss.row.encode.KeyEncoder;
+import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.RowType;
-
-import org.apache.paimon.data.serializer.InternalRowSerializer;
-import org.apache.paimon.types.DataType;
 
 import java.util.List;
 
 /** An implementation of {@link KeyEncoder} to follow Paimon's encoding strategy. */
 public class PaimonKeyEncoder implements KeyEncoder {
 
-    private final FlussRowWrapper flussRowWrapper;
-    private final InternalRowSerializer bucketKeyRowSerializer;
-    private final ProjectedRow bucketKeyProjectedRow;
+    private final InternalRow.FieldGetter[] fieldGetters;
+
+    private final PaimonBinaryRowWriter.FieldWriter[] fieldEncoders;
+
+    private final PaimonBinaryRowWriter paimonBinaryRowWriter;
 
     public PaimonKeyEncoder(RowType rowType, List<String> keys) {
         int[] bucketKeyIndex = getBucketKeyIndex(rowType, keys);
-        this.bucketKeyProjectedRow = ProjectedRow.from(bucketKeyIndex);
-        DataType[] bucketKeyDataTypes =
-                rowType.project(bucketKeyIndex).getChildren().stream()
-                        .map(dataType -> dataType.accept(FlussDataTypeToPaimonDataType.INSTANCE))
-                        .toArray(DataType[]::new);
-        this.bucketKeyRowSerializer = new InternalRowSerializer(bucketKeyDataTypes);
-        this.flussRowWrapper = new FlussRowWrapper();
+        DataType[] encodeDataTypes = new DataType[bucketKeyIndex.length];
+        for (int i = 0; i < bucketKeyIndex.length; i++) {
+            encodeDataTypes[i] = rowType.getTypeAt(bucketKeyIndex[i]);
+        }
+
+        // for get fields from internal row
+        fieldGetters = new InternalRow.FieldGetter[bucketKeyIndex.length];
+        // for encode fields
+        fieldEncoders = new PaimonBinaryRowWriter.FieldWriter[bucketKeyIndex.length];
+        for (int i = 0; i < bucketKeyIndex.length; i++) {
+            DataType fieldDataType = encodeDataTypes[i];
+            fieldGetters[i] = InternalRow.createFieldGetter(fieldDataType, bucketKeyIndex[i]);
+            fieldEncoders[i] = PaimonBinaryRowWriter.createFieldWriter(fieldDataType);
+        }
+        paimonBinaryRowWriter = new PaimonBinaryRowWriter(bucketKeyIndex.length);
     }
 
     private int[] getBucketKeyIndex(RowType rowType, List<String> bucketKey) {
@@ -54,10 +62,14 @@ public class PaimonKeyEncoder implements KeyEncoder {
 
     @Override
     public byte[] encodeKey(InternalRow row) {
-        // todo: remove paimon dependency in #408
-        InternalRow bucketRow = bucketKeyProjectedRow.replaceRow(row);
-        // wrap to paimon's InternalRow
-        flussRowWrapper.replace(bucketRow);
-        return bucketKeyRowSerializer.toBinaryRow(flussRowWrapper).toBytes();
+        paimonBinaryRowWriter.reset();
+        // always be RowKind.INSERT
+        paimonBinaryRowWriter.writeRowKind(RowKind.INSERT);
+        // iterate all the fields of the row, and encode each field
+        for (int i = 0; i < fieldGetters.length; i++) {
+            fieldEncoders[i].writeField(
+                    paimonBinaryRowWriter, i, fieldGetters[i].getFieldOrNull(row));
+        }
+        return paimonBinaryRowWriter.toBytes();
     }
 }

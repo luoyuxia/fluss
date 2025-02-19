@@ -17,8 +17,7 @@
 package com.alibaba.fluss.lakehouse.paimon;
 
 import com.alibaba.fluss.lakehouse.LakeBucketAssigner;
-
-import org.apache.paimon.utils.MurmurHashUtils;
+import com.alibaba.fluss.utils.MurmurHashUtils;
 
 /** An implementation of {@link LakeBucketAssigner} to follow Paimon's bucket assign strategy. */
 public class PaimonBucketAssigner implements LakeBucketAssigner {
