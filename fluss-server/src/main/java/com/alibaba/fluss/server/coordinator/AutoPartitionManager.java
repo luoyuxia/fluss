@@ -110,8 +110,14 @@ public class AutoPartitionManager implements AutoCloseable {
         this.periodicInterval = conf.get(ConfigOptions.AUTO_PARTITION_CHECK_INTERVAL).toMillis();
     }
 
-    public void initAutoPartitionTables(Map<Long, TableInfo> tableInfos) {
-        inLock(lock, () -> autoPartitionTables.putAll(tableInfos));
+    public void initAutoPartitionTables(
+            Map<Long, TableInfo> tableInfos, Map<Long, TreeSet<String>> initPartitionsByTable) {
+        inLock(
+                lock,
+                () -> {
+                    autoPartitionTables.putAll(tableInfos);
+                    partitionsByTable.putAll(initPartitionsByTable);
+                });
     }
 
     public void addAutoPartitionTable(TableInfo tableInfo) {

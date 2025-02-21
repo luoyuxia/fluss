@@ -93,6 +93,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
@@ -292,6 +293,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // load all tables
         Map<Long, TableInfo> autoPartitionTables = new HashMap<>();
+        Map<Long, TreeSet<String>> initPartitionsByTable = new HashMap<>();
         for (String database : metadataManager.listDatabases()) {
             for (String tableName : metadataManager.listTables(database)) {
                 TablePath tablePath = TablePath.of(database, tableName);
@@ -300,11 +302,15 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 coordinatorContext.putTableInfo(tableInfo);
 
                 if (tableInfo.isPartitioned()) {
+                    TreeSet<String> partitionTreeSet =
+                            initPartitionsByTable.computeIfAbsent(
+                                    tableInfo.getTableId(), (k) -> new TreeSet<>());
                     Map<String, Long> partitions =
                             zooKeeperClient.getPartitionNameAndIds(tablePath);
                     for (Map.Entry<String, Long> partition : partitions.entrySet()) {
                         // put partition info to coordinator context
                         coordinatorContext.putPartition(partition.getValue(), partition.getKey());
+                        partitionTreeSet.add(partition.getKey());
                     }
                     // if the table is auto partition, put the partitions info
                     if (tableInfo
@@ -316,7 +322,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 }
             }
         }
-        autoPartitionManager.initAutoPartitionTables(autoPartitionTables);
+        autoPartitionManager.initAutoPartitionTables(autoPartitionTables, initPartitionsByTable);
 
         // load all assignment
         loadTableAssignment();
