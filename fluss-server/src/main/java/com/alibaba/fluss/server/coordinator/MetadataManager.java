@@ -37,18 +37,14 @@ import com.alibaba.fluss.server.zk.data.TableRegistration;
 import com.alibaba.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import com.alibaba.fluss.utils.function.RunnableWithException;
 import com.alibaba.fluss.utils.function.ThrowingRunnable;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
-
-import static com.alibaba.fluss.server.utils.TableDescriptorValidation.validateTableDescriptor;
 
 /** A manager for metadata. */
 public class MetadataManager {
@@ -200,9 +196,6 @@ public class MetadataManager {
             @Nullable TableAssignment tableAssignment,
             boolean ignoreIfExists)
             throws TableAlreadyExistException, DatabaseNotExistException {
-        // validate table properties before creating table
-        validateTableDescriptor(tableToCreate);
-
         if (!databaseExists(tablePath.getDatabaseName())) {
             throw new DatabaseNotExistException(
                     "Database " + tablePath.getDatabaseName() + " does not exist.");

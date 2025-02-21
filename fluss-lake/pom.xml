@@ -29,6 +29,7 @@
     <name>Fluss : Lake :</name>
     <modules>
         <module>fluss-lake-common</module>
+        <module>fluss-lake-format-paimon</module>
     </modules>
     <packaging>pom</packaging>
 </project>

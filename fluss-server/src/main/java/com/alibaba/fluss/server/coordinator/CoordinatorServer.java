@@ -20,6 +20,9 @@ import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
+import com.alibaba.fluss.lake.LakeStoragePlugin;
+import com.alibaba.fluss.lake.LakeStoragePluginSetUp;
+import com.alibaba.fluss.lake.MetadataLakeApplier;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metrics.registry.MetricRegistry;
 import com.alibaba.fluss.rpc.RpcClient;
@@ -37,12 +40,11 @@ import com.alibaba.fluss.server.zk.ZooKeeperUtils;
 import com.alibaba.fluss.server.zk.data.CoordinatorAddress;
 import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -109,6 +111,9 @@ public class CoordinatorServer extends ServerBase {
     @GuardedBy("lock")
     private AutoPartitionManager autoPartitionManager;
 
+    @GuardedBy("lock")
+    private MetadataLakeApplier metadataLakeApplier;
+
     public CoordinatorServer(Configuration conf) {
         super(conf);
         validateConfigs(conf);
@@ -141,6 +146,7 @@ public class CoordinatorServer extends ServerBase {
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
 
             this.metadataCache = new ServerMetadataCacheImpl();
+            this.metadataLakeApplier = loadMetadataLakeApplier();
 
             this.coordinatorService =
                     new CoordinatorService(
@@ -148,7 +154,8 @@ public class CoordinatorServer extends ServerBase {
                             remoteFileSystem,
                             zkClient,
                             this::getCoordinatorEventManager,
-                            metadataCache);
+                            metadataCache,
+                            metadataLakeApplier);
 
             this.rpcServer =
                     RpcServer.create(
@@ -188,6 +195,16 @@ public class CoordinatorServer extends ServerBase {
 
             createDefaultDatabase();
         }
+    }
+
+    @Nullable
+    private MetadataLakeApplier loadMetadataLakeApplier() {
+        LakeStoragePlugin lakeStoragePlugin =
+                LakeStoragePluginSetUp.fromConfiguration(conf, pluginManager);
+        if (lakeStoragePlugin == null) {
+            return null;
+        }
+        return lakeStoragePlugin.createMetadataLakeApplier(conf);
     }
 
     @Override
@@ -289,6 +306,14 @@ public class CoordinatorServer extends ServerBase {
             try {
                 if (coordinatorService != null) {
                     coordinatorService.shutdown();
+                }
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
+
+            try {
+                if (metadataLakeApplier != null) {
+                    metadataLakeApplier.close();
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);

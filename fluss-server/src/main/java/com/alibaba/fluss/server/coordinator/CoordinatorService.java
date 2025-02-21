@@ -19,12 +19,17 @@ package com.alibaba.fluss.server.coordinator;
 import com.alibaba.fluss.cluster.ServerType;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.exception.DatabaseAlreadyExistException;
+import com.alibaba.fluss.exception.DatabaseNotExistException;
 import com.alibaba.fluss.exception.InvalidDatabaseException;
 import com.alibaba.fluss.exception.InvalidTableException;
+import com.alibaba.fluss.exception.TableAlreadyExistException;
 import com.alibaba.fluss.fs.FileSystem;
+import com.alibaba.fluss.lake.MetadataLakeApplier;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.TableDescriptor;
+import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
 import com.alibaba.fluss.rpc.messages.AdjustIsrRequest;
@@ -58,12 +63,10 @@ import com.alibaba.fluss.server.utils.TableAssignmentUtils;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.TableAssignment;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -71,6 +74,7 @@ import java.util.function.Supplier;
 
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.getCommitLakeTableSnapshotData;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.toTablePath;
+import static com.alibaba.fluss.server.utils.TableDescriptorValidation.validateTableDescriptor;
 
 /** An RPC Gateway service for coordinator server. */
 public final class CoordinatorService extends RpcServiceBase implements CoordinatorGateway {
@@ -84,17 +88,21 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     // null if the cluster hasn't configured datalake format
     private final @Nullable DataLakeFormat dataLakeFormat;
 
+    private final @Nullable MetadataLakeApplier metadataLakeApplier;
+
     public CoordinatorService(
             Configuration conf,
             FileSystem remoteFileSystem,
             ZooKeeperClient zkClient,
             Supplier<EventManager> eventManagerSupplier,
-            ServerMetadataCache metadataCache) {
+            ServerMetadataCache metadataCache,
+            @Nullable MetadataLakeApplier metadataLakeApplier) {
         super(conf, remoteFileSystem, ServerType.COORDINATOR, zkClient, metadataCache);
         this.defaultBucketNumber = conf.getInt(ConfigOptions.DEFAULT_BUCKET_NUMBER);
         this.defaultReplicationFactor = conf.getInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR);
         this.eventManagerSupplier = eventManagerSupplier;
         this.dataLakeFormat = conf.getOptional(ConfigOptions.DATALAKE_FORMAT).orElse(null);
+        this.metadataLakeApplier = metadataLakeApplier;
     }
 
     @Override
@@ -116,14 +124,29 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             return FutureUtils.failedFuture(e);
         }
 
-        DatabaseDescriptor databaseDescriptor = null;
+        DatabaseDescriptor databaseDescriptor;
         if (request.getDatabaseJson() != null) {
             databaseDescriptor = DatabaseDescriptor.fromJsonBytes(request.getDatabaseJson());
         } else {
             databaseDescriptor = DatabaseDescriptor.builder().build();
         }
+
+        String databaseName = request.getDatabaseName();
+        boolean ignoreIfExists = request.isIgnoreIfExists();
+        if (metadataLakeApplier != null) {
+            try {
+                metadataLakeApplier.applyDatabaseCreated(databaseName, databaseDescriptor);
+            } catch (DatabaseAlreadyExistException e) {
+                throw new DatabaseAlreadyExistException(
+                        String.format(
+                                "The database %s has been existed in datalake %s catalog, please "
+                                        + "first drop the database in datalake %s catalog.",
+                                databaseName, dataLakeFormat, dataLakeFormat));
+            }
+        }
+
         metadataManager.createDatabase(
-                request.getDatabaseName(), databaseDescriptor, request.isIgnoreIfExists());
+                databaseName, databaseDescriptor, request.isIgnoreIfExists());
         return CompletableFuture.completedFuture(response);
     }
 
@@ -169,6 +192,31 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             int[] servers = metadataCache.getLiveServerIds();
             tableAssignment =
                     TableAssignmentUtils.generateAssignment(bucketCount, replicaFactor, servers);
+        }
+
+        // validate table properties before creating table
+        validateTableDescriptor(tableDescriptor);
+
+        // before create table in fluss, we may create in lake
+        if (metadataLakeApplier != null) {
+            // todo: may introduce a new class to describe
+            // the table to create
+            try {
+                metadataLakeApplier.applyTableCreated(
+                        TableInfo.of(tablePath, -1, -1, tableDescriptor, -1L, -1L));
+            } catch (DatabaseNotExistException e) {
+                throw new DatabaseNotExistException(
+                        String.format(
+                                "The database %s has not been existed in datalake %s catalog, please "
+                                        + "first create the database.",
+                                tablePath.getDatabaseName(), dataLakeFormat));
+            } catch (TableAlreadyExistException e) {
+                throw new TableAlreadyExistException(
+                        String.format(
+                                "The table %s has been existed in datalake %s catalog, please "
+                                        + "first drop the table in datalake %s catalog.",
+                                tablePath, dataLakeFormat, dataLakeFormat));
+            }
         }
 
         // then create table;
