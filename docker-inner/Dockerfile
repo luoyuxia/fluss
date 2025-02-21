@@ -75,7 +75,7 @@ RUN sed -i "s/\/\/.*deb.debian.org/\/\/mirrors.aliyun.com/g;s/\/\/.*security.deb
 	&& rm -rf /var/cache/yum
 
 ENV PATH=/fluss/bin:$PATH
-COPY --chown=root:root build-target/ /fluss/
+COPY --chown=root:root ../build-target/ /fluss/
 
 WORKDIR /fluss
 USER root
