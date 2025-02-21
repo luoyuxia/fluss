@@ -22,6 +22,9 @@ import com.alibaba.fluss.cluster.ServerType;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
+import com.alibaba.fluss.lakehouse.lakestorage.LakeStorage;
+import com.alibaba.fluss.lakehouse.lakestorage.LakeStoragePlugin;
+import com.alibaba.fluss.lakehouse.lakestorage.LakeStoragePluginSetUp;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metrics.registry.MetricRegistry;
 import com.alibaba.fluss.rpc.RpcClient;
@@ -53,12 +56,16 @@ import javax.annotation.concurrent.GuardedBy;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import static com.alibaba.fluss.server.utils.LakeStorageUtils.extractLakeProperties;
+import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /**
  * Coordinator server implementation. The coordinator server is responsible to:
@@ -173,7 +180,8 @@ public class CoordinatorServer extends ServerBase {
                             this::getCoordinatorEventManager,
                             metadataCache,
                             metadataManager,
-                            authorizer);
+                            authorizer,
+                            createLakeStorage());
 
             this.rpcServer =
                     RpcServer.create(
@@ -219,6 +227,18 @@ public class CoordinatorServer extends ServerBase {
 
             createDefaultDatabase();
         }
+    }
+
+    @Nullable
+    private LakeStorage createLakeStorage() {
+        LakeStoragePlugin lakeStoragePlugin =
+                LakeStoragePluginSetUp.fromConfiguration(conf, pluginManager);
+        if (lakeStoragePlugin == null) {
+            return null;
+        }
+        Map<String, String> lakeProperties = extractLakeProperties(conf);
+        return lakeStoragePlugin.createLakeStorage(
+                Configuration.fromMap(checkNotNull(lakeProperties)));
     }
 
     @Override
