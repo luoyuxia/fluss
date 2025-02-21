@@ -49,11 +49,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -86,6 +88,8 @@ class FlussLakeTableITCase {
                     .setClusterConf(initConfig())
                     .build();
 
+    @TempDir private static Path paimonWarehouse;
+
     protected Connection conn;
     protected Admin admin;
     protected Configuration clientConf;
@@ -93,6 +97,7 @@ class FlussLakeTableITCase {
     private static Configuration initConfig() {
         Configuration configuration = new Configuration();
         configuration.set(ConfigOptions.DATALAKE_FORMAT, DataLakeFormat.PAIMON);
+        configuration.setString("datalake.paimon.warehouse", paimonWarehouse.toString());
         configuration.set(ConfigOptions.DEFAULT_BUCKET_NUMBER, 3);
         return configuration;
     }

@@ -45,9 +45,11 @@ import com.alibaba.fluss.types.RowType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import javax.annotation.Nullable;
 
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -71,6 +73,8 @@ public abstract class ClientToServerITCaseBase {
                     .setNumOfTabletServers(3)
                     .setClusterConf(initConfig())
                     .build();
+
+    @TempDir private static Path paimonWarehouse;
 
     protected Connection conn;
     protected Admin admin;
@@ -114,6 +118,7 @@ public abstract class ClientToServerITCaseBase {
         conf.set(ConfigOptions.LOG_REPLICA_MAX_LAG_TIME, Duration.ofSeconds(10));
         // set default datalake format for the cluster and enable datalake tables
         conf.set(ConfigOptions.DATALAKE_FORMAT, DataLakeFormat.PAIMON);
+        conf.setString("datalake.paimon.warehouse", paimonWarehouse.toString());
 
         conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE, MemorySize.parse("1mb"));
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, MemorySize.parse("1kb"));

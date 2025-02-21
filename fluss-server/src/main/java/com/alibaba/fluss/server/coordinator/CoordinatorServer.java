@@ -20,6 +20,9 @@ import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
+import com.alibaba.fluss.lake.LakeStorage;
+import com.alibaba.fluss.lake.LakeStoragePlugin;
+import com.alibaba.fluss.lake.LakeStoragePluginSetUp;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metrics.registry.MetricRegistry;
 import com.alibaba.fluss.rpc.RpcClient;
@@ -32,6 +35,7 @@ import com.alibaba.fluss.server.metadata.ServerMetadataCache;
 import com.alibaba.fluss.server.metadata.ServerMetadataCacheImpl;
 import com.alibaba.fluss.server.metrics.ServerMetricUtils;
 import com.alibaba.fluss.server.metrics.group.CoordinatorMetricGroup;
+import com.alibaba.fluss.server.utils.LakeStorageUtils;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.ZooKeeperUtils;
 import com.alibaba.fluss.server.zk.data.CoordinatorAddress;
@@ -41,6 +45,7 @@ import com.alibaba.fluss.utils.concurrent.FutureUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.util.ArrayList;
@@ -141,7 +146,6 @@ public class CoordinatorServer extends ServerBase {
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
 
             this.metadataCache = new ServerMetadataCacheImpl();
-
             MetadataManager metadataManager = new MetadataManager(zkClient);
             this.coordinatorService =
                     new CoordinatorService(
@@ -150,7 +154,8 @@ public class CoordinatorServer extends ServerBase {
                             zkClient,
                             this::getCoordinatorEventManager,
                             metadataCache,
-                            metadataManager);
+                            metadataManager,
+                            createLakeStorage());
 
             this.rpcServer =
                     RpcServer.create(
@@ -191,6 +196,17 @@ public class CoordinatorServer extends ServerBase {
 
             createDefaultDatabase();
         }
+    }
+
+    @Nullable
+    private LakeStorage createLakeStorage() {
+        LakeStoragePlugin lakeStoragePlugin =
+                LakeStoragePluginSetUp.fromConfiguration(conf, pluginManager);
+        if (lakeStoragePlugin == null) {
+            return null;
+        }
+        return lakeStoragePlugin.createLakeStorage(
+                Configuration.fromMap(LakeStorageUtils.extractLakeProperties(conf)));
     }
 
     @Override

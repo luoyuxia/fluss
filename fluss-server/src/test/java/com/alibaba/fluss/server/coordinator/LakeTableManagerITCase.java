@@ -18,6 +18,7 @@ package com.alibaba.fluss.server.coordinator;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.exception.TableAlreadyExistException;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -25,7 +26,6 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.gateway.AdminGateway;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import com.alibaba.fluss.types.DataTypes;
-
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -35,6 +35,7 @@ import java.util.Map;
 import static com.alibaba.fluss.server.testutils.RpcMessageTestUtils.newCreateTableRequest;
 import static com.alibaba.fluss.server.testutils.RpcMessageTestUtils.newGetTableInfoRequest;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** ITCase for creating/dropping table for Fluss with lake storage configured . */
 class LakeTableManagerITCase {
@@ -49,8 +50,6 @@ class LakeTableManagerITCase {
     private static Map<String, String> getDataLakeFormat() {
         Map<String, String> datalakeFormat = new HashMap<>();
         datalakeFormat.put(ConfigOptions.DATALAKE_FORMAT.key(), DataLakeFormat.PAIMON.toString());
-        datalakeFormat.put("datalake.paimon.metastore", "filesystem");
-        datalakeFormat.put("datalake.paimon.warehouse", "file:/tmp/paimon");
         return datalakeFormat;
     }
 
@@ -80,5 +79,30 @@ class LakeTableManagerITCase {
                     "table." + dataLakePropertyEntry.getKey(), dataLakePropertyEntry.getValue());
         }
         assertThat(properties).containsAllEntriesOf(expectedTableDataLakeProperties);
+
+        // test create table with datalake enabled
+        TableDescriptor lakeTableDescriptor =
+                TableDescriptor.builder()
+                        .schema(Schema.newBuilder().column("f1", DataTypes.INT()).build())
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                        .build();
+        TablePath lakeTablePath = TablePath.of("fluss", "test_lake_enabled_table");
+        // create the table
+        adminGateway
+                .createTable(newCreateTableRequest(lakeTablePath, lakeTableDescriptor, false))
+                .get();
+        // create again, should throw TableAlreadyExistException with message ""
+        assertThatThrownBy(
+                        () ->
+                                adminGateway
+                                        .createTable(
+                                                newCreateTableRequest(
+                                                        lakeTablePath, lakeTableDescriptor, false))
+                                        .get())
+                .cause()
+                .isInstanceOf(TableAlreadyExistException.class)
+                .hasMessage(
+                        "The table %s already exists in paimon catalog, please first drop the table in paimon catalog.",
+                        lakeTablePath);
     }
 }

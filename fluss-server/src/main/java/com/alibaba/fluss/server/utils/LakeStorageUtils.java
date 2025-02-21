@@ -21,13 +21,12 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.lakehouse.LakeStorageInfo;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
 /** Utils for Fluss lake storage. */
 public class LakeStorageUtils {
-
-    private static final String DATALAKE_PAIMON_PREFIX = "datalake.paimon.";
 
     public static LakeStorageInfo getLakeStorageInfo(Configuration configuration) {
         DataLakeFormat datalakeFormat = configuration.get(ConfigOptions.DATALAKE_FORMAT);
@@ -47,16 +46,25 @@ public class LakeStorageUtils {
         }
 
         // currently, extract catalog config
-        Map<String, String> datalakeConfig = new HashMap<>();
-        Map<String, String> flussConfig = configuration.toMap();
-        for (Map.Entry<String, String> configEntry : flussConfig.entrySet()) {
-            String configKey = configEntry.getKey();
-            String configValue = configEntry.getValue();
-            if (configKey.startsWith(DATALAKE_PAIMON_PREFIX)) {
-                datalakeConfig.put(
-                        configKey.substring(DATALAKE_PAIMON_PREFIX.length()), configValue);
+        Map<String, String> datalakeConfig = extractLakeProperties(configuration);
+        return new LakeStorageInfo(datalakeFormat.toString(), datalakeConfig);
+    }
+
+    /** Extract the datalake properties configured from the configuration. */
+    public static Map<String, String> extractLakeProperties(Configuration configuration) {
+        DataLakeFormat datalakeFormat = configuration.get(ConfigOptions.DATALAKE_FORMAT);
+        if (datalakeFormat == null) {
+            return Collections.emptyMap();
+        }
+        Map<String, String> configMap = configuration.toMap();
+        Map<String, String> lakeProperties = new HashMap<>();
+        String datalakePrefix = "datalake" + datalakeFormat + ".";
+        for (Map.Entry<String, String> entry : configMap.entrySet()) {
+            String key = entry.getKey();
+            if (key.startsWith(datalakePrefix)) {
+                lakeProperties.put(key.substring(datalakePrefix.length()), entry.getValue());
             }
         }
-        return new LakeStorageInfo(datalakeFormat.toString(), datalakeConfig);
+        return lakeProperties;
     }
 }
