@@ -41,6 +41,7 @@ import com.alibaba.fluss.utils.concurrent.FutureUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.util.ArrayList;
@@ -109,6 +110,9 @@ public class CoordinatorServer extends ServerBase {
     @GuardedBy("lock")
     private AutoPartitionManager autoPartitionManager;
 
+    @GuardedBy("lock")
+    private MetadataApplier metadataApplier;
+
     public CoordinatorServer(Configuration conf) {
         super(conf);
         validateConfigs(conf);
@@ -141,6 +145,7 @@ public class CoordinatorServer extends ServerBase {
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
 
             this.metadataCache = new ServerMetadataCacheImpl();
+            this.metadataApplier = loadMetadataApplier();
 
             this.coordinatorService =
                     new CoordinatorService(
@@ -148,7 +153,8 @@ public class CoordinatorServer extends ServerBase {
                             remoteFileSystem,
                             zkClient,
                             this::getCoordinatorEventManager,
-                            metadataCache);
+                            metadataCache,
+                            metadataApplier);
 
             this.rpcServer =
                     RpcServer.create(
@@ -187,6 +193,16 @@ public class CoordinatorServer extends ServerBase {
 
             createDefaultDatabase();
         }
+    }
+
+    @Nullable
+    private MetadataApplier loadMetadataApplier() {
+        LakeStoragePlugin lakeStoragePlugin =
+                LakeStoragePluginSetUp.fromConfiguration(conf, pluginManager);
+        if (lakeStoragePlugin == null) {
+            return null;
+        }
+        return lakeStoragePlugin.createMetadataApplier();
     }
 
     @Override
@@ -288,6 +304,14 @@ public class CoordinatorServer extends ServerBase {
             try {
                 if (coordinatorService != null) {
                     coordinatorService.shutdown();
+                }
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
+
+            try {
+                if (metadataApplier != null) {
+                    metadataApplier.close();
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);

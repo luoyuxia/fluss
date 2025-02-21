@@ -24,6 +24,7 @@ import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.fs.FileSystem;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.TableDescriptor;
+import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
 import com.alibaba.fluss.rpc.messages.AdjustIsrRequest;
@@ -61,6 +62,8 @@ import com.alibaba.fluss.utils.concurrent.FutureUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -68,6 +71,7 @@ import java.util.function.Supplier;
 
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.getCommitLakeTableSnapshotData;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.toTablePath;
+import static com.alibaba.fluss.server.utils.TableDescriptorValidation.validateTableDescriptor;
 
 /** An RPC Gateway service for coordinator server. */
 public final class CoordinatorService extends RpcServiceBase implements CoordinatorGateway {
@@ -78,16 +82,20 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private final int defaultReplicationFactor;
     private final Supplier<EventManager> eventManagerSupplier;
 
+    private final @Nullable MetadataApplier metadataApplier;
+
     public CoordinatorService(
             Configuration conf,
             FileSystem remoteFileSystem,
             ZooKeeperClient zkClient,
             Supplier<EventManager> eventManagerSupplier,
-            ServerMetadataCache metadataCache) {
+            ServerMetadataCache metadataCache,
+            @Nullable MetadataApplier metadataApplier) {
         super(conf, remoteFileSystem, ServerType.COORDINATOR, zkClient, metadataCache);
         this.defaultBucketNumber = conf.getInt(ConfigOptions.DEFAULT_BUCKET_NUMBER);
         this.defaultReplicationFactor = conf.getInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR);
         this.eventManagerSupplier = eventManagerSupplier;
+        this.metadataApplier = metadataApplier;
     }
 
     @Override
@@ -162,6 +170,15 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             int[] servers = metadataCache.getLiveServerIds();
             tableAssignment =
                     TableAssignmentUtils.generateAssignment(bucketCount, replicaFactor, servers);
+        }
+
+        // validate table properties before creating table
+        validateTableDescriptor(tableDescriptor);
+
+        // before create table in fluss, we may create in lake
+        if (metadataApplier != null) {
+            metadataApplier.applyTableCreated(
+                    TableInfo.of(tablePath, -1, -1, tableDescriptor, -1L, -1L));
         }
 
         // then create table;
