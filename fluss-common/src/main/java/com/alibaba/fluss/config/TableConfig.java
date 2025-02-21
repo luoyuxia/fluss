@@ -18,7 +18,7 @@ package com.alibaba.fluss.config;
 
 import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.compression.ArrowCompressionInfo;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
 import com.alibaba.fluss.metadata.MergeEngineType;

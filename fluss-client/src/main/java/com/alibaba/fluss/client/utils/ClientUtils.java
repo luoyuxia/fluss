@@ -18,19 +18,15 @@ package com.alibaba.fluss.client.utils;
 
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.table.getter.PartitionGetter;
-import com.alibaba.fluss.client.write.HashBucketAssigner;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
 import com.alibaba.fluss.exception.PartitionNotExistException;
-import com.alibaba.fluss.lakehouse.LakeBucketAssigner;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import javax.annotation.Nullable;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
@@ -133,16 +129,5 @@ public final class ClientUtils {
         PhysicalTablePath physicalTablePath = PhysicalTablePath.of(tablePath, partitionName);
         metadataUpdater.checkAndUpdatePartitionMetadata(physicalTablePath);
         return metadataUpdater.getCluster().getPartitionIdOrElseThrow(physicalTablePath);
-    }
-
-    public static int getBucketId(
-            byte[] bucketKeyBytes,
-            @Nullable LakeBucketAssigner lakeBucketAssigner,
-            int numBuckets) {
-        if (lakeBucketAssigner == null) {
-            return HashBucketAssigner.bucketForRowKey(bucketKeyBytes, numBuckets);
-        } else {
-            return lakeBucketAssigner.assignBucket(bucketKeyBytes);
-        }
     }
 }

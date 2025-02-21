@@ -61,8 +61,7 @@ public class FlussLakehousePaimon {
         flussConfigMap.put(ConfigOptions.BOOTSTRAP_SERVERS.key(), bootstrapServers);
 
         // extract paimon config
-        Map<String, String> paimonConfig =
-                normalizeToPaimonConfigs(extractConfigStartWith(paramsMap, PAIMON_CONF_PREFIX));
+        Map<String, String> paimonConfig = extractConfigStartWith(paramsMap, PAIMON_CONF_PREFIX);
 
         // then build the fluss to paimon job
         final StreamExecutionEnvironment execEnv =
@@ -123,15 +122,5 @@ public class FlussLakehousePaimon {
             }
         }
         return extractedConfig;
-    }
-
-    private static Map<String, String> normalizeToPaimonConfigs(
-            Map<String, String> flussDataLakePaimonConfig) {
-        Map<String, String> normalizedPaimonConfig = new HashMap<>(flussDataLakePaimonConfig);
-        String catalogType = normalizedPaimonConfig.remove("catalog");
-        if (catalogType != null) {
-            normalizedPaimonConfig.put("metastore", catalogType);
-        }
-        return normalizedPaimonConfig;
     }
 }

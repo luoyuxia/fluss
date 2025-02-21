@@ -19,8 +19,7 @@ package com.alibaba.fluss.client.table.writer;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.write.WriteRecord;
 import com.alibaba.fluss.client.write.WriterClient;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
-import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
@@ -28,7 +27,6 @@ import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.InternalRow.FieldGetter;
 import com.alibaba.fluss.row.compacted.CompactedRow;
-import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.row.encode.RowEncoder;
 import com.alibaba.fluss.row.indexed.IndexedRow;
@@ -38,7 +36,6 @@ import javax.annotation.Nullable;
 
 import java.util.BitSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /** The writer to write data to the primary key table. */
@@ -67,30 +64,14 @@ class UpsertWriterImpl extends AbstractTableWriter implements UpsertWriter {
         sanityCheck(rowType, tableInfo.getPrimaryKeys(), partialUpdateColumns);
 
         this.targetColumns = partialUpdateColumns;
-        Optional<DataLakeFormat> optDataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat();
-
-        if (optDataLakeFormat.isPresent()) {
-            DataLakeFormat dataLakeFormat = optDataLakeFormat.get();
-            // encode primary key using physical primary key
-            this.primaryKeyEncoder =
-                    LakeKeyEncoderFactory.createKeyEncoder(
-                            dataLakeFormat, rowType, tableInfo.getPhysicalPrimaryKeys());
-            this.bucketKeyEncoder =
-                    tableInfo.isDefaultBucketKey()
-                            ? primaryKeyEncoder
-                            : LakeKeyEncoderFactory.createKeyEncoder(
-                                    dataLakeFormat, rowType, tableInfo.getBucketKeys());
-        } else {
-            // encode primary key using physical primary key
-            this.primaryKeyEncoder =
-                    CompactedKeyEncoder.createKeyEncoder(
-                            rowType, tableInfo.getPhysicalPrimaryKeys());
-            this.bucketKeyEncoder =
-                    tableInfo.isDefaultBucketKey()
-                            ? primaryKeyEncoder
-                            : CompactedKeyEncoder.createKeyEncoder(
-                                    rowType, tableInfo.getBucketKeys());
-        }
+        DataLakeFormat lakeFormat = tableInfo.getTableConfig().getDataLakeFormat().orElse(null);
+        // encode primary key using physical primary key
+        this.primaryKeyEncoder =
+                KeyEncoder.of(rowType, tableInfo.getPhysicalPrimaryKeys(), lakeFormat);
+        this.bucketKeyEncoder =
+                tableInfo.isDefaultBucketKey()
+                        ? primaryKeyEncoder
+                        : KeyEncoder.of(rowType, tableInfo.getBucketKeys(), lakeFormat);
 
         this.kvFormat = tableInfo.getTableConfig().getKvFormat();
         this.rowEncoder = RowEncoder.create(kvFormat, rowType);

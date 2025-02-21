@@ -19,15 +19,13 @@ package com.alibaba.fluss.client.table.writer;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.write.WriteRecord;
 import com.alibaba.fluss.client.write.WriterClient;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
-import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.LogFormat;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.InternalRow.FieldGetter;
-import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.row.encode.IndexedRowEncoder;
 import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.row.indexed.IndexedRow;
@@ -36,7 +34,6 @@ import com.alibaba.fluss.types.RowType;
 import javax.annotation.Nullable;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 /** The writer to write data to the log table. */
@@ -60,18 +57,8 @@ class AppendWriterImpl extends AbstractTableWriter implements AppendWriter {
             this.bucketKeyEncoder = null;
         } else {
             RowType rowType = tableInfo.getSchema().getRowType();
-            Optional<DataLakeFormat> optDataLakeFormat =
-                    tableInfo.getTableConfig().getDataLakeFormat();
-            this.bucketKeyEncoder =
-                    optDataLakeFormat
-                            .map(
-                                    dataLakeFormat ->
-                                            LakeKeyEncoderFactory.createKeyEncoder(
-                                                    dataLakeFormat, rowType, bucketKeys))
-                            .orElseGet(
-                                    () ->
-                                            CompactedKeyEncoder.createKeyEncoder(
-                                                    rowType, bucketKeys));
+            DataLakeFormat lakeFormat = tableInfo.getTableConfig().getDataLakeFormat().orElse(null);
+            this.bucketKeyEncoder = KeyEncoder.of(rowType, bucketKeys, lakeFormat);
         }
 
         this.logFormat = tableInfo.getTableConfig().getLogFormat();

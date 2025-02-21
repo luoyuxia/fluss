@@ -19,7 +19,7 @@ package com.alibaba.fluss.lakehouse.cli;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.config.GlobalConfiguration;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.utils.types.Tuple2;
 
 import org.apache.flink.client.cli.CliFrontend;

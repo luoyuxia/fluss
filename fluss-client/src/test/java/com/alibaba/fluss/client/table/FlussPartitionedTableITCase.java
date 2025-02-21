@@ -123,7 +123,6 @@ class FlussPartitionedTableITCase extends ClientToServerITCaseBase {
                                 AutoPartitionTimeUnit.YEAR)
                         // test data lake bucket assigner for prefix lookup
                         .property(ConfigOptions.TABLE_DATALAKE_ENABLED, isDataLakeEnabled)
-                        .property(ConfigOptions.TABLE_DATALAKE_FORMAT.key(), "paimon")
                         .build();
         RowType rowType = schema.getRowType();
         createTable(tablePath, descriptor, false);

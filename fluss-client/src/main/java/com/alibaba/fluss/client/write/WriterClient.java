@@ -17,6 +17,7 @@
 package com.alibaba.fluss.client.write;
 
 import com.alibaba.fluss.annotation.Internal;
+import com.alibaba.fluss.bucketing.BucketingFunction;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.metrics.WriterMetricGroup;
 import com.alibaba.fluss.client.write.RecordAccumulator.RecordAppendResult;
@@ -302,12 +303,10 @@ public class WriterClient {
         int bucketNumber = tableInfo.getNumBuckets();
         List<String> bucketKeys = tableInfo.getBucketKeys();
         if (!bucketKeys.isEmpty()) {
-            if (tableInfo.getTableConfig().getDataLakeFormat().isPresent()) {
-                return new LakeStaticBucketAssigner(
-                        tableInfo.getTableConfig().getDataLakeFormat().get(), bucketNumber);
-            } else {
-                return new HashBucketAssigner(bucketNumber);
-            }
+            BucketingFunction function =
+                    BucketingFunction.of(
+                            tableInfo.getTableConfig().getDataLakeFormat().orElse(null));
+            return new HashBucketAssigner(bucketNumber, function);
         } else {
             ConfigOptions.NoKeyAssigner noKeyAssigner =
                     conf.get(ConfigOptions.CLIENT_WRITER_BUCKET_NO_KEY_ASSIGNER);

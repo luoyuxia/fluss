@@ -74,7 +74,7 @@ public class FlinkPaimonTestBase {
                 // not to clean snapshots for test purpose
                 .set(ConfigOptions.KV_MAX_RETAINED_SNAPSHOTS, Integer.MAX_VALUE);
         conf.setString("datalake.format", "paimon");
-        conf.setString("datalake.paimon.catalog", "filesystem");
+        conf.setString("datalake.paimon.metastore", "filesystem");
         try {
             warehousePath =
                     Files.createTempDirectory("fluss-testing-datalake-tiered")

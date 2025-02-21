@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.client.table;
 
+import com.alibaba.fluss.bucketing.BucketingFunction;
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
@@ -26,12 +27,11 @@ import com.alibaba.fluss.client.table.scanner.log.ScanRecords;
 import com.alibaba.fluss.client.table.writer.AppendWriter;
 import com.alibaba.fluss.client.table.writer.TableWriter;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
-import com.alibaba.fluss.client.write.LakeStaticBucketAssigner;
+import com.alibaba.fluss.client.write.HashBucketAssigner;
 import com.alibaba.fluss.config.AutoPartitionTimeUnit;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
-import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -63,11 +63,9 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.alibaba.fluss.testutils.DataTestUtils.compactedRow;
 import static com.alibaba.fluss.testutils.DataTestUtils.row;
 import static com.alibaba.fluss.testutils.InternalRowAssert.assertThatRow;
 import static com.alibaba.fluss.testutils.InternalRowListAssert.assertThatRows;
-import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -185,6 +183,7 @@ class FlussLakeTableITCase {
                 for (int i = 0; i < lookUpFieldGetter.size(); i++) {
                     lookupKeyRow.setField(i, lookUpFieldGetter.get(i).getFieldOrNull(row));
                 }
+                // the written data are also unique on bucket key
                 InternalRow actualRow = lookuper.lookup(lookupKeyRow).get().getSingletonRow();
                 assertThatRow(actualRow).withSchema(pkTableSchema.getRowType()).isEqualTo(row);
             }
@@ -231,15 +230,14 @@ class FlussLakeTableITCase {
             TablePath tablePath, TableDescriptor tableDescriptor) throws Exception {
         TableInfo tableInfo = admin.getTableInfo(tablePath).get();
         long tableId = tableInfo.getTableId();
-        DataLakeFormat dataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat().get();
+        DataLakeFormat dataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat().orElse(null);
         int rowNums = 30;
         boolean isPartitioned = tableDescriptor.isPartitioned();
         RowType rowType = tableDescriptor.getSchema().getRowType();
         KeyEncoder keyEncoder =
-                LakeKeyEncoderFactory.createKeyEncoder(
-                        dataLakeFormat, rowType, tableDescriptor.getBucketKeys());
-        LakeStaticBucketAssigner lakeStaticBucketAssigner =
-                new LakeStaticBucketAssigner(checkNotNull(dataLakeFormat), DEFAULT_BUCKET_COUNT);
+                KeyEncoder.of(rowType, tableDescriptor.getBucketKeys(), dataLakeFormat);
+        HashBucketAssigner bucketAssigner =
+                new HashBucketAssigner(DEFAULT_BUCKET_COUNT, BucketingFunction.of(dataLakeFormat));
         Map<String, Long> partitionIdByNames = null;
         if (isPartitioned) {
             partitionIdByNames =
@@ -258,19 +256,13 @@ class FlussLakeTableITCase {
             if (partitionIdByNames != null) {
                 for (String partition : partitionIdByNames.keySet()) {
                     for (int i = 0; i < rowNums; i++) {
-                        InternalRow row =
-                                tableDescriptor.hasPrimaryKey()
-                                        ? compactedRow(
-                                                rowType,
-                                                new Object[] {i, "b" + i, "c" + i, partition})
-                                        : row(i, "b" + i, "c" + i, partition);
+                        InternalRow row = row(i, "b" + i, "c" + i, partition);
                         writeRow(tableWriter, row);
                         TableBucket assignedBucket =
                                 new TableBucket(
                                         tableId,
                                         partitionIdByNames.get(partition),
-                                        lakeStaticBucketAssigner.assignBucket(
-                                                keyEncoder.encodeKey(row)));
+                                        bucketAssigner.assignBucket(keyEncoder.encodeKey(row)));
                         expectedRows
                                 .computeIfAbsent(assignedBucket, (k) -> new ArrayList<>())
                                 .add(row);
@@ -278,17 +270,12 @@ class FlussLakeTableITCase {
                 }
             } else {
                 for (int i = 0; i < rowNums; i++) {
-                    InternalRow row =
-                            tableDescriptor.hasPrimaryKey()
-                                    ? compactedRow(
-                                            rowType, new Object[] {i, "b" + i, "c" + i, "d" + i})
-                                    : row(i, "b" + i, "c" + i, "d" + i);
+                    InternalRow row = row(i, "b" + i, "c" + i, "d" + i);
                     writeRow(tableWriter, row);
                     TableBucket assignedBucket =
                             new TableBucket(
                                     tableId,
-                                    lakeStaticBucketAssigner.assignBucket(
-                                            keyEncoder.encodeKey(row)));
+                                    bucketAssigner.assignBucket(keyEncoder.encodeKey(row)));
                     expectedRows.computeIfAbsent(assignedBucket, (k) -> new ArrayList<>()).add(row);
                 }
             }

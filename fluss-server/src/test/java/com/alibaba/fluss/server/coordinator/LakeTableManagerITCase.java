@@ -18,7 +18,7 @@ package com.alibaba.fluss.server.coordinator;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
@@ -49,7 +49,7 @@ class LakeTableManagerITCase {
     private static Map<String, String> getDataLakeFormat() {
         Map<String, String> datalakeFormat = new HashMap<>();
         datalakeFormat.put(ConfigOptions.DATALAKE_FORMAT.key(), DataLakeFormat.PAIMON.toString());
-        datalakeFormat.put("datalake.paimon.catalog", "filesystem");
+        datalakeFormat.put("datalake.paimon.metastore", "filesystem");
         datalakeFormat.put("datalake.paimon.warehouse", "file:/tmp/paimon");
         return datalakeFormat;
     }

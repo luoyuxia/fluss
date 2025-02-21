@@ -16,18 +16,21 @@
 
 package com.alibaba.fluss.client.table.scanner.batch;
 
+import com.alibaba.fluss.bucketing.BucketingFunction;
 import com.alibaba.fluss.client.admin.ClientToServerITCaseBase;
 import com.alibaba.fluss.client.metadata.KvSnapshots;
 import com.alibaba.fluss.client.table.Table;
 import com.alibaba.fluss.client.table.scanner.RemoteFileDownloader;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
 import com.alibaba.fluss.client.write.HashBucketAssigner;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
+import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.types.DataTypes;
 
 import org.junit.jupiter.api.AfterEach;
@@ -152,8 +155,14 @@ class KvSnapshotBatchScannerITCase extends ClientToServerITCaseBase {
     // -------- Utils method
 
     private static int getBucketId(InternalRow row) {
-        byte[] key = DEFAULT_KEY_ENCODER.encodeKey(row);
-        return DEFAULT_BUCKET_ASSIGNER.assignBucket(key);
+        KeyEncoder keyEncoder =
+                KeyEncoder.of(
+                        DEFAULT_SCHEMA.getRowType(),
+                        DEFAULT_SCHEMA.getPrimaryKeyColumnNames(),
+                        DataLakeFormat.PAIMON);
+        BucketingFunction function = BucketingFunction.of(DataLakeFormat.PAIMON);
+        byte[] key = keyEncoder.encodeKey(row);
+        return function.bucketing(key, DEFAULT_BUCKET_NUM);
     }
 
     private void waitUtilAllSnapshotFinished(Set<TableBucket> tableBuckets, long snapshotId) {

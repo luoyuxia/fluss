@@ -26,7 +26,7 @@ as an example, you must configure the following configurations:
 datalake.format: paimon
 
 # the catalog config about Paimon, assuming using Filesystem catalog
-datalake.paimon.catalog: filesystem
+datalake.paimon.metastore: filesystem
 datalake.paimon.warehouse: /tmp/paimon_data_warehouse
 ```
 

@@ -54,7 +54,7 @@ services:
         coordinator.host: coordinator-server
         remote.data.dir: /tmp/fluss/remote-data
         datalake.format: paimon
-        datalake.paimon.catalog: filesystem
+        datalake.paimon.metastore: filesystem
         datalake.paimon.warehouse: /tmp/paimon
   tablet-server:
     image: fluss/fluss:0.5.0
@@ -70,7 +70,7 @@ services:
         remote.data.dir: /tmp/fluss/remote-data
         kv.snapshot.interval: 0s
         datalake.format: paimon
-        datalake.paimon.catalog: filesystem
+        datalake.paimon.metastore: filesystem
         datalake.paimon.warehouse: /tmp/paimon
   zookeeper:
     restart: always

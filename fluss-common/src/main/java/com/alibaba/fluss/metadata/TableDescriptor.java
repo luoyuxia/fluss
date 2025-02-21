@@ -245,6 +245,16 @@ public final class TableDescriptor implements Serializable {
 
     /**
      * Returns a new TableDescriptor instance that is a copy of this TableDescriptor with a new
+     * datalake format.
+     */
+    public TableDescriptor withDataLakeFormat(DataLakeFormat dataLakeFormat) {
+        Map<String, String> newProperties = new HashMap<>(properties);
+        newProperties.put(ConfigOptions.TABLE_DATALAKE_FORMAT.key(), dataLakeFormat.toString());
+        return withProperties(newProperties);
+    }
+
+    /**
+     * Returns a new TableDescriptor instance that is a copy of this TableDescriptor with a new
      * bucket count.
      */
     public TableDescriptor withBucketCount(int newBucketCount) {

@@ -16,16 +16,26 @@
 
 package com.alibaba.fluss.client.write;
 
+import com.alibaba.fluss.bucketing.BucketingFunction;
+import com.alibaba.fluss.metadata.DataLakeFormat;
+import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
+import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.types.DataField;
 import com.alibaba.fluss.types.DataTypes;
 import com.alibaba.fluss.types.RowType;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static com.alibaba.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,6 +101,55 @@ class HashBucketAssignerTest {
                 assertThat(bucket >= 0).isTrue();
                 assertThat(bucket < bucketNumber).isTrue();
             }
+        }
+    }
+
+    static Stream<Arguments> lakeParameters() {
+        return Stream.of(
+                Arguments.of(true, true),
+                Arguments.of(true, false),
+                Arguments.of(false, true),
+                Arguments.of(false, false));
+    }
+
+    @ParameterizedTest
+    @MethodSource("lakeParameters")
+    void testLakeBucketAssign(boolean isPartitioned, boolean isLogTable) {
+        Schema.Builder schemaBuilder =
+                Schema.newBuilder()
+                        .column("a", DataTypes.INT())
+                        .column("b", DataTypes.STRING())
+                        .column("c", DataTypes.STRING());
+        Schema schema =
+                isLogTable ? schemaBuilder.build() : schemaBuilder.primaryKey("a", "c").build();
+
+        // bucket key
+        List<String> bucketKey =
+                isPartitioned ? Collections.singletonList("a") : Arrays.asList("a", "c");
+
+        InternalRow row1 = row(1, "2", "a");
+        InternalRow row2 = row(1, "3", "b");
+        InternalRow row3 = row(2, "4", "a");
+        InternalRow row4 = row(2, "4", "b");
+        KeyEncoder keyEncoder =
+                KeyEncoder.of(schema.getRowType(), bucketKey, DataLakeFormat.PAIMON);
+        HashBucketAssigner bucketAssigner =
+                new HashBucketAssigner(3, BucketingFunction.of(DataLakeFormat.PAIMON));
+
+        int row1Bucket = bucketAssigner.assignBucket(keyEncoder.encodeKey(row1));
+        int row2Bucket = bucketAssigner.assignBucket(keyEncoder.encodeKey(row2));
+        int row3Bucket = bucketAssigner.assignBucket(keyEncoder.encodeKey(row3));
+        int row4Bucket = bucketAssigner.assignBucket(keyEncoder.encodeKey(row4));
+
+        if (isPartitioned) {
+            // bucket key is the column 'a'
+            assertThat(row1Bucket).isEqualTo(row2Bucket);
+            assertThat(row3Bucket).isEqualTo(row4Bucket);
+            assertThat(row1Bucket).isNotEqualTo(row3Bucket);
+        } else {
+            // bucket key is the column 'a', 'c'
+            assertThat(row1Bucket).isNotEqualTo(row2Bucket);
+            assertThat(row3Bucket).isNotEqualTo(row4Bucket);
         }
     }
 }

@@ -30,6 +30,7 @@ import com.alibaba.fluss.client.table.writer.UpsertWriter;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.config.MemorySize;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.KvFormat;
 import com.alibaba.fluss.metadata.LogFormat;
 import com.alibaba.fluss.metadata.MergeEngineType;
@@ -92,7 +93,10 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         TableInfo tableInfo = table.getTableInfo();
 
         // the created table info will be applied with additional replica factor property
-        TableDescriptor expected = DATA1_TABLE_DESCRIPTOR_PK.withReplicationFactor(3);
+        TableDescriptor expected =
+                DATA1_TABLE_DESCRIPTOR_PK
+                        .withReplicationFactor(3)
+                        .withDataLakeFormat(DataLakeFormat.PAIMON);
         assertThat(tableInfo.toTableDescriptor()).isEqualTo(expected);
     }
 

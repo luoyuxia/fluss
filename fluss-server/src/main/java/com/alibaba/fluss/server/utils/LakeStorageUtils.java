@@ -18,8 +18,8 @@ package com.alibaba.fluss.server.utils;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
 import com.alibaba.fluss.lakehouse.LakeStorageInfo;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -57,17 +57,6 @@ public class LakeStorageUtils {
                         configKey.substring(DATALAKE_PAIMON_PREFIX.length()), configValue);
             }
         }
-        return new LakeStorageInfo(
-                datalakeFormat.toString(), normalizeToPaimonConfigs(datalakeConfig));
-    }
-
-    private static Map<String, String> normalizeToPaimonConfigs(
-            Map<String, String> flussDataLakePaimonConfig) {
-        Map<String, String> normalizedPaimonConfig = new HashMap<>(flussDataLakePaimonConfig);
-        String catalogType = normalizedPaimonConfig.remove("catalog");
-        if (catalogType != null) {
-            normalizedPaimonConfig.put("metastore", catalogType);
-        }
-        return normalizedPaimonConfig;
+        return new LakeStorageInfo(datalakeFormat.toString(), datalakeConfig);
     }
 }

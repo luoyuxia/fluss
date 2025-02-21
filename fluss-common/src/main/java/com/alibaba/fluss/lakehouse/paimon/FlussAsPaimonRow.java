@@ -28,7 +28,7 @@ import org.apache.paimon.types.RowKind;
  * A wrapper to wrap Fluss's {@link com.alibaba.fluss.row.InternalRow} to Paimon's {@link
  * InternalRow} .
  */
-public class FlussRowWrapper implements InternalRow {
+public class FlussAsPaimonRow implements InternalRow {
 
     private com.alibaba.fluss.row.InternalRow row;
 

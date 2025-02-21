@@ -16,17 +16,14 @@
 
 package com.alibaba.fluss.client.lookup;
 
+import com.alibaba.fluss.bucketing.BucketingFunction;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.table.getter.PartitionGetter;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
-import com.alibaba.fluss.lakehouse.LakeBucketAssigner;
-import com.alibaba.fluss.lakehouse.LakeBucketAssignerFactory;
-import com.alibaba.fluss.lakehouse.LakeKeyEncoderFactory;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.decode.RowDecoder;
-import com.alibaba.fluss.row.encode.CompactedKeyEncoder;
 import com.alibaba.fluss.row.encode.KeyEncoder;
 import com.alibaba.fluss.row.encode.ValueDecoder;
 import com.alibaba.fluss.types.DataType;
@@ -34,10 +31,8 @@ import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
 
-import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
-import static com.alibaba.fluss.client.utils.ClientUtils.getBucketId;
 import static com.alibaba.fluss.client.utils.ClientUtils.getPartitionId;
 import static com.alibaba.fluss.utils.Preconditions.checkArgument;
 
@@ -58,9 +53,7 @@ class PrimaryKeyLookuper implements Lookuper {
      */
     private final KeyEncoder bucketKeyEncoder;
 
-    // won't be null if the datalake type is set in the table
-    private @Nullable final LakeBucketAssigner lakeBucketAssigner;
-
+    private final BucketingFunction bucketingFunction;
     private final int numBuckets;
 
     /** a getter to extract partition from lookup key row, null when it's not a partitioned. */
@@ -82,33 +75,16 @@ class PrimaryKeyLookuper implements Lookuper {
 
         // the row type of the input lookup row
         RowType lookupRowType = tableInfo.getRowType().project(tableInfo.getPrimaryKeys());
-        Optional<DataLakeFormat> optDataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat();
+        DataLakeFormat lakeFormat = tableInfo.getTableConfig().getDataLakeFormat().orElse(null);
 
-        if (optDataLakeFormat.isPresent()) {
-            DataLakeFormat dataLakeFormat = optDataLakeFormat.get();
-            // the encoded primary key is the physical primary key
-            this.primaryKeyEncoder =
-                    LakeKeyEncoderFactory.createKeyEncoder(
-                            dataLakeFormat, lookupRowType, tableInfo.getPhysicalPrimaryKeys());
-            this.bucketKeyEncoder =
-                    tableInfo.isDefaultBucketKey()
-                            ? primaryKeyEncoder
-                            : LakeKeyEncoderFactory.createKeyEncoder(
-                                    dataLakeFormat, lookupRowType, tableInfo.getBucketKeys());
-            this.lakeBucketAssigner =
-                    LakeBucketAssignerFactory.createLakeBucketAssigner(dataLakeFormat, numBuckets);
-        } else {
-            // the encoded primary key is the physical primary key
-            this.primaryKeyEncoder =
-                    CompactedKeyEncoder.createKeyEncoder(
-                            lookupRowType, tableInfo.getPhysicalPrimaryKeys());
-            this.bucketKeyEncoder =
-                    tableInfo.isDefaultBucketKey()
-                            ? primaryKeyEncoder
-                            : CompactedKeyEncoder.createKeyEncoder(
-                                    lookupRowType, tableInfo.getBucketKeys());
-            this.lakeBucketAssigner = null;
-        }
+        // the encoded primary key is the physical primary key
+        this.primaryKeyEncoder =
+                KeyEncoder.of(lookupRowType, tableInfo.getPhysicalPrimaryKeys(), lakeFormat);
+        this.bucketKeyEncoder =
+                tableInfo.isDefaultBucketKey()
+                        ? primaryKeyEncoder
+                        : KeyEncoder.of(lookupRowType, tableInfo.getBucketKeys(), lakeFormat);
+        this.bucketingFunction = BucketingFunction.of(lakeFormat);
 
         this.partitionGetter =
                 tableInfo.isPartitioned()
@@ -138,7 +114,7 @@ class PrimaryKeyLookuper implements Lookuper {
                                 partitionGetter,
                                 tableInfo.getTablePath(),
                                 metadataUpdater);
-        int bucketId = getBucketId(bkBytes, lakeBucketAssigner, numBuckets);
+        int bucketId = bucketingFunction.bucketing(bkBytes, numBuckets);
         TableBucket tableBucket = new TableBucket(tableInfo.getTableId(), partitionId, bucketId);
         return lookupClient
                 .lookup(tableBucket, pkBytes)

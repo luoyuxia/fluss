@@ -22,7 +22,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidDatabaseException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.fs.FileSystem;
-import com.alibaba.fluss.lakehouse.DataLakeFormat;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
@@ -65,7 +65,6 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.UncheckedIOException;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
@@ -194,12 +193,21 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             newDescriptor = newDescriptor.withReplicationFactor(defaultReplicationFactor);
         }
 
-        // if lake storage is not null, we need to add the datalake type
-        // to the property of the table
-        if (dataLakeFormat != null) {
-            properties = new HashMap<>(newDescriptor.getProperties());
-            properties.put(ConfigOptions.TABLE_DATALAKE_FORMAT.key(), dataLakeFormat.toString());
-            newDescriptor = newDescriptor.withProperties(properties);
+        // override the datalake format if the table hasn't set it and the cluster configured
+        if (dataLakeFormat != null
+                && !properties.containsKey(ConfigOptions.TABLE_DATALAKE_FORMAT.key())) {
+            newDescriptor = newDescriptor.withDataLakeFormat(dataLakeFormat);
+        }
+
+        // lake table can only be enabled when the cluster configures datalake format
+        String dataLakeEnabledValue =
+                newDescriptor.getProperties().get(ConfigOptions.TABLE_DATALAKE_ENABLED.key());
+        boolean dataLakeEnabled = Boolean.parseBoolean(dataLakeEnabledValue);
+        if (dataLakeEnabled && dataLakeFormat == null) {
+            throw new InvalidTableException(
+                    String.format(
+                            "'%s' is enabled for the table, but the Fluss cluster doesn't enable datalake tables.",
+                            ConfigOptions.TABLE_DATALAKE_ENABLED.key()));
         }
 
         return newDescriptor;
