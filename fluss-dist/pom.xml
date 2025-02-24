@@ -179,9 +179,9 @@
                                     <goal>exec</goal>
                                 </goals>
                                 <configuration>
-                                    <executable>ln</executable>
+                                    <executable>cp</executable>
                                     <arguments>
-                                        <argument>-sfn</argument>
+                                        <argument>-rf</argument>
                                         <argument>
                                             ${project.basedir}/target/fluss-${project.version}-bin/fluss-${project.version}
                                         </argument>
