@@ -82,7 +82,6 @@
             <artifactId>frocksdbjni</artifactId>
         </dependency>
 
-
         <!-- test dependencies -->
         <dependency>
             <groupId>com.alibaba.fluss</groupId>
