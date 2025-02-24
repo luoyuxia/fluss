@@ -66,6 +66,13 @@
             <fileMode>0644</fileMode>
         </file>
 
+        <file>
+            <source>../docker-inner/fluss-fs-pangu-${project.version}.jar</source>
+            <outputDirectory>plugins/dfs/</outputDirectory>
+            <destName>fluss-fs-pangu-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+
         <!-- metrics -->
         <file>
             <source>../fluss-metrics/fluss-metrics-prometheus/target/fluss-metrics-prometheus-${project.version}.jar</source>
