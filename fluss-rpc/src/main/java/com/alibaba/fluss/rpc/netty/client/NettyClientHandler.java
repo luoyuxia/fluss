@@ -166,6 +166,7 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
         if (evt instanceof IdleStateEvent) {
             IdleStateEvent event = (IdleStateEvent) evt;
             if (event.state().equals(IdleState.ALL_IDLE)) {
+                System.out.println("Connection {} is idle, closing...");
                 LOG.warn("Connection {} is idle, closing...", ctx.channel().remoteAddress());
                 ctx.close();
             }

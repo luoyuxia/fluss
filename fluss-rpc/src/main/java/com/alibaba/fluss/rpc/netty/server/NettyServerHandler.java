@@ -18,6 +18,7 @@ package com.alibaba.fluss.rpc.netty.server;
 
 import com.alibaba.fluss.rpc.messages.ApiMessage;
 import com.alibaba.fluss.rpc.protocol.ApiError;
+import com.alibaba.fluss.rpc.protocol.ApiKeys;
 import com.alibaba.fluss.rpc.protocol.ApiManager;
 import com.alibaba.fluss.rpc.protocol.ApiMethod;
 import com.alibaba.fluss.rpc.protocol.MessageCodec;
@@ -81,6 +82,10 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                 needRelease = true;
             }
 
+            if (api.getApiKey().id == ApiKeys.PRODUCE_LOG.id) {
+                Thread.sleep(5_000);
+            }
+
             RpcRequest request =
                     new RpcRequest(apiKey, apiVersion, requestId, api, requestMessage, buffer, ctx);
             // TODO: we can introduce a smarter and dynamic strategy to distribute requests to
@@ -116,6 +121,7 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
         if (evt instanceof IdleStateEvent) {
             IdleStateEvent event = (IdleStateEvent) evt;
             if (event.state().equals(IdleState.ALL_IDLE)) {
+                System.out.println("Connection {} is idle, closing...");
                 LOG.warn("Connection {} is idle, closing...", ctx.channel().remoteAddress());
                 ctx.close();
             }
@@ -127,8 +133,8 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
         // debug level to avoid too many logs if NLB(Network Load Balancer is mounted, see
         // more detail in #377
         // may revert to warn level if we found warn level is necessary
-        if (LOG.isDebugEnabled()) {
-            LOG.debug(
+        if (LOG.isInfoEnabled()) {
+            LOG.info(
                     "Connection [{}] got exception in Netty server pipeline: \n{}",
                     ctx.channel().remoteAddress(),
                     ExceptionUtils.stringifyException(cause));

@@ -50,6 +50,6 @@ final class ClientChannelInitializer extends ChannelInitializer<SocketChannel> {
                         "frameDecoder",
                         // initialBytesToStrip=0 to include the frame size field after decoding
                         new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4, 0, 0));
-        ch.pipeline().addLast("idle", new IdleStateHandler(0, 0, maxIdleTimeSeconds));
+        ch.pipeline().addLast("idle", new IdleStateHandler(0, 0, 1));
     }
 }

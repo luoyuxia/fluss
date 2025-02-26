@@ -424,7 +424,9 @@ public final class RecordAccumulator {
                 // available to send. Note that entries are currently not removed from
                 // batches when deque is empty.
                 unknownLeaderTables.add(physicalTablePath);
+                LOG.info("unknownLeaderTables: {}, bucket {}", physicalTablePath, tableBucket);
             } else {
+                LOG.info("nextReadyCheckDelayMs...");
                 nextReadyCheckDelayMs =
                         batchReady(
                                 exhausted,
