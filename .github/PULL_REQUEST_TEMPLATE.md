@@ -3,7 +3,9 @@
 
 ## Contribution Checklist
 
-  - Name the pull request in the format "[component] Title of the pull request", where *[component]* should be replaced by the actual issue number, e.g. [kv], [log], [client], [flink] ... Skip *[component]* if you are unsure about which is the best component.
+  - Make sure that the pull request corresponds to a [GitHub issue](https://github.com/alibaba/fluss/issues). Exceptions are made for typos in JavaDoc or documentation files, which need no issue.
+
+  - Name the pull request in the format "[component] Title of the pull request", where *[component]* should be replaced by the name of the component being changed. Typically, this corresponds to the component label assigned to the issue (e.g., [kv], [log], [client], [flink]). Skip *[component]* if you are unsure about which is the best component.
 
   - Fill out the template below to describe the changes contributed by the pull request. That will give reviewers the context they need to do the review.
 
@@ -22,9 +24,9 @@ Linked issue: close #xxx
 
 <!-- What is the purpose of the change -->
 
-### Changes in this pull request
+### Brief change log
 
-<!-- Please clarify what changes in this pull request. The purpose of this section is to outline the changes and how this pull request fixes the issue -->
+<!-- Please describe the changes made in this pull request and explain how they address the issue -->
 
 ### Tests
 
