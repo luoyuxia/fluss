@@ -25,7 +25,6 @@ import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.TimestampLtz;
 import com.alibaba.fluss.row.TimestampNtz;
 import com.alibaba.fluss.types.DataType;
-import com.alibaba.fluss.utils.UnsafeUtils;
 
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
@@ -60,7 +59,7 @@ class PaimonBinaryRowWriter {
     public void reset() {
         this.cursor = fixedSize;
         for (int i = 0; i < nullBitsSizeInBytes; i += 8) {
-            UnsafeUtils.putLong(buffer, i, 0L);
+            segment.putLong(i, 0L);
         }
     }
 
@@ -72,45 +71,62 @@ class PaimonBinaryRowWriter {
 
     public void setNullAt(int pos) {
         setNullBit(pos);
-        UnsafeUtils.putLong(buffer, getFieldOffset(pos), 0L);
+        segment.putLong(getFieldOffset(pos), 0L);
     }
 
     private void setNullBit(int pos) {
-        UnsafeUtils.bitSet(buffer, 0, pos + HEADER_SIZE_IN_BITS);
+        BinarySegmentUtils.bitSet(segment, 0, pos + HEADER_SIZE_IN_BITS);
     }
 
     public void writeRowKind(RowKind kind) {
-        // Fluss has APPEND_ONLY rowKind, so minus 1 to align with paimon
-        byte kindByte = (byte) (kind.toByteValue() - 1);
-        UnsafeUtils.putByte(buffer, 0, kindByte);
+        // convert Fluss rowKind to Paimon rowKind byte value
+        byte paimonRowKindByte;
+        switch (kind) {
+            case APPEND_ONLY:
+            case INSERT:
+                paimonRowKindByte = 0;
+                break;
+            case UPDATE_BEFORE:
+                paimonRowKindByte = 1;
+                break;
+            case UPDATE_AFTER:
+                paimonRowKindByte = 2;
+                break;
+            case DELETE:
+                paimonRowKindByte = 3;
+                break;
+            default:
+                throw new IllegalArgumentException("Unsupported row kind: " + kind);
+        }
+        segment.put(0, paimonRowKindByte);
     }
 
     public void writeBoolean(int pos, boolean value) {
-        UnsafeUtils.putBoolean(buffer, getFieldOffset(pos), value);
+        segment.putBoolean(getFieldOffset(pos), value);
     }
 
     public void writeByte(int pos, byte value) {
-        UnsafeUtils.putByte(buffer, getFieldOffset(pos), value);
+        segment.put(getFieldOffset(pos), value);
     }
 
     public void writeShort(int pos, short value) {
-        UnsafeUtils.putShort(buffer, getFieldOffset(pos), value);
+        segment.putShort(getFieldOffset(pos), value);
     }
 
     public void writeInt(int pos, int value) {
-        UnsafeUtils.putInt(buffer, getFieldOffset(pos), value);
+        segment.putInt(getFieldOffset(pos), value);
     }
 
     public void writeLong(int pos, long value) {
-        UnsafeUtils.putLong(buffer, getFieldOffset(pos), value);
+        segment.putLong(getFieldOffset(pos), value);
     }
 
     public void writeFloat(int pos, float value) {
-        UnsafeUtils.putFloat(buffer, getFieldOffset(pos), value);
+        segment.putFloat(getFieldOffset(pos), value);
     }
 
     public void writeDouble(int pos, double value) {
-        UnsafeUtils.putDouble(buffer, getFieldOffset(pos), value);
+        segment.putDouble(getFieldOffset(pos), value);
     }
 
     public void writeString(int pos, BinaryString input) {
@@ -149,8 +165,8 @@ class PaimonBinaryRowWriter {
             ensureCapacity(16);
 
             // zero-out the bytes
-            UnsafeUtils.putLong(buffer, cursor, 0L);
-            UnsafeUtils.putLong(buffer, cursor + 8, 0L);
+            segment.putLong(cursor, 0L);
+            segment.putLong(cursor + 8, 0L);
 
             // Make sure Decimal object has the same scale as DecimalType.
             // Note that we may pass in null Decimal object to set null for it.
@@ -181,10 +197,10 @@ class PaimonBinaryRowWriter {
             if (value == null) {
                 setNullBit(pos);
                 // zero-out the bytes
-                UnsafeUtils.putLong(buffer, cursor, 0L);
+                segment.putLong(cursor, 0L);
                 setOffsetAndSize(pos, cursor, 0);
             } else {
-                UnsafeUtils.putLong(buffer, cursor, value.getMillisecond());
+                segment.putLong(cursor, value.getMillisecond());
                 setOffsetAndSize(pos, cursor, value.getNanoOfMillisecond());
             }
             cursor += 8;
@@ -200,10 +216,10 @@ class PaimonBinaryRowWriter {
             if (value == null) {
                 setNullBit(pos);
                 // zero-out the bytes
-                UnsafeUtils.putLong(buffer, cursor, 0L);
+                segment.putLong(cursor, 0L);
                 setOffsetAndSize(pos, cursor, 0);
             } else {
-                UnsafeUtils.putLong(buffer, cursor, value.getEpochMillisecond());
+                segment.putLong(cursor, value.getEpochMillisecond());
                 setOffsetAndSize(pos, cursor, value.getNanoOfMillisecond());
             }
         }
@@ -211,7 +227,7 @@ class PaimonBinaryRowWriter {
 
     protected void zeroOutPaddingBytes(int numBytes) {
         if ((numBytes & 0x07) > 0) {
-            UnsafeUtils.putLong(buffer, cursor + ((numBytes >> 3) << 3), 0L);
+            segment.putLong(cursor + ((numBytes >> 3) << 3), 0L);
         }
     }
 
@@ -312,7 +328,7 @@ class PaimonBinaryRowWriter {
 
         final long offsetAndSize = (firstByte << 56) | sevenBytes;
 
-        UnsafeUtils.putLong(buffer, fieldOffset, offsetAndSize);
+        segment.putLong(fieldOffset, offsetAndSize);
     }
 
     // ----------------------- internal methods -------------------------------
@@ -324,7 +340,7 @@ class PaimonBinaryRowWriter {
 
     private void setOffsetAndSize(int pos, int offset, long size) {
         final long offsetAndSize = ((long) offset << 32) | size;
-        UnsafeUtils.putLong(buffer, getFieldOffset(pos), offsetAndSize);
+        segment.putLong(getFieldOffset(pos), offsetAndSize);
     }
 
     private int getFieldOffset(int pos) {
@@ -399,7 +415,8 @@ class PaimonBinaryRowWriter {
                                         pos, (TimestampLtz) value, timestampLtzPrecision);
                 break;
             default:
-                throw new IllegalArgumentException("Unsupported type for IndexedRow: " + fieldType);
+                throw new IllegalArgumentException(
+                        "Unsupported type for Paimon BinaryRow writer: " + fieldType);
         }
         if (!fieldType.isNullable()) {
             return fieldWriter;

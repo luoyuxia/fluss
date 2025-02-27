@@ -59,7 +59,7 @@ class PaimonKeyEncoderTest {
         byte[] paimonEncodedKey = genPaimonRowForAllTypes(allRowType.getFieldCount()).toBytes();
 
         // verify both the result should be same
-        assertThat(encodedKey).containsExactly(paimonEncodedKey);
+        assertThat(encodedKey).isEqualTo(paimonEncodedKey);
     }
 
     private IndexedRow genFlussRowForAllTypes(DataType[] dataTypes) {
