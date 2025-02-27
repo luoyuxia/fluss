@@ -652,8 +652,6 @@ class CoordinatorEventProcessorTest {
                         autoPartitionManager,
                         TestingMetricGroups.COORDINATOR_METRICS,
                         new Configuration());
-        CoordinatorTestUtils.makeSendLeaderAndStopRequestAlwaysSuccess(
-                        TestingMetricGroups.COORDINATOR_METRICS);
         makeSendLeaderAndStopRequestAlwaysSuccess(
                 testCoordinatorChannelManager,
                 Arrays.stream(zookeeperClient.getSortedTabletServerList())
@@ -714,11 +712,9 @@ class CoordinatorEventProcessorTest {
                         zookeeperClient,
                         serverMetadataCache,
                         testCoordinatorChannelManager,
-                        completedSnapshotStoreManager,
                         autoPartitionManager,
-                        TestingMetricGroups.COORDINATOR_METRICS);
-        makeSendLeaderAndStopRequestAlwaysSuccess(
-                eventProcessor.getCoordinatorContext(), testCoordinatorChannelManager);
+                        TestingMetricGroups.COORDINATOR_METRICS,
+                        new Configuration());
         makeSendLeaderAndStopRequestAlwaysSuccess(
                 testCoordinatorChannelManager,
                 Arrays.stream(zookeeperClient.getSortedTabletServerList())
