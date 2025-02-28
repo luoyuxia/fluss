@@ -35,7 +35,6 @@ import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.Channel;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFuture;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
-import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.MapUtils;
 
 import org.slf4j.Logger;
@@ -71,8 +70,6 @@ final class ServerConnection {
 
     @GuardedBy("lock")
     private Channel channel;
-
-    private String localAddress;
 
     /** Current request number used to assign unique request IDs. */
     @GuardedBy("lock")
@@ -135,13 +132,7 @@ final class ServerConnection {
             // which enables clients to retry write/poll
             Throwable requestCause = cause;
             if (cause instanceof IOException) {
-                requestCause =
-                        new NetworkException(
-                                "Disconnected from node "
-                                        + node
-                                        + "\n"
-                                        + ExceptionUtils.stringifyException(cause),
-                                cause);
+                requestCause = new NetworkException("Disconnected from node " + node, cause);
             }
             // notify all the inflight requests
             for (int requestId : inflightRequests.keySet()) {
@@ -251,7 +242,6 @@ final class ServerConnection {
             if (future.isSuccess()) {
                 LOG.debug("Established connection to server {}.", node);
                 channel = future.channel();
-                localAddress = channel.localAddress().toString();
                 channel.pipeline()
                         .addLast("handler", new NettyClientHandler(new ResponseCallback()));
                 // start checking api versions
@@ -335,10 +325,6 @@ final class ServerConnection {
                             (ChannelFutureListener)
                                     future -> {
                                         if (!future.isSuccess()) {
-                                            LOG.error(
-                                                    "Fail to writeAndFlush for local address {}...",
-                                                    localAddress,
-                                                    future.cause());
                                             connectionMetricGroup.updateMetricsAfterGetResponse(
                                                     apiKey, inflight.requestStartTime, 0);
                                             inflight.responseFuture.completeExceptionally(
