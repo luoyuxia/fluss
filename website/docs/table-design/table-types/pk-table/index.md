@@ -2,7 +2,7 @@
 sidebar_position: 1
 ---
 
-# Overview
+# PrimaryKey Table
 
 ## Basic Concept
 
@@ -22,8 +22,8 @@ CREATE TABLE pk_table
     total_amount INT,
     PRIMARY KEY (shop_id, user_id) NOT ENFORCED
 ) WITH (
-      'bucket.num' = '4'
-      );
+    'bucket.num' = '4'
+);
 ```
 
 In Fluss primary key table, each row of data has a unique primary key.
@@ -72,6 +72,18 @@ follows:
 |---|-----|----|
 | 1 | 2.0 | t1 |
 | 2 | 3.0 | t2 |
+
+## Merge Engines
+
+The **Merge Engine** in Fluss is a core component designed to efficiently handle and consolidate data updates for PrimaryKey Tables.
+It offers users the flexibility to define how incoming data records are merged with existing records sharing the same primary key.
+The default merge engine in Fluss retains the latest record for a given primary key.
+However, users can specify a different merge engine to customize the merging behavior according to their specific use cases
+
+The following merge engines are supported:
+
+1. [FirstRow Merge Engine](/docs/table-design/table-types/pk-table/merge-engines/first-row)
+2. [Versioned Merge Engine](/docs/table-design/table-types/pk-table/merge-engines/versioned)
 
 ## Data Queries
 

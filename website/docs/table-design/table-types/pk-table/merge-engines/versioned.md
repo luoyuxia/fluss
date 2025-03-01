@@ -3,6 +3,6 @@ sidebar_label: Versioned
 sidebar_position: 3
 ---
 
-# Versioned
+# Versioned Merge Engine
 
 TODO: Fill me #459
