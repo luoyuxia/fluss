@@ -317,6 +317,32 @@ public final class Cluster {
                 Collections.emptyMap());
     }
 
+    @Override
+    public String toString() {
+        return "Cluster{"
+                + "coordinatorServer="
+                + coordinatorServer
+                + ", availableLocationsByPath="
+                + availableLocationsByPath
+                + ", availableLocationByBucket="
+                + availableLocationByBucket
+                + ", aliveTabletServersById="
+                + aliveTabletServersById
+                + ", aliveTabletServers="
+                + aliveTabletServers
+                + ", tableIdByPath="
+                + tableIdByPath
+                + ", pathByTableId="
+                + pathByTableId
+                + ", partitionsIdByPath="
+                + partitionsIdByPath
+                + ", partitionNameById="
+                + partitionNameById
+                + ", tableInfoByPath="
+                + tableInfoByPath
+                + '}';
+    }
+
     /** Get the current leader for the given table-bucket. */
     public @Nullable ServerNode leaderFor(TableBucket tableBucket) {
         BucketLocation location = availableLocationByBucket.get(tableBucket);

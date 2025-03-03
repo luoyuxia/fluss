@@ -411,7 +411,16 @@ public final class RecordAccumulator {
                 // so we exit early if we can.
                 WriteBatch batch = deque.peekFirst();
                 if (batch == null) {
+                    LOG.info(
+                            "WriteBatch for tableBucket {} of physical table path {} is null.",
+                            tableBucket,
+                            physicalTablePath);
                     continue;
+                } else {
+                    LOG.info(
+                            "WriteBatch for tableBucket {} of physical table path {} isnot null.",
+                            tableBucket,
+                            physicalTablePath);
                 }
 
                 waitedTimeMs = batch.waitedTimeMs(clock.milliseconds());
