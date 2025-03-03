@@ -240,6 +240,10 @@ public final class RecordAccumulator {
 
         for (Map.Entry<PhysicalTablePath, BucketAndWriteBatches> writeBatchesEntry :
                 writeBatches.entrySet()) {
+            LOG.info(
+                    "ready for write batch of physical table path {}, cluster {}.",
+                    writeBatchesEntry.getKey(),
+                    cluster);
             nextReadyCheckDelayMs =
                     bucketReady(
                             writeBatchesEntry.getKey(),
@@ -274,9 +278,13 @@ public final class RecordAccumulator {
 
         Map<Integer, List<WriteBatch>> batches = new HashMap<>();
         for (ServerNode node : nodes) {
+            LOG.info("drain batches for node: {}", node);
             List<WriteBatch> ready = drainBatchesForOneNode(cluster, node, maxSize);
             if (!ready.isEmpty()) {
+                LOG.info("ready is not empty..");
                 batches.put(node.id(), ready);
+            } else {
+                LOG.info("ready is empty");
             }
         }
         return batches;
@@ -353,11 +361,21 @@ public final class RecordAccumulator {
 
     @VisibleForTesting
     public Deque<WriteBatch> getDeque(PhysicalTablePath path, TableBucket tableBucket) {
+        LOG.info("get Deque of physical table path. {}", path);
         BucketAndWriteBatches bucketAndWriteBatches = writeBatches.get(path);
         if (bucketAndWriteBatches == null) {
+            LOG.info(
+                    "bucketAndWriteBatches is null, write batch keys are {}",
+                    writeBatches.keySet());
             return null;
         }
-        return bucketAndWriteBatches.batches.get(tableBucket.getBucket());
+        Deque<WriteBatch> batchDeque = bucketAndWriteBatches.batches.get(tableBucket.getBucket());
+        if (batchDeque == null) {
+            LOG.info(
+                    "batchDeque is null, bucketAndWriteBatches keys are {}",
+                    bucketAndWriteBatches.batches.keySet());
+        }
+        return batchDeque;
     }
 
     private List<MemorySegment> allocateMemorySegments(WriteRecord writeRecord) throws IOException {
@@ -565,7 +583,10 @@ public final class RecordAccumulator {
         List<BucketLocation> buckets = getAllBucketsInCurrentNode(node, cluster);
         List<WriteBatch> ready = new ArrayList<>();
         if (buckets.isEmpty()) {
+            LOG.info("buckets in current node {} of cluster {} is empty.", node, cluster);
             return ready;
+        } else {
+            LOG.info("buckets is not empty. Buckets are {}, cluster: {}.", buckets, cluster);
         }
         // to make starvation less likely each node has its own drainIndex.
         int drainIndex = getDrainIndex(node.id());
@@ -578,14 +599,20 @@ public final class RecordAccumulator {
 
             Deque<WriteBatch> deque = getDeque(bucket.getPhysicalTablePath(), tableBucket);
             if (deque == null) {
+                LOG.info("deque is null..Continue...");
                 continue;
+            } else {
+                LOG.info("deque is not null");
             }
 
             final WriteBatch batch;
             synchronized (deque) {
                 WriteBatch first = deque.peekFirst();
                 if (first == null) {
+                    LOG.info("first is null...");
                     continue;
+                } else {
+                    LOG.info("write batch {} of first.", first.physicalTablePath());
                 }
 
                 // TODO retry back off check.
@@ -594,9 +621,11 @@ public final class RecordAccumulator {
                     // there is a rare case that a single batch size is larger than the request size
                     // due to compression; in this case we will still eventually send this batch in
                     // a single request.
+                    LOG.info("there is a rare ca");
                     break;
                 } else {
                     if (shouldStopDrainBatchesForBucket(first, tableBucket)) {
+                        LOG.info("should shouldStopDrainBatchesForBucket");
                         break;
                     }
                 }

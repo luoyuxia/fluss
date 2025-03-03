@@ -207,6 +207,9 @@ public class Sender implements Runnable {
             // In the future, we need to introduce delay logic to deal with it.
             // TODO: condition waiter
             Thread.sleep(readyCheckResult.nextReadyCheckDelayMs);
+            LOG.info("ready node is empty, sleep {}ms", readyCheckResult.nextReadyCheckDelayMs);
+        } else {
+            LOG.info("ready node: {}", readyNodes);
         }
 
         // get the list of batches prepare to send.
@@ -214,6 +217,7 @@ public class Sender implements Runnable {
                 accumulator.drain(metadataUpdater.getCluster(), readyNodes, maxRequestSize);
 
         if (!batches.isEmpty()) {
+            LOG.info("batch is not empty..");
             addToInflightBatches(batches);
 
             // TODO add logic for batch expire.
@@ -222,6 +226,8 @@ public class Sender implements Runnable {
 
             // move metrics update to the end to make sure the batches has been built.
             updateWriterMetrics(batches);
+        } else {
+            LOG.info("batch is empty..");
         }
     }
 
