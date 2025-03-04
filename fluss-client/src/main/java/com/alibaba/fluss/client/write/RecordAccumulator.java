@@ -396,8 +396,6 @@ public final class RecordAccumulator {
             int bucketId = entry.getKey();
             Deque<WriteBatch> deque = entry.getValue();
 
-            TableBucket tableBucket = cluster.getTableBucket(physicalTablePath, bucketId);
-            ServerNode leader = cluster.leaderFor(tableBucket);
             final long waitedTimeMs;
             final int dequeSize;
             final boolean full;
@@ -411,22 +409,16 @@ public final class RecordAccumulator {
                 // so we exit early if we can.
                 WriteBatch batch = deque.peekFirst();
                 if (batch == null) {
-                    LOG.info(
-                            "WriteBatch for tableBucket {} of physical table path {} is null.",
-                            tableBucket,
-                            physicalTablePath);
                     continue;
-                } else {
-                    LOG.info(
-                            "WriteBatch for tableBucket {} of physical table path {} isnot null.",
-                            tableBucket,
-                            physicalTablePath);
                 }
 
                 waitedTimeMs = batch.waitedTimeMs(clock.milliseconds());
                 dequeSize = deque.size();
                 full = dequeSize > 1 || batch.isClosed();
             }
+
+            TableBucket tableBucket = cluster.getTableBucket(physicalTablePath, bucketId);
+            ServerNode leader = cluster.leaderFor(tableBucket);
 
             if (leader == null) {
                 // This is a bucket for which leader is not known, but messages are

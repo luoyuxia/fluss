@@ -202,15 +202,11 @@ public class Sender implements Runnable {
 
         Set<ServerNode> readyNodes = readyCheckResult.readyNodes;
         if (readyNodes.isEmpty()) {
-            LOG.info("ready node is empty, sleep {}ms", readyCheckResult.nextReadyCheckDelayMs);
             // TODO The method sendWriteData is in a busy loop. If there is no data continuously, it
             // will cause the CPU to be occupied.
             // In the future, we need to introduce delay logic to deal with it.
             // TODO: condition waiter
             Thread.sleep(readyCheckResult.nextReadyCheckDelayMs);
-            LOG.info("ready node is empty, sleep finish");
-        } else {
-            LOG.info("ready node is not empty, {}", readyNodes);
         }
 
         // get the list of batches prepare to send.
