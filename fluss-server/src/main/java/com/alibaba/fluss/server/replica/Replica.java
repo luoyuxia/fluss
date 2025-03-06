@@ -542,7 +542,9 @@ public final class Replica {
 
     private void dropKv() {
         // close any closeable registry for kv
+        LOG.info("Dropping kv for {}", tableBucket);
         if (closeableRegistry.unregisterCloseable(closeableRegistryForKv)) {
+            LOG.info("Close closeableRegistry due to dropping kv for {}.", tableBucket);
             IOUtils.closeQuietly(closeableRegistryForKv);
         }
         if (kvTablet != null) {

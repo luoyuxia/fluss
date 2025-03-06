@@ -69,8 +69,7 @@ public class FileDownloadUtils {
                     transferDataToDirectoryAsync(fileDownloadSpecs, internalCloser, executorService)
                             .collect(Collectors.toList());
             // Wait until either all futures completed successfully or one failed exceptionally.
-            FutureUtils.completeAll(futures, new DownloadProgressAction(fileDownloadSpecs.size()))
-                    .get();
+            FutureUtils.waitForAll(futures).get();
         } catch (Exception e) {
             fileDownloadSpecs.stream()
                     .map(FileDownloadSpec::getTargetDirectory)
@@ -79,6 +78,7 @@ public class FileDownloadUtils {
             // Error reporting
             Throwable throwable = ExceptionUtils.stripExecutionException(e);
             throwable = ExceptionUtils.stripException(throwable, RuntimeException.class);
+            LOG.info("transferAllDataToDirectory exception.", e);
             if (throwable instanceof IOException) {
                 throw (IOException) throwable;
             } else {
@@ -146,6 +146,7 @@ public class FileDownloadUtils {
 
             return readBytes;
         } catch (Exception ex) {
+            LOG.info("downloadFile {} exception", remoteFilePath, ex);
             // Quickly close all open streams. This also stops all concurrent downloads because they
             // are registered with the same registry.
             IOUtils.closeQuietly(closeableRegistry);
