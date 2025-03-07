@@ -339,10 +339,20 @@ public class ReplicaStateMachine {
     }
 
     private String stringifyReplica(TableBucketReplica replica) {
-        return String.format(
-                "TableBucketReplica{tableBucket=%s, replica=%d, tablePath=%s}",
-                replica.getTableBucket(),
-                replica.getReplica(),
-                coordinatorContext.getTablePathById(replica.getTableBucket().getTableId()));
+        TableBucket tableBucket = replica.getTableBucket();
+        if (tableBucket.getPartitionId() == null) {
+            return String.format(
+                    "TableBucketReplica{tableBucket=%s, replica=%d, tablePath=%s}",
+                    tableBucket,
+                    replica.getReplica(),
+                    coordinatorContext.getTablePathById(tableBucket.getTableId()));
+        } else {
+            return String.format(
+                    "TableBucketReplica{tableBucket=%s, replica=%d, tablePath=%s, partition=%s}",
+                    tableBucket,
+                    replica.getReplica(),
+                    coordinatorContext.getTablePathById(replica.getTableBucket().getTableId()),
+                    coordinatorContext.getPartitionName(tableBucket.getPartitionId()));
+        }
     }
 }
