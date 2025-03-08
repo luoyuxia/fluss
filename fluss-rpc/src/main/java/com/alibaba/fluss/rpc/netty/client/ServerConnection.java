@@ -318,8 +318,12 @@ final class ServerConnection {
                 return responseFuture;
             }
 
-            connectionMetricGroup.updateMetricsBeforeSendRequest(apiKey, rawRequest.totalSize());
-
+            if (connectionMetricGroup == null) {
+                LOG.error("connectionMetricGroup is null...");
+            } else {
+                connectionMetricGroup.updateMetricsBeforeSendRequest(
+                        apiKey, rawRequest.totalSize());
+            }
             channel.writeAndFlush(byteBuf)
                     .addListener(
                             (ChannelFutureListener)
