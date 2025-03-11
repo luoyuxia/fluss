@@ -42,12 +42,6 @@
             <version>${project.version}</version>
         </dependency>
 
-        <dependency>
-            <groupId>com.alibaba.fluss</groupId>
-            <artifactId>fluss-fs-pangu</artifactId>
-            <version>0.6-SNAPSHOT</version>
-        </dependency>
-
         <!-- Flink dependency -->
         <dependency>
             <groupId>org.apache.flink</groupId>
