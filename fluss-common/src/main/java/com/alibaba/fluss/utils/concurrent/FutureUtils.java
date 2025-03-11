@@ -300,7 +300,7 @@ public class FutureUtils {
     public static <T> ConjunctFuture<Void> waitForAll(
             Collection<? extends CompletableFuture<T>> futures,
             BiConsumer<T, Throwable> completeAction) {
-        Preconditions.checkNotNull(futures, "futures");
+        checkNotNull(futures, "futures");
         return new WaitingConjunctFuture<>(futures, completeAction);
     }
 
