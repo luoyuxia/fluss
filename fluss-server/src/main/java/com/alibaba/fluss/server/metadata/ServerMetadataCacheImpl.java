@@ -19,6 +19,9 @@ package com.alibaba.fluss.server.metadata;
 import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Set;
@@ -29,6 +32,9 @@ import static com.alibaba.fluss.utils.concurrent.LockUtils.inLock;
 
 /** The default implement of {@link ServerMetadataCache}. */
 public class ServerMetadataCacheImpl extends AbstractServerMetadataCache {
+
+    private static final Logger LOG = LoggerFactory.getLogger(ServerMetadataCacheImpl.class);
+
     private final Lock bucketMetadataLock = new ReentrantLock();
 
     public ServerMetadataCacheImpl() {
@@ -53,6 +59,8 @@ public class ServerMetadataCacheImpl extends AbstractServerMetadataCache {
                         newAliveTableServers.put(tabletServer.id(), tabletServer);
                     }
 
+                    LOG.info("new alive tablet servers {}", newAliveTableServers);
+
                     clusterMetadata =
                             new Cluster(
                                     newAliveTableServers,
@@ -61,6 +69,9 @@ public class ServerMetadataCacheImpl extends AbstractServerMetadataCache {
                                     Collections.emptyMap(),
                                     Collections.emptyMap(),
                                     Collections.emptyMap());
+                    LOG.info(
+                            "alive tablet servers after updated {}",
+                            clusterMetadata.getAliveTabletServers());
                 });
     }
 }

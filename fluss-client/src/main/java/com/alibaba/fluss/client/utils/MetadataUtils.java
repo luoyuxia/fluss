@@ -37,6 +37,9 @@ import com.alibaba.fluss.rpc.messages.PbServerNode;
 import com.alibaba.fluss.rpc.messages.PbTableMetadata;
 import com.alibaba.fluss.rpc.messages.PbTablePath;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -52,6 +55,8 @@ import java.util.concurrent.TimeoutException;
 
 /** Utils for metadata for client. */
 public class MetadataUtils {
+
+    private static final Logger LOG = LoggerFactory.getLogger(MetadataUtils.class);
 
     private static final Random randOffset = new Random();
 
@@ -79,11 +84,11 @@ public class MetadataUtils {
             @Nullable Collection<PhysicalTablePath> tablePartitionNames,
             @Nullable Collection<Long> tablePartitionIds)
             throws ExecutionException, InterruptedException, TimeoutException {
+        ServerNode serverNode = getOneAvailableTabletServerNode(cluster);
         AdminReadOnlyGateway gateway =
                 GatewayClientProxy.createGatewayProxy(
-                        () -> getOneAvailableTabletServerNode(cluster),
-                        client,
-                        AdminReadOnlyGateway.class);
+                        () -> serverNode, client, AdminReadOnlyGateway.class);
+        LOG.info("send metadata update request to {}", serverNode);
         return sendMetadataRequestAndRebuildCluster(
                 gateway, true, cluster, tablePaths, tablePartitionNames, tablePartitionIds);
     }
@@ -145,6 +150,7 @@ public class MetadataUtils {
                                 newPartitionIdByPath = newTableMetadata.partitionIdByPath;
                             }
 
+                            LOG.info("updated new alive tablet server {}.", newAliveTabletServers);
                             return new Cluster(
                                     newAliveTabletServers,
                                     coordinatorServer,
