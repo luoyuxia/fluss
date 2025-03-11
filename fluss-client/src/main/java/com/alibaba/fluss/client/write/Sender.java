@@ -194,10 +194,10 @@ public class Sender implements Runnable {
 
         // if there are any buckets whose leaders are not known yet, force metadata update
         if (!readyCheckResult.unknownLeaderTables.isEmpty()) {
-            metadataUpdater.updatePhysicalTableMetadata(readyCheckResult.unknownLeaderTables);
-            LOG.debug(
+            LOG.info(
                     "Client update metadata due to unknown leader tables from the batched records: {}",
                     readyCheckResult.unknownLeaderTables);
+            metadataUpdater.updatePhysicalTableMetadata(readyCheckResult.unknownLeaderTables);
         }
 
         Set<ServerNode> readyNodes = readyCheckResult.readyNodes;

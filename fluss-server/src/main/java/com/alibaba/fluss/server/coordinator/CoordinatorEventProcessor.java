@@ -1042,11 +1042,16 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // 2. send update metadata request to all alive tablet servers
         coordinatorRequestBatch.newBatch();
+        LOG.info("try update serve metadata cache..");
         Set<Integer> serverIds =
                 aliveTabletServers.stream().map(ServerNode::id).collect(Collectors.toSet());
         coordinatorRequestBatch.addUpdateMetadataRequestForTabletServers(
                 serverIds, coordinatorServer, aliveTabletServers);
         coordinatorRequestBatch.sendUpdateMetadataRequest();
+        LOG.info(
+                "update serve metadata cache for servers {}, alive servers {}",
+                serverIds,
+                aliveTabletServers);
     }
 
     @VisibleForTesting
