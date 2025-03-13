@@ -28,7 +28,7 @@ import java.util.Set;
 /** Factory for {@link FlinkCatalog}. */
 public class FlinkCatalogFactory implements CatalogFactory {
 
-    public static final String IDENTIFIER = "fluss-pre";
+    public static final String IDENTIFIER = "fluss-pre-debug";
 
     @Override
     public String factoryIdentifier() {

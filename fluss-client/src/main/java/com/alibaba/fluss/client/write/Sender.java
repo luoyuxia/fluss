@@ -458,6 +458,7 @@ public class Sender implements Runnable {
     private Set<PhysicalTablePath> handleWriteBatchException(
             WriteBatch writeBatch, ApiError error) {
         Set<PhysicalTablePath> invalidMetadataTables = new HashSet<>();
+        LOG.info("handlewrite batch exception: {}.", error.formatErrMsg());
         if (canRetry(writeBatch, error.error())) {
             // if batch failed because of retrievable exception, we need to retry send all those
             // batches.
