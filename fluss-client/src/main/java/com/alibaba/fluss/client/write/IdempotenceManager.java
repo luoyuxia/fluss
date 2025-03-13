@@ -274,7 +274,23 @@ public class IdempotenceManager {
             return batch.sequenceHasBeenReset();
         }
 
-        return false;
+        boolean hasBeenReset = batch.sequenceHasBeenReset();
+        boolean isNextSequence = isNextSequence(tableBucket, batch.batchSequence());
+        long lastAckedSequence =
+                lastAckedBatchSequence(tableBucket)
+                        .orElse(IdempotenceBucketEntry.NO_LAST_ACKED_BATCH_SEQUENCE);
+        long batchSequence = batch.batchSequence();
+
+        LOG.info(
+                "CanRetry is true, hasBeenReset: {}, isNextSequence {}, lastAckedSequence{},"
+                        + "batchSequence {}, errors: {}",
+                hasBeenReset,
+                isNextSequence,
+                lastAckedSequence,
+                batchSequence,
+                error.message());
+
+        return true;
     }
 
     void maybeWaitForWriterId() {

@@ -114,7 +114,7 @@ public class WriterStateEntry {
 
     public Optional<BatchMetadata> findDuplicateBatch(int arriveBatchSequence) {
         return batchMetadata.stream()
-                .filter(batchMetadata -> batchMetadata.batchSequence == arriveBatchSequence)
+                .filter(batchMetadata -> batchMetadata.batchSequence >= arriveBatchSequence)
                 .findFirst();
     }
 

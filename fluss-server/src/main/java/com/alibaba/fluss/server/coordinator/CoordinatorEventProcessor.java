@@ -784,6 +784,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
             LeaderAndIsr tryAdjustLeaderAndIsr = entry.getValue();
 
             try {
+                LOG.info(
+                        "Try process adjust ISR for {} to {}.", tableBucket, tryAdjustLeaderAndIsr);
                 validateLeaderAndIsr(tableBucket, tryAdjustLeaderAndIsr);
             } catch (Exception e) {
                 result.add(new AdjustIsrResultForBucket(tableBucket, ApiError.fromThrowable(e)));
@@ -856,7 +858,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         "The coordinator is no longer the active coordinator.");
             } else if (newLeaderAndIsr.leaderEpoch() < currentLeaderAndIsr.leaderEpoch()) {
                 throw new FencedLeaderEpochException(
-                        "The request leader epoch in adjust isr request is lower than current leader epoch in coordinator.");
+                        String.format(
+                                "The request leader epoch %s in adjust isr request is lower than current leader epoch %s in coordinator.",
+                                newLeaderAndIsr.leaderEpoch(), currentLeaderAndIsr.leaderEpoch()));
             } else if (newLeaderAndIsr.bucketEpoch() < currentLeaderAndIsr.bucketEpoch()) {
                 // If the replica leader has a lower bucket epoch, then it is likely
                 // that this node is not the leader.
