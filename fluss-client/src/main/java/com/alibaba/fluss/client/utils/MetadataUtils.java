@@ -50,6 +50,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /** Utils for metadata for client. */
@@ -158,7 +159,7 @@ public class MetadataUtils {
                                     newPartitionIdByPath,
                                     newTablePathToTableInfo);
                         })
-                .get(); // TODO currently, we don't have timeout logic in
+                .get(3, TimeUnit.MINUTES); // TODO currently, we don't have timeout logic in
         // RpcClient, it will let the get() block forever. So we
         // time out here
     }

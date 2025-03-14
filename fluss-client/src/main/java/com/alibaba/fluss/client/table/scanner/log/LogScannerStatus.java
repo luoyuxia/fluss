@@ -20,6 +20,9 @@ import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.utils.log.FairBucketStatusMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -32,6 +35,8 @@ import java.util.function.Predicate;
 @ThreadSafe
 @Internal
 public class LogScannerStatus {
+    private static final Logger LOG = LoggerFactory.getLogger(LogScannerStatus.class);
+
     private final FairBucketStatusMap<BucketScanStatus> bucketStatusMap;
 
     public LogScannerStatus() {
@@ -58,10 +63,12 @@ public class LogScannerStatus {
 
     synchronized void updateHighWatermark(TableBucket tableBucket, long highWatermark) {
         bucketStatus(tableBucket).setHighWatermark(highWatermark);
+        LOG.info("update high watermark for bucket {} to {}", tableBucket, highWatermark);
     }
 
     synchronized void updateOffset(TableBucket tableBucket, long offset) {
         bucketStatus(tableBucket).setOffset(offset);
+        LOG.info("update offset for bucket {} to {}", tableBucket, offset);
     }
 
     synchronized void assignScanBuckets(Map<TableBucket, Long> scanBucketAndOffsets) {
