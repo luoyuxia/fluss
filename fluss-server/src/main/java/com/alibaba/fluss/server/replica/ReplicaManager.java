@@ -100,13 +100,11 @@ import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.MapUtils;
 import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.concurrent.Scheduler;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -773,7 +771,6 @@ public class ReplicaManager {
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
                 result.add(new NotifyLeaderAndIsrResultForBucket(tb));
-                replicasBecomeFollower.add(replica);
             } catch (Exception e) {
                 LOG.error("Error make replica {} to follower", tb, e);
                 result.add(new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
