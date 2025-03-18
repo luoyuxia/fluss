@@ -769,6 +769,8 @@ public class ReplicaManager {
                 Replica replica = getReplicaOrException(data.getTableBucket());
                 if (replica.makeFollower(data)) {
                     replicasBecomeFollower.add(replica);
+                } else {
+                    replicasBecomeFollower.add(replica);
                 }
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);

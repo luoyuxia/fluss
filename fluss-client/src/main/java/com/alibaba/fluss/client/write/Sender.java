@@ -143,10 +143,11 @@ public class Sender implements Runnable {
         // main loop, runs until close is called.
         while (running) {
             try {
+                LOG.info("run once.");
                 runOnce();
             } catch (Throwable t) {
                 // if an unexpected error occurs, we first to try to reinitialize the metadata.
-                metadataUpdater.reInitializeCluster();
+                metadataUpdater.updateServers();
                 LOG.error("Uncaught error in Fluss write sender thread: ", t);
             }
         }
@@ -214,6 +215,8 @@ public class Sender implements Runnable {
         // get the list of batches prepare to send.
         Map<Integer, List<WriteBatch>> batches =
                 accumulator.drain(metadataUpdater.getCluster(), readyNodes, maxRequestSize);
+
+        LOG.info("batches is empty {}", batches.isEmpty());
 
         if (!batches.isEmpty()) {
             addToInflightBatches(batches);

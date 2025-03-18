@@ -159,7 +159,7 @@ public class MetadataUtils {
                                     newPartitionIdByPath,
                                     newTablePathToTableInfo);
                         })
-                .get(3, TimeUnit.MINUTES); // TODO currently, we don't have timeout logic in
+                .get(1, TimeUnit.MINUTES); // TODO currently, we don't have timeout logic in
         // RpcClient, it will let the get() block forever. So we
         // time out here
     }
@@ -270,9 +270,10 @@ public class MetadataUtils {
         return aliveTabletServers.get(offset);
     }
 
+    @Nullable
     private static ServerNode getCoordinatorServer(MetadataResponse response) {
         if (!response.hasCoordinatorServer()) {
-            throw new FlussRuntimeException("coordinator server is not found");
+            return null;
         } else {
             PbServerNode protoServerNode = response.getCoordinatorServer();
             return new ServerNode(

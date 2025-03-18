@@ -42,11 +42,11 @@
             <version>${project.version}</version>
         </dependency>
 
-<!--        <dependency>-->
-<!--            <groupId>com.alibaba.fluss</groupId>-->
-<!--            <artifactId>fluss-fs-pangu</artifactId>-->
-<!--            <version>${project.version}</version>-->
-<!--        </dependency>-->
+        <dependency>
+            <groupId>com.alibaba.fluss</groupId>
+            <artifactId>fluss-fs-pangu</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- Flink dependency -->
         <dependency>

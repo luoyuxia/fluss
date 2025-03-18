@@ -265,10 +265,44 @@ public class MetadataUpdater {
             Throwable t = ExceptionUtils.stripExecutionException(e);
             if (t instanceof RetriableException || t instanceof TimeoutException) {
                 LOG.warn("Failed to update metadata, but the exception is re-triable.", t);
+            } else if (ExceptionUtils.findThrowableWithMessage(t, "no alive tablet").isPresent()) {
+                LOG.warn("no alive tablet server in cluster, is re-triable", t);
+                Cluster newCluster = updateServersWhenNoAliveTabletServers(cluster);
+                if (newCluster != null) {
+                    cluster = newCluster;
+                    LOG.warn("update metadata success to new cluster when no alive tablet servers");
+                } else {
+                    LOG.warn(
+                            "not update metadata success to new cluster since new cluster is null");
+                }
             } else {
                 throw new FlussRuntimeException("Failed to update metadata", t);
             }
         }
+    }
+
+    public Cluster updateServersWhenNoAliveTabletServers(Cluster cluster) {
+        List<InetSocketAddress> inetSocketAddresses =
+                parseAndValidateAddresses(conf.get(ConfigOptions.BOOTSTRAP_SERVERS));
+        for (InetSocketAddress address : inetSocketAddresses) {
+            ServerNode serverNode =
+                    new ServerNode(
+                            -1, address.getHostString(), address.getPort(), ServerType.COORDINATOR);
+            try {
+                AdminReadOnlyGateway adminReadOnlyGateway =
+                        GatewayClientProxy.createGatewayProxy(
+                                () -> serverNode, rpcClient, AdminReadOnlyGateway.class);
+                return sendMetadataRequestAndRebuildCluster(
+                        adminReadOnlyGateway, true, cluster, null, null, null);
+            } catch (Exception e) {
+                LOG.error(
+                        "Failed to initialize fluss client connection to bootstrap server: {}",
+                        address,
+                        e);
+                return null;
+            }
+        }
+        return null;
     }
 
     /**
