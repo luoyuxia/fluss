@@ -1596,6 +1596,12 @@ public final class Replica {
                                 + "awaiting new the latest metadata.",
                         proposedIsrState);
                 return false;
+            case FENCED_LEADER_EPOCH_EXCEPTION:
+                LOG.debug(
+                        "Failed to adjust isr to {} because the leader epoch is stale. Replica state may be out of sync, "
+                                + "awaiting new the latest metadata.",
+                        proposedIsrState);
+                return false;
             default:
                 LOG.warn(
                         "Failed to adjust isr to {} due to unexpected error {}. Retrying.",
