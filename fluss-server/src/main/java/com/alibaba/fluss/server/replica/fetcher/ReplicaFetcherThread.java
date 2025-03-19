@@ -218,7 +218,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                         "Fetch from leader node {} cost {} ms",
                         leader.leaderNode(),
                         System.currentTimeMillis() - startTime);
-            } catch (Exception t) {
+            } catch (Throwable t) {
                 LOG.info(
                         "fetch from leader node {} exception with time {}",
                         leader.leaderNode(),

@@ -325,7 +325,7 @@ public class ReplicaManager {
             int requestCoordinatorEpoch,
             List<NotifyLeaderAndIsrData> notifyLeaderAndIsrDataList,
             Consumer<List<NotifyLeaderAndIsrResultForBucket>> responseCallback) {
-        List<NotifyLeaderAndIsrResultForBucket> result = new ArrayList<>();
+        Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result = new HashMap<>();
         LOG.info("becomeLeaderOrFollower");
         inLock(
                 replicaStateChangeLock,
@@ -345,7 +345,8 @@ public class ReplicaManager {
                                 replicasToBeFollower.add(data);
                             }
                         } catch (Exception e) {
-                            result.add(
+                            result.put(
+                                    tb,
                                     new NotifyLeaderAndIsrResultForBucket(
                                             tb, ApiError.fromThrowable(e)));
                         }
@@ -361,7 +362,7 @@ public class ReplicaManager {
                     replicaFetcherManager.shutdownIdleFetcherThreads();
                 });
 
-        responseCallback.accept(result);
+        responseCallback.accept(new ArrayList<>(result.values()));
     }
 
     /**
@@ -701,7 +702,7 @@ public class ReplicaManager {
      */
     private void makeLeaders(
             List<NotifyLeaderAndIsrData> replicasToBeLeader,
-            List<NotifyLeaderAndIsrResultForBucket> result) {
+            Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result) {
         if (replicasToBeLeader.isEmpty()) {
             return;
         }
@@ -720,10 +721,11 @@ public class ReplicaManager {
                 }
                 // start the remote log tiering tasks for leaders
                 remoteLogManager.startLogTiering(replica);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb));
+                result.put(tb, new NotifyLeaderAndIsrResultForBucket(tb));
             } catch (Exception e) {
                 LOG.error("Error make replica {} to leader", tb, e);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
+                result.put(
+                        tb, new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
             }
         }
     }
@@ -760,7 +762,7 @@ public class ReplicaManager {
      */
     private void makeFollowers(
             List<NotifyLeaderAndIsrData> replicasToBeFollower,
-            List<NotifyLeaderAndIsrResultForBucket> result) {
+            Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result) {
         if (replicasToBeFollower.isEmpty()) {
             return;
         }
@@ -771,15 +773,14 @@ public class ReplicaManager {
                 Replica replica = getReplicaOrException(data.getTableBucket());
                 if (replica.makeFollower(data)) {
                     replicasBecomeFollower.add(replica);
-                } else {
-                    replicasBecomeFollower.add(replica);
                 }
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb));
+                result.put(tb, new NotifyLeaderAndIsrResultForBucket(tb));
             } catch (Exception e) {
                 LOG.error("Error make replica {} to follower", tb, e);
-                result.add(new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
+                result.put(
+                        tb, new NotifyLeaderAndIsrResultForBucket(tb, ApiError.fromThrowable(e)));
             }
         }
 
@@ -803,34 +804,54 @@ public class ReplicaManager {
         truncateToHighWatermark(replicasBecomeFollower);
 
         // add fetcher for those follower replicas.
-        addFetcherForReplicas(replicasBecomeFollower);
+        addFetcherForReplicas(replicasBecomeFollower, result);
     }
 
-    private void addFetcherForReplicas(List<Replica> replicas) {
+    private void addFetcherForReplicas(
+            List<Replica> replicas, Map<TableBucket, NotifyLeaderAndIsrResultForBucket> result) {
         Map<TableBucket, InitialFetchStatus> bucketAndStatus = new HashMap<>();
         for (Replica replica : replicas) {
             Integer leaderId = replica.getLeaderId();
+            TableBucket tb = replica.getTableBucket();
+            LogTablet logTablet = replica.getLogTablet();
+            boolean error = false;
             if (leaderId == null) {
-                throw new NotLeaderOrFollowerException(
-                        String.format(
-                                "Could not find leader for follower replica %s while make leader for table bucket %s",
-                                serverId, replica.getTableBucket()));
+                result.put(
+                        tb,
+                        new NotifyLeaderAndIsrResultForBucket(
+                                tb,
+                                ApiError.fromThrowable(
+                                        new NotLeaderOrFollowerException(
+                                                String.format(
+                                                        "Could not find leader for follower replica %s while make "
+                                                                + "leader for table bucket %s",
+                                                        serverId, tb)))));
+                error = true;
             }
 
             ServerNode leader = metadataCache.getTabletServer(leaderId);
             if (leader == null) {
-                throw new NotLeaderOrFollowerException(
-                        String.format(
-                                "Could not find leader in server metadata by id for replica %s while make follower",
-                                replica));
+                LOG.info(
+                        "Could not find leader in server metadata by id for replica {} while make follower",
+                        leaderId);
+                result.put(
+                        tb,
+                        new NotifyLeaderAndIsrResultForBucket(
+                                tb,
+                                ApiError.fromThrowable(
+                                        new NotLeaderOrFollowerException(
+                                                String.format(
+                                                        "Could not find leader in server metadata by id "
+                                                                + "for replica %s while make follower",
+                                                        replica)))));
+            } else {
+                if (!error) {
+                    bucketAndStatus.put(
+                            tb,
+                            new InitialFetchStatus(
+                                    tb.getTableId(), leader, logTablet.localLogEndOffset()));
+                }
             }
-
-            LogTablet logTablet = replica.getLogTablet();
-            TableBucket tableBucket = logTablet.getTableBucket();
-            bucketAndStatus.put(
-                    tableBucket,
-                    new InitialFetchStatus(
-                            tableBucket.getTableId(), leader, logTablet.localLogEndOffset()));
         }
         replicaFetcherManager.addFetcherForBuckets(bucketAndStatus);
     }
