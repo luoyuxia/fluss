@@ -101,6 +101,7 @@ public abstract class ShutdownableThread extends Thread {
             log.info("Stopped");
             System.exit(-1);
         } catch (Throwable e) {
+            log.info("Stop shutdown thread due to throwable.", e);
             if (isRunning()) {
                 log.error("Error due to", e);
             }

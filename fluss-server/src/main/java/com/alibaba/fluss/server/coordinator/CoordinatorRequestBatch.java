@@ -293,6 +293,7 @@ public class CoordinatorRequestBatch {
                             .setCoordinatorEpoch(coordinatorEpoch)
                             .addAllNotifyBucketsLeaderReqs(notifyLeaders.values());
 
+            LOG.info("sendNotifyLeaderAndIsrRequest to server {}", serverId);
             coordinatorChannelManager.sendBucketLeaderAndIsrRequest(
                     serverId,
                     notifyLeaderAndIsrRequest,

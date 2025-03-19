@@ -224,7 +224,6 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                         leader.leaderNode(),
                         System.currentTimeMillis() - startTime,
                         t);
-                throw t;
             }
         } catch (Throwable t) {
             if (isRunning()) {

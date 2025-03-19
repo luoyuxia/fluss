@@ -326,6 +326,7 @@ public class ReplicaManager {
             List<NotifyLeaderAndIsrData> notifyLeaderAndIsrDataList,
             Consumer<List<NotifyLeaderAndIsrResultForBucket>> responseCallback) {
         List<NotifyLeaderAndIsrResultForBucket> result = new ArrayList<>();
+        LOG.info("becomeLeaderOrFollower");
         inLock(
                 replicaStateChangeLock,
                 () -> {

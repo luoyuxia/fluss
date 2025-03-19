@@ -60,7 +60,7 @@ public class TableBucketStateMachine {
         initializeBucketState();
         LOG.info("Triggering online table bucket changes");
         triggerOnlineBucketStateChange();
-        LOG.debug(
+        LOG.info(
                 "Started bucket state machine with initial state {}.",
                 coordinatorContext.getBucketStates());
     }
@@ -95,6 +95,7 @@ public class TableBucketStateMachine {
         Set<TableBucket> buckets =
                 coordinatorContext.bucketsInStates(
                         Sets.newHashSet(BucketState.NewBucket, BucketState.OfflineBucket));
+        LOG.info("triggerOnlineBucketStateChange for buckets {}", buckets);
 
         buckets =
                 buckets.stream()
