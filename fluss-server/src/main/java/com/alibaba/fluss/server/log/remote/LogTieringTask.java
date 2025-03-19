@@ -24,6 +24,7 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.remote.RemoteLogSegment;
 import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
 import com.alibaba.fluss.rpc.messages.CommitRemoteLogManifestRequest;
+import com.alibaba.fluss.rpc.messages.CommitRemoteLogManifestResponse;
 import com.alibaba.fluss.server.entity.CommitRemoteLogManifestData;
 import com.alibaba.fluss.server.log.LogSegment;
 import com.alibaba.fluss.server.log.LogTablet;
@@ -41,6 +42,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeCommitRemoteLogManifestRequest;
 
@@ -378,7 +380,15 @@ public class LogTieringTask implements Runnable {
 
     private boolean commitRemoteLogManifest(CommitRemoteLogManifestData data) throws Exception {
         CommitRemoteLogManifestRequest request = makeCommitRemoteLogManifestRequest(data);
-        return coordinatorGateway.commitRemoteLogManifest(request).get().isCommitSuccess();
+        CommitRemoteLogManifestResponse commitRemoteLogManifestResponse;
+        try {
+            commitRemoteLogManifestResponse =
+                    coordinatorGateway.commitRemoteLogManifest(request).get(1, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            LOG.error("commitRemoteLogManifest error", e);
+            throw e;
+        }
+        return commitRemoteLogManifestResponse.isCommitSuccess();
     }
 
     private Path toPathIfExists(File file) {

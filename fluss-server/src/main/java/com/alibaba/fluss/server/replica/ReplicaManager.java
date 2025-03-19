@@ -257,7 +257,8 @@ public class ReplicaManager {
                         serverId,
                         conf.getInt(ConfigOptions.LOG_REPLICA_FETCH_OPERATION_PURGE_NUMBER));
 
-        this.replicaFetcherManager = new ReplicaFetcherManager(conf, rpcClient, serverId, this);
+        this.replicaFetcherManager =
+                new ReplicaFetcherManager(conf, rpcClient, serverId, this, metadataCache);
         this.adjustIsrManager = new AdjustIsrManager(scheduler, coordinatorGateway, serverId);
         this.fatalErrorHandler = fatalErrorHandler;
 

@@ -17,6 +17,7 @@
 package com.alibaba.fluss.server.replica.fetcher;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
+import com.alibaba.fluss.cluster.MetadataCache;
 import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
@@ -64,14 +65,20 @@ public class ReplicaFetcherManager {
     private final ReplicaManager replicaManager;
     private final int numFetchersPerServer;
     private final Object lock = new Object();
+    private final MetadataCache metadataCache;
 
     public ReplicaFetcherManager(
-            Configuration conf, RpcClient rpcClient, int serverId, ReplicaManager replicaManager) {
+            Configuration conf,
+            RpcClient rpcClient,
+            int serverId,
+            ReplicaManager replicaManager,
+            MetadataCache metadataCache) {
         this.conf = conf;
         this.rpcClient = rpcClient;
         this.serverId = serverId;
         this.replicaManager = replicaManager;
         this.numFetchersPerServer = conf.getInt(ConfigOptions.LOG_REPLICA_FETCHER_NUMBER);
+        this.metadataCache = metadataCache;
     }
 
     public void addFetcherForBuckets(Map<TableBucket, InitialFetchStatus> bucketAndStatus) {
@@ -182,7 +189,27 @@ public class ReplicaFetcherManager {
                         serverId,
                         remoteNode,
                         GatewayClientProxy.createGatewayProxy(
-                                () -> remoteNode, rpcClient, TabletServerGateway.class));
+                                () -> {
+                                    ServerNode newNodeId =
+                                            metadataCache.getTabletServer(remoteNode.id());
+                                    if (newNodeId == null) {
+                                        LOG.info(
+                                                "new node is is null, still use old remote node {}",
+                                                remoteNode);
+                                        return remoteNode;
+                                    } else {
+                                        if (!newNodeId.equals(remoteNode)) {
+                                            LOG.info(
+                                                    "new node {} is not equals to old remote node {},"
+                                                            + " use new node.",
+                                                    newNodeId,
+                                                    remoteNode);
+                                        }
+                                        return newNodeId;
+                                    }
+                                },
+                                rpcClient,
+                                TabletServerGateway.class));
         return new ReplicaFetcherThread(
                 threadName,
                 replicaManager,

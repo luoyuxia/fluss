@@ -27,6 +27,7 @@ import com.alibaba.fluss.server.replica.ReplicaManager;
 import com.alibaba.fluss.server.replica.ReplicaTestBase;
 import com.alibaba.fluss.server.replica.fetcher.ReplicaFetcherManager.ServerIdAndFetcherId;
 import com.alibaba.fluss.server.tablet.TestTabletServerGateway;
+import com.alibaba.fluss.server.testutils.TestingMetadataCache;
 import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -122,7 +123,7 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
 
         public TestingReplicaFetcherManager(
                 int serverId, ReplicaManager replicaManager, ReplicaFetcherThread fetcherThread) {
-            super(new Configuration(), null, serverId, replicaManager);
+            super(new Configuration(), null, serverId, replicaManager, new TestingMetadataCache(3));
             this.fetcherThread = fetcherThread;
         }
 
