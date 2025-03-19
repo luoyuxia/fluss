@@ -210,20 +210,20 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     "Sending fetch log request {} to leader {}", fetchRequest, leader.leaderNode());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            LOG.info("Begin to fetch from leader node {}", leader.leaderNode());
+            //            LOG.info("Begin to fetch from leader node {}", leader.leaderNode());
             long startTime = System.currentTimeMillis();
             try {
                 responseData = leader.fetchLog(fetchRequest).get(1, TimeUnit.MINUTES);
-                LOG.info(
-                        "Fetch from leader node {} cost {} ms",
-                        leader.leaderNode(),
-                        System.currentTimeMillis() - startTime);
+                //                LOG.info(
+                //                        "Fetch from leader node {} cost {} ms",
+                //                        leader.leaderNode(),
+                //                        System.currentTimeMillis() - startTime);
             } catch (Throwable t) {
-                LOG.info(
-                        "fetch from leader node {} exception with time {}",
-                        leader.leaderNode(),
-                        System.currentTimeMillis() - startTime,
-                        t);
+                //                LOG.info(
+                //                        "fetch from leader node {} exception with time {}",
+                //                        leader.leaderNode(),
+                //                        System.currentTimeMillis() - startTime,
+                //                        t);
             }
         } catch (Throwable t) {
             if (isRunning()) {
