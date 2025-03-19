@@ -127,7 +127,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                                         leader.buildFetchLogRequest(
                                                 fairBucketStatusMap.bucketStatusMap());
                                 if (!fetchLogRequest.isPresent()) {
-                                    LOG.trace(
+                                    LOG.info(
                                             "There are no active buckets. Back off for {} ms before "
                                                     + "sending a fetch fetchLogRequest",
                                             fetchBackOffMs);
@@ -210,10 +210,20 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     "Sending fetch log request {} to leader {}", fetchRequest, leader.leaderNode());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
+            LOG.info("Begin to fetch from leader node {}", leader.leaderNode());
+            long startTime = System.currentTimeMillis();
             try {
                 responseData = leader.fetchLog(fetchRequest).get(1, TimeUnit.MINUTES);
+                LOG.info(
+                        "Fetch from leader node {} cost {} ms",
+                        leader.leaderNode(),
+                        System.currentTimeMillis() - startTime);
             } catch (Exception t) {
-                LOG.info("fetch from leader node {} exception", leader.leaderNode(), t);
+                LOG.info(
+                        "fetch from leader node {} exception with time {}",
+                        leader.leaderNode(),
+                        System.currentTimeMillis() - startTime,
+                        t);
                 throw t;
             }
         } catch (Throwable t) {
