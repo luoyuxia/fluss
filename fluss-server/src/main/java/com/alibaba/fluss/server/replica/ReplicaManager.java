@@ -18,6 +18,7 @@ package com.alibaba.fluss.server.replica;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.cluster.ServerType;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FencedLeaderEpochException;
@@ -95,6 +96,7 @@ import com.alibaba.fluss.server.replica.fetcher.ReplicaFetcherManager;
 import com.alibaba.fluss.server.utils.FatalErrorHandler;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.LakeTableSnapshot;
+import com.alibaba.fluss.server.zk.data.TabletServerRegistration;
 import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.MapUtils;
@@ -818,10 +820,23 @@ public class ReplicaManager {
 
             ServerNode leader = metadataCache.getTabletServer(leaderId);
             if (leader == null) {
-                throw new NotLeaderOrFollowerException(
-                        String.format(
-                                "Could not find leader in server metadata by id for replica %s while make follower",
-                                replica));
+                LOG.error(
+                        "Could not find leader in server metadata by id {} in follower {} for replica {} while make follower.",
+                        leaderId,
+                        serverId,
+                        replica.getTableBucket());
+                try {
+                    TabletServerRegistration registration =
+                            zkClient.getTabletServer(leaderId).get();
+                    leader =
+                            new ServerNode(
+                                    leaderId,
+                                    registration.getHost(),
+                                    registration.getPort(),
+                                    ServerType.TABLET_SERVER);
+                } catch (Exception e) {
+                    throw new FlussRuntimeException(e);
+                }
             }
 
             LogTablet logTablet = replica.getLogTablet();
