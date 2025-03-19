@@ -95,6 +95,7 @@ public abstract class ShutdownableThread extends Thread {
                 doWork();
             }
         } catch (Error e) {
+            log.info("Stop shutdown thread", e);
             shutdownInitiated.countDown();
             shutdownComplete.countDown();
             log.info("Stopped");

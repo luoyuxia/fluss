@@ -229,9 +229,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         } catch (Throwable t) {
             if (isRunning()) {
                 LOG.warn("Error in response for fetch log request {}", fetchRequest, t);
-                inLock(
-                        bucketStatusMapLock,
-                        () -> bucketsWithError.addAll(fairBucketStatusMap.bucketSet()));
+                //                inLock(
+                //                        bucketStatusMapLock,
+                //                        () ->
+                // bucketsWithError.addAll(fairBucketStatusMap.bucketSet()));
             }
         }
 
