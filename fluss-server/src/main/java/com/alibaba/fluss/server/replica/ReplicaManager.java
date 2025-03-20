@@ -114,10 +114,14 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -137,6 +141,7 @@ public class ReplicaManager {
     public static final String HIGH_WATERMARK_CHECKPOINT_FILE_NAME = "high-watermark-checkpoint";
     private final Configuration conf;
     private final Scheduler scheduler;
+    private final ScheduledExecutorService scheduledExecutorService;
     private final LogManager logManager;
     private final KvManager kvManager;
     private final ZooKeeperClient zkClient;
@@ -271,6 +276,7 @@ public class ReplicaManager {
         this.serverMetricGroup = serverMetricGroup;
         this.clock = clock;
         registerMetrics();
+        this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     }
 
     public void startup() {
@@ -282,6 +288,26 @@ public class ReplicaManager {
                 this::maybeShrinkIsr,
                 0L,
                 conf.get(ConfigOptions.LOG_REPLICA_MAX_LAG_TIME).toMillis() / 2);
+        scheduledExecutorService.schedule(this::printOnlineReplica, 5, TimeUnit.MINUTES);
+    }
+
+    private void printOnlineReplica() {
+        LOG.info("Start to print printOnlineReplica");
+        Set<TableBucket> leaderReplicas = new HashSet<>();
+        allReplicas
+                .values()
+                .forEach(
+                        t -> {
+                            if (t instanceof OnlineReplica) {
+                                OnlineReplica onlineReplica = (OnlineReplica) t;
+                                Replica replica = onlineReplica.replica;
+                                if (replica.isLeader()) {
+                                    leaderReplicas.add(replica.getTableBucket());
+                                }
+                            }
+                        });
+        LOG.info("Leader replicas are {}, size is {}", leaderReplicas, leaderReplicas.size());
+        LOG.info("End to print printOnlineReplica");
     }
 
     public RemoteLogManager getRemoteLogManager() {

@@ -92,6 +92,7 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -100,6 +101,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -132,6 +134,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private final ServerMetadataCache serverMetadataCache;
     private final CoordinatorRequestBatch coordinatorRequestBatch;
     private final CoordinatorMetricGroup coordinatorMetricGroup;
+    private final ScheduledExecutorService scheduledExecutorService;
 
     private final CompletedSnapshotStoreManager completedSnapshotStoreManager;
     private final ExecutorService ioExecutor;
@@ -215,6 +218,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.autoPartitionManager = autoPartitionManager;
         this.coordinatorMetricGroup = coordinatorMetricGroup;
         registerMetric();
+        this.scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     }
 
     private void registerMetric() {
@@ -260,6 +264,36 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // start the event manager which will then process the event
         coordinatorEventManager.start();
+        scheduledExecutorService.schedule(
+                () ->
+                        coordinatorEventManager.put(
+                                new AccessContextEvent<>(
+                                        coordinatorContext -> {
+                                            Map<Integer, Set<TableBucket>> leaderServerToBuckets =
+                                                    new HashMap<>();
+                                            for (Integer serverId :
+                                                    coordinatorContext
+                                                            .getLiveTabletServers()
+                                                            .keySet()) {
+                                                leaderServerToBuckets.put(
+                                                        serverId,
+                                                        coordinatorContext.getBucketsWithLeaderIn(
+                                                                serverId));
+                                            }
+                                            for (Integer serverId :
+                                                    leaderServerToBuckets.keySet()) {
+                                                Set<TableBucket> tableBuckets =
+                                                        leaderServerToBuckets.get(serverId);
+                                                LOG.info(
+                                                        "server id: {}, lead buckets: {}, bucketNum: {}.",
+                                                        serverId,
+                                                        tableBuckets,
+                                                        tableBuckets.size());
+                                            }
+                                            return null;
+                                        })),
+                5,
+                TimeUnit.MINUTES);
     }
 
     public void shutdown() {
