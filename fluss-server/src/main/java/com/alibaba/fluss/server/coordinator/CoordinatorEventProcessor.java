@@ -674,7 +674,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
     }
 
     private void onReplicaBecomeOffline(Set<TableBucketReplica> offlineReplicas) {
-
         LOG.info("The replica {} become offline.", offlineReplicas);
         for (TableBucketReplica offlineReplica : offlineReplicas) {
             coordinatorContext.addOfflineBucketInServer(

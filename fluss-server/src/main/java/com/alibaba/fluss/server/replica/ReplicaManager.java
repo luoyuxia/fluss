@@ -17,7 +17,6 @@
 package com.alibaba.fluss.server.replica;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
-import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FencedLeaderEpochException;
@@ -858,30 +857,11 @@ public class ReplicaManager {
                 error = true;
             }
 
-            ServerNode leader = metadataCache.getTabletServer(leaderId);
-            if (leader == null) {
-                LOG.info(
-                        "Could not find leader {} in server metadata by id for follower replica {} while make follower for bucket {}",
-                        leaderId,
-                        serverId,
-                        tb);
-                result.put(
+            if (!error) {
+                bucketAndStatus.put(
                         tb,
-                        new NotifyLeaderAndIsrResultForBucket(
-                                tb,
-                                ApiError.fromThrowable(
-                                        new NotLeaderOrFollowerException(
-                                                String.format(
-                                                        "Could not find leader %s in server metadata by id "
-                                                                + "for follower replica %s while make follower for bucket %s",
-                                                        leaderId, serverId, tb)))));
-            } else {
-                if (!error) {
-                    bucketAndStatus.put(
-                            tb,
-                            new InitialFetchStatus(
-                                    tb.getTableId(), leader, logTablet.localLogEndOffset()));
-                }
+                        new InitialFetchStatus(
+                                tb.getTableId(), leaderId, logTablet.localLogEndOffset()));
             }
         }
         replicaFetcherManager.addFetcherForBuckets(bucketAndStatus);
