@@ -59,7 +59,10 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
                         "test-fetcher-thread",
                         replicaManager,
                         new RemoteLeaderEndpoint(
-                                conf, TABLET_SERVER_ID, leader, new TestTabletServerGateway(false)),
+                                conf,
+                                TABLET_SERVER_ID,
+                                leader.id(),
+                                new TestTabletServerGateway(false)),
                         (int)
                                 conf.get(ConfigOptions.LOG_REPLICA_FETCH_BACKOFF_INTERVAL)
                                         .toMillis());
@@ -92,7 +95,7 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
                 result -> {});
 
         InitialFetchStatus initialFetchStatus =
-                new InitialFetchStatus(DATA1_TABLE_ID, leader, fetchOffset);
+                new InitialFetchStatus(DATA1_TABLE_ID, leader.id(), fetchOffset);
 
         Map<TableBucket, InitialFetchStatus> initialFetchStateMap = new HashMap<>();
         initialFetchStateMap.put(tb, initialFetchStatus);
@@ -128,7 +131,7 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
         }
 
         @Override
-        public ReplicaFetcherThread createFetcherThread(int fetcherId, ServerNode remoteNode) {
+        public ReplicaFetcherThread createFetcherThread(int fetcherId, int remoteNode) {
             return fetcherThread;
         }
     }

@@ -136,7 +136,8 @@ public class ReplicaFetcherThreadTest {
         assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
 
         followerFetcher.addBuckets(
-                Collections.singletonMap(tb, new InitialFetchStatus(DATA1_TABLE_ID, leader, 0L)));
+                Collections.singletonMap(
+                        tb, new InitialFetchStatus(DATA1_TABLE_ID, leader.id(), 0L)));
         assertThat(followerRM.getReplicaOrException(tb).getLocalLogEndOffset()).isEqualTo(0L);
 
         // begin fetcher thread.
