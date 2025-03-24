@@ -17,10 +17,10 @@
 package com.alibaba.fluss.server.log.remote;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
-import com.alibaba.fluss.exception.CorruptIndexException;
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.exception.RemoteStorageException;
 import com.alibaba.fluss.remote.RemoteLogSegment;
+import com.alibaba.fluss.server.exception.CorruptIndexException;
 import com.alibaba.fluss.server.log.OffsetIndex;
 import com.alibaba.fluss.server.log.OffsetPosition;
 import com.alibaba.fluss.server.log.StorageAction;
