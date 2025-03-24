@@ -125,7 +125,7 @@ public class WriterStateManagerTest {
         WriterAppendInfo appendInfo = stateManager.prepareUpdate(writerId);
         appendInfo.appendDataBatch(0, new LogOffsetMetadata(15L), 20L, System.currentTimeMillis());
         assertThat(stateManager.lastEntry(writerId)).isNotPresent();
-        stateManager.update(appendInfo);
+        stateManager.update(appendInfo, false, false);
         assertThat(stateManager.lastEntry(writerId)).isPresent();
 
         WriterAppendInfo nextAppendInfo = stateManager.prepareUpdate(writerId);
@@ -137,7 +137,7 @@ public class WriterStateManagerTest {
         assertThat(lastEntry.lastBatchSequence()).isEqualTo(0);
         assertThat(lastEntry.lastDataOffset()).isEqualTo(20L);
 
-        stateManager.update(nextAppendInfo);
+        stateManager.update(nextAppendInfo, false, false);
         lastEntry = stateManager.lastEntry(writerId).get();
         assertThat(lastEntry.lastBatchSequence()).isEqualTo(1);
         assertThat(lastEntry.lastDataOffset()).isEqualTo(30L);
@@ -485,7 +485,7 @@ public class WriterStateManagerTest {
             long timestamp) {
         WriterAppendInfo appendInfo = stateManager.prepareUpdate(writerId);
         appendInfo.appendDataBatch(batchSequence, new LogOffsetMetadata(offset), offset, timestamp);
-        stateManager.update(appendInfo);
+        stateManager.update(appendInfo, false, false);
         stateManager.updateMapEndOffset(offset + 1);
     }
 

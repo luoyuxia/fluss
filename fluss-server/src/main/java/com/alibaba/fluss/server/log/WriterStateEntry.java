@@ -18,6 +18,9 @@ package com.alibaba.fluss.server.log;
 
 import com.alibaba.fluss.record.LogRecordBatch;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayDeque;
@@ -34,6 +37,7 @@ import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
  * for the incoming batch.
  */
 public class WriterStateEntry {
+    private static final Logger LOG = LoggerFactory.getLogger(WriterStateEntry.class);
     private static final int NUM_BATCHES_TO_RETAIN = 5;
     private final long writerId;
     private final Deque<BatchMetadata> batchMetadata = new ArrayDeque<>();
@@ -90,13 +94,24 @@ public class WriterStateEntry {
         this.lastTimestamp = timestamp;
     }
 
-    public void update(WriterStateEntry nextEntry) {
-        update(nextEntry.lastTimestamp, nextEntry.batchMetadata);
+    public void update(WriterStateEntry nextEntry, boolean isLeader, boolean isReload) {
+        update(nextEntry.lastTimestamp, nextEntry.batchMetadata, isLeader, isReload);
     }
 
-    private void update(long lastTimestamp, Deque<BatchMetadata> batchMetadata) {
+    private void update(
+            long lastTimestamp,
+            Deque<BatchMetadata> batchMetadata,
+            boolean isLeader,
+            boolean isReload) {
         while (!batchMetadata.isEmpty()) {
-            addBatchMetadata(batchMetadata.removeFirst());
+            BatchMetadata batchMetadata1 = batchMetadata.removeFirst();
+            LOG.info(
+                    "I have ack writer id: {} batch sequence: {} as leader: {}, is reload: {}",
+                    writerId,
+                    batchMetadata1.batchSequence,
+                    isLeader,
+                    isReload);
+            addBatchMetadata(batchMetadata1);
         }
         this.lastTimestamp = lastTimestamp;
     }

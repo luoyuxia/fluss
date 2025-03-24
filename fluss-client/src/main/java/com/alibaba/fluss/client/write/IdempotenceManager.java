@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.ThreadSafe;
 
+import java.util.List;
 import java.util.Optional;
 
 import static com.alibaba.fluss.record.LogRecordBatch.NO_WRITER_ID;
@@ -242,6 +243,10 @@ public class IdempotenceManager {
     @VisibleForTesting
     synchronized int inflightBatchSize(TableBucket tableBucket) {
         return idempotenceBucketMap.getOrCreate(tableBucket).inflightBatchSize();
+    }
+
+    synchronized List<WriteBatch> inflightBatch(TableBucket tableBucket) {
+        return idempotenceBucketMap.get(tableBucket).inFlightBatches();
     }
 
     synchronized boolean canRetry(WriteBatch batch, Errors error) {
