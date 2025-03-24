@@ -254,8 +254,15 @@ public class ReplicaManager {
                         "delay fetch log",
                         serverId,
                         conf.getInt(ConfigOptions.LOG_REPLICA_FETCH_OPERATION_PURGE_NUMBER));
+        this.internalListenerName = conf.get(ConfigOptions.INTERNAL_LISTENER_NAME);
 
-        this.replicaFetcherManager = new ReplicaFetcherManager(conf, rpcClient, serverId, this);
+        this.replicaFetcherManager =
+                new ReplicaFetcherManager(
+                        conf,
+                        rpcClient,
+                        serverId,
+                        this,
+                        (nodeId) -> metadataCache.getTabletServer(nodeId, internalListenerName));
         this.adjustIsrManager = new AdjustIsrManager(scheduler, coordinatorGateway, serverId);
         this.fatalErrorHandler = fatalErrorHandler;
 
@@ -266,7 +273,6 @@ public class ReplicaManager {
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
         this.serverMetricGroup = serverMetricGroup;
-        this.internalListenerName = conf.get(ConfigOptions.INTERNAL_LISTENER_NAME);
         this.clock = clock;
         registerMetrics();
     }
@@ -855,7 +861,7 @@ public class ReplicaManager {
                     bucketAndStatus.put(
                             tb,
                             new InitialFetchStatus(
-                                    tb.getTableId(), leader.get(), logTablet.localLogEndOffset()));
+                                    tb.getTableId(), leaderId, logTablet.localLogEndOffset()));
                 }
             }
         }

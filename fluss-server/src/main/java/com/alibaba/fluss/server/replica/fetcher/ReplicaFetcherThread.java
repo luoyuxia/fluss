@@ -74,6 +74,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     private final LeaderEndpoint leader;
     private final int fetchBackOffMs;
 
+    // manually add timout logic in here, todo remove this timeout logic if
+    // we support global request timeout in #279
+    private final int timeoutSeconds = 30;
+
     // TODO this range-robin fair map will take effect after we introduce fetch response limit size
     // in FetchLogRequest. trace id: FLUSS-56111098
     /**
@@ -210,7 +214,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     "Sending fetch log request {} to leader {}", fetchRequest, leader.leaderNode());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            responseData = leader.fetchLog(fetchRequest).get();
+            responseData = leader.fetchLog(fetchRequest).get(timeoutSeconds, TimeUnit.SECONDS);
         } catch (Throwable t) {
             if (isRunning()) {
                 LOG.warn("Error in response for fetch log request {}", fetchRequest, t);
@@ -358,7 +362,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
          * <p>There is a potential for a mismatch between the logs of the two replicas here. We
          * don't fix this mismatch as of now.
          */
-        long leaderEndOffset = leader.fetchLocalLogEndOffset(tableBucket).get();
+        long leaderEndOffset =
+                leader.fetchLocalLogEndOffset(tableBucket).get(timeoutSeconds, TimeUnit.SECONDS);
         if (leaderEndOffset < replicaEndOffset) {
             LOG.warn(
                     "Reset fetch offset for bucket {} from {} to current leader's latest offset {}",
@@ -391,7 +396,9 @@ final class ReplicaFetcherThread extends ShutdownableThread {
              * needs to be set for both tablet servers and producers.
              *
              * */
-            long leaderStartOffset = leader.fetchLocalLogStartOffset(tableBucket).get();
+            long leaderStartOffset =
+                    leader.fetchLocalLogStartOffset(tableBucket)
+                            .get(timeoutSeconds, TimeUnit.SECONDS);
             LOG.warn(
                     "Reset fetch offset for bucket {} from {} to current leader's start offset {}",
                     tableBucket,

@@ -16,7 +16,6 @@
 
 package com.alibaba.fluss.server.replica.fetcher;
 
-import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
 import com.alibaba.fluss.rpc.messages.FetchLogRequest;
@@ -28,8 +27,8 @@ import java.util.concurrent.CompletableFuture;
 /** Defines the interface to be used to access a tablet server that is a leader. */
 interface LeaderEndpoint {
 
-    /** The specific tablet server address we want to connect to. */
-    ServerNode leaderNode();
+    /** The tablet server id we want to connect to. */
+    int leaderNode();
 
     /** Fetches the local log end offset of the given table bucket. */
     CompletableFuture<Long> fetchLocalLogEndOffset(TableBucket tableBucket);
