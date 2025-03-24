@@ -69,7 +69,7 @@ public class FileDownloadUtils {
                     transferDataToDirectoryAsync(fileDownloadSpecs, internalCloser, executorService)
                             .collect(Collectors.toList());
             // Wait until either all futures completed successfully or one failed exceptionally.
-            FutureUtils.completeAll(futures, new DownloadProgressAction(fileDownloadSpecs.size()))
+            FutureUtils.waitForAll(futures, new DownloadProgressAction(fileDownloadSpecs.size()))
                     .get();
         } catch (Exception e) {
             fileDownloadSpecs.stream()
