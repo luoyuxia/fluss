@@ -597,7 +597,15 @@ public final class RecordAccumulator {
                     break;
                 } else {
                     if (shouldStopDrainBatchesForBucket(first, tableBucket)) {
-                        LOG.info("should stop drain batches for bucket {}", tableBucket);
+                        List<WriteBatch> currentInflightBatches =
+                                idempotenceManager.inflightBatch(tableBucket);
+                        for (WriteBatch currentInflightBatch : currentInflightBatches) {
+                            LOG.info(
+                                    "writerId: {}, batchSequence: {}, send to bucket {}, all in cache",
+                                    currentInflightBatch.writerId(),
+                                    currentInflightBatch.batchSequence(),
+                                    tableBucket);
+                        }
                         break;
                     }
                 }
@@ -654,12 +662,12 @@ public final class RecordAccumulator {
                 return true;
             }
 
-            if (!idempotenceManager.canSendMortRequests(tableBucket)) {
-                // we have reached the max inflight requests for this table bucket, so we need stop
-                // drain this batch.
-                LOG.info("can't send more requests for {}", tableBucket);
-                return true;
-            }
+            //            if (!idempotenceManager.canSendMortRequests(tableBucket)) {
+            //                // we have reached the max inflight requests for this table bucket, so
+            // we need stop
+            //                // drain this batch.
+            //                return true;
+            //            }
 
             int firstInFlightSequence = idempotenceManager.firstInFlightBatchSequence(tableBucket);
             // If the queued batch already has an assigned batch sequence, then it is being
@@ -756,7 +764,7 @@ public final class RecordAccumulator {
                 orderedBatches.add(deque.pollFirst());
             }
 
-            LOG.debug(
+            LOG.info(
                     "Reordered incoming batch with sequence {} for bucket {}. It was placed in the queue at "
                             + "position {}",
                     batch.batchSequence(),
@@ -776,6 +784,7 @@ public final class RecordAccumulator {
             // At this point, the incoming batch has been queued in the correct place according to
             // its sequence.
         } else {
+            LOG.info("be added to first.");
             deque.addFirst(batch);
         }
     }

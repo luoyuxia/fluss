@@ -646,7 +646,9 @@ public final class LogTablet {
 
                 // update the writer state.
                 Collection<WriterAppendInfo> updatedWriters = validateResult.right();
-                updatedWriters.forEach(writerStateManager::update);
+                for (WriterAppendInfo updatedWriter : updatedWriters) {
+                    writerStateManager.update(updatedWriter, needAssignOffsetAndTimestamp, false);
+                }
 
                 // always update the last writer id map offset so that the snapshot reflects
                 // the current offset even if there isn't any idempotent data being written.
@@ -1197,7 +1199,10 @@ public final class LogTablet {
                 updateWriterAppendInfo(writerStateManager, batch, loadedWriters);
             }
         }
-        loadedWriters.values().forEach(writerStateManager::update);
+
+        for (WriterAppendInfo writerAppendInfo : loadedWriters.values()) {
+            writerStateManager.update(writerAppendInfo, true, true);
+        }
     }
 
     private static void deleteWriterSnapshots(

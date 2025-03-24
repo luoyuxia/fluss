@@ -235,7 +235,7 @@ public class WriterStateManager {
     }
 
     /** Update the mapping with the given append information. */
-    public void update(WriterAppendInfo appendInfo) {
+    public void update(WriterAppendInfo appendInfo, boolean isLeader, boolean isReload) {
         long writerId = appendInfo.writerId();
         if (writerId == LogRecordBatch.NO_WRITER_ID) {
             throw new IllegalArgumentException(
@@ -250,7 +250,7 @@ public class WriterStateManager {
         WriterStateEntry updatedEntry = appendInfo.toEntry();
         WriterStateEntry currentEntry = writers.get(writerId);
         if (currentEntry != null) {
-            currentEntry.update(updatedEntry);
+            currentEntry.update(tableBucket, updatedEntry, isLeader, isReload);
         } else {
             addWriterId(writerId, updatedEntry);
         }

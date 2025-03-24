@@ -22,7 +22,9 @@ import com.alibaba.fluss.metadata.TableBucket;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Optional;
 import java.util.SortedSet;
 import java.util.TreeSet;
@@ -128,6 +130,10 @@ public class IdempotenceBucketEntry {
             return sequence;
         }
         return lastAckedSequence;
+    }
+
+    List<WriteBatch> inFlightBatches() {
+        return new ArrayList<>(inflightBatchesBySequence);
     }
 
     void removeInFlightBatch(WriteBatch batch) {
