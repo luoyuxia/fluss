@@ -347,6 +347,7 @@ public class TabletServer extends ServerBase {
 
                 if (logManager != null) {
                     logManager.shutdown();
+                    LOG.info("test log: log manager clean shutdown");
                 }
 
                 if (replicaManager != null) {

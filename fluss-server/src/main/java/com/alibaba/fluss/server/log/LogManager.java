@@ -380,6 +380,7 @@ public final class LogManager extends TabletManagerBase {
             Runnable runnable =
                     () -> {
                         try {
+                            LOG.info("test log: log flushed while shutdown");
                             logTablet.flush(true);
                             logTablet.close();
                         } catch (IOException e) {
