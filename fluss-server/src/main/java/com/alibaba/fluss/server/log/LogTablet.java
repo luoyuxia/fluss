@@ -668,9 +668,8 @@ public final class LogTablet {
                         localLog.getLocalLogEndOffset(),
                         validRecords);
 
-                if (localLog.unflushedMessages() >= logFlushIntervalMessages) {
-                    flush(false);
-                }
+                // just for test, force flush every append.
+                flush(true);
             }
             return appendInfo;
         }

@@ -653,12 +653,7 @@ public final class RecordAccumulator {
                 return true;
             }
 
-            //            if (!idempotenceManager.canSendMortRequests(tableBucket)) {
-            //                // we have reached the max inflight requests for this table bucket, so
-            // we need stop
-            //                // drain this batch.
-            //                return true;
-            //            }
+            boolean canSendMore = idempotenceManager.canSendMortRequests(tableBucket);
 
             int firstInFlightSequence = idempotenceManager.firstInFlightBatchSequence(tableBucket);
             // If the queued batch already has an assigned batch sequence, then it is being
@@ -666,9 +661,16 @@ public final class RecordAccumulator {
             // drain that. We only move on when the next in line batch is complete (either
             // successfully or due to a fatal server error). This effectively reduces our in
             // flight request count to 1.
-            return firstInFlightSequence != LogRecordBatch.NO_BATCH_SEQUENCE
-                    && first.hasBatchSequence()
-                    && first.batchSequence() != firstInFlightSequence;
+            boolean isFirstBatch =
+                    firstInFlightSequence != LogRecordBatch.NO_BATCH_SEQUENCE
+                            && first.hasBatchSequence()
+                            && first.batchSequence() == firstInFlightSequence;
+
+            if (isFirstBatch) {
+                return false;
+            } else {
+                return !canSendMore;
+            }
         }
         return false;
     }

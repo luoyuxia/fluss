@@ -295,7 +295,7 @@ public class IdempotenceManager {
                 batchSequence,
                 error.message());
 
-        return true;
+        return false;
     }
 
     void maybeWaitForWriterId() {
