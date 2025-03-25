@@ -29,6 +29,9 @@ import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.arrow.ArrowWriter;
 import com.alibaba.fluss.rpc.messages.ProduceLogRequest;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.concurrent.NotThreadSafe;
 
 import java.io.IOException;
@@ -46,6 +49,7 @@ import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 @NotThreadSafe
 @Internal
 public class ArrowLogWriteBatch extends WriteBatch {
+    private static final Logger LOG = LoggerFactory.getLogger(ArrowLogWriteBatch.class);
     private final MemoryLogRecordsArrowBuilder recordsBuilder;
     private final AbstractPagedOutputView outputView;
 
@@ -113,6 +117,14 @@ public class ArrowLogWriteBatch extends WriteBatch {
 
     @Override
     public void setWriterState(long writerId, int batchSequence) {
+        LOG.info(
+                "Set batch sequence of {} for "
+                        + "table bucket {} to {} of writer id {}, batch object: {}",
+                batchSequence(),
+                tableBucket(),
+                batchSequence,
+                writerId,
+                this);
         recordsBuilder.setWriterState(writerId, batchSequence);
     }
 

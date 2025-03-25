@@ -29,6 +29,9 @@ import com.alibaba.fluss.row.BinaryRow;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.rpc.messages.PutKvRequest;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
@@ -47,6 +50,7 @@ import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 @NotThreadSafe
 @Internal
 public class KvWriteBatch extends WriteBatch {
+    private static final Logger LOG = LoggerFactory.getLogger(KvWriteBatch.class);
     private final AbstractPagedOutputView outputView;
     private final KvRecordBatchBuilder recordsBuilder;
     private final @Nullable int[] targetColumns;
@@ -131,6 +135,14 @@ public class KvWriteBatch extends WriteBatch {
 
     @Override
     public void setWriterState(long writerId, int batchSequence) {
+        LOG.info(
+                "Set batch sequence of {} for "
+                        + "table bucket {} to {} of writer id {}, batch object: {}",
+                batchSequence(),
+                tableBucket(),
+                batchSequence,
+                writerId,
+                this);
         recordsBuilder.setWriterState(writerId, batchSequence);
     }
 

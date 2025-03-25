@@ -597,15 +597,6 @@ public final class RecordAccumulator {
                     break;
                 } else {
                     if (shouldStopDrainBatchesForBucket(first, tableBucket)) {
-                        List<WriteBatch> currentInflightBatches =
-                                idempotenceManager.inflightBatch(tableBucket);
-                        for (WriteBatch currentInflightBatch : currentInflightBatches) {
-                            LOG.info(
-                                    "writerId: {}, batchSequence: {}, send to bucket {}, all in cache",
-                                    currentInflightBatch.writerId(),
-                                    currentInflightBatch.batchSequence(),
-                                    tableBucket);
-                        }
                         break;
                     }
                 }

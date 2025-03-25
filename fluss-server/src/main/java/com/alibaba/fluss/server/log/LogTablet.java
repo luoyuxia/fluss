@@ -951,6 +951,14 @@ public final class LogTablet {
                 monotonic = false;
             }
 
+            int batchSequence = batch.batchSequence();
+            long writerId = batch.writerId();
+            LOG.info(
+                    "I receive batch sequence: {}, writer id: {} for tb {}",
+                    batchSequence,
+                    writerId,
+                    localLog.getTableBucket());
+
             lastOffset = batch.lastLogOffset();
 
             int batchSize = batch.sizeInBytes();
@@ -987,6 +995,14 @@ public final class LogTablet {
         Map<Long, WriterAppendInfo> updatedWriters = new HashMap<>();
 
         for (LogRecordBatch batch : records.batches()) {
+            int sequence = batch.batchSequence();
+            long writerId = batch.writerId();
+            LOG.info(
+                    "I try to analyze batch sequence: {}, writer id: {} for tb {}",
+                    sequence,
+                    writerId,
+                    localLog.getTableBucket());
+
             if (batch.hasWriterId()) {
                 // if this is a write request, there will be up to 5 batches which could
                 // have been duplicated. If we find a duplicate, we return the metadata of the

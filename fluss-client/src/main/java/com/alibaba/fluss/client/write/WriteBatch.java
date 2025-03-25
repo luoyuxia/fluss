@@ -117,10 +117,12 @@ public abstract class WriteBatch {
 
     public void resetWriterState(long writerId, int batchSequence) {
         LOG.info(
-                "Resetting batch sequence of batch with current batch sequence {} for table bucket {} to {}",
+                "Resetting batch sequence of batch with current batch sequence {} for table bucket {} to {} of writer id {}, batch object: {}",
                 batchSequence(),
                 tableBucket,
-                batchSequence);
+                batchSequence,
+                writerId,
+                this);
         reopened = true;
     }
 

@@ -191,7 +191,7 @@ public class IdempotenceManager {
         }
 
         int lastAckedSequence = maybeUpdateLastAckedSequence(tableBucket, batch.batchSequence());
-        LOG.debug(
+        LOG.info(
                 "Writer id: {}; Set last ack'd batch sequence for table-bucket {} to {}",
                 batch.writerId(),
                 tableBucket,
@@ -319,6 +319,6 @@ public class IdempotenceManager {
     }
 
     private int maybeUpdateLastAckedSequence(TableBucket tableBucket, int sequence) {
-        return idempotenceBucketMap.maybeUpdateLastAckedSequence(tableBucket, sequence);
+        return idempotenceBucketMap.maybeUpdateLastAckedSequence(tableBucket, sequence, writerId);
     }
 }

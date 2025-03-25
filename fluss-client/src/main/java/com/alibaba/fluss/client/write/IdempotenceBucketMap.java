@@ -97,9 +97,14 @@ public class IdempotenceBucketMap {
         get(tableBucket).adjustSequencesDueToFailedBatch(batch);
     }
 
-    int maybeUpdateLastAckedSequence(TableBucket tableBucket, int sequence) {
+    int maybeUpdateLastAckedSequence(TableBucket tableBucket, int sequence, long writerId) {
         IdempotenceBucketEntry entry = tableBuckets.get(tableBucket);
         if (entry != null) {
+            LOG.info(
+                    "writerId: {}, Try to set last ack'd batch sequence for table-bucket {} to {}",
+                    writerId,
+                    tableBucket,
+                    sequence);
             return entry.maybeUpdateLastAckedSequence(sequence);
         }
         return NO_LAST_ACKED_BATCH_SEQUENCE;
