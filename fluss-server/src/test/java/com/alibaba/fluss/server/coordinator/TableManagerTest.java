@@ -112,7 +112,8 @@ class TableManagerTest {
         CoordinatorRequestBatch coordinatorRequestBatch =
                 new CoordinatorRequestBatch(testCoordinatorChannelManager, testingEventManager);
         ReplicaStateMachine replicaStateMachine =
-                new ReplicaStateMachine(coordinatorContext, coordinatorRequestBatch);
+                new ReplicaStateMachine(
+                        coordinatorContext, coordinatorRequestBatch, zookeeperClient);
         TableBucketStateMachine tableBucketStateMachine =
                 new TableBucketStateMachine(
                         coordinatorContext, coordinatorRequestBatch, zookeeperClient);

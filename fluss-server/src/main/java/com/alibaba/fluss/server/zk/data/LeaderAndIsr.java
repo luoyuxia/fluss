@@ -69,6 +69,10 @@ public class LeaderAndIsr {
         this.bucketEpoch = bucketEpoch;
     }
 
+    public LeaderAndIsr newLeaderAndIsr(List<Integer> newIsr) {
+        return new LeaderAndIsr(leader, leaderEpoch, newIsr, coordinatorEpoch, bucketEpoch + 1);
+    }
+
     public int leader() {
         return leader;
     }

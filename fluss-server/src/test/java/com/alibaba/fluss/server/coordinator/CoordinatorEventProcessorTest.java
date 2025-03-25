@@ -326,10 +326,9 @@ class CoordinatorEventProcessorTest {
 
         // retry until the table2 been created
         retryVerifyContext(
-                ctx -> {
-                    assertThat(ctx.getBucketLeaderAndIsr(new TableBucket(table2Id, 0)))
-                            .isNotEmpty();
-                });
+                ctx ->
+                        assertThat(ctx.getBucketLeaderAndIsr(new TableBucket(table2Id, 0)))
+                                .isNotEmpty());
 
         // now, assume the server 3 is down;
         client.close();
@@ -343,8 +342,11 @@ class CoordinatorEventProcessorTest {
         // should be offline
         verifyReplicaOnlineOrOffline(
                 table1Id, table1Assignment, Collections.singleton(newlyServerId));
+        verifyBucketIsr(table1Id, 0, new int[] {0, 2});
+        verifyBucketIsr(table1Id, 1, new int[] {2, 0});
         verifyReplicaOnlineOrOffline(
                 table2Id, table2Assignment, Collections.singleton(newlyServerId));
+        verifyBucketIsr(table2Id, 0, new int[] {3});
 
         // now, check bucket state
         TableBucket t1Bucket0 = new TableBucket(table1Id, 0);
@@ -865,6 +867,23 @@ class CoordinatorEventProcessorTest {
                                 }
                             }
                         });
+    }
+
+    private void verifyBucketIsr(long tableId, int bucket, int[] expectedIsr) {
+        retryVerifyContext(
+                ctx -> {
+                    TableBucket tableBucket = new TableBucket(tableId, bucket);
+                    // verify leaderAndIsr from coordinator context
+                    LeaderAndIsr leaderAndIsr = ctx.getBucketLeaderAndIsr(tableBucket).get();
+                    assertThat(leaderAndIsr.isrArray()).isEqualTo(expectedIsr);
+                    // verify leaderAndIsr from tablet server
+                    try {
+                        leaderAndIsr = zookeeperClient.getLeaderAndIsr(tableBucket).get();
+                    } catch (Exception e) {
+                        throw new RuntimeException("Fail to get leaderAndIsr of " + tableBucket);
+                    }
+                    assertThat(leaderAndIsr.isrArray()).isEqualTo(expectedIsr);
+                });
     }
 
     private void verifyReplicaForPartitionInState(

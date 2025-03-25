@@ -184,7 +184,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 new ReplicaStateMachine(
                         coordinatorContext,
                         new CoordinatorRequestBatch(
-                                coordinatorChannelManager, coordinatorEventManager));
+                                coordinatorChannelManager, coordinatorEventManager),
+                        zooKeeperClient);
         this.tableBucketStateMachine =
                 new TableBucketStateMachine(
                         coordinatorContext,
@@ -651,7 +652,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
     }
 
     private void onReplicaBecomeOffline(Set<TableBucketReplica> offlineReplicas) {
-
         LOG.info("The replica {} become offline.", offlineReplicas);
         for (TableBucketReplica offlineReplica : offlineReplicas) {
             coordinatorContext.addOfflineBucketInServer(

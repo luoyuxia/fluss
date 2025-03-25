@@ -18,14 +18,21 @@ package com.alibaba.fluss.server.replica;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
+import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.gateway.TabletServerGateway;
+import com.alibaba.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
+import com.alibaba.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
 import com.alibaba.fluss.rpc.messages.PbProduceLogRespForBucket;
 import com.alibaba.fluss.rpc.messages.ProduceLogResponse;
+import com.alibaba.fluss.rpc.messages.StopReplicaRequest;
 import com.alibaba.fluss.rpc.protocol.Errors;
+import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrData;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import com.alibaba.fluss.server.testutils.RpcMessageTestUtils;
+import com.alibaba.fluss.server.utils.RpcMessageUtils;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 
@@ -34,12 +41,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.record.TestData.DATA1;
 import static com.alibaba.fluss.record.TestData.DATA1_SCHEMA;
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_PATH;
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeNotifyBucketLeaderAndIsr;
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeStopBucketReplica;
 import static com.alibaba.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
 import static com.alibaba.fluss.testutils.common.CommonTestUtils.retry;
 import static com.alibaba.fluss.testutils.common.CommonTestUtils.waitValue;
@@ -63,7 +73,7 @@ public class AdjustIsrITCase {
     }
 
     @Test
-    void testIsrShrinkAndExpend() throws Exception {
+    void testIsrShrinkAndExpand() throws Exception {
         long tableId = createLogTable();
         TableBucket tb = new TableBucket(tableId, 0);
 
@@ -77,7 +87,23 @@ public class AdjustIsrITCase {
 
         int leader = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tb);
         Integer stopFollower = isr.stream().filter(i -> i != leader).findFirst().get();
-        FLUSS_CLUSTER_EXTENSION.stopTabletServer(stopFollower);
+
+        FLUSS_CLUSTER_EXTENSION.waitAndGetFollowerReplica(tb, stopFollower);
+        TabletServerGateway followerGateway =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(stopFollower);
+        // send stop replica request to the follower
+        followerGateway
+                .stopReplica(
+                        new StopReplicaRequest()
+                                .setCoordinatorEpoch(currentLeaderAndIsr.coordinatorEpoch())
+                                .addAllStopReplicasReqs(
+                                        Collections.singleton(
+                                                makeStopBucketReplica(
+                                                        tb,
+                                                        false,
+                                                        currentLeaderAndIsr.leaderEpoch()))))
+                .get();
+
         isr.remove(stopFollower);
 
         // send one batch data to check the stop follower will become out of sync replica.
@@ -89,7 +115,7 @@ public class AdjustIsrITCase {
                                 RpcMessageTestUtils.newProduceLogRequest(
                                         tableId,
                                         tb.getBucket(),
-                                        1, // need not ack in this test.
+                                        -1,
                                         genMemoryLogRecordsByObject(DATA1)))
                         .get(),
                 0,
@@ -120,10 +146,10 @@ public class AdjustIsrITCase {
                                                 .getHighWatermark())
                                 .isEqualTo(10L));
 
-        // make this tablet server re-start.
-        FLUSS_CLUSTER_EXTENSION.startTabletServer(stopFollower);
         isr.add(stopFollower);
-
+        currentLeaderAndIsr = zkClient.getLeaderAndIsr(tb).get();
+        followerGateway.notifyLeaderAndIsr(
+                makeNotifyLeaderAndIsrRequest(DATA1_TABLE_PATH, tb, currentLeaderAndIsr, isr));
         // retry until the stop follower add back to ISR.
         retry(
                 Duration.ofMinutes(1),
@@ -238,5 +264,21 @@ public class AdjustIsrITCase {
         // the produce log request will be failed, and the leader HW will not increase.
         conf.setInt(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER, 2);
         return conf;
+    }
+
+    private NotifyLeaderAndIsrRequest makeNotifyLeaderAndIsrRequest(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            LeaderAndIsr leaderAndIsr,
+            List<Integer> replicas) {
+        PbNotifyLeaderAndIsrReqForBucket reqForBucket =
+                makeNotifyBucketLeaderAndIsr(
+                        new NotifyLeaderAndIsrData(
+                                PhysicalTablePath.of(tablePath),
+                                tableBucket,
+                                replicas,
+                                leaderAndIsr));
+        return RpcMessageUtils.makeNotifyLeaderAndIsrRequest(
+                0, Collections.singletonList(reqForBucket));
     }
 }

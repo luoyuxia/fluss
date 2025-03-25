@@ -571,25 +571,33 @@ public final class FlussClusterExtension
                         return Optional.empty();
                     } else {
                         int leader = leaderAndIsrOpt.get().leader();
-                        ReplicaManager replicaManager =
-                                getTabletServerById(leader).getReplicaManager();
-                        if (replicaManager.getReplica(tableBucket)
-                                instanceof ReplicaManager.OnlineReplica) {
-                            ReplicaManager.OnlineReplica onlineReplica =
-                                    (ReplicaManager.OnlineReplica)
-                                            replicaManager.getReplica(tableBucket);
-                            if (onlineReplica.getReplica().isLeader()) {
-                                return Optional.of(onlineReplica.getReplica());
-                            } else {
-                                return Optional.empty();
-                            }
-                        } else {
-                            return Optional.empty();
-                        }
+                        return getReplica(tableBucket, leader, true);
                     }
                 },
                 Duration.ofMinutes(1),
                 "Fail to wait leader replica ready");
+    }
+
+    public Replica waitAndGetFollowerReplica(TableBucket tableBucket, int replica) {
+        return waitValue(
+                () -> getReplica(tableBucket, replica, false),
+                Duration.ofMinutes(1),
+                "Fail to wait " + replica + " ready");
+    }
+
+    private Optional<Replica> getReplica(TableBucket tableBucket, int replica, boolean isLeader) {
+        ReplicaManager replicaManager = getTabletServerById(replica).getReplicaManager();
+        if (replicaManager.getReplica(tableBucket) instanceof ReplicaManager.OnlineReplica) {
+            ReplicaManager.OnlineReplica onlineReplica =
+                    (ReplicaManager.OnlineReplica) replicaManager.getReplica(tableBucket);
+            if (onlineReplica.getReplica().isLeader() == isLeader) {
+                return Optional.of(onlineReplica.getReplica());
+            } else {
+                return Optional.empty();
+            }
+        } else {
+            return Optional.empty();
+        }
     }
 
     public Map<String, Long> waitUtilPartitionAllReady(TablePath tablePath) {
