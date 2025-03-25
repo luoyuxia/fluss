@@ -213,6 +213,14 @@ abstract class CompletedFetch {
                 }
 
                 currentBatch = batches.next();
+                long writerId = currentBatch.writerId();
+                int batchSequence = currentBatch.batchSequence();
+                LOG.info(
+                        "Fetched batch for bucket {} at offset {} with writerId {} and batchSequence {}.",
+                        tableBucket,
+                        currentBatch.baseLogOffset(),
+                        writerId,
+                        batchSequence);
                 // TODO get last epoch.
                 maybeEnsureValid(currentBatch);
 

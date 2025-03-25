@@ -226,9 +226,6 @@ public class LogScannerImpl implements LogScanner {
     private Map<TableBucket, List<ScanRecord>> pollForFetches() {
         Map<TableBucket, List<ScanRecord>> fetchedRecords = logFetcher.collectFetch();
         if (!fetchedRecords.isEmpty()) {
-            LOG.info("fetch records size: {}", fetchedRecords.size());
-            TableBucket tableBucket = fetchedRecords.keySet().iterator().next();
-            LOG.info("scan records size: {}.", fetchedRecords.get(tableBucket).size());
             return fetchedRecords;
         }
 

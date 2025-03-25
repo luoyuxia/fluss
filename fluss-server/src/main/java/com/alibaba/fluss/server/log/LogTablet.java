@@ -633,6 +633,11 @@ public final class LogTablet {
                 appendInfo.setMaxTimestamp(duplicatedBatch.timestamp);
                 appendInfo.setStartOffsetOfMaxTimestamp(startOffset);
                 appendInfo.setDuplicated(true);
+                LOG.info(
+                        "Find an duplicated batch: tb: {}, writerId: {},  batchSequence: {}",
+                        getTableBucket(),
+                        duplicatedBatch.writerId,
+                        duplicatedBatch.batchSequence);
             } else {
                 // Append the records, and increment the local log end offset immediately after
                 // append because write to the transaction index below may fail, and we want to
