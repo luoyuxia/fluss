@@ -101,7 +101,13 @@ final class ReplicaTest extends ReplicaTestBase {
         assertThat(kvReplica.getLogTablet()).isNotNull();
         makeKvReplicaAsLeader(kvReplica);
         assertThat(kvReplica.getLogTablet()).isNotNull();
-        // TODO get kv is true.
+        assertThat(kvReplica.getKvTablet()).isNotNull();
+
+        // make as leader with leader epoch change
+        int expectedLeaderEpoch = 1;
+        makeKvReplicaAsLeader(kvReplica, expectedLeaderEpoch);
+        assertThat(kvReplica.getLeaderEpoch()).isEqualTo(expectedLeaderEpoch);
+        assertThat(kvReplica.getLogTablet()).isNotNull();
         assertThat(kvReplica.getKvTablet()).isNotNull();
     }
 
