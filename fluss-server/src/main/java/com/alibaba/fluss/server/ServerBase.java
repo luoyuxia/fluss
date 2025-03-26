@@ -135,7 +135,12 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
     private void addShutDownHook() {
         shutDownHook =
                 ShutdownHookUtil.addShutdownHook(
-                        () -> this.closeAsync(Result.JVM_SHUTDOWN).join(), getServerName(), LOG);
+                        () -> {
+                            LOG.info("Shutting {} down by hook.", getServerName());
+                            this.closeAsync(Result.JVM_SHUTDOWN).join();
+                        },
+                        getServerName(),
+                        LOG);
     }
 
     @Override
