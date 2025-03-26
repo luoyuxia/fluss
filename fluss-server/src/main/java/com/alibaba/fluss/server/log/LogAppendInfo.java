@@ -39,6 +39,9 @@ public final class LogAppendInfo {
     /** Whether the appended log data is duplicated. */
     private boolean duplicated;
 
+    private long writerId;
+    private int batchSequence;
+
     /** Creates an instance with the given params. */
     public LogAppendInfo(
             long firstOffset,
@@ -127,6 +130,22 @@ public final class LogAppendInfo {
 
     public void setDuplicated(boolean duplicated) {
         this.duplicated = duplicated;
+    }
+
+    public void setWriterId(long writerId) {
+        this.writerId = writerId;
+    }
+
+    public long writerId() {
+        return writerId;
+    }
+
+    public void setBatchSequence(int batchSequence) {
+        this.batchSequence = batchSequence;
+    }
+
+    public int batchSequence() {
+        return batchSequence;
     }
 
     public boolean offsetsMonotonic() {

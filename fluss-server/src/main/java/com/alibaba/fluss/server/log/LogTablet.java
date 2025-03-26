@@ -939,6 +939,8 @@ public final class LogTablet {
         long startOffsetOfMaxTimestamp = -1L;
         boolean monotonic = true;
         boolean readFirstMessage = false;
+        long writerId = -1L;
+        int batchSequence = -1;
 
         for (LogRecordBatch batch : records.batches()) {
             if (!readFirstMessage) {
@@ -950,8 +952,8 @@ public final class LogTablet {
                 monotonic = false;
             }
 
-            int batchSequence = batch.batchSequence();
-            long writerId = batch.writerId();
+            batchSequence = batch.batchSequence();
+            writerId = batch.writerId();
             LOG.info(
                     "I receive batch sequence: {}, writer id: {} for tb {}",
                     batchSequence,
@@ -978,14 +980,18 @@ public final class LogTablet {
             validBytesCount += batchSize;
         }
 
-        return new LogAppendInfo(
-                firstOffset,
-                lastOffset,
-                maxTimestamp,
-                startOffsetOfMaxTimestamp,
-                shallowMessageCount,
-                validBytesCount,
-                monotonic);
+        LogAppendInfo logAppendInfo =
+                new LogAppendInfo(
+                        firstOffset,
+                        lastOffset,
+                        maxTimestamp,
+                        startOffsetOfMaxTimestamp,
+                        shallowMessageCount,
+                        validBytesCount,
+                        monotonic);
+        logAppendInfo.setWriterId(writerId);
+        logAppendInfo.setBatchSequence(batchSequence);
+        return logAppendInfo;
     }
 
     /** Returns either the duplicated batch metadata (left) or the updated writers (right). */

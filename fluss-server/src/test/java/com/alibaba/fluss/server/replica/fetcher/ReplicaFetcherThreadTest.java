@@ -133,7 +133,7 @@ public class ReplicaFetcherThreadTest {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
 
         followerFetcher.addBuckets(
                 Collections.singletonMap(
@@ -155,7 +155,7 @@ public class ReplicaFetcherThreadTest {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L, 1, 1));
         retry(
                 Duration.ofSeconds(20),
                 () ->

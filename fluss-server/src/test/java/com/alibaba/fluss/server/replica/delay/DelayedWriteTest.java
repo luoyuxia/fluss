@@ -174,7 +174,7 @@ final class DelayedWriteTest extends ReplicaTestBase {
                 replica.getLogTablet().appendAsLeader(genMemoryLogRecordsByObject(DATA1));
         ProduceLogResultForBucket appendResult =
                 new ProduceLogResultForBucket(
-                        tb, appendInfo.firstOffset(), appendInfo.lastOffset() + 1);
+                        tb, appendInfo.firstOffset(), appendInfo.lastOffset() + 1, 1, 1);
         Map<TableBucket, DelayedBucketStatus<ProduceLogResultForBucket>> bucketStatusMap =
                 Collections.singletonMap(tb, new DelayedBucketStatus<>(10, appendResult));
 

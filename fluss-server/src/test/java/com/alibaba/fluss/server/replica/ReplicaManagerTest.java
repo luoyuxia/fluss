@@ -122,7 +122,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
 
         // 2. append second batch.
         future = new CompletableFuture<>();
@@ -131,7 +131,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L, 1, 1));
 
         // 3. test append with error acks which will throw exception directly.
         assertThatThrownBy(
@@ -191,7 +191,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
 
         // fetch from this bucket from offset 0, return data1.
         CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> future1 =
@@ -231,7 +231,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L, 1, 1));
 
         // fetch this bucket from offset 10, return data2.
         future1 = new CompletableFuture<>();
@@ -290,7 +290,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         CompletableFuture<List<ProduceLogResultForBucket>> future = new CompletableFuture<>();
         replicaManager.appendRecordsToLog(
                 20000, 1, Collections.singletonMap(tb, records1), future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
 
         // fetch from this bucket from offset 0 with fetch max bytes size bigger that data1 batch
         // size, return data1.
@@ -317,7 +317,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(ANOTHER_DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10L, 20L, 1, 1));
 
         // fetch this bucket from offset 0 without fetch bytes size, return data1 + anotherData1.
         future1 = new CompletableFuture<>();
@@ -365,8 +365,8 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.appendRecordsToLog(20000, 1, data, future::complete);
         assertThat(future.get())
                 .containsExactlyInAnyOrder(
-                        new ProduceLogResultForBucket(tb1, 0, 10L),
-                        new ProduceLogResultForBucket(tb2, 0, 10L));
+                        new ProduceLogResultForBucket(tb1, 0, 10L, 1, 1),
+                        new ProduceLogResultForBucket(tb2, 0, 10L, 1, 1));
 
         // produce another batch to tb1 and tb2.
         future = new CompletableFuture<>();
@@ -376,8 +376,8 @@ class ReplicaManagerTest extends ReplicaTestBase {
         replicaManager.appendRecordsToLog(20000, 1, data, future::complete);
         assertThat(future.get())
                 .containsExactlyInAnyOrder(
-                        new ProduceLogResultForBucket(tb1, 10L, 20L),
-                        new ProduceLogResultForBucket(tb2, 10L, 20L));
+                        new ProduceLogResultForBucket(tb1, 10L, 20L, 1, 1),
+                        new ProduceLogResultForBucket(tb2, 10L, 20L, 1, 1));
 
         // fetch from tb1 and tb2 from offset 0 with fetch max bytes size 10, return data1 and an
         // empty memory records.
@@ -833,7 +833,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
         // produce another batch to this bucket.
         future = new CompletableFuture<>();
         replicaManager.appendRecordsToLog(
@@ -841,7 +841,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(ANOTHER_DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10, 20L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 10, 20L, 1, 1));
 
         // get limit 10 records from local.
         CompletableFuture<LimitScanResultForBucket> limitFuture = new CompletableFuture<>();
@@ -865,7 +865,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
 
         // list offsets from client.
         CompletableFuture<List<ListOffsetsResultForBucket>> future1 = new CompletableFuture<>();
@@ -1018,7 +1018,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                 -1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
     }
 
     @Test

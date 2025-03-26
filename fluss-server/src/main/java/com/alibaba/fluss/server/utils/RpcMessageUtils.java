@@ -401,6 +401,8 @@ public class RpcMessageUtils {
                         bucketResult.getErrorCode(), bucketResult.getErrorMessage());
             } else {
                 producedBucket.setBaseOffset(bucketResult.getBaseOffset());
+                producedBucket.setWriterId(bucketResult.getWriterId());
+                producedBucket.setBatchSequence(bucketResult.getBatchSequence());
             }
             produceLogRespForBucketList.add(producedBucket);
         }

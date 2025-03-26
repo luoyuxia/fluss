@@ -63,7 +63,7 @@ public class AdjustIsrTest extends ReplicaTestBase {
                 1,
                 Collections.singletonMap(tb, genMemoryLogRecordsByObject(DATA1)),
                 future::complete);
-        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L));
+        assertThat(future.get()).containsOnly(new ProduceLogResultForBucket(tb, 0, 10L, 1, 1));
 
         // mock follower 2 to fetch data from leader. fetch offset is 10 (which indicate the
         // follower catch up the leader, it will be added into isr list).

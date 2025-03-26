@@ -563,7 +563,7 @@ final class SenderTest {
             TableBucket tb, long baseOffset, long endOffset) {
         return makeProduceLogResponse(
                 Collections.singletonList(
-                        new ProduceLogResultForBucket(tb, baseOffset, endOffset)));
+                        new ProduceLogResultForBucket(tb, baseOffset, endOffset, 1, 1)));
     }
 
     private ProduceLogResponse createProduceLogResponse(TableBucket tb, Errors error) {

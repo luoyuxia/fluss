@@ -87,6 +87,8 @@ public class Sender implements Runnable {
     /** true when the caller wants to ignore all unsent/inflight messages and force close. */
     private volatile boolean forceClose;
 
+    private volatile int requestRound;
+
     /**
      * A per-bucket queue of batches ordered by creation time for tracking the in-flight batches.
      */
@@ -411,6 +413,13 @@ public class Sender implements Runnable {
                                 writeBatch, ApiError.fromErrorMessage(logRespForBucket));
                 invalidMetadataTablesSet.addAll(invalidMetadataTables);
             } else {
+                LOG.info(
+                        "handle write batch success for tb: {}, sending writer id is {}, batch sequence is {}, answered writer id is {}, batch sequence is {}.",
+                        writeBatch.tableBucket(),
+                        writeBatch.writerId(),
+                        writeBatch.batchSequence(),
+                        logRespForBucket.getWriterId(),
+                        logRespForBucket.getBatchSequence());
                 completeBatch(writeBatch);
             }
         }

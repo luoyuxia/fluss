@@ -534,6 +534,8 @@ message PbProduceLogRespForBucket {
   optional int32 error_code = 3;
   optional string error_message = 4;
   optional int64 base_offset = 5;
+  optional int64 writer_id = 6;
+  optional int32 batch_sequence = 7;
 }
 
 message PbFetchLogReqForTable {

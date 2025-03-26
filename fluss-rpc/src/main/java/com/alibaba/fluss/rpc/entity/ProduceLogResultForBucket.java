@@ -26,23 +26,45 @@ import com.alibaba.fluss.rpc.protocol.Errors;
 @Internal
 public class ProduceLogResultForBucket extends WriteResultForBucket {
     private final long baseOffset;
+    private final long writerId;
+    private final int batchSequence;
 
-    public ProduceLogResultForBucket(TableBucket tableBucket, long baseOffset, long endOffset) {
-        this(tableBucket, baseOffset, endOffset, ApiError.NONE);
+    public ProduceLogResultForBucket(
+            TableBucket tableBucket,
+            long baseOffset,
+            long endOffset,
+            long writerId,
+            int batchSequence) {
+        this(tableBucket, baseOffset, endOffset, writerId, batchSequence, ApiError.NONE);
     }
 
     public ProduceLogResultForBucket(TableBucket tableBucket, ApiError error) {
-        this(tableBucket, -1L, -1L, error);
+        this(tableBucket, -1L, -1L, -1L, -1, error);
     }
 
     private ProduceLogResultForBucket(
-            TableBucket tableBucket, long baseOffset, long endOffset, ApiError error) {
+            TableBucket tableBucket,
+            long baseOffset,
+            long endOffset,
+            long writerId,
+            int batchSequence,
+            ApiError error) {
         super(tableBucket, endOffset, error);
         this.baseOffset = baseOffset;
+        this.writerId = writerId;
+        this.batchSequence = batchSequence;
     }
 
     public long getBaseOffset() {
         return baseOffset;
+    }
+
+    public long getWriterId() {
+        return writerId;
+    }
+
+    public int getBatchSequence() {
+        return batchSequence;
     }
 
     @Override
@@ -50,7 +72,12 @@ public class ProduceLogResultForBucket extends WriteResultForBucket {
         //noinspection unchecked
         return (T)
                 new ProduceLogResultForBucket(
-                        tableBucket, baseOffset, getWriteLogEndOffset(), newError.toApiError());
+                        tableBucket,
+                        baseOffset,
+                        getWriteLogEndOffset(),
+                        writerId,
+                        batchSequence,
+                        newError.toApiError());
     }
 
     @Override
@@ -65,6 +92,8 @@ public class ProduceLogResultForBucket extends WriteResultForBucket {
             return false;
         }
         ProduceLogResultForBucket that = (ProduceLogResultForBucket) o;
-        return baseOffset == that.baseOffset;
+        return baseOffset == that.baseOffset
+                && writerId == that.writerId
+                && batchSequence == that.batchSequence;
     }
 }
