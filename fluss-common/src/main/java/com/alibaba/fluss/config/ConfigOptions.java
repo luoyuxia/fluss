@@ -400,7 +400,7 @@ public class ConfigOptions {
     public static final ConfigOption<Duration> LOG_REPLICA_HIGH_WATERMARK_CHECKPOINT_INTERVAL =
             key("log.replica.high-watermark.checkpoint-interval")
                     .durationType()
-                    .defaultValue(Duration.ofSeconds(5))
+                    .defaultValue(Duration.ofMillis(10))
                     .withDescription(
                             "The frequency with which the high watermark is saved out to disk. "
                                     + "The default setting is 5 seconds.");
