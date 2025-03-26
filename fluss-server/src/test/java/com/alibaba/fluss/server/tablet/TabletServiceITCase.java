@@ -838,7 +838,7 @@ public class TabletServiceITCase {
                         .get();
         result = getNotifyLeaderAndIsrResponseData(notifyLeaderAndIsrResponse);
         assertThat(result.size()).isEqualTo(1);
-        assertThat(result.get(0).getErrorCode()).isEqualTo(Errors.NOT_LEADER_OR_FOLLOWER.code());
+        assertThat(result.get(0).getErrorCode()).isEqualTo(Errors.STORAGE_EXCEPTION.code());
     }
 
     private static void assertPutKvResponse(PutKvResponse putKvResponse) {
