@@ -649,6 +649,9 @@ public final class LogTablet {
                         validRecords);
                 updateHighWatermarkWithLogEndOffset();
 
+                // just for test, force flush every append.
+                flush(false);
+
                 // update the writer state.
                 Collection<WriterAppendInfo> updatedWriters = validateResult.right();
                 for (WriterAppendInfo updatedWriter : updatedWriters) {
@@ -667,9 +670,6 @@ public final class LogTablet {
                         appendInfo.firstOffset(),
                         localLog.getLocalLogEndOffset(),
                         validRecords);
-
-                // just for test, force flush every append.
-                flush(false);
             }
             return appendInfo;
         }
