@@ -19,7 +19,6 @@ package com.alibaba.fluss.server.zk.data;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
@@ -87,10 +86,6 @@ public class LeaderAndIsr {
 
     public int[] isrArray() {
         return isr.stream().mapToInt(Integer::intValue).toArray();
-    }
-
-    public List<Integer> followers() {
-        return isr.stream().filter(i -> i != leader).collect(Collectors.toList());
     }
 
     public int bucketEpoch() {

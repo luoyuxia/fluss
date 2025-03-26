@@ -34,6 +34,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -271,6 +272,13 @@ public class CoordinatorContext {
         } else {
             return Collections.emptyList();
         }
+    }
+
+    public List<Integer> getFollowers(TableBucket tableBucket, Integer leaderReplica) {
+        List<Integer> replicas = new ArrayList<>(getAssignment(tableBucket));
+        // remove leaderReplica
+        replicas.remove(leaderReplica);
+        return replicas;
     }
 
     public Map<TableBucket, BucketState> getBucketStates() {
