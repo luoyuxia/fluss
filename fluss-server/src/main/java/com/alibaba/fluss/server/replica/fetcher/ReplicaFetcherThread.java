@@ -501,7 +501,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         // For the follower replica, we do not need to keep its segment base offset and physical
         // position. These values will be computed upon becoming leader or handling a preferred read
         // replica fetch.
-        logTablet.updateHighWatermark(replicaData.getHighWatermark());
+        // TODO update to local log end offset.
+        logTablet.updateHighWatermark(logTablet.localLogEndOffset());
         LOG.trace(
                 "Follower received high watermark {} from the leader for replica {}",
                 replicaData.getHighWatermark(),
