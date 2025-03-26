@@ -174,6 +174,7 @@ public final class Replica {
     private final AtomicReference<Integer> leaderReplicaIdOpt = new AtomicReference<>();
     private final ReadWriteLock leaderIsrUpdateLock = new ReentrantReadWriteLock();
     private final Clock clock;
+    private final ReplicaManager replicaManager;
 
     /**
      * storing the remote follower replicas' state, used to update leader's highWatermark and
@@ -215,7 +216,8 @@ public final class Replica {
             FatalErrorHandler fatalErrorHandler,
             BucketMetricGroup bucketMetricGroup,
             TableInfo tableInfo,
-            Clock clock)
+            Clock clock,
+            ReplicaManager replicaManager)
             throws Exception {
         this.physicalPath = physicalPath;
         this.tableBucket = tableBucket;
@@ -238,6 +240,7 @@ public final class Replica {
         this.snapshotContext = snapshotContext;
         // create a closeable registry for the replica
         this.closeableRegistry = new CloseableRegistry();
+        this.replicaManager = replicaManager;
 
         this.logTablet = createLog(lazyHighWatermarkCheckpoint);
         this.clock = clock;
@@ -848,7 +851,10 @@ public final class Replica {
                             kv, "KvTablet for the replica to put kv records shouldn't be null.");
                     LogAppendInfo logAppendInfo = kv.putAsLeader(kvRecords, targetColumns);
                     // we may need to increment high watermark.
-                    maybeIncrementLeaderHW(logTablet, clock.milliseconds());
+                    boolean hwIncreased = maybeIncrementLeaderHW(logTablet, clock.milliseconds());
+                    if (hwIncreased) {
+                        tryCompleteDelayedOperations();
+                    }
                     return logAppendInfo;
                 });
     }
@@ -1314,6 +1320,9 @@ public final class Replica {
     }
 
     private void tryCompleteDelayedOperations() {
+        // just for test:
+        replicaManager.checkpointHighWatermarks();
+
         DelayedTableBucketKey delayedTableBucketKey = new DelayedTableBucketKey(tableBucket);
         delayedWriteManager.checkAndComplete(delayedTableBucketKey);
         delayedFetchLogManager.checkAndComplete(delayedTableBucketKey);

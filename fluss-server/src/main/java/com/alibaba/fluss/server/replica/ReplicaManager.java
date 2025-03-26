@@ -1160,14 +1160,14 @@ public class ReplicaManager {
      * for all buckets to the high watermark checkpoint file.
      */
     private void startHighWatermarkCheckPointThread() {
-        if (highWatermarkCheckPointThreadStarted.compareAndSet(false, true)) {
-            scheduler.schedule(
-                    "highWatermark-checkpoint",
-                    this::checkpointHighWatermarks,
-                    0L,
-                    conf.get(ConfigOptions.LOG_REPLICA_HIGH_WATERMARK_CHECKPOINT_INTERVAL)
-                            .toMillis());
-        }
+        //        if (highWatermarkCheckPointThreadStarted.compareAndSet(false, true)) {
+        //            scheduler.schedule(
+        //                    "highWatermark-checkpoint",
+        //                    this::checkpointHighWatermarks,
+        //                    0L,
+        //                    conf.get(ConfigOptions.LOG_REPLICA_HIGH_WATERMARK_CHECKPOINT_INTERVAL)
+        //                            .toMillis());
+        //        }
     }
 
     /** Flushes the high watermark value for all buckets to the high watermark checkpoint file. */
@@ -1497,7 +1497,8 @@ public class ReplicaManager {
                                 fatalErrorHandler,
                                 bucketMetricGroup,
                                 tableInfo,
-                                clock);
+                                clock,
+                                this);
                 allReplicas.put(tb, new OnlineReplica(replica));
                 replicaOpt = Optional.of(replica);
             } else if (hostedReplica instanceof OnlineReplica) {
