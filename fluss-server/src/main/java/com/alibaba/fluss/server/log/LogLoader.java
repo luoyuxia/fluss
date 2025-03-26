@@ -94,7 +94,8 @@ final class LogLoader {
         // LogLoader.writerStateManager instance witnessing the deletion.
         writerStateManager.removeStraySnapshots(logSegments.baseOffsets());
         // TODO get the clean shutdown info from LogManager.
-        LogTablet.rebuildWriterState(writerStateManager, logSegments, 0, nextOffset, true);
+        // Set to not clean shutdown.
+        LogTablet.rebuildWriterState(writerStateManager, logSegments, 0, nextOffset, false);
 
         LogSegment activeSegment = logSegments.lastSegment().get();
         activeSegment.resizeIndexes((int) conf.get(ConfigOptions.LOG_INDEX_FILE_SIZE).getBytes());
