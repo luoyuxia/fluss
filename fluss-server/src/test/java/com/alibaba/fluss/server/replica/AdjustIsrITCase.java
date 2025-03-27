@@ -72,6 +72,10 @@ public class AdjustIsrITCase {
         zkClient = FLUSS_CLUSTER_EXTENSION.getZooKeeperClient();
     }
 
+    /**
+     * The test is used to verify that isr will be changed due to follower lags behind leader and
+     * catch up with leader.
+     */
     @Test
     void testIsrShrinkAndExpand() throws Exception {
         long tableId = createLogTable();
