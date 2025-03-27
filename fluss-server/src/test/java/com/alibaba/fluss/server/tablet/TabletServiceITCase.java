@@ -821,8 +821,7 @@ public class TabletServiceITCase {
 
         // 3. send one NotifyLeaderAndIsr request again with same LeaderAndIsr to mock the
         // coordinator is offline and recovery again to send NotifyLeaderAndIsr request with
-        // same leader but leader epoch plus 1. Bucket level NotLeaderOrFollower exception will be
-        // thrown.
+        // same leader but leader epoch plus 1. Shouldn't throw any exception
         notifyLeaderAndIsrResponse =
                 followerGateway
                         .notifyLeaderAndIsr(
@@ -838,7 +837,7 @@ public class TabletServiceITCase {
                         .get();
         result = getNotifyLeaderAndIsrResponseData(notifyLeaderAndIsrResponse);
         assertThat(result.size()).isEqualTo(1);
-        assertThat(result.get(0).getErrorCode()).isEqualTo(Errors.STORAGE_EXCEPTION.code());
+        assertThat(result.get(0).getError().error()).isEqualTo(Errors.NONE);
     }
 
     private static void assertPutKvResponse(PutKvResponse putKvResponse) {
