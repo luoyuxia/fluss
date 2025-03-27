@@ -369,8 +369,8 @@ public final class Replica {
                             int requestLeaderEpoch = data.getLeaderEpoch();
                             if (requestLeaderEpoch > leaderEpoch) {
                                 leaderEpoch = requestLeaderEpoch;
-                                leaderReplicaIdOpt.set(localTabletServerId);
                                 onBecomeNewLeader();
+                                leaderReplicaIdOpt.set(localTabletServerId);
                                 LOG.info(
                                         "TabletServer {} becomes leader for bucket {}",
                                         localTabletServerId,

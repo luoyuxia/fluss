@@ -423,8 +423,7 @@ public class ReplicaTestBase {
             throws Exception {
         if (snapshotContext == null) {
             snapshotContext =
-                    new TestSnapshotContext(
-                            tableBucket, conf.getString(ConfigOptions.REMOTE_DATA_DIR));
+                    new TestSnapshotContext(conf.getString(ConfigOptions.REMOTE_DATA_DIR));
         }
         BucketMetricGroup metricGroup =
                 replicaManager
@@ -531,25 +530,44 @@ public class ReplicaTestBase {
     protected class TestSnapshotContext implements SnapshotContext {
 
         private final FsPath remoteKvTabletDir;
-        protected final ManuallyTriggeredScheduledExecutorService scheduledExecutorService =
-                new ManuallyTriggeredScheduledExecutorService();
+        protected ManuallyTriggeredScheduledExecutorService scheduledExecutorService;
         protected final TestingCompletedKvSnapshotCommitter testKvSnapshotStore;
         private final ExecutorService executorService;
 
         public TestSnapshotContext(
-                TableBucket tableBucket,
+                String remoteKvTabletDir, TestingCompletedKvSnapshotCommitter testKvSnapshotStore)
+                throws Exception {
+            this(
+                    remoteKvTabletDir,
+                    testKvSnapshotStore,
+                    new ManuallyTriggeredScheduledExecutorService());
+        }
+
+        public TestSnapshotContext(String remoteKvTabletDir) throws Exception {
+            this(remoteKvTabletDir, new TestingCompletedKvSnapshotCommitter());
+        }
+
+        public TestSnapshotContext(
                 String remoteKvTabletDir,
-                TestingCompletedKvSnapshotCommitter testKvSnapshotStore)
+                ManuallyTriggeredScheduledExecutorService manuallyTriggeredScheduledExecutorService)
+                throws Exception {
+            this(
+                    remoteKvTabletDir,
+                    new TestingCompletedKvSnapshotCommitter(),
+                    manuallyTriggeredScheduledExecutorService);
+        }
+
+        private TestSnapshotContext(
+                String remoteKvTabletDir,
+                TestingCompletedKvSnapshotCommitter testKvSnapshotStore,
+                ManuallyTriggeredScheduledExecutorService manuallyTriggeredScheduledExecutorService)
                 throws Exception {
             this.remoteKvTabletDir = new FsPath(remoteKvTabletDir);
             this.testKvSnapshotStore = testKvSnapshotStore;
             this.executorService = Executors.newFixedThreadPool(1);
-            closeableRegistry.registerCloseable(scheduledExecutorService::shutdownNow);
-        }
-
-        public TestSnapshotContext(TableBucket tableBucket, String remoteKvTabletDir)
-                throws Exception {
-            this(tableBucket, remoteKvTabletDir, new TestingCompletedKvSnapshotCommitter());
+            this.scheduledExecutorService = manuallyTriggeredScheduledExecutorService;
+            closeableRegistry.registerCloseable(
+                    manuallyTriggeredScheduledExecutorService::shutdownNow);
         }
 
         @Override

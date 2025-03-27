@@ -158,12 +158,8 @@ public class StopReplicaITCase {
                 // wait the replica become leader, so that we can get the kv tablet
                 Replica kvReplica =
                         FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(replica.getTableBucket());
-                retry(
-                        Duration.ofMinutes(1),
-                        () -> {
-                            assertThat(kvReplica.getKvTablet()).isNotNull();
-                            assertThat(kvReplica.getKvTablet().getKvTabletDir()).exists();
-                        });
+                assertThat(kvReplica.getKvTablet()).isNotNull();
+                assertThat(kvReplica.getKvTablet().getKvTabletDir()).exists();
             }
         }
 
