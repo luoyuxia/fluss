@@ -1182,14 +1182,6 @@ public class ReplicaManager {
 
         if (!highWatermarks.isEmpty()) {
             try {
-                LOG.info("Checkpointing high watermark begin!");
-                highWatermarks.forEach(
-                        ((tableBucket, aLong) ->
-                                LOG.info(
-                                        "Checkpointing high watermark {} for table bucket {}",
-                                        aLong,
-                                        tableBucket)));
-                LOG.info("Checkpointing high watermark end!");
                 highWatermarkCheckpoint.write(highWatermarks);
             } catch (Exception e) {
                 throw new LogStorageException("Error while writing to high watermark file", e);

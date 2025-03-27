@@ -413,13 +413,6 @@ public class Sender implements Runnable {
                                 writeBatch, ApiError.fromErrorMessage(logRespForBucket));
                 invalidMetadataTablesSet.addAll(invalidMetadataTables);
             } else {
-                LOG.info(
-                        "handle write batch success for tb: {}, sending writer id is {}, batch sequence is {}, answered writer id is {}, batch sequence is {}.",
-                        writeBatch.tableBucket(),
-                        writeBatch.writerId(),
-                        writeBatch.batchSequence(),
-                        logRespForBucket.getWriterId(),
-                        logRespForBucket.getBatchSequence());
                 completeBatch(writeBatch);
             }
         }

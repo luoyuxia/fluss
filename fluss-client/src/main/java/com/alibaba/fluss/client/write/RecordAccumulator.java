@@ -653,8 +653,6 @@ public final class RecordAccumulator {
                 return true;
             }
 
-            boolean canSendMore = idempotenceManager.canSendMortRequests(tableBucket);
-
             int firstInFlightSequence = idempotenceManager.firstInFlightBatchSequence(tableBucket);
             // If the queued batch already has an assigned batch sequence, then it is being
             // retried. In this case, we wait until the next immediate batch is ready and
@@ -667,9 +665,20 @@ public final class RecordAccumulator {
                             && first.batchSequence() == firstInFlightSequence;
 
             if (isFirstBatch) {
+                LOG.info("try tp send first batch.");
                 return false;
             } else {
-                return !canSendMore;
+                if (!first.hasBatchSequence()) {
+                    if (idempotenceManager.canSendMortRequests(tableBucket)) {
+                        return false;
+                    } else {
+                        LOG.info("no batch sequence, but cannot send mort requests, skip it.");
+                        return true;
+                    }
+                } else {
+                    LOG.info("batch sequence with sequence id, skip it.");
+                    return true;
+                }
             }
         }
         return false;
