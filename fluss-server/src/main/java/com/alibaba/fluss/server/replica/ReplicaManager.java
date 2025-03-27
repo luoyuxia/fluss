@@ -17,7 +17,6 @@
 package com.alibaba.fluss.server.replica;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
-import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FencedLeaderEpochException;
@@ -833,36 +832,10 @@ public class ReplicaManager {
                                                                 + "follower for %s.",
                                                         serverId, tb)))));
             } else {
-                // fetch from leader server node with internal endpoint.
-                Optional<ServerNode> leader =
-                        metadataCache.getTabletServer(leaderId, internalListenerName);
-                if (!leader.isPresent()) {
-                    // If leader serverNode is not in the metadata, we need to return a bucket level
-                    // error to let CoordinatorServer retry sending makeLeaderOrFollower request.
-                    // This situation will be happened if the leader serverNode is offline and
-                    // didn't recovery now.
-                    LOG.error(
-                            "Could not find leader {} in server metadata for replica {} while make follower for {}.",
-                            leaderId,
-                            serverId,
-                            tb);
-                    result.put(
-                            tb,
-                            new NotifyLeaderAndIsrResultForBucket(
-                                    tb,
-                                    ApiError.fromThrowable(
-                                            new StorageException(
-                                                    String.format(
-                                                            "Could not find leader %d in server metadata for replica %d while make follower for %s.",
-                                                            leaderId, serverId, tb)))));
-                } else {
-                    // For these replicas whose leader id has been set and the server id is in the
-                    // metadata. We need to add fetcher for these replicas.
-                    bucketAndStatus.put(
-                            tb,
-                            new InitialFetchStatus(
-                                    tb.getTableId(), leaderId, logTablet.localLogEndOffset()));
-                }
+                bucketAndStatus.put(
+                        tb,
+                        new InitialFetchStatus(
+                                tb.getTableId(), leaderId, logTablet.localLogEndOffset()));
             }
         }
         replicaFetcherManager.addFetcherForBuckets(bucketAndStatus);

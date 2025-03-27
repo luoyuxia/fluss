@@ -109,7 +109,7 @@ public class ReplicaFetcherManager {
                             fetcherThread =
                                     addAndStartFetcherThread(
                                             serverAndFetcherId, serverIdAndFetcherId);
-                        } else if (fetcherThread.getLeader().leaderNode()
+                        } else if (fetcherThread.getLeader().leaderServerId()
                                 != serverAndFetcherId.leaderId) {
                             try {
                                 fetcherThread.shutdown();
@@ -217,7 +217,7 @@ public class ReplicaFetcherManager {
             fetcherThread.addBuckets(initialFetchStatusMap);
             LOG.info(
                     "Added fetcher to server {} with initial fetch status {}",
-                    fetcherThread.getLeader().leaderNode(),
+                    fetcherThread.getLeader().leaderServerId(),
                     initialFetchStatusMap);
         } catch (InterruptedException e) {
             LOG.error("Interrupted while add buckets to fetcher threads.", e);

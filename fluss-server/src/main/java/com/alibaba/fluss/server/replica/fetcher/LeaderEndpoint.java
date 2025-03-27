@@ -28,7 +28,7 @@ import java.util.concurrent.CompletableFuture;
 interface LeaderEndpoint {
 
     /** The tablet server id we want to connect to. */
-    int leaderNode();
+    int leaderServerId();
 
     /** Fetches the local log end offset of the given table bucket. */
     CompletableFuture<Long> fetchLocalLogEndOffset(TableBucket tableBucket);

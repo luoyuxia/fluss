@@ -59,7 +59,7 @@ public class TestingLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
-    public int leaderNode() {
+    public int leaderServerId() {
         return localNode.id();
     }
 

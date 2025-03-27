@@ -211,7 +211,9 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         Map<TableBucket, FetchLogResultForBucket> responseData = new HashMap<>();
         try {
             LOG.trace(
-                    "Sending fetch log request {} to leader {}", fetchRequest, leader.leaderNode());
+                    "Sending fetch log request {} to leader {}",
+                    fetchRequest,
+                    leader.leaderServerId());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
             responseData = leader.fetchLog(fetchRequest).get(timeoutSeconds, TimeUnit.SECONDS);
