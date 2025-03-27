@@ -286,7 +286,7 @@ public class ReplicaStateMachine {
                                     tableBucketReplica,
                                     coordinatorContext.getReplicaState(tableBucketReplica),
                                     targetState);
-                            return;
+                            continue;
                         }
                         // send leader request to the replica server
                         coordinatorRequestBatch.addNotifyLeaderRequestForTabletServers(
