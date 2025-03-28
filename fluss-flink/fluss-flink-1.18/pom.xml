@@ -44,6 +44,12 @@
 
         <dependency>
             <groupId>com.alibaba.fluss</groupId>
+            <artifactId>fluss-fs-pangu</artifactId>
+            <version>0.6-SNAPSHOT</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.alibaba.fluss</groupId>
             <artifactId>fluss-flink-common</artifactId>
             <version>${project.version}</version>
             <exclusions>
@@ -163,6 +169,7 @@
                                 <includes combine.children="append">
                                     <include>com.alibaba.fluss:fluss-flink-common</include>
                                     <include>com.alibaba.fluss:fluss-client</include>
+                                    <include>com.alibaba.fluss:fluss-fs-pangu</include>
                                 </includes>
                             </artifactSet>
                         </configuration>

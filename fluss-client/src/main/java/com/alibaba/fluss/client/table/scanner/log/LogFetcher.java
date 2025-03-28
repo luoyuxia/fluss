@@ -23,6 +23,7 @@ import com.alibaba.fluss.client.metrics.ScannerMetricGroup;
 import com.alibaba.fluss.client.table.scanner.RemoteFileDownloader;
 import com.alibaba.fluss.client.table.scanner.ScanRecord;
 import com.alibaba.fluss.cluster.BucketLocation;
+import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidMetadataException;
@@ -192,28 +193,39 @@ public class LogFetcher implements Closeable {
     }
 
     private void sendFetchRequest(int destination, FetchLogRequest fetchLogRequest) {
-        // TODO cache the tablet server gateway.
-        TabletServerGateway gateway =
-                GatewayClientProxy.createGatewayProxy(
-                        () -> metadataUpdater.getTabletServer(destination),
-                        rpcClient,
-                        TabletServerGateway.class);
-
-        final long requestStartTime = System.currentTimeMillis();
-        scannerMetricGroup.fetchRequestCount().inc();
-
         TableOrPartitions tableOrPartitionsInFetchRequest =
                 getTableOrPartitionsInFetchRequest(fetchLogRequest);
+        // TODO cache the tablet server gateway.
+        ServerNode destinationNode = metadataUpdater.getTabletServer(destination);
+        if (destinationNode == null) {
+            // invalid the metadata to request metadata update
+            LOG.warn(
+                    "Server {} is not found in metadata cache, "
+                            + "going to request metadata update.",
+                    destination);
+            invalidTableOrPartitions(tableOrPartitionsInFetchRequest);
+            LOG.debug(
+                    "Removing pending request for node: {} due to the destination node is not found in metadata cache",
+                    destination);
+            nodesWithPendingFetchRequests.remove(destination);
+        } else {
+            TabletServerGateway gateway =
+                    GatewayClientProxy.createGatewayProxy(
+                            () -> destinationNode, rpcClient, TabletServerGateway.class);
 
-        gateway.fetchLog(fetchLogRequest)
-                .whenComplete(
-                        (fetchLogResponse, e) ->
-                                handleFetchLogResponse(
-                                        destination,
-                                        requestStartTime,
-                                        fetchLogResponse,
-                                        tableOrPartitionsInFetchRequest,
-                                        e));
+            final long requestStartTime = System.currentTimeMillis();
+            scannerMetricGroup.fetchRequestCount().inc();
+
+            gateway.fetchLog(fetchLogRequest)
+                    .whenComplete(
+                            (fetchLogResponse, e) ->
+                                    handleFetchLogResponse(
+                                            destination,
+                                            requestStartTime,
+                                            fetchLogResponse,
+                                            tableOrPartitionsInFetchRequest,
+                                            e));
+        }
     }
 
     private TableOrPartitions getTableOrPartitionsInFetchRequest(FetchLogRequest fetchLogRequest) {
@@ -251,6 +263,13 @@ public class LogFetcher implements Closeable {
         }
     }
 
+    private void invalidTableOrPartitions(TableOrPartitions tableOrPartitions) {
+        Set<PhysicalTablePath> physicalTablePaths =
+                metadataUpdater.getPhysicalTablePathByIds(
+                        tableOrPartitions.tableIds, tableOrPartitions.tablePartitions);
+        metadataUpdater.invalidPhysicalTableBucketMeta(physicalTablePaths);
+    }
+
     /** Implements the core logic for a successful fetch log response. */
     private synchronized void handleFetchLogResponse(
             int destination,
@@ -269,15 +288,11 @@ public class LogFetcher implements Closeable {
                 // if is invalid metadata exception, we need to clear table bucket meta
                 // to enable another round of log fetch to request new medata
                 if (e instanceof InvalidMetadataException) {
-                    Set<PhysicalTablePath> physicalTablePaths =
-                            metadataUpdater.getPhysicalTablePathByIds(
-                                    tableOrPartitionsInFetchRequest.tableIds,
-                                    tableOrPartitionsInFetchRequest.tablePartitions);
                     LOG.warn(
                             "Received invalid metadata error in fetch log request. "
                                     + "Going to request metadata update.",
                             e);
-                    metadataUpdater.invalidPhysicalTableBucketMeta(physicalTablePaths);
+                    invalidTableOrPartitions(tableOrPartitionsInFetchRequest);
                 }
                 return;
             }

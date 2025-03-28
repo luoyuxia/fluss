@@ -397,25 +397,38 @@ public class Sender implements Runnable {
                             .add(batch);
                 });
 
-        TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
-        writeBatchByTable.forEach(
-                (tableId, writeBatches) -> {
-                    TableInfo tableInfo = metadataUpdater.getTableInfoOrElseThrow(tableId);
-                    if (tableInfo.hasPrimaryKey()) {
-                        sendPutKvRequestAndHandleResponse(
-                                gateway,
-                                makePutKvRequest(tableId, acks, maxRequestTimeoutMs, writeBatches),
-                                tableId,
-                                recordsByBucket);
-                    } else {
-                        sendProduceLogRequestAndHandleResponse(
-                                gateway,
-                                makeProduceLogRequest(
-                                        tableId, acks, maxRequestTimeoutMs, writeBatches),
-                                tableId,
-                                recordsByBucket);
-                    }
-                });
+        ServerNode destinationNode = metadataUpdater.getTabletServer(destination);
+        if (destinationNode == null) {
+            LOG.warn(
+                    "Server {} is not found in metadata cache, "
+                            + "going to request metadata update.",
+                    destination);
+            // invalidate the metadata to request metadata
+            invalidBucketMetadata(batches);
+            // requeue the write batch
+            batches.forEach(this::reEnqueueBatch);
+        } else {
+            TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
+            writeBatchByTable.forEach(
+                    (tableId, writeBatches) -> {
+                        TableInfo tableInfo = metadataUpdater.getTableInfoOrElseThrow(tableId);
+                        if (tableInfo.hasPrimaryKey()) {
+                            sendPutKvRequestAndHandleResponse(
+                                    gateway,
+                                    makePutKvRequest(
+                                            tableId, acks, maxRequestTimeoutMs, writeBatches),
+                                    tableId,
+                                    recordsByBucket);
+                        } else {
+                            sendProduceLogRequestAndHandleResponse(
+                                    gateway,
+                                    makeProduceLogRequest(
+                                            tableId, acks, maxRequestTimeoutMs, writeBatches),
+                                    tableId,
+                                    recordsByBucket);
+                        }
+                    });
+        }
     }
 
     private void sendProduceLogRequestAndHandleResponse(
@@ -501,6 +514,14 @@ public class Sender implements Runnable {
             } else {
                 completeBatch(writeBatch);
             }
+        }
+        metadataUpdater.invalidPhysicalTableBucketMeta(invalidMetadataTablesSet);
+    }
+
+    private void invalidBucketMetadata(List<WriteBatch> writeBatches) {
+        Set<PhysicalTablePath> invalidMetadataTablesSet = new HashSet<>();
+        for (WriteBatch writeBatch : writeBatches) {
+            invalidMetadataTablesSet.add(writeBatch.physicalTablePath());
         }
         metadataUpdater.invalidPhysicalTableBucketMeta(invalidMetadataTablesSet);
     }

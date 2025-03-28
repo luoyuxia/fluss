@@ -18,6 +18,7 @@ package com.alibaba.fluss.client.write;
 
 import com.alibaba.fluss.client.metadata.TestingMetadataUpdater;
 import com.alibaba.fluss.client.metrics.TestingWriterMetricGroup;
+import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
@@ -33,7 +34,7 @@ import com.alibaba.fluss.rpc.messages.ProduceLogRequest;
 import com.alibaba.fluss.rpc.messages.ProduceLogResponse;
 import com.alibaba.fluss.rpc.protocol.Errors;
 import com.alibaba.fluss.server.tablet.TestTabletServerGateway;
-import com.alibaba.fluss.utils.clock.ManualClock;
+import com.alibaba.fluss.utils.clock.SystemClock;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,12 +43,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 import static com.alibaba.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_ID;
@@ -56,7 +57,6 @@ import static com.alibaba.fluss.record.TestData.DATA1_TABLE_PATH;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.getProduceLogData;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeProduceLogResponse;
 import static com.alibaba.fluss.testutils.DataTestUtils.row;
-import static com.alibaba.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** ITCase for {@link Sender}. */
@@ -68,7 +68,6 @@ final class SenderTest {
     private static final int REQUEST_TIMEOUT = 5000;
     private static final short ACKS_ALL = -1;
     private static final int MAX_INFLIGHT_REQUEST_PER_BUCKET = 5;
-    private final ManualClock clock = new ManualClock(System.currentTimeMillis());
 
     private final TableBucket tb1 = new TableBucket(DATA1_TABLE_ID, 0);
     private TestingMetadataUpdater metadataUpdater;
@@ -110,7 +109,6 @@ final class SenderTest {
                                 MAX_INFLIGHT_REQUEST_PER_BUCKET,
                                 metadataUpdater.newRandomTabletServerClient()),
                         maxRetries,
-                        Long.MAX_VALUE,
                         0);
         // do a successful retry.
         CompletableFuture<Exception> future = new CompletableFuture<>();
@@ -584,8 +582,7 @@ final class SenderTest {
     void testSequenceNumberIncrement() throws Exception {
         int maxRetries = 10;
         IdempotenceManager idempotenceManager = createIdempotenceManager(true);
-        Sender sender1 =
-                setupWithIdempotenceState(idempotenceManager, maxRetries, Long.MAX_VALUE, 0);
+        Sender sender1 = setupWithIdempotenceState(idempotenceManager, maxRetries, 0);
         sender1.runOnce();
         assertThat(idempotenceManager.isWriterIdValid()).isTrue();
         assertThat(idempotenceManager.nextSequence(tb1)).isEqualTo(0);
@@ -602,57 +599,50 @@ final class SenderTest {
     }
 
     @Test
-    void testExpiredWriteBatches() throws Exception {
-        long batchDeliveryTimeout = 5000;
-        IdempotenceManager idempotenceManager = createIdempotenceManager(false);
-        Sender sender = setupWithIdempotenceState(idempotenceManager, batchDeliveryTimeout);
+    void testSendWhenDestinationIsNullInMetadata() throws Exception {
+        long offset = 0;
+        CompletableFuture<Exception> future = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(1, "a"), future::complete);
+
+        int leaderNode = metadataUpdater.leaderFor(tb1);
+        // now, remove leader node ,so that send destination
+        // server node is null
+        Cluster oldCluster = metadataUpdater.getCluster();
+        Map<Integer, ServerNode> aliveTabletServersById =
+                new HashMap<>(oldCluster.getAliveTabletServers());
+        aliveTabletServersById.remove(leaderNode);
+        Cluster newCluster =
+                new Cluster(
+                        aliveTabletServersById,
+                        oldCluster.getCoordinatorServer(),
+                        oldCluster.getBucketLocationsByPath(),
+                        oldCluster.getTableIdByPath(),
+                        oldCluster.getPartitionIdByPath(),
+                        oldCluster.getTableInfoByPath());
+
+        metadataUpdater.updateCluster(newCluster);
+
         sender.runOnce();
+        // should be no inflight batches
+        assertThat(sender.numOfInFlightBatches(tb1)).isEqualTo(0);
 
-        // append many records with futures. don't return the request.
-        List<CompletableFuture<Exception>> recordFutures = new ArrayList<>();
-        for (int i = 0; i < 20; i++) {
-            for (int j = 0; j < 10; j++) {
-                CompletableFuture<Exception> future = new CompletableFuture<>();
-                appendToAccumulator(tb1, row(1, "a"), future::complete);
-                recordFutures.add(future);
-            }
-            sender.runOnce(); // runOnce to send request.
-        }
+        // the bucket location should be empty for the bucket since we'll invalid it
+        // when send to a null destination
+        assertThat(metadataUpdater.getCluster().getBucketLocation(tb1)).isEmpty();
 
-        for (int i = 0; i < 20; i++) {
-            CompletableFuture<Exception> future = new CompletableFuture<>();
-            appendToAccumulator(tb1, row(1, "a"), future::complete);
-            recordFutures.add(future);
-            // just append to accumulate, don't seed the request.
-        }
+        // update with old cluster to mock a metadata update
+        metadataUpdater.updateCluster(oldCluster);
 
-        // batch shouldn't expire yet as the expiry timeout not reach.
-        clock.advanceTime(batchDeliveryTimeout / 2, TimeUnit.MILLISECONDS);
-        List<WriteBatch> expiredInflightBatches =
-                sender.getExpiredInflightBatches(clock.milliseconds());
-        assertThat(expiredInflightBatches.size()).isEqualTo(0);
-        List<WriteBatch> expiredBatches = accumulator.expiredBatches(clock.milliseconds());
-        assertThat(expiredBatches.size()).isEqualTo(0);
-
-        // batch can be expired after the expiry timeout.
-        clock.advanceTime(batchDeliveryTimeout / 2 + 1, TimeUnit.MILLISECONDS);
-        // To expire batches. Add some batches to make sure batch can be drained to trigger expired
-        // logic.
-        for (int i = 0; i < 20; i++) {
-            CompletableFuture<Exception> future = new CompletableFuture<>();
-            appendToAccumulator(tb1, row(1, "a"), future::complete);
-            // just append to accumulate, don't seed the request.
-        }
+        // send again, should send successfully
         sender.runOnce();
-        retry(
-                Duration.ofMinutes(1),
-                () -> {
-                    for (CompletableFuture<Exception> future : recordFutures) {
-                        assertThat(future.get())
-                                .isInstanceOf(TimeoutException.class)
-                                .hasMessageContaining("has passed since batch creation.");
-                    }
-                });
+        assertThat(sender.numOfInFlightBatches(tb1)).isEqualTo(1);
+
+        finishProduceLogRequest(tb1, 0, createProduceLogResponse(tb1, offset, 1));
+
+        // send again, should send nothing since no batch in queue
+        sender.runOnce();
+        assertThat(sender.numOfInFlightBatches(tb1)).isEqualTo(0);
+        assertThat(future.get()).isNull();
     }
 
     private TestingMetadataUpdater initializeMetadataUpdater() {
@@ -720,31 +710,19 @@ final class SenderTest {
     }
 
     private Sender setupWithIdempotenceState(IdempotenceManager idempotenceManager) {
-        return setupWithIdempotenceState(idempotenceManager, Integer.MAX_VALUE, Long.MAX_VALUE, 0);
+        return setupWithIdempotenceState(idempotenceManager, Integer.MAX_VALUE, 0);
     }
 
     private Sender setupWithIdempotenceState(
-            IdempotenceManager idempotenceManager, long batchDeliveryTimeoutMs) {
-        return setupWithIdempotenceState(
-                idempotenceManager, Integer.MAX_VALUE, batchDeliveryTimeoutMs, 0);
-    }
-
-    private Sender setupWithIdempotenceState(
-            IdempotenceManager idempotenceManager,
-            int reties,
-            long batchDeliveryTimeoutMs,
-            int batchTimeoutMs) {
+            IdempotenceManager idempotenceManager, int reties, int batchTimeoutMs) {
         Configuration conf = new Configuration();
         conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE, new MemorySize(TOTAL_MEMORY_SIZE));
-        conf.set(
-                ConfigOptions.CLIENT_WRITER_BATCH_DELIVERY_TIMEOUT,
-                Duration.ofMillis(batchDeliveryTimeoutMs));
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(BATCH_SIZE));
         conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(PAGE_SIZE));
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT, Duration.ofMillis(batchTimeoutMs));
         accumulator =
                 new RecordAccumulator(
-                        conf, idempotenceManager, writerMetricGroup, clock, batchDeliveryTimeoutMs);
+                        conf, idempotenceManager, writerMetricGroup, SystemClock.getInstance());
         return new Sender(
                 accumulator,
                 REQUEST_TIMEOUT,
@@ -753,7 +731,6 @@ final class SenderTest {
                 reties,
                 metadataUpdater,
                 idempotenceManager,
-                clock,
                 writerMetricGroup);
     }
 
