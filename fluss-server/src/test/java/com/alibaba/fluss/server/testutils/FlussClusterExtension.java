@@ -23,6 +23,7 @@ import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.config.MemorySize;
 import com.alibaba.fluss.fs.local.LocalFileSystem;
+import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.metrics.registry.MetricRegistry;
@@ -33,15 +34,20 @@ import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
 import com.alibaba.fluss.rpc.gateway.TabletServerGateway;
 import com.alibaba.fluss.rpc.messages.MetadataRequest;
 import com.alibaba.fluss.rpc.messages.MetadataResponse;
+import com.alibaba.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
+import com.alibaba.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
+import com.alibaba.fluss.rpc.messages.StopReplicaRequest;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.server.coordinator.CoordinatorServer;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
+import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrData;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshotHandle;
 import com.alibaba.fluss.server.metadata.ServerInfo;
 import com.alibaba.fluss.server.replica.Replica;
 import com.alibaba.fluss.server.replica.ReplicaManager;
 import com.alibaba.fluss.server.tablet.TabletServer;
+import com.alibaba.fluss.server.utils.RpcMessageUtils;
 import com.alibaba.fluss.server.zk.NOPErrorHandler;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.ZooKeeperTestUtils;
@@ -76,6 +82,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeNotifyBucketLeaderAndIsr;
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeStopBucketReplica;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.toServerNode;
 import static com.alibaba.fluss.server.zk.ZooKeeperTestUtils.createZooKeeperClient;
 import static com.alibaba.fluss.testutils.common.CommonTestUtils.retry;
@@ -583,6 +591,41 @@ public final class FlussClusterExtension
                 () -> getReplica(tableBucket, replica, false),
                 Duration.ofMinutes(1),
                 "Fail to wait " + replica + " ready");
+    }
+
+    public void stopReplica(int tabletServerId, TableBucket tableBucket, int leaderEpoch)
+            throws Exception {
+        TabletServerGateway followerGateway = newTabletServerClientForNode(tabletServerId);
+        // send stop replica request to the follower
+        followerGateway
+                .stopReplica(
+                        new StopReplicaRequest()
+                                .setCoordinatorEpoch(0)
+                                .addAllStopReplicasReqs(
+                                        Collections.singleton(
+                                                makeStopBucketReplica(
+                                                        tableBucket, false, leaderEpoch))))
+                .get();
+    }
+
+    public void notifyLeaderAndIsr(
+            int tabletServerId,
+            TablePath tablePath,
+            TableBucket tableBucket,
+            LeaderAndIsr leaderAndIsr,
+            List<Integer> replicas) {
+        TabletServerGateway followerGateway = newTabletServerClientForNode(tabletServerId);
+        PbNotifyLeaderAndIsrReqForBucket reqForBucket =
+                makeNotifyBucketLeaderAndIsr(
+                        new NotifyLeaderAndIsrData(
+                                PhysicalTablePath.of(tablePath),
+                                tableBucket,
+                                replicas,
+                                leaderAndIsr));
+        NotifyLeaderAndIsrRequest notifyLeaderAndIsrRequest =
+                RpcMessageUtils.makeNotifyLeaderAndIsrRequest(
+                        0, Collections.singletonList(reqForBucket));
+        followerGateway.notifyLeaderAndIsr(notifyLeaderAndIsrRequest);
     }
 
     private Optional<Replica> getReplica(TableBucket tableBucket, int replica, boolean isLeader) {

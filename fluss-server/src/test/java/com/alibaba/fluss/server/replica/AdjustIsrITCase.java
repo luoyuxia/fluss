@@ -18,21 +18,14 @@ package com.alibaba.fluss.server.replica;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
-import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.gateway.TabletServerGateway;
-import com.alibaba.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
-import com.alibaba.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
 import com.alibaba.fluss.rpc.messages.PbProduceLogRespForBucket;
 import com.alibaba.fluss.rpc.messages.ProduceLogResponse;
-import com.alibaba.fluss.rpc.messages.StopReplicaRequest;
 import com.alibaba.fluss.rpc.protocol.Errors;
-import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrData;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import com.alibaba.fluss.server.testutils.RpcMessageTestUtils;
-import com.alibaba.fluss.server.utils.RpcMessageUtils;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 
@@ -41,15 +34,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
-import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.record.TestData.DATA1;
 import static com.alibaba.fluss.record.TestData.DATA1_SCHEMA;
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_PATH;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeNotifyBucketLeaderAndIsr;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeStopBucketReplica;
 import static com.alibaba.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
 import static com.alibaba.fluss.testutils.common.CommonTestUtils.retry;
 import static com.alibaba.fluss.testutils.common.CommonTestUtils.waitValue;
@@ -95,18 +85,8 @@ public class AdjustIsrITCase {
         FLUSS_CLUSTER_EXTENSION.waitAndGetFollowerReplica(tb, stopFollower);
         TabletServerGateway followerGateway =
                 FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(stopFollower);
-        // send stop replica request to the follower
-        followerGateway
-                .stopReplica(
-                        new StopReplicaRequest()
-                                .setCoordinatorEpoch(currentLeaderAndIsr.coordinatorEpoch())
-                                .addAllStopReplicasReqs(
-                                        Collections.singleton(
-                                                makeStopBucketReplica(
-                                                        tb,
-                                                        false,
-                                                        currentLeaderAndIsr.leaderEpoch()))))
-                .get();
+        // stop follower replica for the bucket
+        FLUSS_CLUSTER_EXTENSION.stopReplica(stopFollower, tb, leader);
 
         isr.remove(stopFollower);
 
@@ -159,8 +139,8 @@ public class AdjustIsrITCase {
                         currentLeaderAndIsr.coordinatorEpoch(),
                         currentLeaderAndIsr.bucketEpoch());
         isr.add(stopFollower);
-        followerGateway.notifyLeaderAndIsr(
-                makeNotifyLeaderAndIsrRequest(DATA1_TABLE_PATH, tb, newLeaderAndIsr, isr));
+        FLUSS_CLUSTER_EXTENSION.notifyLeaderAndIsr(
+                stopFollower, DATA1_TABLE_PATH, tb, newLeaderAndIsr, isr);
         // retry until the stop follower add back to ISR.
         retry(
                 Duration.ofMinutes(1),
@@ -275,21 +255,5 @@ public class AdjustIsrITCase {
         // the produce log request will be failed, and the leader HW will not increase.
         conf.setInt(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER, 2);
         return conf;
-    }
-
-    private NotifyLeaderAndIsrRequest makeNotifyLeaderAndIsrRequest(
-            TablePath tablePath,
-            TableBucket tableBucket,
-            LeaderAndIsr leaderAndIsr,
-            List<Integer> replicas) {
-        PbNotifyLeaderAndIsrReqForBucket reqForBucket =
-                makeNotifyBucketLeaderAndIsr(
-                        new NotifyLeaderAndIsrData(
-                                PhysicalTablePath.of(tablePath),
-                                tableBucket,
-                                replicas,
-                                leaderAndIsr));
-        return RpcMessageUtils.makeNotifyLeaderAndIsrRequest(
-                0, Collections.singletonList(reqForBucket));
     }
 }
