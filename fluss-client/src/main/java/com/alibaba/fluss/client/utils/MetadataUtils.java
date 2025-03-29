@@ -271,6 +271,7 @@ public class MetadataUtils {
         return aliveTabletServers.get(offset);
     }
 
+    @Nullable
     private static ServerNode getCoordinatorServer(MetadataResponse response) {
         if (!response.hasCoordinatorServer()) {
             return null;

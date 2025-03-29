@@ -34,7 +34,7 @@ class MetadataUpdaterTest {
 
     @RegisterExtension
     public static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
-            FlussClusterExtension.builder().setNumOfTabletServers(1).build();
+            FlussClusterExtension.builder().setNumOfTabletServers(2).build();
 
     @Test
     void testUpdateWithEmptyMetadataResponse() throws Exception {
@@ -47,6 +47,7 @@ class MetadataUpdaterTest {
         Cluster cluster = metadataUpdater.getCluster();
 
         List<ServerNode> expectedServerNodes = FLUSS_CLUSTER_EXTENSION.getTabletServerNodes();
+        assertThat(expectedServerNodes).hasSize(2);
         assertThat(cluster.getAliveTabletServerList()).isEqualTo(expectedServerNodes);
 
         // then, stop coordinator server, can still update metadata
@@ -56,14 +57,16 @@ class MetadataUpdaterTest {
 
         // start a new tablet server, the tablet server will return empty metadata
         // response since no coordinator server to send newest metadata to the tablet server
-        FLUSS_CLUSTER_EXTENSION.startTabletServer(1);
+        int newServerId = 2;
+        FLUSS_CLUSTER_EXTENSION.startTabletServer(newServerId);
 
         // we mock a new cluster with only server 1 so that it'll only send request
         // to server 1, which will return empty resonate
         Cluster newCluster =
                 new Cluster(
                         Collections.singletonMap(
-                                1, FLUSS_CLUSTER_EXTENSION.getTabletServerNodes().get(1)),
+                                newServerId,
+                                FLUSS_CLUSTER_EXTENSION.getTabletServerNodes().get(newServerId)),
                         null,
                         Collections.emptyMap(),
                         Collections.emptyMap(),
@@ -74,6 +77,7 @@ class MetadataUpdaterTest {
         // shouldn't update metadata to empty since the empty metadata will be ignored
         metadataUpdater.updateMetadata(null, null, null);
         assertThat(metadataUpdater.getCluster().getAliveTabletServers())
-                .isEqualTo(newCluster.getAliveTabletServers());
+                .isEqualTo(newCluster.getAliveTabletServers())
+                .hasSize(1);
     }
 }

@@ -27,6 +27,7 @@ import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidMetadataException;
+import com.alibaba.fluss.exception.LeaderNotAvailableException;
 import com.alibaba.fluss.fs.FsPath;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -198,16 +199,11 @@ public class LogFetcher implements Closeable {
         // TODO cache the tablet server gateway.
         ServerNode destinationNode = metadataUpdater.getTabletServer(destination);
         if (destinationNode == null) {
-            // invalid the metadata to request metadata update
-            LOG.warn(
-                    "Server {} is not found in metadata cache, "
-                            + "going to request metadata update.",
-                    destination);
-            invalidTableOrPartitions(tableOrPartitionsInFetchRequest);
-            LOG.debug(
-                    "Removing pending request for node: {} due to the destination node is not found in metadata cache",
-                    destination);
-            nodesWithPendingFetchRequests.remove(destination);
+            handleFetchLogException(
+                    destination,
+                    tableOrPartitionsInFetchRequest,
+                    new LeaderNotAvailableException(
+                            "Server " + destination + " is not found in metadata cache."));
         } else {
             TabletServerGateway gateway =
                     GatewayClientProxy.createGatewayProxy(
@@ -218,13 +214,15 @@ public class LogFetcher implements Closeable {
 
             gateway.fetchLog(fetchLogRequest)
                     .whenComplete(
-                            (fetchLogResponse, e) ->
+                            (fetchLogResponse, e) -> {
+                                if (e != null) {
+                                    handleFetchLogException(
+                                            destination, tableOrPartitionsInFetchRequest, e);
+                                } else {
                                     handleFetchLogResponse(
-                                            destination,
-                                            requestStartTime,
-                                            fetchLogResponse,
-                                            tableOrPartitionsInFetchRequest,
-                                            e));
+                                            destination, requestStartTime, fetchLogResponse);
+                                }
+                            });
         }
     }
 
@@ -270,30 +268,30 @@ public class LogFetcher implements Closeable {
         metadataUpdater.invalidPhysicalTableBucketMeta(physicalTablePaths);
     }
 
+    private void handleFetchLogException(
+            int destination, TableOrPartitions tableOrPartitionsInFetchRequest, Throwable e) {
+        try {
+            LOG.error("Failed to fetch log from node {}", destination, e);
+            // if is invalid metadata exception, we need to clear table bucket meta
+            // to enable another round of log fetch to request new medata
+            if (e instanceof InvalidMetadataException) {
+                LOG.warn(
+                        "Invalid metadata error in fetch log request. "
+                                + "Going to request metadata update.",
+                        e);
+                invalidTableOrPartitions(tableOrPartitionsInFetchRequest);
+            }
+        } catch (Exception ex) {
+            LOG.debug("Removing pending request for node: {}", destination);
+            nodesWithPendingFetchRequests.remove(destination);
+        }
+    }
+
     /** Implements the core logic for a successful fetch log response. */
     private synchronized void handleFetchLogResponse(
-            int destination,
-            long requestStartTime,
-            FetchLogResponse fetchLogResponse,
-            TableOrPartitions tableOrPartitionsInFetchRequest,
-            @Nullable Throwable e) {
+            int destination, long requestStartTime, FetchLogResponse fetchLogResponse) {
         try {
             if (isClosed) {
-                return;
-            }
-
-            if (e != null) {
-                LOG.error("Failed to fetch log from node {}", destination, e);
-
-                // if is invalid metadata exception, we need to clear table bucket meta
-                // to enable another round of log fetch to request new medata
-                if (e instanceof InvalidMetadataException) {
-                    LOG.warn(
-                            "Received invalid metadata error in fetch log request. "
-                                    + "Going to request metadata update.",
-                            e);
-                    invalidTableOrPartitions(tableOrPartitionsInFetchRequest);
-                }
                 return;
             }
 

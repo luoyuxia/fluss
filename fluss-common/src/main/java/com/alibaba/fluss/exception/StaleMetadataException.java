@@ -16,10 +16,15 @@
 
 package com.alibaba.fluss.exception;
 
+import com.alibaba.fluss.annotation.PublicEvolving;
+
 /**
  * Thrown when current metadata cannot be used. This is often used to trigger a new update metadata
  * request.
+ *
+ * @since 0.7
  */
+@PublicEvolving
 public class StaleMetadataException extends InvalidMetadataException {
 
     private static final long serialVersionUID = 1L;

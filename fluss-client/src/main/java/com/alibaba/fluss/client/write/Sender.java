@@ -22,6 +22,7 @@ import com.alibaba.fluss.client.metrics.WriterMetricGroup;
 import com.alibaba.fluss.client.write.RecordAccumulator.ReadyCheckResult;
 import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.exception.InvalidMetadataException;
+import com.alibaba.fluss.exception.LeaderNotAvailableException;
 import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.exception.RetriableException;
 import com.alibaba.fluss.exception.UnknownTableOrBucketException;
@@ -331,14 +332,10 @@ public class Sender implements Runnable {
 
         ServerNode destinationNode = metadataUpdater.getTabletServer(destination);
         if (destinationNode == null) {
-            LOG.warn(
-                    "Server {} is not found in metadata cache, "
-                            + "going to request metadata update.",
-                    destination);
-            // invalidate the metadata to request metadata
-            invalidBucketMetadata(batches);
-            // requeue the write batch
-            batches.forEach(this::reEnqueueBatch);
+            handleWriteRequestException(
+                    new LeaderNotAvailableException(
+                            "Server " + destination + " is not found in metadata cache."),
+                    recordsByBucket);
         } else {
             TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
             writeBatchByTable.forEach(
@@ -448,14 +445,6 @@ public class Sender implements Runnable {
             } else {
                 completeBatch(writeBatch);
             }
-        }
-        metadataUpdater.invalidPhysicalTableBucketMeta(invalidMetadataTablesSet);
-    }
-
-    private void invalidBucketMetadata(List<WriteBatch> writeBatches) {
-        Set<PhysicalTablePath> invalidMetadataTablesSet = new HashSet<>();
-        for (WriteBatch writeBatch : writeBatches) {
-            invalidMetadataTablesSet.add(writeBatch.physicalTablePath());
         }
         metadataUpdater.invalidPhysicalTableBucketMeta(invalidMetadataTablesSet);
     }
