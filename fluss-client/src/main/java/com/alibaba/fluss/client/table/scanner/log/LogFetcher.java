@@ -281,7 +281,7 @@ public class LogFetcher implements Closeable {
                         e);
                 invalidTableOrPartitions(tableOrPartitionsInFetchRequest);
             }
-        } catch (Exception ex) {
+        } finally {
             LOG.debug("Removing pending request for node: {}", destination);
             nodesWithPendingFetchRequests.remove(destination);
         }
