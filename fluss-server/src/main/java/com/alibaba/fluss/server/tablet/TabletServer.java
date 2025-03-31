@@ -297,6 +297,7 @@ public class TabletServer extends ServerBase {
                     tabletServerMetricGroup.close();
                 }
             } catch (Throwable t) {
+                LOG.info("stop tablet service-1.1, the error: {}", t.getMessage());
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
             LOG.info("stop tablet service-2");
