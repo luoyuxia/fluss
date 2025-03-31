@@ -229,6 +229,7 @@ public class TabletServer extends ServerBase {
     @Override
     protected CompletableFuture<Result> closeAsync(Result result) {
         if (isShutDown.compareAndSet(false, true)) {
+            LOG.info("Shutting down Tablet server ({}).", result);
             CompletableFuture<Void> serviceShutdownFuture = stopServices();
 
             serviceShutdownFuture.whenComplete(
@@ -290,6 +291,7 @@ public class TabletServer extends ServerBase {
         synchronized (lock) {
             Throwable exception = null;
 
+            LOG.info("stop tablet service-1");
             try {
                 if (tabletServerMetricGroup != null) {
                     tabletServerMetricGroup.close();
@@ -297,6 +299,7 @@ public class TabletServer extends ServerBase {
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
+            LOG.info("stop tablet service-2");
 
             final Collection<CompletableFuture<Void>> terminationFutures = new ArrayList<>(2);
             try {
@@ -306,6 +309,7 @@ public class TabletServer extends ServerBase {
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
+            LOG.info("stop tablet service-3");
 
             try {
                 if (rpcServer != null) {
@@ -314,6 +318,7 @@ public class TabletServer extends ServerBase {
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
+            LOG.info("stop tablet service-4");
 
             try {
                 if (tabletService != null) {
@@ -322,11 +327,13 @@ public class TabletServer extends ServerBase {
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
+            LOG.info("stop tablet service-5");
 
             try {
                 if (zkClient != null) {
                     zkClient.close();
                 }
+                LOG.info("stop tablet service-6");
 
                 // TODO currently, rpc client don't have timeout logic. After implementing the
                 // timeout logic, we need to move the closure of rpc client to after the closure of
@@ -334,36 +341,44 @@ public class TabletServer extends ServerBase {
                 if (rpcClient != null) {
                     rpcClient.close();
                 }
+                LOG.info("stop tablet service-7");
 
                 if (clientMetricGroup != null) {
                     clientMetricGroup.close();
                 }
+                LOG.info("stop tablet service-8");
 
                 // We must shut down the scheduler early because otherwise, the scheduler could
                 // touch other resources that might have been shutdown and cause exceptions.
                 if (scheduler != null) {
                     scheduler.shutdown();
                 }
+                LOG.info("stop tablet service-9");
 
                 if (kvManager != null) {
                     kvManager.shutdown();
                 }
+                LOG.info("stop tablet service-10");
 
                 if (remoteLogManager != null) {
                     remoteLogManager.close();
                 }
+                LOG.info("stop tablet service-11");
 
                 if (logManager != null) {
                     logManager.shutdown();
                 }
+                LOG.info("stop tablet service-12");
 
                 if (replicaManager != null) {
                     replicaManager.shutdown();
                 }
+                LOG.info("stop tablet service-13");
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
 
+            LOG.info("stop tablet service-14");
             if (exception != null) {
                 terminationFutures.add(FutureUtils.completedExceptionally(exception));
             }
