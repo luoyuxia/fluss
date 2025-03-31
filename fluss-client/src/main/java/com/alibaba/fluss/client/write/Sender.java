@@ -24,7 +24,6 @@ import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.exception.InvalidMetadataException;
 import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.exception.RetriableException;
-import com.alibaba.fluss.exception.TimeoutException;
 import com.alibaba.fluss.exception.UnknownTableOrBucketException;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -38,7 +37,6 @@ import com.alibaba.fluss.rpc.messages.PutKvRequest;
 import com.alibaba.fluss.rpc.messages.PutKvResponse;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.rpc.protocol.Errors;
-import com.alibaba.fluss.utils.clock.Clock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,7 +46,6 @@ import javax.annotation.concurrent.GuardedBy;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -84,9 +81,6 @@ public class Sender implements Runnable {
     /** the number of times to retry a failed write batch before giving up. */
     private final int retries;
 
-    /* the clock instance used for getting the time */
-    private final Clock clock;
-
     /** true while the sender thread is still running. */
     private volatile boolean running;
 
@@ -117,7 +111,6 @@ public class Sender implements Runnable {
             int retries,
             MetadataUpdater metadataUpdater,
             IdempotenceManager idempotenceManager,
-            Clock clock,
             WriterMetricGroup writerMetricGroup) {
         this.accumulator = accumulator;
         this.maxRequestSize = maxRequestSize;
@@ -131,7 +124,6 @@ public class Sender implements Runnable {
         checkNotNull(metadataUpdater.getCoordinatorServer());
 
         this.idempotenceManager = idempotenceManager;
-        this.clock = clock;
         this.writerMetricGroup = writerMetricGroup;
 
         // TODO add retry logic while send failed. See FLUSS-56364375
@@ -183,8 +175,7 @@ public class Sender implements Runnable {
         }
 
         // do send.
-        long currentTimeMillis = clock.milliseconds();
-        sendWriteData(currentTimeMillis);
+        sendWriteData();
     }
 
     public boolean isRunning() {
@@ -197,7 +188,7 @@ public class Sender implements Runnable {
         }
     }
 
-    private void sendWriteData(long now) throws Exception {
+    private void sendWriteData() throws Exception {
         // get the list of buckets with data ready to send.
         ReadyCheckResult readyCheckResult = accumulator.ready(metadataUpdater.getCluster());
 
@@ -225,9 +216,7 @@ public class Sender implements Runnable {
         if (!batches.isEmpty()) {
             addToInflightBatches(batches);
 
-            // check and expire batches if they have reached batch delivery timeout. This can avoid
-            // the client to wait for a long time while the batch is forever retry.
-            checkAndExpireBatches(now);
+            // TODO add logic for batch expire.
 
             sendWriteRequests(batches);
 
@@ -250,8 +239,9 @@ public class Sender implements Runnable {
             if (idempotenceManager.idempotenceEnabled()) {
                 try {
                     // This call can throw an exception in the rare case that there's an invalid
-                    // state transition attempted. Catch these so as not to interfere with the rest
-                    // of the logic.
+                    // state
+                    // transition attempted. Catch these so as not to interfere with the rest of the
+                    // logic.
                     idempotenceManager.handleFailedBatch(batch, exception, adjustBatchSequences);
                 } catch (Exception e) {
                     LOG.debug(
@@ -288,64 +278,6 @@ public class Sender implements Runnable {
     private void maybeRemoveAndDeallocateBatch(WriteBatch batch) {
         maybeRemoveFromInflightBatches(batch);
         accumulator.deallocate(batch);
-    }
-
-    private void checkAndExpireBatches(long now) {
-        List<WriteBatch> expiredInflightBatches = getExpiredInflightBatches(now);
-        List<WriteBatch> expiredBatches = accumulator.expiredBatches(now);
-        expiredBatches.addAll(expiredInflightBatches);
-        if (!expiredBatches.isEmpty()) {
-            LOG.trace("Client found expired batches: {}", expiredBatches);
-        }
-
-        for (WriteBatch batch : expiredBatches) {
-            failBatch(
-                    batch,
-                    new TimeoutException(
-                            String.format(
-                                    "Expiring %s records for %s : %s ms has passed since batch creation.",
-                                    batch.recordCount,
-                                    batch.tableBucket(),
-                                    now - batch.getCreatedMs())),
-                    false);
-        }
-    }
-
-    /** Get the in-flight batches that has reached batch delivery timeout. */
-    @VisibleForTesting
-    List<WriteBatch> getExpiredInflightBatches(long now) {
-        List<WriteBatch> expiredBatches = new ArrayList<>();
-        for (Iterator<Map.Entry<TableBucket, List<WriteBatch>>> batchIt =
-                        inFlightBatches.entrySet().iterator();
-                batchIt.hasNext(); ) {
-            Map.Entry<TableBucket, List<WriteBatch>> entry = batchIt.next();
-            List<WriteBatch> tbFlightBatches = entry.getValue();
-            if (tbFlightBatches != null) {
-                Iterator<WriteBatch> iter = tbFlightBatches.iterator();
-                while (iter.hasNext()) {
-                    WriteBatch batch = iter.next();
-                    if (batch.hasReachedDeliveryTimeout(accumulator.getDeliveryTimeoutMs(), now)) {
-                        iter.remove();
-                        if (!batch.isDone()) {
-                            expiredBatches.add(batch);
-                        } else {
-                            throw new IllegalStateException(
-                                    batch.tableBucket()
-                                            + " batch created at "
-                                            + batch.getCreatedMs()
-                                            + " gets unexpected final state "
-                                            + batch.getFinalState());
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                if (tbFlightBatches.isEmpty()) {
-                    batchIt.remove();
-                }
-            }
-        }
-        return expiredBatches;
     }
 
     private void maybeRemoveFromInflightBatches(WriteBatch batch) {
@@ -436,11 +368,12 @@ public class Sender implements Runnable {
             ProduceLogRequest request,
             long tableId,
             Map<TableBucket, WriteBatch> recordsByBucket) {
-        long startTime = clock.milliseconds();
+        long startTime = System.currentTimeMillis();
         gateway.produceLog(request)
                 .whenComplete(
                         (produceLogResponse, e) -> {
-                            writerMetricGroup.setSendLatencyInMs(clock.milliseconds() - startTime);
+                            writerMetricGroup.setSendLatencyInMs(
+                                    System.currentTimeMillis() - startTime);
                             if (e != null) {
                                 handleWriteRequestException(e, recordsByBucket);
                             } else {
@@ -455,11 +388,12 @@ public class Sender implements Runnable {
             PutKvRequest request,
             long tableId,
             Map<TableBucket, WriteBatch> recordsByBucket) {
-        long startTime = clock.milliseconds();
+        long startTime = System.currentTimeMillis();
         gateway.putKv(request)
                 .whenComplete(
                         (putKvResponse, e) -> {
-                            writerMetricGroup.setSendLatencyInMs(clock.milliseconds() - startTime);
+                            writerMetricGroup.setSendLatencyInMs(
+                                    System.currentTimeMillis() - startTime);
                             if (e != null) {
                                 handleWriteRequestException(e, recordsByBucket);
                             } else {
