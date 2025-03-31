@@ -159,6 +159,9 @@ case $STARTSTOP in
                 if kill -0 $to_stop > /dev/null 2>&1; then
                     echo "Stopping $DAEMON daemon (pid: $to_stop) on host $HOSTNAME."
                     guaranteed_kill $to_stop $DAEMON
+                    echo "kill finish,try to sleep 50s to await hook execution"
+                    sleep 50s
+                    echo "kill finished"
                 else
                     echo "No $DAEMON daemon (pid: $to_stop) is running anymore on $HOSTNAME."
                 fi
