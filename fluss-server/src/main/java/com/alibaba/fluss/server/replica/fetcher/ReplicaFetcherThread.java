@@ -457,6 +457,12 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         LogTablet logTablet = replica.getLogTablet();
 
         MemoryLogRecords records = (MemoryLogRecords) replicaData.recordsOrEmpty();
+        LOG.info(
+                "ReplicaFetcherThread {} try to append offset {} to tb {}, current log end offset {}",
+                this,
+                fetchOffset,
+                tableBucket,
+                logTablet.localLogEndOffset());
         if (fetchOffset != logTablet.localLogEndOffset()) {
             throw new IllegalStateException(
                     String.format(
