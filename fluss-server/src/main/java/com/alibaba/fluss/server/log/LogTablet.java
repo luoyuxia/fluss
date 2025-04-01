@@ -631,6 +631,10 @@ public final class LogTablet {
                 WriterStateEntry.BatchMetadata duplicatedBatch = validateResult.left();
                 long startOffset = duplicatedBatch.firstOffset();
                 appendInfo.setFirstOffset(startOffset);
+                LOG.info(
+                        "Found duplicated batch for tb {}, set lastOffset to {}",
+                        getTableBucket(),
+                        duplicatedBatch.lastOffset);
                 appendInfo.setLastOffset(duplicatedBatch.lastOffset);
                 appendInfo.setMaxTimestamp(duplicatedBatch.timestamp);
                 appendInfo.setStartOffsetOfMaxTimestamp(startOffset);
