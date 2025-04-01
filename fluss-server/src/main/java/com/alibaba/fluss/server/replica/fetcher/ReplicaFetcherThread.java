@@ -37,13 +37,11 @@ import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
 import com.alibaba.fluss.utils.log.FairBucketStatusMap;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -457,6 +455,12 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         LogTablet logTablet = replica.getLogTablet();
 
         MemoryLogRecords records = (MemoryLogRecords) replicaData.recordsOrEmpty();
+        LOG.info(
+                "ReplicaFetcherThread {} try to append offset {} to tb {}, current log end offset {}",
+                this,
+                fetchOffset,
+                tableBucket,
+                logTablet.localLogEndOffset());
         if (fetchOffset != logTablet.localLogEndOffset()) {
             throw new IllegalStateException(
                     String.format(
