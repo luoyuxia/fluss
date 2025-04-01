@@ -151,8 +151,6 @@ public class AdjustIsrITCase {
                                         leaderAndIsr ->
                                                 assertThat(leaderAndIsr.isr())
                                                         .containsExactlyInAnyOrderElementsOf(isr)));
-
-        Thread.sleep(3_000_000);
     }
 
     @Test

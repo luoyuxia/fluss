@@ -33,7 +33,6 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.metrics.MetricNames;
-import com.alibaba.fluss.record.FileLogRecords;
 import com.alibaba.fluss.record.KvRecordBatch;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.remote.RemoteLogFetchInfo;
@@ -96,7 +95,6 @@ import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.MapUtils;
 import com.alibaba.fluss.utils.clock.Clock;
-import com.alibaba.fluss.utils.concurrent.ExecutorThreadFactory;
 import com.alibaba.fluss.utils.concurrent.Scheduler;
 
 import org.slf4j.Logger;
@@ -107,7 +105,6 @@ import javax.annotation.concurrent.GuardedBy;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -117,12 +114,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -153,7 +145,6 @@ public class ReplicaManager {
 
     private final ServerMetadataCache metadataCache;
     private final Lock replicaStateChangeLock = new ReentrantLock();
-    private final AtomicLong atomicLong = new AtomicLong();
 
     /**
      * delayed write operation manager is used to manage the delayed write operation, which is
@@ -189,12 +180,6 @@ public class ReplicaManager {
     private final String internalListenerName;
 
     private final Clock clock;
-
-    private final ScheduledExecutorService scheduledExecutorService =
-            Executors.newSingleThreadScheduledExecutor(
-                    new ExecutorThreadFactory("fluss-replica-manager-log-printer"));
-
-    private FileLogRecords fileLogRecords;
 
     public ReplicaManager(
             Configuration conf,
@@ -291,7 +276,7 @@ public class ReplicaManager {
         registerMetrics();
     }
 
-    public void startup() throws Exception {
+    public void startup() {
         // start up ISR expiration thread.
         // A follower can log behind leader for up tp configOptions#LOG_REPLICA_MAX_LAG_TIME x 1.5
         // before it is removed from ISR.
@@ -300,25 +285,6 @@ public class ReplicaManager {
                 this::maybeShrinkIsr,
                 0L,
                 conf.get(ConfigOptions.LOG_REPLICA_MAX_LAG_TIME).toMillis() / 2);
-        UUID fileUUId = UUID.randomUUID();
-        File file = new File(conf.getString(ConfigOptions.DATA_DIR), fileUUId.toString());
-        LOG.info("print log to file: {}", file.getPath());
-        fileLogRecords = FileLogRecords.open(file);
-        scheduledExecutorService.scheduleAtFixedRate(this::printLog, 0L, 1L, TimeUnit.SECONDS);
-    }
-
-    private void printLog() {
-        long value = atomicLong.getAndIncrement();
-        LOG.info("replica manager print log: {}", value);
-        try {
-            ByteBuffer longBuffer = ByteBuffer.wrap(String.valueOf(value).getBytes());
-            fileLogRecords.channel().write(longBuffer);
-            // 写入换行符
-            ByteBuffer newlineBuffer = ByteBuffer.wrap(System.lineSeparator().getBytes());
-            fileLogRecords.channel().write(newlineBuffer);
-        } catch (IOException e) {
-            throw new RuntimeException("Fail to write content to file channel");
-        }
     }
 
     public RemoteLogManager getRemoteLogManager() {
@@ -1173,8 +1139,6 @@ public class ReplicaManager {
         }
     }
 
-    private void startPrintLogThread() {}
-
     /** Flushes the high watermark value for all buckets to the high watermark checkpoint file. */
     @VisibleForTesting
     void checkpointHighWatermarks() {
@@ -1587,13 +1551,6 @@ public class ReplicaManager {
 
         // Checkpoint highWatermark.
         checkpointHighWatermarks();
-
-        scheduledExecutorService.shutdownNow();
-        try {
-            fileLogRecords.close();
-        } catch (IOException e) {
-            LOG.error("Error while closing fileLogRecords", e);
-        }
     }
 
     /** The result of reading log. */
