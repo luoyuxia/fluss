@@ -722,7 +722,11 @@ final class SenderTest {
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT, Duration.ofMillis(batchTimeoutMs));
         accumulator =
                 new RecordAccumulator(
-                        conf, idempotenceManager, writerMetricGroup, SystemClock.getInstance());
+                        conf,
+                        idempotenceManager,
+                        writerMetricGroup,
+                        SystemClock.getInstance(),
+                        Long.MAX_VALUE);
         return new Sender(
                 accumulator,
                 REQUEST_TIMEOUT,
@@ -731,6 +735,7 @@ final class SenderTest {
                 reties,
                 metadataUpdater,
                 idempotenceManager,
+                SystemClock.getInstance(),
                 writerMetricGroup);
     }
 
