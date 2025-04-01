@@ -304,7 +304,8 @@ public class ReplicaManager {
         File file = new File(conf.getString(ConfigOptions.DATA_DIR), fileUUId.toString());
         LOG.info("print log to file: {}", file.getPath());
         fileLogRecords = FileLogRecords.open(file);
-        scheduledExecutorService.scheduleAtFixedRate(this::printLog, 0L, 1L, TimeUnit.SECONDS);
+        scheduledExecutorService.scheduleAtFixedRate(
+                this::printLog, 0L, 10L, TimeUnit.MILLISECONDS);
     }
 
     private void printLog() {
