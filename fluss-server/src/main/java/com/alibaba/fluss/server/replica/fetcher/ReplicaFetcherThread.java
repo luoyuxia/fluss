@@ -37,11 +37,13 @@ import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
 import com.alibaba.fluss.utils.log.FairBucketStatusMap;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -165,6 +167,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                         BucketFetchStatus updatedStatus =
                                 bucketFetchStatus(tableBucket, initialFetchStatus, currentStatus);
 
+                        LOG.info(
+                                "3 I try to update fetch status from {} to {} for tb {}",
+                                fairBucketStatusMap.statusValue(tableBucket),
+                                updatedStatus,
+                                tableBucket);
                         fairBucketStatusMap.updateAndMoveToEnd(tableBucket, updatedStatus);
                     });
 
@@ -194,6 +201,12 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                                     currentFetchStatus.tableId(),
                                     currentFetchStatus.fetchOffset(),
                                     new DelayedItem(delay));
+
+                    LOG.info(
+                            "4 I try to update fetch status from {} to {} for tb {}",
+                            fairBucketStatusMap.statusValue(tableBucket),
+                            updatedFetchStatus,
+                            tableBucket);
                     fairBucketStatusMap.updateAndMoveToEnd(tableBucket, updatedFetchStatus);
                 }
             }
@@ -296,6 +309,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             if (nextFetchOffset != -1L && fairBucketStatusMap.contains(tableBucket)) {
                 BucketFetchStatus newFetchStatus =
                         new BucketFetchStatus(currentFetchStatus.tableId(), nextFetchOffset, null);
+                LOG.info(
+                        "2 I try to update fetch status from {} to {} for tb {}",
+                        fairBucketStatusMap.statusValue(tableBucket),
+                        newFetchStatus,
+                        tableBucket);
                 fairBucketStatusMap.updateAndMoveToEnd(tableBucket, newFetchStatus);
             }
         } catch (Exception e) {
@@ -329,6 +347,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     private boolean handleOutOfRangeError(TableBucket tableBucket, BucketFetchStatus fetchStatus) {
         try {
             BucketFetchStatus newFetchStatus = fetchOffsetAndTruncate(tableBucket);
+            LOG.info(
+                    "1 I try to update fetch status from {} to {} for tb {}",
+                    fairBucketStatusMap.statusValue(tableBucket),
+                    newFetchStatus,
+                    tableBucket);
             fairBucketStatusMap.updateAndMoveToEnd(tableBucket, newFetchStatus);
             LOG.info(
                     "Current offset {} for table bucket {} is out of range, which typically implies "
