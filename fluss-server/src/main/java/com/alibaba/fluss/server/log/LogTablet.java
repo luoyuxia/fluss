@@ -52,6 +52,7 @@ import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -903,6 +904,14 @@ public final class LogTablet {
                 writerStateManager.takeSnapshot();
             } catch (IOException e) {
                 LOG.error("Error while taking writer snapshot.", e);
+                File file = new File(localLog.getLogTabletDir(), "failed-msg.txt");
+                try (FileWriter writer = new FileWriter(file)) {
+                    writer.write("Error occurred at " + new java.util.Date() + ":\n");
+                    writer.write(e.getMessage() + "\n");
+                    writer.write("\n---\n");
+                } catch (IOException innerE) {
+                    LOG.error("Failed to write error message to file: ", innerE);
+                }
                 throw e;
             }
             localLog.close();
