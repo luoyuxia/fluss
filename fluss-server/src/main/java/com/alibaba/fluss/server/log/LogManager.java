@@ -409,17 +409,12 @@ public final class LogManager extends TabletManagerBase {
     public void shutdown() {
         LOG.info("Shutting down LogManager.");
 
-        try {
-            Files.createFile(new File(dataDir, ".shutdownbegin").toPath());
-            File file = new File(dataDir, "shutdownbegin.txt");
-            try (FileWriter writer = new FileWriter(file)) {
-                writer.write("Error occurred at " + new java.util.Date() + ":\n");
-                writer.write("\n---\n");
-            } catch (IOException innerE) {
-                LOG.error("Failed to write error message to file: ", innerE);
-            }
-        } catch (IOException e) {
-            LOG.warn("Failed to write clean shutdown marker.", e);
+        File file1 = new File(dataDir, "shutdownbegin.txt");
+        try (FileWriter writer = new FileWriter(file1)) {
+            writer.write("Error occurred at " + new java.util.Date() + ":\n");
+            writer.write("\n---\n");
+        } catch (IOException innerE) {
+            LOG.error("Failed to write error message to file: ", innerE);
         }
 
         String dataDirAbsolutePath = dataDir.getAbsolutePath();
@@ -485,34 +480,26 @@ public final class LogManager extends TabletManagerBase {
                     LOG.warn("Failed to write clean shutdown marker.", e);
                 }
             } else {
-                try {
-                    Files.createFile(new File(dataDir, ".uncleanedshotdown").toPath());
-                    File file = new File(dataDir, "uncleanedshotdown.txt");
-                    try (FileWriter writer = new FileWriter(file)) {
-                        writer.write("Error occurred at " + new java.util.Date() + ":\n");
-                        writer.write("\n---\n");
-                    } catch (IOException innerE) {
-                        LOG.error("Failed to write error message to file: ", innerE);
-                    }
-                } catch (IOException e) {
-                    LOG.warn("Failed to write clean shutdown marker.", e);
+                File file = new File(dataDir, "uncleanedshotdown.txt");
+                try (FileWriter writer = new FileWriter(file)) {
+                    writer.write("Error occurred at " + new java.util.Date() + ":\n");
+                    writer.write("loadLogsCompletedFlag: " + loadLogsCompletedFlag + "\n");
+                    writer.write("allJobsFinished: " + allJobsFinished + "\n");
+                    writer.write("\n---\n");
+                } catch (IOException innerE) {
+                    LOG.error("Failed to write error message to file: ", innerE);
                 }
             }
         } finally {
             pool.shutdown();
         }
 
-        try {
-            Files.createFile(new File(dataDir, ".showdownend").toPath());
-            File file = new File(dataDir, "showdownend.txt");
-            try (FileWriter writer = new FileWriter(file)) {
-                writer.write("Error occurred at " + new java.util.Date() + ":\n");
-                writer.write("\n---\n");
-            } catch (IOException innerE) {
-                LOG.error("Failed to write error message to file: ", innerE);
-            }
-        } catch (IOException e) {
-            LOG.warn("Failed to write clean shutdown marker.", e);
+        File file2 = new File(dataDir, "showdownend.txt");
+        try (FileWriter writer = new FileWriter(file2)) {
+            writer.write("Error occurred at " + new java.util.Date() + ":\n");
+            writer.write("\n---\n");
+        } catch (IOException innerE) {
+            LOG.error("Failed to write error message to file: ", innerE);
         }
 
         LOG.info("Shut down LogManager complete.");
