@@ -42,6 +42,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -433,11 +434,27 @@ public final class LogManager extends TabletManagerBase {
                     future.get();
                 } catch (InterruptedException e) {
                     LOG.warn("Interrupted while shutting down LogManager.");
+                    File file = new File(dataDir, "failed-msg2.txt");
+                    try (FileWriter writer = new FileWriter(file)) {
+                        writer.write("Error occurred at " + new java.util.Date() + ":\n");
+                        writer.write(e.getMessage() + "\n");
+                        writer.write("\n---\n");
+                    } catch (IOException innerE) {
+                        LOG.error("Failed to write error message to file: ", innerE);
+                    }
                     allJobsFinished = false;
                 } catch (ExecutionException e) {
                     LOG.warn(
                             "There was an error in one of the threads during LogManager shutdown",
                             e);
+                    File file = new File(dataDir, "failed-msg3.txt");
+                    try (FileWriter writer = new FileWriter(file)) {
+                        writer.write("Error occurred at " + new java.util.Date() + ":\n");
+                        writer.write(e.getMessage() + "\n");
+                        writer.write("\n---\n");
+                    } catch (IOException innerE) {
+                        LOG.error("Failed to write error message to file: ", innerE);
+                    }
                     allJobsFinished = false;
                 }
             }
