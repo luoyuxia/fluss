@@ -426,16 +426,19 @@ public final class LogManager extends TabletManagerBase {
             jobsForTabletDir.add(pool.submit(runnable));
         }
 
+        boolean allJobsFinished = true;
         try {
             for (Future<?> future : jobsForTabletDir) {
                 try {
                     future.get();
                 } catch (InterruptedException e) {
                     LOG.warn("Interrupted while shutting down LogManager.");
+                    allJobsFinished = false;
                 } catch (ExecutionException e) {
                     LOG.warn(
                             "There was an error in one of the threads during LogManager shutdown",
                             e);
+                    allJobsFinished = false;
                 }
             }
 
@@ -444,7 +447,7 @@ public final class LogManager extends TabletManagerBase {
 
             // mark that the shutdown was clean by creating marker file for log dirs that all logs
             // have been recovered at startup time.
-            if (loadLogsCompletedFlag) {
+            if (loadLogsCompletedFlag && allJobsFinished) {
                 LOG.debug("Writing clean shutdown marker.");
                 try {
                     Files.createFile(new File(dataDir, CLEAN_SHUTDOWN_FILE).toPath());

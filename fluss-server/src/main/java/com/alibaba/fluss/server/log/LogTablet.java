@@ -894,7 +894,7 @@ public final class LogTablet {
         }
     }
 
-    public void close() {
+    public void close() throws IOException {
         LOG.debug("close log tablet");
         synchronized (lock) {
             localLog.checkIfMemoryMappedBufferClosed();
@@ -903,6 +903,7 @@ public final class LogTablet {
                 writerStateManager.takeSnapshot();
             } catch (IOException e) {
                 LOG.error("Error while taking writer snapshot.", e);
+                throw e;
             }
             localLog.close();
         }

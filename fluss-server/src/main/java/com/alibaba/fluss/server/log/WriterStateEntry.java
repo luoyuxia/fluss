@@ -18,6 +18,9 @@ package com.alibaba.fluss.server.log;
 
 import com.alibaba.fluss.record.LogRecordBatch;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayDeque;
@@ -34,6 +37,8 @@ import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
  * for the incoming batch.
  */
 public class WriterStateEntry {
+    private static final Logger LOG = LoggerFactory.getLogger(WriterStateEntry.class);
+
     private static final int NUM_BATCHES_TO_RETAIN = 5;
     private final long writerId;
     private final Deque<BatchMetadata> batchMetadata = new ArrayDeque<>();
@@ -113,9 +118,25 @@ public class WriterStateEntry {
     }
 
     public Optional<BatchMetadata> findDuplicateBatch(int arriveBatchSequence) {
-        return batchMetadata.stream()
-                .filter(batchMetadata -> batchMetadata.batchSequence == arriveBatchSequence)
-                .findFirst();
+        Optional<BatchMetadata> originWay =
+                batchMetadata.stream()
+                        .filter(batchMetadata -> batchMetadata.batchSequence == arriveBatchSequence)
+                        .findFirst();
+
+        if (!originWay.isPresent() && !batchMetadata.isEmpty()) {
+            int lastSequence = batchMetadata.getLast().batchSequence;
+            if (arriveBatchSequence <= lastSequence) {
+                LOG.info(
+                        "arriveBatchSequence:{} <= lastSequence:{}",
+                        arriveBatchSequence,
+                        lastSequence);
+                return Optional.of(batchMetadata.getLast());
+            } else {
+                return originWay;
+            }
+        } else {
+            return originWay;
+        }
     }
 
     /**
