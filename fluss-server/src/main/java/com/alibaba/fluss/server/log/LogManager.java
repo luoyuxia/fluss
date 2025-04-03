@@ -514,6 +514,12 @@ public final class LogManager extends TabletManagerBase {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+
+        try {
+            writer.flush();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
         LOG.info("Shut down LogManager complete.");
     }
 
