@@ -94,8 +94,6 @@ public final class LogManager extends TabletManagerBase {
 
     private volatile OffsetCheckpointFile recoveryPointCheckpoint;
     private volatile boolean loadLogsCompletedFlag = false;
-    private final File file = new File(dataDir, "debug-log.txt");
-    private final FileWriter writer = new FileWriter(file, true);
 
     private LogManager(
             File dataDir,
@@ -411,6 +409,14 @@ public final class LogManager extends TabletManagerBase {
     /** Close all the logs. */
     public void shutdown() {
         LOG.info("Shutting down LogManager.");
+
+        File file = new File(dataDir, "debug-log.txt");
+        FileWriter writer = null;
+        try {
+            writer = new FileWriter(file, true);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
 
         try {
             writer.write("Begin this shutdown at: " + new java.util.Date() + ":\n");
