@@ -360,13 +360,18 @@ public class TabletServer extends ServerBase {
                 }
 
                 Files.createFile(
-                        new File(logManager.getDataDir(), "logmanager_shutdown_finish").toPath());
+                        new File(
+                                        conf.getString(ConfigOptions.DATA_DIR),
+                                        "logmanager_shutdown_finish")
+                                .toPath());
 
                 if (replicaManager != null) {
                     replicaManager.shutdown();
                 }
                 Files.createFile(
-                        new File(logManager.getDataDir(), "replicaManager_shutdown_finish")
+                        new File(
+                                        conf.getString(ConfigOptions.DATA_DIR),
+                                        "replicaManager_shutdown_finish")
                                 .toPath());
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
@@ -375,7 +380,9 @@ public class TabletServer extends ServerBase {
             if (exception != null) {
                 try {
                     Files.createFile(
-                            new File(logManager.getDataDir(), "close_with_exception_finish")
+                            new File(
+                                            conf.getString(ConfigOptions.DATA_DIR),
+                                            "close_with_exception_finish")
                                     .toPath());
                 } catch (Exception e) {
                     throw new RuntimeException(e);
