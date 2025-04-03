@@ -51,6 +51,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -92,7 +93,9 @@ public final class LogManager extends TabletManagerBase {
     private final Map<TableBucket, LogTablet> currentLogs = MapUtils.newConcurrentHashMap();
 
     private volatile OffsetCheckpointFile recoveryPointCheckpoint;
-    private boolean loadLogsCompletedFlag = false;
+    private volatile boolean loadLogsCompletedFlag = false;
+    private final File file = new File(dataDir, "debug-log.txt");
+    private final FileWriter writer = new FileWriter(file, true);
 
     private LogManager(
             File dataDir,
@@ -409,25 +412,25 @@ public final class LogManager extends TabletManagerBase {
     public void shutdown() {
         LOG.info("Shutting down LogManager.");
 
-        File file1 = new File(dataDir, "shutdownbegin.txt");
-        try (FileWriter writer = new FileWriter(file1, true)) {
-            writer.write("Error occurred at " + new java.util.Date() + ":\n");
-            writer.write("\n---\n");
-        } catch (IOException innerE) {
-            LOG.error("Failed to write error message to file: ", innerE);
+        try {
+            writer.write("Begin this shutdown at: " + new java.util.Date() + ":\n");
+            writer.write("\n----------------\n");
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
 
         String dataDirAbsolutePath = dataDir.getAbsolutePath();
         ExecutorService pool = createThreadPool("log-tablet-closing-" + dataDirAbsolutePath);
 
         List<LogTablet> logs = new ArrayList<>(currentLogs.values());
-        List<Future<?>> jobsForTabletDir = new ArrayList<>();
+        List<Future<TableBucket>> jobsForTabletDir = new ArrayList<>();
         for (LogTablet logTablet : logs) {
-            Runnable runnable =
+            Callable<TableBucket> runnable =
                     () -> {
                         try {
                             logTablet.flush(true);
                             logTablet.close();
+                            return logTablet.getTableBucket();
                         } catch (IOException e) {
                             throw new FlussRuntimeException(e);
                         }
@@ -437,31 +440,36 @@ public final class LogManager extends TabletManagerBase {
 
         boolean allJobsFinished = true;
         try {
-            for (Future<?> future : jobsForTabletDir) {
+            for (Future<TableBucket> future : jobsForTabletDir) {
                 try {
-                    future.get();
+                    TableBucket tableBucket = future.get();
+                    try {
+                        writer.write("Table bucket" + tableBucket + " flush success.\n");
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
                 } catch (InterruptedException e) {
                     LOG.warn("Interrupted while shutting down LogManager.");
-                    File file = new File(dataDir, "failed-msg2.txt");
-                    try (FileWriter writer = new FileWriter(file, true)) {
+                    try {
+                        writer.write("flush failed.\n");
                         writer.write("Error occurred at " + new java.util.Date() + ":\n");
                         writer.write(e.getMessage() + "\n");
                         writer.write("\n---\n");
-                    } catch (IOException innerE) {
-                        LOG.error("Failed to write error message to file: ", innerE);
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
                     }
                     allJobsFinished = false;
                 } catch (ExecutionException e) {
                     LOG.warn(
                             "There was an error in one of the threads during LogManager shutdown",
                             e);
-                    File file = new File(dataDir, "failed-msg3.txt");
-                    try (FileWriter writer = new FileWriter(file, true)) {
+                    try {
+                        writer.write("flush failed.\n");
                         writer.write("Error occurred at " + new java.util.Date() + ":\n");
                         writer.write(e.getMessage() + "\n");
                         writer.write("\n---\n");
-                    } catch (IOException innerE) {
-                        LOG.error("Failed to write error message to file: ", innerE);
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
                     }
                     allJobsFinished = false;
                 }
@@ -480,28 +488,26 @@ public final class LogManager extends TabletManagerBase {
                     LOG.warn("Failed to write clean shutdown marker.", e);
                 }
             } else {
-                File file = new File(dataDir, "uncleanedshotdown.txt");
-                try (FileWriter writer = new FileWriter(file, true)) {
-                    writer.write("Error occurred at " + new java.util.Date() + ":\n");
+                try {
+                    writer.write("uncleaned shut down \n");
                     writer.write("loadLogsCompletedFlag: " + loadLogsCompletedFlag + "\n");
                     writer.write("allJobsFinished: " + allJobsFinished + "\n");
                     writer.write("\n---\n");
-                } catch (IOException innerE) {
-                    LOG.error("Failed to write error message to file: ", innerE);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
                 }
             }
         } finally {
             pool.shutdown();
         }
 
-        File file2 = new File(dataDir, "showdownend.txt");
-        try (FileWriter writer = new FileWriter(file2, true)) {
-            writer.write("Error occurred at " + new java.util.Date() + ":\n");
+        try {
+            writer.write("shut down finished\n");
             writer.write("\n---\n");
-        } catch (IOException innerE) {
-            LOG.error("Failed to write error message to file: ", innerE);
+            writer.write("\n---\n");
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
-
         LOG.info("Shut down LogManager complete.");
     }
 
