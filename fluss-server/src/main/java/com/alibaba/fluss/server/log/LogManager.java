@@ -91,7 +91,7 @@ public final class LogManager extends TabletManagerBase {
     private final Map<TableBucket, LogTablet> currentLogs = MapUtils.newConcurrentHashMap();
 
     private volatile OffsetCheckpointFile recoveryPointCheckpoint;
-    private boolean loadLogsCompletedFlag = false;
+    private volatile boolean loadLogsCompletedFlag = false;
 
     private LogManager(
             File dataDir,
