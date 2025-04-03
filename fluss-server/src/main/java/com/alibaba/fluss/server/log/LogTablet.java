@@ -631,6 +631,10 @@ public final class LogTablet {
                 WriterStateEntry.BatchMetadata duplicatedBatch = validateResult.left();
                 long startOffset = duplicatedBatch.firstOffset();
                 appendInfo.setFirstOffset(startOffset);
+                LOG.info(
+                        "Found duplicated batch, try to update last offset to {} for table bucket {}",
+                        duplicatedBatch.lastOffset,
+                        getTableBucket());
                 appendInfo.setLastOffset(duplicatedBatch.lastOffset);
                 appendInfo.setMaxTimestamp(duplicatedBatch.timestamp);
                 appendInfo.setStartOffsetOfMaxTimestamp(startOffset);
@@ -785,7 +789,7 @@ public final class LogTablet {
             // We avoid potentially-costly fsync call, since we acquire UnifiedLog#lock here which
             // could block subsequent produces in the meantime.
             // flush is done in the scheduler thread along with segment flushing below.
-            Optional<File> maybeSnapshot = writerStateManager.takeSnapshot(false);
+            Optional<File> maybeSnapshot = writerStateManager.takeSnapshot(true);
             updateHighWatermarkWithLogEndOffset();
 
             scheduler.scheduleOnce(
@@ -1161,7 +1165,7 @@ public final class LogTablet {
                                     logStartOffset);
                     writerStateManager.updateMapEndOffset(startOffset);
 
-                    if (offsetsToSnapshot.contains(Optional.of(startOffset))) {
+                    if (offsetsToSnapshot.contains(Optional.of(segment.getBaseOffset()))) {
                         writerStateManager.takeSnapshot();
                     }
 
