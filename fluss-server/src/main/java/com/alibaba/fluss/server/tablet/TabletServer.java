@@ -56,6 +56,8 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -357,14 +359,27 @@ public class TabletServer extends ServerBase {
                     logManager.shutdown();
                 }
 
+                Files.createFile(
+                        new File(logManager.getDataDir(), "logmanager_shutdown_finish").toPath());
+
                 if (replicaManager != null) {
                     replicaManager.shutdown();
                 }
+                Files.createFile(
+                        new File(logManager.getDataDir(), "replicaManager_shutdown_finish")
+                                .toPath());
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
             }
 
             if (exception != null) {
+                try {
+                    Files.createFile(
+                            new File(logManager.getDataDir(), "close_with_exception_finish")
+                                    .toPath());
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
                 terminationFutures.add(FutureUtils.completedExceptionally(exception));
             }
             return FutureUtils.completeAll(terminationFutures);
