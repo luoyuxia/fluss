@@ -410,7 +410,7 @@ public final class LogManager extends TabletManagerBase {
         LOG.info("Shutting down LogManager.");
 
         File file1 = new File(dataDir, "shutdownbegin.txt");
-        try (FileWriter writer = new FileWriter(file1)) {
+        try (FileWriter writer = new FileWriter(file1, true)) {
             writer.write("Error occurred at " + new java.util.Date() + ":\n");
             writer.write("\n---\n");
         } catch (IOException innerE) {
@@ -443,7 +443,7 @@ public final class LogManager extends TabletManagerBase {
                 } catch (InterruptedException e) {
                     LOG.warn("Interrupted while shutting down LogManager.");
                     File file = new File(dataDir, "failed-msg2.txt");
-                    try (FileWriter writer = new FileWriter(file)) {
+                    try (FileWriter writer = new FileWriter(file, true)) {
                         writer.write("Error occurred at " + new java.util.Date() + ":\n");
                         writer.write(e.getMessage() + "\n");
                         writer.write("\n---\n");
@@ -456,7 +456,7 @@ public final class LogManager extends TabletManagerBase {
                             "There was an error in one of the threads during LogManager shutdown",
                             e);
                     File file = new File(dataDir, "failed-msg3.txt");
-                    try (FileWriter writer = new FileWriter(file)) {
+                    try (FileWriter writer = new FileWriter(file, true)) {
                         writer.write("Error occurred at " + new java.util.Date() + ":\n");
                         writer.write(e.getMessage() + "\n");
                         writer.write("\n---\n");
@@ -481,7 +481,7 @@ public final class LogManager extends TabletManagerBase {
                 }
             } else {
                 File file = new File(dataDir, "uncleanedshotdown.txt");
-                try (FileWriter writer = new FileWriter(file)) {
+                try (FileWriter writer = new FileWriter(file, true)) {
                     writer.write("Error occurred at " + new java.util.Date() + ":\n");
                     writer.write("loadLogsCompletedFlag: " + loadLogsCompletedFlag + "\n");
                     writer.write("allJobsFinished: " + allJobsFinished + "\n");
@@ -495,7 +495,7 @@ public final class LogManager extends TabletManagerBase {
         }
 
         File file2 = new File(dataDir, "showdownend.txt");
-        try (FileWriter writer = new FileWriter(file2)) {
+        try (FileWriter writer = new FileWriter(file2, true)) {
             writer.write("Error occurred at " + new java.util.Date() + ":\n");
             writer.write("\n---\n");
         } catch (IOException innerE) {
