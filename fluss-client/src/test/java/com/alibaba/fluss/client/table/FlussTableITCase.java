@@ -105,7 +105,10 @@ class FlussTableITCase extends ClientToServerITCaseBase {
         createTable(DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR, false);
         try (Table table = conn.getTable(DATA1_TABLE_PATH)) {
             AppendWriter appendWriter = table.newAppend().createWriter();
-            appendWriter.append(row(1, "a")).get();
+            for (int i = 0; i < 10000; i++) {
+                appendWriter.append(row(1, "a"));
+            }
+            appendWriter.flush();
         }
     }
 

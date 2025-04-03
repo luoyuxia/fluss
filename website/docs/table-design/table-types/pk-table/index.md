@@ -51,8 +51,8 @@ partition key.
 
 ## Bucket Assigning
 
-For primary key tables, Fluss always determines which bucket the data belongs to based on the hash value of the primary
-key for each record.
+For primary key tables, Fluss always determines which bucket the data belongs to based on the hash value of the bucket
+key(must be a subset of primary keys excluding partition keys) for each record.
 Data with the same hash value will be distributed to the same bucket.
 
 ## Partial Update
