@@ -97,7 +97,8 @@ public class WriterStateEntry {
     }
 
     public void addBath(int batchSequence, long lastOffset, int offsetDelta, long timestamp) {
-        addBatchMetadata(new BatchMetadata(batchSequence, lastOffset, offsetDelta, timestamp));
+        addBatchMetadata(
+                new BatchMetadata(writerId, batchSequence, lastOffset, offsetDelta, timestamp));
         this.lastTimestamp = timestamp;
     }
 
@@ -160,8 +161,15 @@ public class WriterStateEntry {
         public final long lastOffset;
         public final int offsetDelta;
         public final long timestamp;
+        public final long writerId;
 
-        public BatchMetadata(int batchSequence, long lastOffset, int offsetDelta, long timestamp) {
+        public BatchMetadata(
+                long writerId,
+                int batchSequence,
+                long lastOffset,
+                int offsetDelta,
+                long timestamp) {
+            this.writerId = writerId;
             this.batchSequence = batchSequence;
             this.lastOffset = lastOffset;
             this.offsetDelta = offsetDelta;

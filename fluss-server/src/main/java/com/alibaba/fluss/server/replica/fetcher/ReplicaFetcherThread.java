@@ -296,6 +296,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             }
 
             if (nextFetchOffset != -1L && fairBucketStatusMap.contains(tableBucket)) {
+                LOG.info(
+                        "Update fetch offset for bucket {} from {} to {}",
+                        tableBucket,
+                        currentFetchStatus.fetchOffset(),
+                        nextFetchOffset);
                 BucketFetchStatus newFetchStatus =
                         new BucketFetchStatus(currentFetchStatus.tableId(), nextFetchOffset, null);
                 fairBucketStatusMap.updateAndMoveToEnd(tableBucket, newFetchStatus);

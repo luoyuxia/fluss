@@ -631,10 +631,25 @@ public final class LogTablet {
                 WriterStateEntry.BatchMetadata duplicatedBatch = validateResult.left();
                 long startOffset = duplicatedBatch.firstOffset();
                 appendInfo.setFirstOffset(startOffset);
+                WriterStateEntry writerStateEntry =
+                        writerStateManager.lastEntry(duplicatedBatch.writerId).get();
+                StringBuilder sb = new StringBuilder();
+                for (WriterStateEntry.BatchMetadata batchMetadata :
+                        writerStateEntry.getBatchMetadata()) {
+                    sb.append(batchMetadata.batchSequence)
+                            .append(",")
+                            .append(batchMetadata.lastOffset)
+                            .append(",")
+                            .append(batchMetadata.offsetDelta)
+                            .append(";");
+                }
                 LOG.info(
-                        "Found duplicated batch, try to update last offset to {} for table bucket {}",
+                        "Found duplicated batch for table bucket {}, duplicated offset is {}, writer id is {} and batch sequence is: {}, all batch number: {}",
+                        getTableBucket(),
                         duplicatedBatch.lastOffset,
-                        getTableBucket());
+                        duplicatedBatch.writerId,
+                        duplicatedBatch.batchSequence,
+                        sb);
                 appendInfo.setLastOffset(duplicatedBatch.lastOffset);
                 appendInfo.setMaxTimestamp(duplicatedBatch.timestamp);
                 appendInfo.setStartOffsetOfMaxTimestamp(startOffset);
@@ -661,11 +676,12 @@ public final class LogTablet {
                 // todo update the first unstable offset (which is used to compute lso)
 
                 LOG.trace(
-                        "Appended message set with last offset: {}, first offset {}, next offset: {} and messages {}",
+                        "Appended message set with last offset: {}, first offset {}, next offset: {} and messages {} for tb {}",
                         appendInfo.lastOffset(),
                         appendInfo.firstOffset(),
                         localLog.getLocalLogEndOffset(),
-                        validRecords);
+                        validRecords,
+                        getTableBucket());
 
                 if (localLog.unflushedMessages() >= logFlushIntervalMessages) {
                     flush(false);
@@ -952,6 +968,15 @@ public final class LogTablet {
             }
 
             lastOffset = batch.lastLogOffset();
+            long baseLogOffset = batch.baseLogOffset();
+            int sequence = batch.batchSequence();
+            long writerId = batch.writerId();
+            LOG.info(
+                    "Try to append batch with base offset {} and sequence {} and writer id {} for tb {}",
+                    baseLogOffset,
+                    sequence,
+                    writerId,
+                    localLog.getTableBucket());
 
             int batchSize = batch.sizeInBytes();
             if (!batch.isValid()) {
