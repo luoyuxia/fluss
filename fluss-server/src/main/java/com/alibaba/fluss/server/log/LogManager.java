@@ -419,7 +419,7 @@ public final class LogManager extends TabletManagerBase {
         }
 
         try {
-            writer.write("Begin this shutdown at: " + new java.util.Date() + ":\n");
+            writer.write("Begin to shutdown LogManager:\n");
             writer.write("\n----------------\n");
         } catch (IOException e) {
             throw new RuntimeException(e);

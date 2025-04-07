@@ -24,7 +24,9 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.Optional;
 
 import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
@@ -84,6 +86,10 @@ public class WriterStateEntry {
 
     public int lastOffsetDelta() {
         return isEmpty() ? -1 : batchMetadata.getLast().offsetDelta;
+    }
+
+    public List<BatchMetadata> getBatchMetadata() {
+        return new ArrayList<>(batchMetadata);
     }
 
     public long lastBatchTimestamp() {

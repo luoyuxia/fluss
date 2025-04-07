@@ -203,6 +203,17 @@ public class WriterStateManager {
                     tableBucket,
                     System.currentTimeMillis() - start);
 
+            // print this snapshot:
+            for (Map.Entry<Long, WriterStateEntry> entry : writers.entrySet()) {
+                Long writerId = entry.getKey();
+                WriterStateEntry value = entry.getValue();
+                StringBuilder sb = new StringBuilder();
+                for (WriterStateEntry.BatchMetadata batchMetadata : value.getBatchMetadata()) {
+                    sb.append(batchMetadata.batchSequence).append(",");
+                }
+                LOG.info("WriterId: {} BatchMetadata: {}", writerId, sb);
+            }
+
             snapshots.put(snapshotFile.offset, snapshotFile);
 
             // Update the last snap offset according to the serialized map

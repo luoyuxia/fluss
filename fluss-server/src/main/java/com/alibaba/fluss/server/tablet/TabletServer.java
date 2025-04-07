@@ -56,6 +56,9 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -290,12 +293,47 @@ public class TabletServer extends ServerBase {
         synchronized (lock) {
             Throwable exception = null;
 
+            File file = new File(conf.get(ConfigOptions.DATA_DIR), "debug-log.txt");
+            FileWriter writer = null;
+            try {
+                if (!file.getParentFile().exists()) {
+                    boolean success = file.getParentFile().mkdirs();
+                    if (!success) {
+                        throw new IOException(
+                                "Failed to create directory: "
+                                        + file.getParentFile().getAbsolutePath());
+                    }
+                }
+
+                writer = new FileWriter(file, true);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to initialize DebugLogManager", e);
+            }
+
+            try {
+                writer.write("Begin this shutdown at: " + new java.util.Date() + ":\n");
+                writer.write("\n----------------\n");
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+
             try {
                 if (tabletServerMetricGroup != null) {
                     tabletServerMetricGroup.close();
                 }
+                try {
+                    writer.write("tabletServerMetricGroup close success.\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
+                }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
+                try {
+                    writer.write("tabletServerMetricGroup close failed.\n");
+                    writer.write(t.getMessage() + "\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
+                }
             }
 
             final Collection<CompletableFuture<Void>> terminationFutures = new ArrayList<>(2);
@@ -303,21 +341,48 @@ public class TabletServer extends ServerBase {
                 if (metricRegistry != null) {
                     terminationFutures.add(metricRegistry.closeAsync());
                 }
+                try {
+                    writer.write("metricRegistry close success.\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
+                }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
+                try {
+                    writer.write("metricRegistry close failed.\n");
+                    writer.write(t.getMessage() + "\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
+                }
             }
 
             try {
                 if (rpcServer != null) {
                     terminationFutures.add(rpcServer.closeAsync());
                 }
+                try {
+                    writer.write("rpcServer close success.\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
+                }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
+                try {
+                    writer.write("rpcServer close failed.\n");
+                    writer.write(t.getMessage() + "\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
+                }
             }
 
             try {
                 if (tabletService != null) {
                     tabletService.shutdown();
+                }
+                try {
+                    writer.write("tabletService close success.\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
@@ -326,6 +391,11 @@ public class TabletServer extends ServerBase {
             try {
                 if (zkClient != null) {
                     zkClient.close();
+                    try {
+                        writer.write("zkClient close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
 
                 // TODO currently, rpc client don't have timeout logic. After implementing the
@@ -333,35 +403,76 @@ public class TabletServer extends ServerBase {
                 // replica manager.
                 if (rpcClient != null) {
                     rpcClient.close();
+                    try {
+                        writer.write("rpcClient close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
 
                 if (clientMetricGroup != null) {
                     clientMetricGroup.close();
+                    try {
+                        writer.write("clientMetricGroup close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
 
                 // We must shut down the scheduler early because otherwise, the scheduler could
                 // touch other resources that might have been shutdown and cause exceptions.
                 if (scheduler != null) {
                     scheduler.shutdown();
+                    try {
+                        writer.write("scheduler close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
 
                 if (kvManager != null) {
                     kvManager.shutdown();
+                    try {
+                        writer.write("kvManager close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
 
                 if (remoteLogManager != null) {
                     remoteLogManager.close();
+                    try {
+                        writer.write("remoteLogManager close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
 
                 if (logManager != null) {
                     logManager.shutdown();
+                    try {
+                        writer.write("logManager close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
 
                 if (replicaManager != null) {
                     replicaManager.shutdown();
+                    try {
+                        writer.write("replicaManager close success.\n");
+                    } catch (IOException inE) {
+                        throw new RuntimeException(inE);
+                    }
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
+                try {
+                    writer.write("one manager close failed.\n");
+                    writer.write(t.getMessage() + "\n");
+                } catch (IOException inE) {
+                    throw new RuntimeException(inE);
+                }
             }
 
             if (exception != null) {
