@@ -82,6 +82,13 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
+    public CompletableFuture<Long> fetchLocalLogEndOffsetWhileBecomeLeader(
+            TableBucket tableBucket) {
+        return fetchLogOffset(
+                tableBucket, ListOffsetsParam.END_OFFSET_OFFSET_WHILE_BECOME_LEADER_TYPE);
+    }
+
+    @Override
     public CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> fetchLog(
             FetchLogRequest fetchLogRequest) {
         return tabletServerGateway
