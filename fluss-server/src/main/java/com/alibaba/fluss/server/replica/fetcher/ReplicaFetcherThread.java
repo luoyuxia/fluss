@@ -54,6 +54,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
@@ -162,6 +163,29 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         try {
             initialFetchStatusMap.forEach(
                     (tableBucket, initialFetchStatus) -> {
+                        long initOffset = initialFetchStatus.initOffset();
+                        try {
+                            Long leaderLocalEndOffsetWhileBecomeLeader =
+                                    leader.fetchLocalLogEndOffsetWhileBecomeLeader(tableBucket)
+                                            .get();
+                            if (leaderLocalEndOffsetWhileBecomeLeader != -1L
+                                    && leaderLocalEndOffsetWhileBecomeLeader < initOffset) {
+                                truncate(tableBucket, leaderLocalEndOffsetWhileBecomeLeader);
+                                LOG.info(
+                                        "Truncate bucket {} from offset {} to offset {} while add into fetcher thread",
+                                        tableBucket,
+                                        initOffset,
+                                        leaderLocalEndOffsetWhileBecomeLeader);
+                            }
+                            initialFetchStatus =
+                                    new InitialFetchStatus(
+                                            initialFetchStatus.tableId(),
+                                            initialFetchStatus.leader(),
+                                            leaderLocalEndOffsetWhileBecomeLeader);
+                        } catch (InterruptedException | ExecutionException e) {
+                            throw new RuntimeException(e);
+                        }
+
                         BucketFetchStatus currentStatus =
                                 fairBucketStatusMap.statusValue(tableBucket);
                         BucketFetchStatus updatedStatus =

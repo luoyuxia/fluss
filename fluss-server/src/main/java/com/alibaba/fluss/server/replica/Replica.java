@@ -438,6 +438,7 @@ public final class Replica {
                         throw new FencedLeaderEpochException(errorMessage);
                     }
 
+                    updateLocalEndOffsetWhileBecomeLeader();
                     leaderReplicaIdOpt.set(data.getLeader());
                     leaderEpoch = requestLeaderEpoch;
                     bucketEpoch = data.getBucketEpoch();
@@ -521,6 +522,10 @@ public final class Replica {
             // it should be from leader to follower, we need to destroy the kv tablet
             dropKv();
         }
+    }
+
+    private void updateLocalEndOffsetWhileBecomeLeader() {
+        logTablet.updateLocalEndOffsetWhileBecomeLeader();
     }
 
     private void createKv() {
@@ -790,6 +795,10 @@ public final class Replica {
         } catch (Exception e) {
             LOG.error("init kv periodic snapshot failed.", e);
         }
+    }
+
+    public long getLocalLogEndOffsetWhileBecomeLeader() {
+        return logTablet.getLocalLogEndOffsetWhileBecomeLeader();
     }
 
     public LogAppendInfo appendRecordsToLeader(MemoryLogRecords memoryLogRecords, int requiredAcks)
@@ -1219,6 +1228,9 @@ public final class Replica {
                         }
                     } else if (offsetType == ListOffsetsParam.LATEST_OFFSET_TYPE) {
                         return getLatestOffset(listOffsetsParam.getFollowerServerId());
+                    } else if (offsetType
+                            == ListOffsetsParam.END_OFFSET_OFFSET_WHILE_BECOME_LEADER_TYPE) {
+                        return logTablet.getLocalLogEndOffsetWhileBecomeLeader();
                     } else {
                         throw new IllegalArgumentException(
                                 "Invalid list offset type: " + offsetType);
