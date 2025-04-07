@@ -105,6 +105,8 @@ public final class LogTablet {
     @GuardedBy("lock")
     private volatile LogOffsetMetadata highWatermarkMetadata;
 
+    private volatile long localLogEndOffsetWhileBecomeLeader = -1L;
+
     // The minimum offset that should be retained in the local log. This is used to ensure that,
     // the offset of kv snapshot should be retained, otherwise, kv recovery will fail.
     private volatile long minRetainOffset;
@@ -259,6 +261,10 @@ public final class LogTablet {
         return logFormat;
     }
 
+    public long getLocalLogEndOffsetWhileBecomeLeader() {
+        return localLogEndOffsetWhileBecomeLeader;
+    }
+
     @VisibleForTesting
     public WriterStateManager writerStateManager() {
         return writerStateManager;
@@ -334,6 +340,16 @@ public final class LogTablet {
         metricGroup.meter(MetricNames.LOG_FLUSH_RATE, new MeterView(localLog.getFlushCount()));
         metricGroup.histogram(
                 MetricNames.LOG_FLUSH_LATENCY_MS, localLog.getFlushLatencyHistogram());
+    }
+
+    public void updateLocalEndOffsetWhileBecomeLeader() {
+        synchronized (lock) {
+            LOG.info(
+                    "Update local log end offset while become leader to {} for tb {}",
+                    localLogEndOffset(),
+                    localLog.getTableBucket());
+            localLogEndOffsetWhileBecomeLeader = localLog.getLocalLogEndOffset();
+        }
     }
 
     /**

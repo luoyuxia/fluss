@@ -54,6 +54,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
@@ -162,6 +163,41 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         try {
             initialFetchStatusMap.forEach(
                     (tableBucket, initialFetchStatus) -> {
+                        long initOffset = initialFetchStatus.initOffset();
+                        long leaderLocalEndOffsetWhileBecomeLeader = 0L;
+                        for (int i = 0; i < 1000; i++) {
+                            try {
+                                leaderLocalEndOffsetWhileBecomeLeader =
+                                        leader.fetchLocalLogEndOffsetWhileBecomeLeader(tableBucket)
+                                                .get();
+                            } catch (InterruptedException | ExecutionException e) {
+                                try {
+                                    Thread.sleep(3000);
+                                } catch (InterruptedException ex) {
+                                    throw new RuntimeException(ex);
+                                }
+                                LOG.warn(
+                                        "Error in response for fetch fetch local log endOffset "
+                                                + "while become leader request.",
+                                        e);
+                            }
+                        }
+
+                        if (leaderLocalEndOffsetWhileBecomeLeader != 0L
+                                && leaderLocalEndOffsetWhileBecomeLeader < initOffset) {
+                            truncate(tableBucket, leaderLocalEndOffsetWhileBecomeLeader);
+                            LOG.info(
+                                    "Truncate bucket {} from offset {} to offset {} while add into fetcher thread",
+                                    tableBucket,
+                                    initOffset,
+                                    leaderLocalEndOffsetWhileBecomeLeader);
+                            initialFetchStatus =
+                                    new InitialFetchStatus(
+                                            initialFetchStatus.tableId(),
+                                            initialFetchStatus.leader(),
+                                            leaderLocalEndOffsetWhileBecomeLeader);
+                        }
+
                         BucketFetchStatus currentStatus =
                                 fairBucketStatusMap.statusValue(tableBucket);
                         BucketFetchStatus updatedStatus =
