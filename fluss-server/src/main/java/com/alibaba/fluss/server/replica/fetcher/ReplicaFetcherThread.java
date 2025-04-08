@@ -17,6 +17,7 @@
 package com.alibaba.fluss.server.replica.fetcher;
 
 import com.alibaba.fluss.exception.CorruptRecordException;
+import com.alibaba.fluss.exception.DuplicateSequenceException;
 import com.alibaba.fluss.exception.InvalidRecordException;
 import com.alibaba.fluss.exception.RemoteStorageException;
 import com.alibaba.fluss.exception.StorageException;
@@ -322,9 +323,9 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                         currentFetchStatus.fetchOffset(),
                         e);
                 removeBucket(tableBucket);
-            } else {
+            } else if (e instanceof DuplicateSequenceException) {
                 LOG.error(
-                        "Unexpected error occurred while processing data for bucket {} at offset {}",
+                        "Found duplicate sequence during fetch for bucket {} at offset {}",
                         tableBucket,
                         currentFetchStatus.fetchOffset(),
                         e);
@@ -338,6 +339,13 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                             ex);
                     removeBucket(tableBucket);
                 }
+            } else {
+                LOG.error(
+                        "Unexpected error occurred while processing data for bucket {} at offset {}",
+                        tableBucket,
+                        currentFetchStatus.fetchOffset(),
+                        e);
+                removeBucket(tableBucket);
             }
         }
     }

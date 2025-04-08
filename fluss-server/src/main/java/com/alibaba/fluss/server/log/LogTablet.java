@@ -20,6 +20,7 @@ import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.CorruptRecordException;
+import com.alibaba.fluss.exception.DuplicateSequenceException;
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.exception.InvalidTimestampException;
 import com.alibaba.fluss.exception.LogOffsetOutOfRangeException;
@@ -598,10 +599,10 @@ public final class LogTablet {
      * segment if necessary.
      *
      * <p>This method will generally be responsible for assigning offsets to the messages, however
-     * if the needAssignOffsetAndTimestamp=false flag is passed we will only check that the existing
-     * offsets are valid.
+     * if the appendAsFollower=false flag is passed we will only check that the existing offsets are
+     * valid.
      */
-    private LogAppendInfo append(MemoryLogRecords records, boolean needAssignOffsetAndTimestamp)
+    private LogAppendInfo append(MemoryLogRecords records, boolean appendAsFollower)
             throws Exception {
         LogAppendInfo appendInfo = analyzeAndValidateRecords(records);
 
@@ -615,7 +616,7 @@ public final class LogTablet {
 
         synchronized (lock) {
             localLog.checkIfMemoryMappedBufferClosed();
-            if (needAssignOffsetAndTimestamp) {
+            if (appendAsFollower) {
                 long offset = localLog.getLocalLogEndOffset();
                 // assign offsets to the message set.
                 appendInfo.setFirstOffset(offset);
@@ -646,30 +647,37 @@ public final class LogTablet {
                 // have duplicated batch metadata, skip the append and update append info.
                 WriterStateEntry.BatchMetadata duplicatedBatch = validateResult.left();
                 long startOffset = duplicatedBatch.firstOffset();
-                appendInfo.setFirstOffset(startOffset);
-                WriterStateEntry writerStateEntry =
-                        writerStateManager.lastEntry(duplicatedBatch.writerId).get();
-                StringBuilder sb = new StringBuilder();
-                for (WriterStateEntry.BatchMetadata batchMetadata :
-                        writerStateEntry.getBatchMetadata()) {
-                    sb.append(batchMetadata.batchSequence)
-                            .append(",")
-                            .append(batchMetadata.lastOffset)
-                            .append(",")
-                            .append(batchMetadata.offsetDelta)
-                            .append(";");
+                if (appendAsFollower) {
+                    WriterStateEntry writerStateEntry =
+                            writerStateManager.lastEntry(duplicatedBatch.writerId).get();
+                    StringBuilder sb = new StringBuilder();
+                    for (WriterStateEntry.BatchMetadata batchMetadata :
+                            writerStateEntry.getBatchMetadata()) {
+                        sb.append(batchMetadata.batchSequence)
+                                .append(",")
+                                .append(batchMetadata.lastOffset)
+                                .append(",")
+                                .append(batchMetadata.offsetDelta)
+                                .append(";");
+                    }
+                    String errorMsg =
+                            String.format(
+                                    "Found duplicated batch for table bucket %s, duplicated offset is %s, "
+                                            + "writer id is %s and batch sequence is: %s, all batch number: %s",
+                                    getTableBucket(),
+                                    duplicatedBatch.lastOffset,
+                                    duplicatedBatch.writerId,
+                                    duplicatedBatch.batchSequence,
+                                    sb);
+                    LOG.error(errorMsg);
+                    throw new DuplicateSequenceException(errorMsg);
+                } else {
+                    appendInfo.setFirstOffset(startOffset);
+                    appendInfo.setLastOffset(duplicatedBatch.lastOffset);
+                    appendInfo.setMaxTimestamp(duplicatedBatch.timestamp);
+                    appendInfo.setStartOffsetOfMaxTimestamp(startOffset);
+                    appendInfo.setDuplicated(true);
                 }
-                LOG.info(
-                        "Found duplicated batch for table bucket {}, duplicated offset is {}, writer id is {} and batch sequence is: {}, all batch number: {}",
-                        getTableBucket(),
-                        duplicatedBatch.lastOffset,
-                        duplicatedBatch.writerId,
-                        duplicatedBatch.batchSequence,
-                        sb);
-                appendInfo.setLastOffset(duplicatedBatch.lastOffset);
-                appendInfo.setMaxTimestamp(duplicatedBatch.timestamp);
-                appendInfo.setStartOffsetOfMaxTimestamp(startOffset);
-                appendInfo.setDuplicated(true);
             } else {
                 // Append the records, and increment the local log end offset immediately after
                 // append because write to the transaction index below may fail, and we want to
