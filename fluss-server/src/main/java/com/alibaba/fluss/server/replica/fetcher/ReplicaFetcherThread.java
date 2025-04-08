@@ -351,10 +351,16 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         if (leaderLocalEndOffsetWhileBecomeLeader != 0L
                 && leaderLocalEndOffsetWhileBecomeLeader < localLogEndOffset) {
             truncate(tableBucket, leaderLocalEndOffsetWhileBecomeLeader);
+            // update fetch status.
+            BucketFetchStatus bucketFetchStatus =
+                    new BucketFetchStatus(
+                            tableBucket.getTableId(), leaderLocalEndOffsetWhileBecomeLeader, null);
+            fairBucketStatusMap.updateAndMoveToEnd(tableBucket, bucketFetchStatus);
             LOG.info(
-                    "Truncate bucket {} from offset {} to offset {} while get error",
-                    tableBucket,
+                    "Current offset {} for table bucket {} cannot recovery, which typically implies "
+                            + "a leader change, Truncate to {}",
                     localLogEndOffset,
+                    tableBucket,
                     leaderLocalEndOffsetWhileBecomeLeader);
         }
     }
