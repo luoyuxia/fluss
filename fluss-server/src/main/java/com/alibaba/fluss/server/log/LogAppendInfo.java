@@ -16,10 +16,15 @@
 
 package com.alibaba.fluss.server.log;
 
+import com.alibaba.fluss.record.LogRecordBatch;
+
 /**
  * Struct to hold various quantities we compute about each message set before appending to the log.
  */
 public final class LogAppendInfo {
+
+    public static final LogAppendInfo UNKNOWN_LOG_APPEND_INFO =
+            new LogAppendInfo(-1, -1, LogRecordBatch.NO_TIMESTAMP, -1, -1, -1, false);
 
     /** The number of validated records. */
     private final int shallowCount;

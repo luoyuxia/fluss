@@ -54,8 +54,6 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
-import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
-import com.alibaba.fluss.rpc.messages.MetadataRequest;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
 import com.alibaba.fluss.server.kv.snapshot.KvSnapshotHandle;
 import com.alibaba.fluss.types.DataTypes;
@@ -77,7 +75,6 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.alibaba.fluss.testutils.DataTestUtils.row;
-import static com.alibaba.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -356,7 +353,7 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
         FLUSS_CLUSTER_EXTENSION.stopTabletServer(0);
 
         // assert the cluster should have tablet server number to be 2
-        assertHasTabletServerNumber(2);
+        FLUSS_CLUSTER_EXTENSION.assertHasTabletServerNumber(2);
 
         // let's set the table's replica.factor to 3, should also throw exception
         TableDescriptor tableDescriptor =
@@ -376,7 +373,7 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
         FLUSS_CLUSTER_EXTENSION.startTabletServer(0);
 
         // assert the cluster should have tablet server number to be 3
-        assertHasTabletServerNumber(3);
+        FLUSS_CLUSTER_EXTENSION.assertHasTabletServerNumber(3);
         FLUSS_CLUSTER_EXTENSION.waitUtilAllGatewayHasSameMetadata();
 
         // we can create the table now
@@ -807,21 +804,6 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
                                         .get())
                 .cause()
                 .isInstanceOf(TooManyPartitionsException.class);
-    }
-
-    private void assertHasTabletServerNumber(int tabletServerNumber) {
-        CoordinatorGateway coordinatorGateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
-        retry(
-                Duration.ofMinutes(2),
-                () -> {
-                    assertThat(
-                                    coordinatorGateway
-                                            .metadata(new MetadataRequest())
-                                            .get()
-                                            .getTabletServersCount())
-                            .as("Tablet server number should be " + tabletServerNumber)
-                            .isEqualTo(tabletServerNumber);
-                });
     }
 
     private void assertNoBucketSnapshot(KvSnapshots snapshots, int expectBucketNum) {

@@ -44,6 +44,8 @@ public interface LogRecordBatch {
 
     int NO_BATCH_SEQUENCE = -1;
 
+    long NO_TIMESTAMP = -1L;
+
     /**
      * Check whether the checksum of this batch is correct.
      *

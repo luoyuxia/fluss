@@ -263,8 +263,17 @@ public final class FlussClusterExtension
 
     /** Start a new tablet server. */
     public void startTabletServer(int serverId) throws Exception {
+        startTabletServer(serverId, false);
+    }
+
+    public void startTabletServer(int serverId, boolean forceStartIfExists) throws Exception {
         if (tabletServers.containsKey(serverId)) {
-            throw new IllegalArgumentException("Tablet server " + serverId + " already exists.");
+            if (forceStartIfExists) {
+                tabletServers.remove(serverId);
+            } else {
+                throw new IllegalArgumentException(
+                        "Tablet server " + serverId + " already exists.");
+            }
         }
         String dataDir = getDataDir(serverId);
         Configuration tabletServerConf = new Configuration(clusterConf);
@@ -286,6 +295,20 @@ public final class FlussClusterExtension
 
         tabletServers.put(serverId, tabletServer);
         tabletServerInfos.add(serverInfo);
+    }
+
+    public void assertHasTabletServerNumber(int tabletServerNumber) {
+        CoordinatorGateway coordinatorGateway = newCoordinatorClient();
+        retry(
+                Duration.ofMinutes(2),
+                () ->
+                        assertThat(
+                                        coordinatorGateway
+                                                .metadata(new MetadataRequest())
+                                                .get()
+                                                .getTabletServersCount())
+                                .as("Tablet server number should be " + tabletServerNumber)
+                                .isEqualTo(tabletServerNumber));
     }
 
     private String getDataDir(int serverId) {
