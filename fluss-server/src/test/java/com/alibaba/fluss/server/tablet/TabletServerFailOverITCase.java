@@ -17,13 +17,14 @@
 package com.alibaba.fluss.server.tablet;
 
 import com.alibaba.fluss.config.ConfigOptions;
-import com.alibaba.fluss.exception.NetworkException;
+import com.alibaba.fluss.exception.RetriableException;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.gateway.TabletServerGateway;
 import com.alibaba.fluss.rpc.messages.ApiMessage;
+import com.alibaba.fluss.server.log.LogSegment;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import com.alibaba.fluss.types.DataTypes;
 
@@ -49,18 +50,18 @@ class TabletServerFailOverITCase {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
-    void testIOExceptionShouldStopTabletServer(boolean isPkTable) throws Exception {
+    void testIOExceptionShouldStopTabletServer(boolean isLogTable) throws Exception {
         FLUSS_CLUSTER_EXTENSION.assertHasTabletServerNumber(3);
         Schema schema =
-                isPkTable
+                isLogTable
                         ? Schema.newBuilder()
                                 .column("a", DataTypes.INT())
                                 .column("b", DataTypes.STRING())
-                                .primaryKey("a")
                                 .build()
                         : Schema.newBuilder()
                                 .column("a", DataTypes.INT())
                                 .column("b", DataTypes.STRING())
+                                .primaryKey("a")
                                 .build();
         TableDescriptor tableDescriptor =
                 TableDescriptor.builder()
@@ -70,7 +71,8 @@ class TabletServerFailOverITCase {
                         .build();
 
         TablePath tablePath =
-                TablePath.of("fluss", "test_ioexception_table_" + (isPkTable ? "pk" : "no_pk"));
+                TablePath.of(
+                        "test_failover", "test_ioexception_table_" + (isLogTable ? "log" : "pk"));
         long tableId = createTable(FLUSS_CLUSTER_EXTENSION, tablePath, tableDescriptor);
         TableBucket tb = new TableBucket(tableId, 0);
 
@@ -81,16 +83,19 @@ class TabletServerFailOverITCase {
                 FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(leader);
 
         // delete the active segment, which will cause IOException when append log/changelog
-        FLUSS_CLUSTER_EXTENSION
-                .waitAndGetLeaderReplica(tb)
-                .getLogTablet()
-                .activeLogSegment()
-                .deleteIfExists();
+        LogSegment logSegment =
+                FLUSS_CLUSTER_EXTENSION
+                        .waitAndGetLeaderReplica(tb)
+                        .getLogTablet()
+                        .activeLogSegment();
+        logSegment.flush();
+        logSegment.deleteIfExists();
 
-        // should get NetworkException: since the leader server is shutdown
-        assertThatThrownBy(() -> writeData(leaderGateWay, tableId, isPkTable))
+        // should get RetriableException since the leader server is shutdown
+        // and new Leader will be on new server
+        assertThatThrownBy(() -> writeData(leaderGateWay, tableId, isLogTable))
                 .cause()
-                .isInstanceOf(NetworkException.class);
+                .isInstanceOf(RetriableException.class);
 
         // should only has 2 tablet servers
         FLUSS_CLUSTER_EXTENSION.assertHasTabletServerNumber(2);
@@ -100,18 +105,18 @@ class TabletServerFailOverITCase {
     }
 
     private ApiMessage writeData(
-            TabletServerGateway tabletServerGateway, long tableId, boolean isPkTable)
+            TabletServerGateway tabletServerGateway, long tableId, boolean isLogTable)
             throws Exception {
-        if (isPkTable) {
+        if (isLogTable) {
+            return tabletServerGateway
+                    .produceLog(
+                            newProduceLogRequest(tableId, 0, 1, genMemoryLogRecordsByObject(DATA1)))
+                    .get();
+        } else {
             return tabletServerGateway
                     .putKv(
                             newPutKvRequest(
                                     tableId, 0, 1, genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE)))
-                    .get();
-        } else {
-            return tabletServerGateway
-                    .produceLog(
-                            newProduceLogRequest(tableId, 0, 1, genMemoryLogRecordsByObject(DATA1)))
                     .get();
         }
     }
