@@ -17,7 +17,10 @@
 package com.alibaba.fluss.server.replica.fetcher;
 
 import com.alibaba.fluss.exception.CorruptRecordException;
+import com.alibaba.fluss.exception.DuplicateSequenceException;
+import com.alibaba.fluss.exception.InvalidOffsetException;
 import com.alibaba.fluss.exception.InvalidRecordException;
+import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.exception.RemoteStorageException;
 import com.alibaba.fluss.exception.StorageException;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -322,9 +325,12 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                         currentFetchStatus.fetchOffset(),
                         e);
                 removeBucket(tableBucket);
-            } else {
+            } else if (e instanceof DuplicateSequenceException
+                    || e instanceof OutOfOrderSequenceException
+                    || e instanceof InvalidOffsetException) {
                 LOG.error(
-                        "Unexpected error occurred while processing data for bucket {} at offset {}",
+                        "Founding recoverable error during fetch for bucket {} at offset {}, try to "
+                                + "truncate to leader's local end offset while become leader",
                         tableBucket,
                         currentFetchStatus.fetchOffset(),
                         e);
@@ -338,6 +344,13 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                             ex);
                     removeBucket(tableBucket);
                 }
+            } else {
+                LOG.error(
+                        "Unexpected error occurred while processing data for bucket {} at offset {}",
+                        tableBucket,
+                        currentFetchStatus.fetchOffset(),
+                        e);
+                removeBucket(tableBucket);
             }
         }
     }
