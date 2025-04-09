@@ -43,6 +43,7 @@ import static com.alibaba.fluss.server.testutils.RpcMessageTestUtils.createTable
 import static com.alibaba.fluss.server.testutils.RpcMessageTestUtils.newDropTableRequest;
 import static com.alibaba.fluss.server.testutils.RpcMessageTestUtils.newProduceLogRequest;
 import static com.alibaba.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
+import static com.alibaba.fluss.testutils.DataTestUtils.genMemoryLogRecordsWithWriterId;
 import static com.alibaba.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -130,6 +131,49 @@ public class RemoteLogITCase {
                             .produceLog(
                                     newProduceLogRequest(
                                             tableId, 0, 1, genMemoryLogRecordsByObject(DATA1)))
+                            .get(),
+                    0,
+                    i * 10L);
+        }
+
+        FLUSS_CLUSTER_EXTENSION.waitUtilReplicaShrinkFromIsr(tb, follower);
+        FLUSS_CLUSTER_EXTENSION.waitUtilSomeLogSegmentsCopyToRemote(tb);
+
+        // restart follower
+        FLUSS_CLUSTER_EXTENSION.startTabletServer(follower);
+        FLUSS_CLUSTER_EXTENSION.waitUtilReplicaExpandToIsr(tb, follower);
+    }
+
+    @Test
+    void testFollowerFetchMoveToRemoteLogWithWriterStates() throws Exception {
+        long tableId =
+                createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR);
+        TableBucket tb = new TableBucket(tableId, 0);
+
+        FLUSS_CLUSTER_EXTENSION.waitUtilAllReplicaReady(tb);
+        int leader = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tb);
+        int follower;
+        for (int i = 0; true; i++) {
+            if (i != leader) {
+                follower = i;
+                break;
+            }
+        }
+        // kill follower, and restart after some segments in leader has been copied to remote.
+        FLUSS_CLUSTER_EXTENSION.stopTabletServer(follower);
+
+        TabletServerGateway leaderGateWay =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(leader);
+        // produce many records to trigger remote log copy.
+        for (int i = 0; i < 10; i++) {
+            assertProduceLogResponse(
+                    leaderGateWay
+                            .produceLog(
+                                    newProduceLogRequest(
+                                            tableId,
+                                            0,
+                                            1,
+                                            genMemoryLogRecordsWithWriterId(DATA1, 100, i, 0L)))
                             .get(),
                     0,
                     i * 10L);
