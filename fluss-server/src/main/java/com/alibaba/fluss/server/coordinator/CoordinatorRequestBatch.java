@@ -36,7 +36,7 @@ import com.alibaba.fluss.server.coordinator.event.NotifyLeaderAndIsrResponseRece
 import com.alibaba.fluss.server.entity.DeleteReplicaResultForBucket;
 import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrData;
 import com.alibaba.fluss.server.metadata.ServerInfo;
-import com.alibaba.fluss.server.utils.RpcMessageUtils;
+import com.alibaba.fluss.server.utils.ServerRpcMessageUtils;
 import com.alibaba.fluss.server.zk.data.LakeTableSnapshot;
 import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 
@@ -51,11 +51,11 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.getNotifyLeaderAndIsrResponseData;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeNotifyBucketLeaderAndIsr;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeNotifyLeaderAndIsrRequest;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.makeUpdateMetadataRequest;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.toTableBucket;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getNotifyLeaderAndIsrResponseData;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeNotifyBucketLeaderAndIsr;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeNotifyLeaderAndIsrRequest;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeUpdateMetadataRequest;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.toTableBucket;
 
 /** A request sender for coordinator server to request to tablet server by batch. */
 public class CoordinatorRequestBatch {
@@ -214,7 +214,7 @@ public class CoordinatorRequestBatch {
                                     stopBucketReplica.get(tableBucket) != null
                                             && stopBucketReplica.get(tableBucket).isDelete();
                             PbStopReplicaReqForBucket protoStopReplicaForBucket =
-                                    RpcMessageUtils.makeStopBucketReplica(
+                                    ServerRpcMessageUtils.makeStopBucketReplica(
                                             tableBucket, alreadyDelete || isDelete, leaderEpoch);
                             stopBucketReplica.put(tableBucket, protoStopReplicaForBucket);
                         });
@@ -246,7 +246,7 @@ public class CoordinatorRequestBatch {
                         id ->
                                 notifyRemoteLogOffsetsRequestMap.put(
                                         id,
-                                        RpcMessageUtils.makeNotifyRemoteLogOffsetsRequest(
+                                        ServerRpcMessageUtils.makeNotifyRemoteLogOffsetsRequest(
                                                 tableBucket,
                                                 remoteLogStartOffset,
                                                 remoteLogEndOffset)));
@@ -260,7 +260,7 @@ public class CoordinatorRequestBatch {
                         id ->
                                 notifyKvSnapshotOffsetRequestMap.put(
                                         id,
-                                        RpcMessageUtils.makeNotifyKvSnapshotOffsetRequest(
+                                        ServerRpcMessageUtils.makeNotifyKvSnapshotOffsetRequest(
                                                 tableBucket, minRetainOffset)));
     }
 
@@ -278,7 +278,7 @@ public class CoordinatorRequestBatch {
                                                     id, k -> new HashMap<>());
                             notifyLakeTableOffsetReqForBucketMap.put(
                                     tableBucket,
-                                    RpcMessageUtils.makeNotifyLakeTableOffsetForBucket(
+                                    ServerRpcMessageUtils.makeNotifyLakeTableOffsetForBucket(
                                             tableBucket, lakeTableSnapshot));
                         });
     }

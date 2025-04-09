@@ -550,7 +550,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     }
 
     private long processFetchResultFromRemoteStorage(
-            TableBucket tb, FetchLogResultForBucket replicaData) throws Exception {
+            TableBucket tb, FetchLogResultForBucket replicaData) {
         RemoteLogFetchInfo rlFetchInfo = replicaData.remoteLogFetchInfo();
         checkNotNull(rlFetchInfo, "RemoteLogFetchInfo is null");
         Replica replica = replicaManager.getReplicaOrException(tb);
@@ -566,24 +566,32 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             // until remoteLogSegment.endOffset().
             nextFetchOffset = remoteLogSegment.remoteLogEndOffset();
 
+            LOG.info("Truncate1 fully and start at {} for {}", nextFetchOffset, tb);
             // Truncate the existing local log before restoring the writer id snapshots.
-            replica.truncateFullyAndStartAt(nextFetchOffset);
+            try {
+                replica.truncateFullyAndStartAt(nextFetchOffset);
 
-            // TODO maybe need increase log start offset.
+                // TODO maybe need increase log start offset.
 
-            // Restore writer snapshot.
-            LogTablet log = replica.getLogTablet();
-            File snapshotFile = FlussPaths.writerSnapshotFile(log.getLogDir(), nextFetchOffset);
-            buildWriterIdSnapshotFile(snapshotFile, remoteLogSegment, rlm);
+                // Restore writer snapshot.
+                LogTablet log = replica.getLogTablet();
+                File snapshotFile = FlussPaths.writerSnapshotFile(log.getLogDir(), nextFetchOffset);
+                buildWriterIdSnapshotFile(snapshotFile, remoteLogSegment, rlm);
 
-            // Reload writer id snapshot.
-            log.writerStateManager().truncateFullyAndReloadSnapshots();
-            log.loadWriterSnapshot(nextFetchOffset);
-            LOG.debug(
-                    "Build the writer snapshots from remote storage for {} with active writer size: {} and remoteLogEndOffset: {}",
-                    tb,
-                    log.writerStateManager().activeWriters().size(),
-                    nextFetchOffset);
+                // Reload writer id snapshot.
+                log.writerStateManager().truncateFullyAndReloadSnapshots();
+                log.loadWriterSnapshot(nextFetchOffset);
+                LOG.info(
+                        "Build the writer snapshots from remote storage for {} with active writer size: {} and remoteLogEndOffset: {}",
+                        tb,
+                        log.writerStateManager().activeWriters().size(),
+                        nextFetchOffset);
+            } catch (Exception e) {
+                LOG.error(
+                        "Failed to truncate and restore writer snapshot for {} while log hash been moved to remote",
+                        tb,
+                        e);
+            }
         }
         return nextFetchOffset;
     }
