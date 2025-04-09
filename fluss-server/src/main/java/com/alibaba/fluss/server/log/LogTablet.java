@@ -44,14 +44,12 @@ import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.concurrent.Scheduler;
 import com.alibaba.fluss.utils.types.Either;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -826,16 +824,12 @@ public final class LogTablet {
             // current writer state end offset (which corresponds to the log end offset),
             // we manually override the state offset here prior to taking the snapshot.
             writerStateManager.updateMapEndOffset(segment.getBaseOffset());
-            // We avoid potentially-costly fsync call, since we acquire UnifiedLog#lock here which
-            // could block subsequent produces in the meantime.
-            // flush is done in the scheduler thread along with segment flushing below.
-            Optional<File> maybeSnapshot = writerStateManager.takeSnapshot(true);
+            writerStateManager.takeSnapshot(true);
             updateHighWatermarkWithLogEndOffset();
 
             scheduler.scheduleOnce(
                     "flush-log",
                     () -> {
-                        maybeSnapshot.ifPresent(f -> flushWriterStateSnapshot(f.toPath()));
                         flushUptoOffsetExclusive(segment.getBaseOffset());
                     });
         }
