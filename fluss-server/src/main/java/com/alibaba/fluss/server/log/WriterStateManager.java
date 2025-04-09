@@ -26,12 +26,10 @@ import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode
 import com.alibaba.fluss.utils.json.JsonDeserializer;
 import com.alibaba.fluss.utils.json.JsonSerdeUtils;
 import com.alibaba.fluss.utils.json.JsonSerializer;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.NotThreadSafe;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -189,7 +187,7 @@ public class WriterStateManager {
      * Take a snapshot at the current end offset if one does not already exist, then return the
      * snapshot file if taken.
      */
-    public Optional<File> takeSnapshot(boolean sync) throws IOException {
+    public void takeSnapshot(boolean sync) throws IOException {
         // If not a new offset, then it is not worth taking another snapshot
         if (lastMapOffset > lastSnapOffset) {
             SnapshotFile snapshotFile =
@@ -218,10 +216,7 @@ public class WriterStateManager {
 
             // Update the last snap offset according to the serialized map
             lastSnapOffset = lastMapOffset;
-
-            return Optional.of(snapshotFile.file());
         }
-        return Optional.empty();
     }
 
     /**
