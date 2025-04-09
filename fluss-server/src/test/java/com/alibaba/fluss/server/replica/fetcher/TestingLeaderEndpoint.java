@@ -76,6 +76,11 @@ public class TestingLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
+    public CompletableFuture<Long> fetchLeaderEndOffsetSnapshot(TableBucket tableBucket) {
+        return null;
+    }
+
+    @Override
     public CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> fetchLog(
             FetchLogRequest fetchLogRequest) {
         CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> response =
