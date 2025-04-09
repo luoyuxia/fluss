@@ -36,7 +36,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.getFetchLogData;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getFetchLogData;
 import static com.alibaba.fluss.utils.function.ThrowingRunnable.unchecked;
 
 /** The leader end point used for test, which replica manager in local. */
@@ -83,9 +83,10 @@ public class TestingLeaderEndpoint implements LeaderEndpoint {
 
     @Override
     public CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> fetchLog(
-            FetchLogRequest fetchLogRequest) {
+            FetchLogContext fetchLogContext) {
         CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> response =
                 new CompletableFuture<>();
+        FetchLogRequest fetchLogRequest = fetchLogContext.getFetchLogRequest();
         Map<TableBucket, FetchData> fetchLogData = getFetchLogData(fetchLogRequest);
         replicaManager.fetchLogRecords(
                 new FetchParams(
@@ -96,9 +97,9 @@ public class TestingLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
-    public Optional<FetchLogRequest> buildFetchLogRequest(
+    public Optional<FetchLogContext> buildFetchLogContext(
             Map<TableBucket, BucketFetchStatus> replicas) {
-        return RemoteLeaderEndpoint.buildFetchLogRequest(
+        return RemoteLeaderEndpoint.buildFetchLogContext(
                 replicas, localNode.id(), maxFetchSize, maxFetchSizeForBucket, -1, -1);
     }
 

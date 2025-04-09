@@ -835,7 +835,10 @@ public class ReplicaManager {
                 bucketAndStatus.put(
                         tb,
                         new InitialFetchStatus(
-                                tb.getTableId(), leaderId, logTablet.localLogEndOffset()));
+                                tb.getTableId(),
+                                replica.getTablePath(),
+                                leaderId,
+                                logTablet.localLogEndOffset()));
             }
         }
         replicaFetcherManager.addFetcherForBuckets(bucketAndStatus);
@@ -1030,9 +1033,7 @@ public class ReplicaManager {
                 }
 
                 FetchLogResultForBucket result;
-                if (replica != null
-                        && e instanceof LogOffsetOutOfRangeException
-                        && !isFromFollower) {
+                if (replica != null && e instanceof LogOffsetOutOfRangeException) {
                     result = handleFetchOutOfRangeException(replica, fetchOffset, e);
                 } else {
                     result = new FetchLogResultForBucket(tb, ApiError.fromThrowable(e));

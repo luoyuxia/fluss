@@ -24,6 +24,7 @@ import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.exception.RemoteStorageException;
 import com.alibaba.fluss.exception.StorageException;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.remote.RemoteLogFetchInfo;
 import com.alibaba.fluss.remote.RemoteLogSegment;
@@ -124,16 +125,16 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     }
 
     private void maybeFetch() {
-        Optional<FetchLogRequest> fetchRequestOpt =
+        Optional<FetchLogContext> fetchLogContextOpt =
                 inLock(
                         bucketStatusMapLock,
                         () -> {
-                            Optional<FetchLogRequest> fetchLogRequest = Optional.empty();
+                            Optional<FetchLogContext> fetchLogContext = Optional.empty();
                             try {
-                                fetchLogRequest =
-                                        leader.buildFetchLogRequest(
+                                fetchLogContext =
+                                        leader.buildFetchLogContext(
                                                 fairBucketStatusMap.bucketStatusMap());
-                                if (!fetchLogRequest.isPresent()) {
+                                if (!fetchLogContext.isPresent()) {
                                     LOG.trace(
                                             "There are no active buckets. Back off for {} ms before "
                                                     + "sending a fetch fetchLogRequest",
@@ -144,10 +145,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                             } catch (InterruptedException e) {
                                 LOG.error("Interrupted while awaiting fetch back off ms.", e);
                             }
-                            return fetchLogRequest;
+                            return fetchLogContext;
                         });
 
-        fetchRequestOpt.ifPresent(this::processFetchLogRequest);
+        fetchLogContextOpt.ifPresent(this::processFetchLogRequest);
     }
 
     void removeBuckets(Set<TableBucket> tableBuckets) throws InterruptedException {
@@ -197,6 +198,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     BucketFetchStatus updatedFetchStatus =
                             new BucketFetchStatus(
                                     currentFetchStatus.tableId(),
+                                    currentFetchStatus.tablePath(),
                                     currentFetchStatus.fetchOffset(),
                                     new DelayedItem(delay));
                     fairBucketStatusMap.updateAndMoveToEnd(tableBucket, updatedFetchStatus);
@@ -209,20 +211,21 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     }
 
     // TODO add fetch session to reduce the fetch request byte size.
-    private void processFetchLogRequest(FetchLogRequest fetchRequest) {
+    private void processFetchLogRequest(FetchLogContext fetchLogContext) {
         Set<TableBucket> bucketsWithError = new HashSet<>();
         Map<TableBucket, FetchLogResultForBucket> responseData = new HashMap<>();
+        FetchLogRequest fetchLogRequest = fetchLogContext.getFetchLogRequest();
         try {
             LOG.trace(
                     "Sending fetch log request {} to leader {}",
-                    fetchRequest,
+                    fetchLogRequest,
                     leader.leaderServerId());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            responseData = leader.fetchLog(fetchRequest).get(timeoutSeconds, TimeUnit.SECONDS);
+            responseData = leader.fetchLog(fetchLogContext).get(timeoutSeconds, TimeUnit.SECONDS);
         } catch (Throwable t) {
             if (isRunning()) {
-                LOG.warn("Error in response for fetch log request {}", fetchRequest, t);
+                LOG.warn("Error in response for fetch log request {}", fetchLogRequest, t);
                 inLock(
                         bucketStatusMapLock,
                         () -> bucketsWithError.addAll(fairBucketStatusMap.bucketSet()));
@@ -300,7 +303,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
 
             if (nextFetchOffset != -1L && fairBucketStatusMap.contains(tableBucket)) {
                 BucketFetchStatus newFetchStatus =
-                        new BucketFetchStatus(currentFetchStatus.tableId(), nextFetchOffset, null);
+                        new BucketFetchStatus(
+                                currentFetchStatus.tableId(),
+                                currentFetchStatus.tablePath(),
+                                nextFetchOffset,
+                                null);
                 fairBucketStatusMap.updateAndMoveToEnd(tableBucket, newFetchStatus);
             }
         } catch (Exception e) {
@@ -332,7 +339,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                         currentFetchStatus.fetchOffset(),
                         e);
                 try {
-                    truncateToLeaderEndOffsetSnapshot(tableBucket);
+                    truncateToLeaderEndOffsetSnapshot(tableBucket, currentFetchStatus.tablePath());
                 } catch (Exception ex) {
                     LOG.error(
                             "Error while truncating bucket {} at offset {}",
@@ -352,7 +359,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         }
     }
 
-    private void truncateToLeaderEndOffsetSnapshot(TableBucket tableBucket) throws Exception {
+    private void truncateToLeaderEndOffsetSnapshot(TableBucket tableBucket, TablePath tablePath)
+            throws Exception {
         long leaderLocalEndOffsetWhileBecomeLeader =
                 leader.fetchLeaderEndOffsetSnapshot(tableBucket).get();
         long localLogEndOffset =
@@ -365,7 +373,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             // update fetch status.
             BucketFetchStatus bucketFetchStatus =
                     new BucketFetchStatus(
-                            tableBucket.getTableId(), leaderLocalEndOffsetWhileBecomeLeader, null);
+                            tableBucket.getTableId(),
+                            tablePath,
+                            leaderLocalEndOffsetWhileBecomeLeader,
+                            null);
             fairBucketStatusMap.updateAndMoveToEnd(tableBucket, bucketFetchStatus);
         }
     }
@@ -389,8 +400,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
 
     /** Handle a replica whose offset is out of range and return a new fetch offset. */
     private BucketFetchStatus fetchOffsetAndTruncate(TableBucket tableBucket) throws Exception {
-        long replicaEndOffset =
-                replicaManager.getReplicaOrException(tableBucket).getLocalLogEndOffset();
+        Replica replica = replicaManager.getReplicaOrException(tableBucket);
+        long replicaEndOffset = replica.getLocalLogEndOffset();
 
         /*
          * Unclean leader election: A follower goes down, in the meanwhile the leader keeps
@@ -415,7 +426,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     replicaEndOffset,
                     leaderEndOffset);
             truncate(tableBucket, leaderEndOffset);
-            return new BucketFetchStatus(tableBucket.getTableId(), leaderEndOffset, null);
+            return new BucketFetchStatus(
+                    tableBucket.getTableId(), replica.getTablePath(), leaderEndOffset, null);
         } else {
             /*
              * If the leader's log end offset is greater than the follower's log end offset,
@@ -455,7 +467,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             }
 
             long offsetToFetch = Math.max(leaderStartOffset, replicaEndOffset);
-            return new BucketFetchStatus(tableBucket.getTableId(), offsetToFetch, null);
+            return new BucketFetchStatus(
+                    tableBucket.getTableId(), replica.getTablePath(), offsetToFetch, null);
         }
     }
 
@@ -482,7 +495,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             return currentFetchStatus;
         } else {
             return new BucketFetchStatus(
-                    tableBucket.getTableId(), initialFetchStatus.initOffset(), null);
+                    tableBucket.getTableId(),
+                    initialFetchStatus.tablePath(),
+                    initialFetchStatus.initOffset(),
+                    null);
         }
     }
 
@@ -542,40 +558,57 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     }
 
     private long processFetchResultFromRemoteStorage(
-            TableBucket tb, FetchLogResultForBucket replicaData) throws Exception {
+            TableBucket tb, FetchLogResultForBucket replicaData) {
         RemoteLogFetchInfo rlFetchInfo = replicaData.remoteLogFetchInfo();
         checkNotNull(rlFetchInfo, "RemoteLogFetchInfo is null");
         Replica replica = replicaManager.getReplicaOrException(tb);
-        long nextFetchOffset = -1L;
         RemoteLogManager rlm = replicaManager.getRemoteLogManager();
 
         // TODO after introduce leader epoch cache, we need to rebuild the local leader epoch
         // cache. Trace by https://github.com/alibaba/fluss/issues/673
 
         // update next fetch offset and writer id snapshot in local.
-        for (RemoteLogSegment remoteLogSegment : rlFetchInfo.remoteLogSegmentList()) {
-            // build writer snapshots until remoteLogSegment.endOffset() and start segment from
-            // until remoteLogSegment.endOffset().
-            nextFetchOffset = remoteLogSegment.remoteLogEndOffset();
+        RemoteLogSegment remoteLogSegmentWithMaxStartOffset =
+                rlFetchInfo
+                        .remoteLogSegmentList()
+                        .get(rlFetchInfo.remoteLogSegmentList().size() - 1);
+        // build writer snapshots until remoteLogSegment.endOffset() and start segment from
+        // until remoteLogSegment.endOffset().
+        long nextFetchOffset = remoteLogSegmentWithMaxStartOffset.remoteLogEndOffset();
 
+        try {
             // Truncate the existing local log before restoring the writer id snapshots.
             replica.truncateFullyAndStartAt(nextFetchOffset);
 
             // TODO maybe need increase log start offset.
 
-            // Restore writer snapshot.
             LogTablet log = replica.getLogTablet();
-            File snapshotFile = FlussPaths.writerSnapshotFile(log.getLogDir(), nextFetchOffset);
-            buildWriterIdSnapshotFile(snapshotFile, remoteLogSegment, rlm);
+            // 1. Perform a truncate before calling buildWriterIdSnapshotFile() to ensure that all
+            // historical data is completely cleaned up.
+            log.writerStateManager().truncateFullyAndStartAt(0L);
 
-            // Reload writer id snapshot.
-            log.writerStateManager().truncateFullyAndReloadSnapshots();
+            // 2. download writer id snapshots from remote storage.
+            File snapshotFile = FlussPaths.writerSnapshotFile(log.getLogDir(), nextFetchOffset);
+            buildWriterIdSnapshotFile(snapshotFile, remoteLogSegmentWithMaxStartOffset, rlm);
+
+            // 3. Perform a reloadSnapshots after buildWriterIdSnapshotFile() to load the latest
+            // downloaded writerId snapshot file into the writerStateManager.
+            // Note: This must occur  after the file is downloaded, so we cannot call
+            // truncateFullyAndReloadSnapshots() here to avoid  deleting the newly downloaded
+            // writerId snapshot file.
+            log.writerStateManager().reloadSnapshots();
             log.loadWriterSnapshot(nextFetchOffset);
-            LOG.debug(
-                    "Build the writer snapshots from remote storage for {} with active writer size: {} and remoteLogEndOffset: {}",
+            LOG.info(
+                    "Build the writer snapshots from remote storage for {} with active "
+                            + "writer size: {} and remoteLogEndOffset: {}",
                     tb,
                     log.writerStateManager().activeWriters().size(),
                     nextFetchOffset);
+        } catch (Exception e) {
+            LOG.error(
+                    "Failed to truncate and restore writer snapshot for {} while log hash been moved to remote",
+                    tb,
+                    e);
         }
         return nextFetchOffset;
     }

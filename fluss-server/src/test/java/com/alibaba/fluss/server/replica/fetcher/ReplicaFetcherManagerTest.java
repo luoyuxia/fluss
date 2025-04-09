@@ -95,7 +95,7 @@ class ReplicaFetcherManagerTest extends ReplicaTestBase {
                 result -> {});
 
         InitialFetchStatus initialFetchStatus =
-                new InitialFetchStatus(DATA1_TABLE_ID, leader.id(), fetchOffset);
+                new InitialFetchStatus(DATA1_TABLE_ID, DATA1_TABLE_PATH, leader.id(), fetchOffset);
 
         Map<TableBucket, InitialFetchStatus> initialFetchStateMap = new HashMap<>();
         initialFetchStateMap.put(tb, initialFetchStatus);

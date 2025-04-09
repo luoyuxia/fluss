@@ -96,6 +96,8 @@ final class LogLoader {
         // WriterStateManager used during log recovery may have deleted some files without the
         // LogLoader.writerStateManager instance witnessing the deletion.
         writerStateManager.removeStraySnapshots(logSegments.baseOffsets());
+        // TODO, set to logStartOffset instead of 0, trace by
+        // https://github.com/alibaba/fluss/issues/744.
         LogTablet.rebuildWriterState(
                 writerStateManager, logSegments, 0, nextOffset, isCleanShutdown);
 
