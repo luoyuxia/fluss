@@ -115,7 +115,7 @@ public final class FlussClusterExtension
     private File tempDir;
 
     private final Map<Integer, TabletServer> tabletServers;
-    private final List<ServerInfo> tabletServerInfos;
+    private final Map<Integer, ServerInfo> tabletServerInfos;
     private final Configuration clusterConf;
 
     /** Creates a new {@link Builder} for {@link FlussClusterExtension}. */
@@ -132,7 +132,7 @@ public final class FlussClusterExtension
         this.tabletServers = new HashMap<>(numOfTabletServers);
         this.coordinatorServerListeners = coordinatorServerListeners;
         this.tabletServerListeners = tabletServerListeners;
-        this.tabletServerInfos = new ArrayList<>();
+        this.tabletServerInfos = new HashMap<>();
         this.clusterConf = clusterConf;
     }
 
@@ -268,9 +268,7 @@ public final class FlussClusterExtension
 
     public void startTabletServer(int serverId, boolean forceStartIfExists) throws Exception {
         if (tabletServers.containsKey(serverId)) {
-            if (forceStartIfExists) {
-                tabletServers.remove(serverId);
-            } else {
+            if (!forceStartIfExists) {
                 throw new IllegalArgumentException(
                         "Tablet server " + serverId + " already exists.");
             }
@@ -294,7 +292,7 @@ public final class FlussClusterExtension
                         ServerType.TABLET_SERVER);
 
         tabletServers.put(serverId, tabletServer);
-        tabletServerInfos.add(serverInfo);
+        tabletServerInfos.put(serverId, serverInfo);
     }
 
     public void assertHasTabletServerNumber(int tabletServerNumber) {
@@ -333,7 +331,7 @@ public final class FlussClusterExtension
             throw new IllegalArgumentException("Tablet server " + serverId + " does not exist.");
         }
         tabletServers.remove(serverId).close();
-        tabletServerInfos.removeIf(node -> node.id() == serverId);
+        tabletServerInfos.remove(serverId);
     }
 
     public Configuration getClientConfig() {
@@ -363,7 +361,7 @@ public final class FlussClusterExtension
     }
 
     public List<ServerInfo> getTabletServerInfos() {
-        return tabletServerInfos;
+        return new ArrayList<>(tabletServerInfos.values());
     }
 
     public ServerNode getCoordinatorServerNode() {
@@ -391,7 +389,7 @@ public final class FlussClusterExtension
     }
 
     public List<ServerNode> getTabletServerNodes(@Nullable String listenerName) {
-        return tabletServerInfos.stream()
+        return tabletServerInfos.values().stream()
                 .map(
                         node -> {
                             Endpoint endpoint =

@@ -88,7 +88,6 @@ class TabletServerFailOverITCase {
                         .waitAndGetLeaderReplica(tb)
                         .getLogTablet()
                         .activeLogSegment();
-        logSegment.flush();
         logSegment.deleteIfExists();
 
         // should get RetriableException since the leader server is shutdown
