@@ -117,6 +117,9 @@ public class CoordinatorServer extends ServerBase {
     private AutoPartitionManager autoPartitionManager;
 
     @GuardedBy("lock")
+    private LakeTableTieringManager lakeTableTieringManager;
+
+    @GuardedBy("lock")
     private ExecutorService ioExecutor;
 
     public CoordinatorServer(Configuration conf) {
@@ -151,6 +154,8 @@ public class CoordinatorServer extends ServerBase {
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
 
             this.metadataCache = new ServerMetadataCacheImpl();
+
+            this.lakeTableTieringManager = new LakeTableTieringManager();
 
             MetadataManager metadataManager = new MetadataManager(zkClient, conf);
             this.coordinatorService =
@@ -199,6 +204,7 @@ public class CoordinatorServer extends ServerBase {
                             metadataCache,
                             coordinatorChannelManager,
                             autoPartitionManager,
+                            lakeTableTieringManager,
                             serverMetricGroup,
                             conf,
                             ioExecutor);
@@ -325,6 +331,14 @@ public class CoordinatorServer extends ServerBase {
             try {
                 if (coordinatorService != null) {
                     coordinatorService.shutdown();
+                }
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
+
+            try {
+                if (lakeTableTieringManager != null) {
+                    lakeTableTieringManager.close();
                 }
             } catch (Throwable t) {
                 exception = ExceptionUtils.firstOrSuppressed(t, exception);
