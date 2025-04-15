@@ -119,6 +119,7 @@ import java.util.stream.Collectors;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeGetLatestKvSnapshotsResponse;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeGetLatestLakeSnapshotResponse;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeKvSnapshotMetadataResponse;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeListAclsResponse;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.toGetFileSystemSecurityTokenResponse;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.toListPartitionInfosResponse;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.toPhysicalTablePath;
@@ -304,9 +305,9 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                     OperationType.DESCRIBE,
                     Resource.table(
                             partitionPath.getDatabaseName(), partitionPath.getTableName()))) {
-            partitionMetadataInfos.add(
-                    getPartitionMetadata(toPhysicalTablePath(partitionPath), listenerName));
-          }
+                partitionMetadataInfos.add(
+                        getPartitionMetadata(toPhysicalTablePath(partitionPath), listenerName));
+            }
         }
 
         // get partition info from partition ids
@@ -489,7 +490,7 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                 CommonRpcMessageUtils.toAclFilter(request.getAclFilter());
         try {
             Collection<AclBinding> acls = authorizer.listAcls(aclBindingFilter);
-            return CompletableFuture.completedFuture(RpcMessageUtils.makeListAclsResponse(acls));
+            return CompletableFuture.completedFuture(makeListAclsResponse(acls));
         } catch (Exception e) {
             throw new FlussRuntimeException(
                     String.format("Failed to list acls for resource: ", aclBindingFilter), e);

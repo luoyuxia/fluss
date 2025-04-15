@@ -96,17 +96,14 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
+import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toAclBindingFilters;
+import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toAclBindings;
+import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toPbAclInfo;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getAdjustIsrData;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getCommitLakeTableSnapshotData;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getCommitRemoteLogManifestData;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getPartitionSpec;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.toTablePath;
-import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toAclBindingFilters;
-import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toAclBindings;
-import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toPbAclInfo;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.getCommitLakeTableSnapshotData;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.getPartitionSpec;
-import static com.alibaba.fluss.server.utils.RpcMessageUtils.toTablePath;
 import static com.alibaba.fluss.utils.PartitionUtils.validatePartitionSpec;
 
 /** An RPC Gateway service for coordinator server. */
@@ -289,17 +286,8 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     "Only partitioned table support create partition.");
         }
 
-        Session session = currentSession();
-        if (!authorizer.authorize(
-                session,
-                OperationType.CREATE,
-                Resource.table(tablePath.getDatabaseName(), tablePath.getTableName()))) {
-            // todo: 统一一下
-            throw new AuthenticationException(
-                    String.format(
-                            "Principal %s have no authorization to operate %s on resource %s ",
-                            session.getPrincipal(), OperationType.CREATE, Resource.cluster()));
-        }
+
+        doAuthorize(OperationType.CREATE, Resource.table(tablePath.getDatabaseName(), tablePath.getTableName()));
 
         // first, validate the partition spec, and get resolved partition spec.
         PartitionSpec partitionSpec = getPartitionSpec(request.getPartitionSpec());
