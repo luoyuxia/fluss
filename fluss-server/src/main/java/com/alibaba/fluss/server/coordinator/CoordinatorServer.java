@@ -164,6 +164,7 @@ public class CoordinatorServer extends ServerBase {
                             remoteFileSystem,
                             zkClient,
                             this::getCoordinatorEventManager,
+                            lakeTableTieringManager,
                             metadataCache,
                             metadataManager);
 

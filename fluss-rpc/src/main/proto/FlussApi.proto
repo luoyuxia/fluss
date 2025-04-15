@@ -472,6 +472,16 @@ message PbNotifyLakeTableOffsetReqForBucket {
 message NotifyLakeTableOffsetResponse {
 }
 
+message LakeTieringHeartBeatRequest {
+  repeated int64 tiering_table_ids = 1 [packed = true];
+  repeated int64 finished_table_ids = 2 [packed = true];
+  required int32 request_table_num = 3;
+}
+
+message LakeTieringHeartBeatResponse {
+  repeated PbTableIdAndPath table_id_and_path = 1;
+}
+
 // --------------- Inner classes ----------------
 message PbApiVersion {
   required int32 api_key = 1;
@@ -742,4 +752,9 @@ message PbPartitionInfo {
 
 message PbPartitionSpec {
   repeated PbKeyValue partition_key_values = 1;
+}
+
+message PbTableIdAndPath {
+  required int64 table_id = 1;
+  required PbTablePath table_path = 2;
 }

@@ -51,6 +51,8 @@ import com.alibaba.fluss.rpc.messages.DropPartitionRequest;
 import com.alibaba.fluss.rpc.messages.DropPartitionResponse;
 import com.alibaba.fluss.rpc.messages.DropTableRequest;
 import com.alibaba.fluss.rpc.messages.DropTableResponse;
+import com.alibaba.fluss.rpc.messages.LakeTieringHeartBeatRequest;
+import com.alibaba.fluss.rpc.messages.LakeTieringHeartBeatResponse;
 import com.alibaba.fluss.server.RpcServiceBase;
 import com.alibaba.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitKvSnapshotEvent;
@@ -68,6 +70,7 @@ import com.alibaba.fluss.server.zk.data.BucketAssignment;
 import com.alibaba.fluss.server.zk.data.PartitionAssignment;
 import com.alibaba.fluss.server.zk.data.TableAssignment;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
+import com.alibaba.fluss.utils.types.Tuple2;
 
 import javax.annotation.Nullable;
 
@@ -76,6 +79,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
+import static com.alibaba.fluss.server.utils.RpcMessageUtils.fromTablePath;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.getCommitLakeTableSnapshotData;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.getPartitionSpec;
 import static com.alibaba.fluss.server.utils.RpcMessageUtils.toTablePath;
@@ -87,6 +91,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private final int defaultBucketNumber;
     private final int defaultReplicationFactor;
     private final Supplier<EventManager> eventManagerSupplier;
+    private final LakeTableTieringManager lakeTableTieringManager;
 
     // null if the cluster hasn't configured datalake format
     private final @Nullable DataLakeFormat dataLakeFormat;
@@ -96,6 +101,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             FileSystem remoteFileSystem,
             ZooKeeperClient zkClient,
             Supplier<EventManager> eventManagerSupplier,
+            LakeTableTieringManager lakeTableTieringManager,
             ServerMetadataCache metadataCache,
             MetadataManager metadataManager) {
         super(remoteFileSystem, ServerType.COORDINATOR, zkClient, metadataCache, metadataManager);
@@ -103,6 +109,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         this.defaultReplicationFactor = conf.getInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR);
         this.eventManagerSupplier = eventManagerSupplier;
         this.dataLakeFormat = conf.getOptional(ConfigOptions.DATALAKE_FORMAT).orElse(null);
+        this.lakeTableTieringManager = lakeTableTieringManager;
     }
 
     @Override
@@ -336,5 +343,36 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         new CommitLakeTableSnapshotEvent(
                                 getCommitLakeTableSnapshotData(request), response));
         return response;
+    }
+
+    @Override
+    public CompletableFuture<LakeTieringHeartBeatResponse> lakeTieringHeartBeat(
+            LakeTieringHeartBeatRequest request) {
+        // mark active tiering tables
+        for (long tableId : request.getTieringTableIds()) {
+            lakeTableTieringManager.heartBeatTableTiering(tableId);
+        }
+
+        // mark finished table
+        for (long tableId : request.getFinishedTableIds()) {
+            lakeTableTieringManager.finishTableTiering(tableId);
+        }
+
+        LakeTieringHeartBeatResponse lakeTieringHeartBeatResponse =
+                new LakeTieringHeartBeatResponse();
+
+        // may request tables
+        for (int i = 0; i < request.getRequestTableNum(); i++) {
+            Tuple2<Long, TablePath> tableIdAndPath = lakeTableTieringManager.requestTable();
+            if (tableIdAndPath == null) {
+                // no any available tables, not to request table anymore
+                break;
+            }
+            lakeTieringHeartBeatResponse
+                    .addTableIdAndPath()
+                    .setTableId(tableIdAndPath.f0)
+                    .setTablePath(fromTablePath(tableIdAndPath.f1));
+        }
+        return CompletableFuture.completedFuture(lakeTieringHeartBeatResponse);
     }
 }

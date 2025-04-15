@@ -25,6 +25,8 @@ import com.alibaba.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
 import com.alibaba.fluss.rpc.messages.CommitLakeTableSnapshotResponse;
 import com.alibaba.fluss.rpc.messages.CommitRemoteLogManifestRequest;
 import com.alibaba.fluss.rpc.messages.CommitRemoteLogManifestResponse;
+import com.alibaba.fluss.rpc.messages.LakeTieringHeartBeatRequest;
+import com.alibaba.fluss.rpc.messages.LakeTieringHeartBeatResponse;
 import com.alibaba.fluss.rpc.protocol.ApiKeys;
 import com.alibaba.fluss.rpc.protocol.RPC;
 
@@ -70,4 +72,14 @@ public interface CoordinatorGateway extends RpcGateway, AdminGateway {
     @RPC(api = ApiKeys.COMMIT_LAKE_TABLE_SNAPSHOT)
     CompletableFuture<CommitLakeTableSnapshotResponse> commitLakeTableSnapshot(
             CommitLakeTableSnapshotRequest request);
+
+    /**
+     * Send lake tiering heartbeat to coordinator server.
+     *
+     * @param request the request for lake tiering heartbeat.
+     * @return lake tiering heartbeat response.
+     */
+    @RPC(api = ApiKeys.LAKE_TIERING_HEARTBEAT)
+    CompletableFuture<LakeTieringHeartBeatResponse> lakeTieringHeartBeat(
+            LakeTieringHeartBeatRequest request);
 }

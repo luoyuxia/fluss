@@ -174,6 +174,12 @@ public class RpcMessageUtils {
         return new TablePath(pbTablePath.getDatabaseName(), pbTablePath.getTableName());
     }
 
+    public static PbTablePath fromTablePath(TablePath tablePath) {
+        return new PbTablePath()
+                .setDatabaseName(tablePath.getDatabaseName())
+                .setTableName(tablePath.getTableName());
+    }
+
     public static PhysicalTablePath toPhysicalTablePath(PbPhysicalTablePath pbPhysicalPath) {
         return PhysicalTablePath.of(
                 pbPhysicalPath.getDatabaseName(),
