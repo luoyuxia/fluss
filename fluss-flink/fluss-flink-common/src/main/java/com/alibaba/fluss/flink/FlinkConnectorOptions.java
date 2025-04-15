@@ -44,10 +44,10 @@ public class FlinkConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Specific the distribution policy of the Fluss table. "
-                                    + "Data will be distributed to each bucket according to the hash value of bucket-key(must be a subset of primary keys excluding partition keys for primary key table). "
+                                    + "Data will be distributed to each bucket according to the hash value of bucket-key (It must be a subset of the primary keys excluding partition keys of the primary key table). "
                                     + "If you specify multiple fields, delimiter is ','. "
-                                    + "If the table is with primary key and bucket key is not specified, the bucket key will be the primary key(excluding partition key). "
-                                    + "If the table is not with primary key, you can specific bucket key, and when the bucket key is not specified, "
+                                    + "If the table has a primary key and a bucket key is not specified, the bucket key will be used as primary key(excluding the partition key). "
+                                    + "If the table has no primary key and the bucket key is not specified, "
                                     + "the data will be distributed to each bucket randomly.");
 
     public static final ConfigOption<String> BOOTSTRAP_SERVERS =
