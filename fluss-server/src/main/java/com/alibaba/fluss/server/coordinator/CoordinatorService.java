@@ -19,7 +19,6 @@ package com.alibaba.fluss.server.coordinator;
 import com.alibaba.fluss.cluster.ServerType;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.exception.AuthenticationException;
 import com.alibaba.fluss.exception.InvalidDatabaseException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.exception.TableNotPartitionedException;
@@ -59,7 +58,6 @@ import com.alibaba.fluss.rpc.messages.DropPartitionResponse;
 import com.alibaba.fluss.rpc.messages.DropTableRequest;
 import com.alibaba.fluss.rpc.messages.DropTableResponse;
 import com.alibaba.fluss.rpc.messages.PbCreateAclRespInfo;
-import com.alibaba.fluss.rpc.netty.server.Session;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.rpc.protocol.Errors;
 import com.alibaba.fluss.security.acl.AclBinding;
@@ -286,8 +284,9 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     "Only partitioned table support create partition.");
         }
 
-
-        doAuthorize(OperationType.CREATE, Resource.table(tablePath.getDatabaseName(), tablePath.getTableName()));
+        doAuthorize(
+                OperationType.CREATE,
+                Resource.table(tablePath.getDatabaseName(), tablePath.getTableName()));
 
         // first, validate the partition spec, and get resolved partition spec.
         PartitionSpec partitionSpec = getPartitionSpec(request.getPartitionSpec());
