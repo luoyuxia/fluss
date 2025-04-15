@@ -778,18 +778,22 @@ public final class LogTablet {
         synchronized (lock) {
             LogSegment segment = localLog.getSegments().activeSegment();
 
-            if (segment.shouldRoll(
-                    new RollParams(maxSegmentFileSize, appendInfo.lastOffset(), messageSize))) {
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug(
-                            "Rolling new log segment (log_size = {}/{}), offset_index_size = {}/{}, time_index_size = {}/{}",
-                            segment.getSizeInBytes(),
-                            maxSegmentFileSize,
-                            segment.offsetIndex().entries(),
-                            segment.offsetIndex().maxEntries(),
-                            segment.timeIndex().entries(),
-                            segment.timeIndex().maxEntries());
-                }
+            RollParams rollParams =
+                    new RollParams(maxSegmentFileSize, appendInfo.lastOffset(), messageSize);
+            if (segment.shouldRoll(rollParams)) {
+                LOG.info(
+                        "Rolling new log segment for tb {}, (log_size = {}/{}), offset_index_size = {}/{}, time_index_size = {}/{}, should roll info: size: {}, offset full: {}, timestamp full: {}",
+                        localLog.getTableBucket(),
+                        segment.getSizeInBytes(),
+                        maxSegmentFileSize,
+                        segment.offsetIndex().entries(),
+                        segment.offsetIndex().maxEntries(),
+                        segment.timeIndex().entries(),
+                        segment.timeIndex().maxEntries(),
+                        segment.getSizeInBytes()
+                                > rollParams.maxSegmentBytes - rollParams.messagesSize,
+                        segment.offsetIndex().isFull(),
+                        segment.timeIndex().isFull());
 
                 roll(Optional.of(appendInfo.firstOffset()));
             }
