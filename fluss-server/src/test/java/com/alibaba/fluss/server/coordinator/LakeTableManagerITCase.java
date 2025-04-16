@@ -104,7 +104,7 @@ class LakeTableManagerITCase {
                 .cause()
                 .isInstanceOf(TableAlreadyExistException.class)
                 .hasMessage(
-                        "The table %s already exists in paimon catalog, please first drop the table in paimon catalog.",
+                        "The table %s already exists in paimon catalog, please first drop the table in paimon catalog or use a new table name.",
                         lakeTablePath);
     }
 }

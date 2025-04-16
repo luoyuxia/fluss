@@ -16,11 +16,17 @@
 
 package com.alibaba.fluss.lakehouse.lakestorage;
 
+import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.exception.TableAlreadyExistException;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
 
-/** A catalog interface to modify metadata in external datalake. */
+/**
+ * A catalog interface to modify metadata in external datalake.
+ *
+ * @since 0.7
+ */
+@PublicEvolving
 public interface LakeCatalog extends AutoCloseable {
 
     /**
