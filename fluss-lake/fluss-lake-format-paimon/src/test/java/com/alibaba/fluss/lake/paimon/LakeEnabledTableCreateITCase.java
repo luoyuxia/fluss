@@ -42,7 +42,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import javax.annotation.Nullable;
+
 import java.nio.file.Files;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -261,11 +264,92 @@ class LakeEnabledTableCreateITCase {
                 customProperties);
     }
 
+    @Test
+    void testCreateLakeEnabledTableWithAllTypes() throws Exception {
+        TableDescriptor logTable =
+                TableDescriptor.builder()
+                        .schema(
+                                Schema.newBuilder()
+                                        .column("log_c1", DataTypes.BOOLEAN())
+                                        .column("log_c2", DataTypes.TINYINT())
+                                        .column("log_c3", DataTypes.SMALLINT())
+                                        .column("log_c4", DataTypes.INT())
+                                        .column("log_c5", DataTypes.BIGINT())
+                                        .column("log_c6", DataTypes.FLOAT())
+                                        .column("log_c7", DataTypes.DOUBLE())
+                                        .column("log_c8", DataTypes.DECIMAL(10, 2))
+                                        .column("log_c9", DataTypes.CHAR(10))
+                                        .column("log_c10", DataTypes.STRING())
+                                        .column("log_c11", DataTypes.BYTES())
+                                        .column("log_c12", DataTypes.BINARY(5))
+                                        .column("log_c13", DataTypes.DATE())
+                                        .column("log_c14", DataTypes.TIME())
+                                        .column("log_c15", DataTypes.TIMESTAMP())
+                                        .column("log_c16", DataTypes.TIMESTAMP_LTZ())
+                                        .build())
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                        .build();
+        TablePath logTablePath = TablePath.of(DATABASE, "log_all_type_table");
+        admin.createTable(logTablePath, logTable, false).get();
+        Table paimonLogTable =
+                paimonCatalog.getTable(Identifier.create(DATABASE, logTablePath.getTableName()));
+        verifyPaimonTable(
+                paimonLogTable,
+                logTable,
+                RowType.of(
+                        new DataType[] {
+                            org.apache.paimon.types.DataTypes.BOOLEAN(),
+                            org.apache.paimon.types.DataTypes.TINYINT(),
+                            org.apache.paimon.types.DataTypes.SMALLINT(),
+                            org.apache.paimon.types.DataTypes.INT(),
+                            org.apache.paimon.types.DataTypes.BIGINT(),
+                            org.apache.paimon.types.DataTypes.FLOAT(),
+                            org.apache.paimon.types.DataTypes.DOUBLE(),
+                            org.apache.paimon.types.DataTypes.DECIMAL(10, 2),
+                            org.apache.paimon.types.DataTypes.CHAR(10),
+                            org.apache.paimon.types.DataTypes.STRING(),
+                            org.apache.paimon.types.DataTypes.BYTES(),
+                            org.apache.paimon.types.DataTypes.BINARY(5),
+                            org.apache.paimon.types.DataTypes.DATE(),
+                            org.apache.paimon.types.DataTypes.TIME(),
+                            org.apache.paimon.types.DataTypes.TIMESTAMP(),
+                            org.apache.paimon.types.DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(),
+                            // for __bucket, __offset, __timestamp
+                            org.apache.paimon.types.DataTypes.INT(),
+                            org.apache.paimon.types.DataTypes.BIGINT(),
+                            org.apache.paimon.types.DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE()
+                        },
+                        new String[] {
+                            "log_c1",
+                            "log_c2",
+                            "log_c3",
+                            "log_c4",
+                            "log_c5",
+                            "log_c6",
+                            "log_c7",
+                            "log_c8",
+                            "log_c9",
+                            "log_c10",
+                            "log_c11",
+                            "log_c12",
+                            "log_c13",
+                            "log_c14",
+                            "log_c15",
+                            "log_c16",
+                            BUCKET_COLUMN_NAME,
+                            OFFSET_COLUMN_NAME,
+                            TIMESTAMP_COLUMN_NAME
+                        }),
+                null,
+                BUCKET_NUM,
+                Collections.emptyMap());
+    }
+
     private void verifyPaimonTable(
             Table paimonTable,
             TableDescriptor flussTable,
             RowType expectedRowType,
-            String expectedBucketKey,
+            @Nullable String expectedBucketKey,
             int bucketNum,
             Map<String, String> expectedCustomProperties) {
         // check pk

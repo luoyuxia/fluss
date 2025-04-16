@@ -151,6 +151,8 @@ public class PaimonLakeCatalog implements LakeCatalog {
 
     @Override
     public void close() throws Exception {
-        paimonCatalog.close();
+        if (paimonCatalog != null) {
+            paimonCatalog.close();
+        }
     }
 }

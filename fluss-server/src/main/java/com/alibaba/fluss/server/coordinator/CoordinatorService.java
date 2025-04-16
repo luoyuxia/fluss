@@ -243,7 +243,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 throw new TableAlreadyExistException(
                         String.format(
                                 "The table %s already exists in %s catalog, please "
-                                        + "first drop the table in %s catalog.",
+                                        + "first drop the table in %s catalog or use a new table name.",
                                 tablePath, dataLakeFormat, dataLakeFormat));
             }
         }
