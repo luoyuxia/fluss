@@ -68,7 +68,8 @@ public class RequestsMetrics {
                         ApiKeys.PUT_KV,
                         ApiKeys.LOOKUP,
                         ApiKeys.FETCH_LOG,
-                        ApiKeys.PREFIX_LOOKUP);
+                        ApiKeys.PREFIX_LOOKUP,
+                        ApiKeys.GET_METADATA);
         return new RequestsMetrics(serverMetricsGroup, apiKeys);
     }
 

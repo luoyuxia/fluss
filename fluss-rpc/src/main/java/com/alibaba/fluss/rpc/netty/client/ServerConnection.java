@@ -35,6 +35,7 @@ import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.Channel;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFuture;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
+import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.MapUtils;
 
 import org.slf4j.Logger;
@@ -132,7 +133,13 @@ final class ServerConnection {
             // which enables clients to retry write/poll
             Throwable requestCause = cause;
             if (cause instanceof IOException) {
-                requestCause = new NetworkException("Disconnected from node " + node, cause);
+                requestCause =
+                        new NetworkException(
+                                "Disconnected from node "
+                                        + node
+                                        + " "
+                                        + ExceptionUtils.stringifyException(cause),
+                                cause);
             }
             // notify all the inflight requests
             for (int requestId : inflightRequests.keySet()) {

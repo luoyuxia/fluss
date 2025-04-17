@@ -160,7 +160,7 @@ public class MetadataUtils {
                                     newPartitionIdByPath,
                                     newTablePathToTableInfo);
                         })
-                .get(5, TimeUnit.MINUTES); // TODO currently, we don't have timeout logic in
+                .get(3, TimeUnit.MINUTES); // TODO currently, we don't have timeout logic in
         // RpcClient, it will let the get() block forever. So we
         // time out here
     }
@@ -267,7 +267,7 @@ public class MetadataUtils {
             throw new FlussRuntimeException("no alive tablet server in cluster");
         }
         // just pick one random server node
-        int offset = randOffset.nextInt(aliveTabletServers.size());
+        int offset = new Random().nextInt(aliveTabletServers.size());
         return aliveTabletServers.get(offset);
     }
 
