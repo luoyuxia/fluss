@@ -38,6 +38,9 @@ import com.alibaba.fluss.rpc.messages.PbServerNode;
 import com.alibaba.fluss.rpc.messages.PbTableMetadata;
 import com.alibaba.fluss.rpc.messages.PbTablePath;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -54,6 +57,8 @@ import java.util.concurrent.TimeoutException;
 /** Utils for metadata for client. */
 public class MetadataUtils {
 
+    private static final Logger LOG = LoggerFactory.getLogger(MetadataUtils.class);
+
     private static final Random randOffset = new Random();
 
     /**
@@ -64,7 +69,8 @@ public class MetadataUtils {
     public static Cluster sendMetadataRequestAndRebuildCluster(
             AdminReadOnlyGateway gateway, Set<TablePath> tablePaths)
             throws ExecutionException, InterruptedException, TimeoutException {
-        return sendMetadataRequestAndRebuildCluster(gateway, false, null, tablePaths, null, null);
+        return sendMetadataRequestAndRebuildCluster(
+                gateway, false, null, tablePaths, null, null, 180);
     }
 
     /**
@@ -78,15 +84,26 @@ public class MetadataUtils {
             RpcClient client,
             @Nullable Set<TablePath> tablePaths,
             @Nullable Collection<PhysicalTablePath> tablePartitionNames,
-            @Nullable Collection<Long> tablePartitionIds)
+            @Nullable Collection<Long> tablePartitionIds,
+            int timeout)
             throws ExecutionException, InterruptedException, TimeoutException {
         AdminReadOnlyGateway gateway =
                 GatewayClientProxy.createGatewayProxy(
-                        () -> getOneAvailableTabletServerNode(cluster),
+                        () -> {
+                            ServerNode serverNode = getOneAvailableTabletServerNode(cluster);
+                            LOG.info("Send metadata use node {}", serverNode);
+                            return serverNode;
+                        },
                         client,
                         AdminReadOnlyGateway.class);
         return sendMetadataRequestAndRebuildCluster(
-                gateway, true, cluster, tablePaths, tablePartitionNames, tablePartitionIds);
+                gateway,
+                true,
+                cluster,
+                tablePaths,
+                tablePartitionNames,
+                tablePartitionIds,
+                timeout);
     }
 
     /** maybe partial update cluster. */
@@ -96,7 +113,8 @@ public class MetadataUtils {
             Cluster originCluster,
             @Nullable Set<TablePath> tablePaths,
             @Nullable Collection<PhysicalTablePath> tablePartitions,
-            @Nullable Collection<Long> tablePartitionIds)
+            @Nullable Collection<Long> tablePartitionIds,
+            int timeout)
             throws ExecutionException, InterruptedException, TimeoutException {
         MetadataRequest metadataRequest =
                 ClientRpcMessageUtils.makeMetadataRequest(
@@ -160,7 +178,7 @@ public class MetadataUtils {
                                     newPartitionIdByPath,
                                     newTablePathToTableInfo);
                         })
-                .get(3, TimeUnit.MINUTES); // TODO currently, we don't have timeout logic in
+                .get(timeout, TimeUnit.SECONDS); // TODO currently, we don't have timeout logic in
         // RpcClient, it will let the get() block forever. So we
         // time out here
     }

@@ -60,6 +60,9 @@ public class MetadataUpdater {
     private static final Logger LOG = LoggerFactory.getLogger(MetadataUpdater.class);
 
     private static final int MAX_RETRY_TIMES = 5;
+    private static final int DEFAULT_MAX_TIMEOUT = 30;
+
+    private int currentTimeOut = 10;
 
     private final RpcClient rpcClient;
     protected volatile Cluster cluster;
@@ -258,12 +261,21 @@ public class MetadataUpdater {
                                 rpcClient,
                                 tablePaths,
                                 tablePartitionNames,
-                                tablePartitionIds);
+                                tablePartitionIds,
+                                currentTimeOut);
             }
+            currentTimeOut = DEFAULT_MAX_TIMEOUT;
         } catch (Exception e) {
             Throwable t = ExceptionUtils.stripExecutionException(e);
             if (t instanceof RetriableException || t instanceof TimeoutException) {
                 LOG.warn("Failed to update metadata, but the exception is re-triable.", t);
+                if (t instanceof TimeoutException) {
+                    currentTimeOut = Math.min(currentTimeOut + 10, 5 * 60);
+                    LOG.warn(
+                            "Metadata is time out, try to increase timeout to {}s", currentTimeOut);
+                } else {
+                    currentTimeOut = DEFAULT_MAX_TIMEOUT;
+                }
             } else {
                 throw new FlussRuntimeException("Failed to update metadata", t);
             }

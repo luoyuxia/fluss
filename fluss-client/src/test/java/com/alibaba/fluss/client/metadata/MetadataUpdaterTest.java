@@ -69,7 +69,8 @@ class MetadataUpdaterTest {
                             cluster,
                             null,
                             null,
-                            null);
+                            null,
+                            180);
         }
     }
 

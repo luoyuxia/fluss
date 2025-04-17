@@ -649,7 +649,7 @@ public class ConfigOptions {
                             "The number of queued requests allowed for worker threads, before blocking the I/O threads.");
 
     public static final ConfigOption<Duration> NETTY_CONNECTION_MAX_IDLE_TIME =
-            key("netty.connection.max-idle-time")
+            key("client.netty.connection.max-idle-time")
                     .durationType()
                     .defaultValue(Duration.ofMinutes(10))
                     .withDescription(
