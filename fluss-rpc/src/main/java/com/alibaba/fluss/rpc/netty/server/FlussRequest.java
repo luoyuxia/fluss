@@ -20,8 +20,7 @@ import com.alibaba.fluss.rpc.messages.ApiMessage;
 import com.alibaba.fluss.rpc.protocol.ApiMethod;
 import com.alibaba.fluss.rpc.protocol.RequestType;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
-
-import java.util.concurrent.CompletableFuture;
+import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
@@ -35,13 +34,10 @@ public final class FlussRequest implements RpcRequest {
     private final ApiMessage message;
     private final ByteBuf buffer;
     private final String listenerName;
-    private final CompletableFuture<ApiMessage> responseFuture;
+    private final ChannelHandlerContext channelContext;
 
     // the time when the request is received by server
     private final long startTimeMs;
-    private volatile long requestDequeTimeMs;
-    private volatile long requestCompletedTimeMs;
-    private volatile boolean cancelled = false;
 
     public FlussRequest(
             short apiKey,
@@ -51,7 +47,7 @@ public final class FlussRequest implements RpcRequest {
             ApiMessage message,
             ByteBuf buffer,
             String listenerName,
-            CompletableFuture<ApiMessage> responseFuture) {
+            ChannelHandlerContext channelContext) {
         this.apiKey = apiKey;
         this.apiVersion = apiVersion;
         this.requestId = requestId;
@@ -59,7 +55,7 @@ public final class FlussRequest implements RpcRequest {
         this.message = message;
         this.buffer = checkNotNull(buffer);
         this.listenerName = listenerName;
-        this.responseFuture = responseFuture;
+        this.channelContext = channelContext;
         this.startTimeMs = System.currentTimeMillis();
     }
 
@@ -94,48 +90,16 @@ public final class FlussRequest implements RpcRequest {
         }
     }
 
+    public ChannelHandlerContext getChannelContext() {
+        return channelContext;
+    }
+
     public long getStartTimeMs() {
         return startTimeMs;
     }
 
     public String getListenerName() {
         return listenerName;
-    }
-
-    public CompletableFuture<ApiMessage> getResponseFuture() {
-        return responseFuture;
-    }
-
-    public void complete(ApiMessage response) {
-        responseFuture.complete(response);
-    }
-
-    public void fail(Throwable t) {
-        responseFuture.completeExceptionally(t);
-    }
-
-    public void setRequestDequeTimeMs(long requestDequeTimeMs) {
-        this.requestDequeTimeMs = requestDequeTimeMs;
-    }
-
-    public long getRequestDequeTimeMs() {
-        return requestDequeTimeMs;
-    }
-
-    public void setRequestCompletedTimeMs(long requestCompletedTimeMs) {
-        this.requestCompletedTimeMs = requestCompletedTimeMs;
-    }
-
-    public long getRequestCompletedTimeMs() {
-        return requestCompletedTimeMs;
-    }
-
-    public void cancel() {
-        cancelled = true;
-    }
-
-    public boolean cancelled() {
-        return cancelled;
     }
 
     @Override
