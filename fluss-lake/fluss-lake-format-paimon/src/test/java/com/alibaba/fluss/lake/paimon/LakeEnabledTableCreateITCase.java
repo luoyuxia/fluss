@@ -22,6 +22,7 @@ import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FlussRuntimeException;
+import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
@@ -45,6 +46,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import javax.annotation.Nullable;
 
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -54,6 +56,7 @@ import static com.alibaba.fluss.lake.paimon.PaimonLakeCatalog.OFFSET_COLUMN_NAME
 import static com.alibaba.fluss.lake.paimon.PaimonLakeCatalog.TIMESTAMP_COLUMN_NAME;
 import static com.alibaba.fluss.server.utils.LakeStorageUtils.extractLakeProperties;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** ITCase for create lake enabled table with paimon as lake storage. */
 class LakeEnabledTableCreateITCase {
@@ -343,6 +346,30 @@ class LakeEnabledTableCreateITCase {
                 null,
                 BUCKET_NUM,
                 Collections.emptyMap());
+    }
+
+    @Test
+    void testThrowExceptionWhenConflictWithSystemColumn() {
+        for (String systemColumn :
+                Arrays.asList(BUCKET_COLUMN_NAME, OFFSET_COLUMN_NAME, TIMESTAMP_COLUMN_NAME)) {
+            TableDescriptor logTable =
+                    TableDescriptor.builder()
+                            .schema(
+                                    Schema.newBuilder()
+                                            .column("log_c1", DataTypes.INT())
+                                            .column(systemColumn, DataTypes.STRING())
+                                            .build())
+                            .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                            .build();
+            TablePath logTablePath = TablePath.of(DATABASE, "log_conflict_table");
+            assertThatThrownBy(() -> admin.createTable(logTablePath, logTable, false).get())
+                    .cause()
+                    .isInstanceOf(InvalidTableException.class)
+                    .hasMessage(
+                            "Column "
+                                    + systemColumn
+                                    + " conflicts with a system column name of paimon table, please rename the column.");
+        }
     }
 
     private void verifyPaimonTable(
