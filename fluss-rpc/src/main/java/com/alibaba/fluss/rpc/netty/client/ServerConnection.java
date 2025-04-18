@@ -37,13 +37,11 @@ import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFuture;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
 import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.MapUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
-
 import java.io.IOException;
 import java.net.ConnectException;
 import java.nio.channels.ClosedChannelException;
@@ -105,7 +103,9 @@ final class ServerConnection {
 
     /** Send an RPC request to the server and return a future for the response. */
     public CompletableFuture<ApiMessage> send(ApiKeys apikey, ApiMessage request) {
-        LOG.info("Send to {}", node);
+        if (apikey == ApiKeys.GET_METADATA) {
+            LOG.info("Try to send get metadata to {}, request id {}", node, request);
+        }
         return doSend(apikey, request, new CompletableFuture<>(), false);
     }
 
@@ -248,7 +248,7 @@ final class ServerConnection {
     private void establishConnection(ChannelFuture future) {
         synchronized (lock) {
             if (future.isSuccess()) {
-                LOG.debug("Established connection to server {}.", node);
+                LOG.info("Established connection to server {}.", node);
                 channel = future.channel();
                 channel.pipeline()
                         .addLast("handler", new NettyClientHandler(new ResponseCallback()));
@@ -273,6 +273,7 @@ final class ServerConnection {
             ApiMessage rawRequest,
             CompletableFuture<ApiMessage> responseFuture,
             boolean isInternalRequest) {
+        boolean isGetMetadata = apiKey == ApiKeys.GET_METADATA;
         synchronized (lock) {
             if (state.isDisconnected()) {
                 Exception exception =
@@ -284,15 +285,25 @@ final class ServerConnection {
                 responseFuture.completeExceptionally(exception);
                 return responseFuture;
             }
+            if (isGetMetadata) {
+                LOG.info("doSend get metadata before add pending to request");
+            }
             // 1. connection is not established: all requests are queued
             // 2. connection is established but not ready: internal requests are processed, other
             // requests are queued
             if (!state.isEstablished() || (!state.isReady() && !isInternalRequest)) {
+                LOG.info(
+                        "doSend get metadata fall back to add pending to request, "
+                                + "is established {}, state is ready {} ",
+                        state.isEstablished(),
+                        state.isReady());
                 pendingRequests.add(
                         new PendingRequest(apiKey, rawRequest, isInternalRequest, responseFuture));
                 return responseFuture;
             }
-
+            if (isGetMetadata) {
+                LOG.info("doSend get metadata after add pending to request");
+            }
             // version equals highestSupportedVersion might happen when requesting api version check
             // before serverApiVersions is  initialized. We always use the highest version for api
             // version checking.
@@ -311,6 +322,9 @@ final class ServerConnection {
             inflightRequests.put(inflight.requestId, inflight);
 
             // TODO: maybe we need to add timeout for the inflight requests
+            if (isGetMetadata) {
+                LOG.info("doSend get metadata, try to map inflight to byteBuf");
+            }
             ByteBuf byteBuf;
             try {
                 byteBuf = inflight.toByteBuf(channel.alloc());
@@ -328,7 +342,9 @@ final class ServerConnection {
 
             connectionMetricGroup.updateMetricsBeforeSendRequest(apiKey, rawRequest.totalSize());
 
-            LOG.info("do send {}", apiKey);
+            if (isGetMetadata) {
+                LOG.info("do send {}.", apiKey);
+            }
             channel.writeAndFlush(byteBuf)
                     .addListener(
                             (ChannelFutureListener)
@@ -353,11 +369,13 @@ final class ServerConnection {
     }
 
     private void handleApiVersionsResponse(ApiMessage response, Throwable cause) {
+        LOG.info("handleApiVersionsResponse: ", cause);
         if (cause != null) {
             close(cause);
             return;
         }
         if (!(response instanceof ApiVersionsResponse)) {
+            LOG.info("Unexpected response type for handleApiVersionsResponse: {}", response);
             close(new IllegalStateException("Unexpected response type " + response.getClass()));
             return;
         }
@@ -369,6 +387,9 @@ final class ServerConnection {
             // process pending requests
             PendingRequest pending;
             while ((pending = pendingRequests.pollFirst()) != null) {
+                if (pending.apikey == ApiKeys.GET_METADATA) {
+                    LOG.info("do send pending get metadata request.");
+                }
                 doSend(
                         pending.apikey,
                         pending.request,
