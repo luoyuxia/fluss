@@ -829,11 +829,7 @@ public final class Replica {
 
                     // we may need to increment high watermark if isr could be down to 1 or the
                     // replica count is 1.
-                    boolean hwIncreased = maybeIncrementLeaderHW(logTablet, clock.milliseconds());
-
-                    if (hwIncreased) {
-                        tryCompleteDelayedOperations();
-                    }
+                    maybeIncrementLeaderHW(logTablet, clock.milliseconds());
 
                     return appendInfo;
                 });
