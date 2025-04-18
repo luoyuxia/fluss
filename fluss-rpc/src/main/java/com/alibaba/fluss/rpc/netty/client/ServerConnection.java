@@ -105,6 +105,7 @@ final class ServerConnection {
 
     /** Send an RPC request to the server and return a future for the response. */
     public CompletableFuture<ApiMessage> send(ApiKeys apikey, ApiMessage request) {
+        LOG.info("Send to {}", node);
         return doSend(apikey, request, new CompletableFuture<>(), false);
     }
 
@@ -327,6 +328,7 @@ final class ServerConnection {
 
             connectionMetricGroup.updateMetricsBeforeSendRequest(apiKey, rawRequest.totalSize());
 
+            LOG.info("do send {}", apiKey);
             channel.writeAndFlush(byteBuf)
                     .addListener(
                             (ChannelFutureListener)

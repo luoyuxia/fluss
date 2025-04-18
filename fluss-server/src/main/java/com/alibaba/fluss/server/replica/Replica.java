@@ -115,7 +115,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -1396,7 +1395,7 @@ public final class Replica {
             // Send adjust isr request outside the leaderIsrUpdateLock since the completion
             // logic may increment the high watermark (and consequently complete delayed
             // operations).
-            adjustIsrUpdateOpt.map(this::submitAdjustIsr);
+            adjustIsrUpdateOpt.ifPresent(this::submitAdjustIsr);
         }
     }
 
@@ -1442,7 +1441,7 @@ public final class Replica {
             // Send adjust isr request outside the leaderIsrUpdateLock since the completion
             // logic may increment the high watermark (and consequently complete delayed
             // operations).
-            adjustIsrUpdateOpt.map(this::submitAdjustIsr);
+            adjustIsrUpdateOpt.ifPresent(this::submitAdjustIsr);
         }
     }
 
@@ -1490,13 +1489,7 @@ public final class Replica {
         return updatedState;
     }
 
-    @VisibleForTesting
-    CompletableFuture<LeaderAndIsr> submitAdjustIsr(IsrState.PendingIsrState proposedIsrState) {
-        return submitAdjustIsr(proposedIsrState, new CompletableFuture<>());
-    }
-
-    private CompletableFuture<LeaderAndIsr> submitAdjustIsr(
-            IsrState.PendingIsrState proposedIsrState, CompletableFuture<LeaderAndIsr> result) {
+    public void submitAdjustIsr(IsrState.PendingIsrState proposedIsrState) {
         LOG.debug("Submitting ISR state change {}.", proposedIsrState);
         adjustIsrManager
                 .submit(tableBucket, proposedIsrState.sentLeaderAndIsr())
@@ -1539,16 +1532,9 @@ public final class Replica {
                             // completion logic may increment the high watermark (and consequently
                             // complete delayed operations).
                             if (shouldRetry.get()) {
-                                submitAdjustIsr(proposedIsrState, result);
-                            } else {
-                                if (exception != null) {
-                                    result.completeExceptionally(exception);
-                                } else {
-                                    result.complete(leaderAndIsr);
-                                }
+                                submitAdjustIsr(proposedIsrState);
                             }
                         });
-        return result;
     }
 
     /**

@@ -119,9 +119,11 @@ public class MetadataUtils {
         MetadataRequest metadataRequest =
                 ClientRpcMessageUtils.makeMetadataRequest(
                         tablePaths, tablePartitions, tablePartitionIds);
+        LOG.info("Start to sendMetadataRequestAndRebuildCluster");
         return gateway.metadata(metadataRequest)
                 .thenApply(
                         response -> {
+                            LOG.info("send metadata get reply");
                             // Update the alive table servers.
                             Map<Integer, ServerNode> newAliveTabletServers =
                                     getAliveTabletServers(response);
