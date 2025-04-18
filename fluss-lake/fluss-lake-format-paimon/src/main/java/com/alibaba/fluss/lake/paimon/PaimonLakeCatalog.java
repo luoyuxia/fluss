@@ -17,6 +17,7 @@
 package com.alibaba.fluss.lake.paimon;
 
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.exception.TableAlreadyExistException;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeCatalog;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -29,9 +30,12 @@ import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
+import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** A Paimon implementation of {@link LakeCatalog}. */
 public class PaimonLakeCatalog implements LakeCatalog {
@@ -117,28 +121,43 @@ public class PaimonLakeCatalog implements LakeCatalog {
             options.set(CoreOptions.BUCKET, CoreOptions.BUCKET.defaultValue());
         }
 
+        Map<String, DataType> systemColumns = new LinkedHashMap<>();
+        if (!tableDescriptor.hasPrimaryKey()) {
+            // for log table, need to set bucket, offset and timestamp as system metadata columns
+            systemColumns.put(BUCKET_COLUMN_NAME, DataTypes.INT());
+            systemColumns.put(OFFSET_COLUMN_NAME, DataTypes.BIGINT());
+            // we use timestamp_ltz type
+            systemColumns.put(TIMESTAMP_COLUMN_NAME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE());
+        }
+
         // set schema
         for (com.alibaba.fluss.metadata.Schema.Column column :
                 tableDescriptor.getSchema().getColumns()) {
+            String columnName = column.getName();
+            if (systemColumns.containsKey(columnName)) {
+                throw new InvalidTableException(
+                        "Column "
+                                + columnName
+                                + " conflicts with a system column name of paimon table, please rename the column.");
+            }
             schemaBuilder.column(
-                    column.getName(),
+                    columnName,
                     column.getDataType().accept(FlussDataTypeToPaimonDataType.INSTANCE),
                     column.getComment().orElse(null));
         }
 
+        // add system metadata columns to schema
+        for (Map.Entry<String, DataType> systemColumn : systemColumns.entrySet()) {
+            schemaBuilder.column(systemColumn.getKey(), systemColumn.getValue());
+        }
+
         // set pk
-        if (tableDescriptor.getSchema().getPrimaryKey().isPresent()) {
+        if (tableDescriptor.hasPrimaryKey()) {
             schemaBuilder.primaryKey(
                     tableDescriptor.getSchema().getPrimaryKey().get().getColumnNames());
             options.set(
                     CoreOptions.CHANGELOG_PRODUCER.key(),
                     CoreOptions.ChangelogProducer.INPUT.toString());
-        } else {
-            // for log table, need to set bucket, offset and timestamp
-            schemaBuilder.column(BUCKET_COLUMN_NAME, DataTypes.INT());
-            schemaBuilder.column(OFFSET_COLUMN_NAME, DataTypes.BIGINT());
-            // we use timestamp_ltz type
-            schemaBuilder.column(TIMESTAMP_COLUMN_NAME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE());
         }
         // set partition keys
         schemaBuilder.partitionKeys(tableDescriptor.getPartitionKeys());
