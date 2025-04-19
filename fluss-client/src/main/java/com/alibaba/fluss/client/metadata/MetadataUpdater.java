@@ -60,9 +60,9 @@ public class MetadataUpdater {
     private static final Logger LOG = LoggerFactory.getLogger(MetadataUpdater.class);
 
     private static final int MAX_RETRY_TIMES = 5;
-    private static final int DEFAULT_MAX_TIMEOUT = 30;
+    private static final int DEFAULT_MAX_TIMEOUT = 5 * 60;
 
-    private int currentTimeOut = 10;
+    private int currentTimeOut = 5 * 60;
 
     private final RpcClient rpcClient;
     protected volatile Cluster cluster;
@@ -262,7 +262,10 @@ public class MetadataUpdater {
                                 tablePaths,
                                 tablePartitionNames,
                                 tablePartitionIds,
-                                currentTimeOut);
+                                30);
+            }
+            for (ServerNode serverNode : cluster.getAliveTabletServers().values()) {
+                rpcClient.connect(serverNode);
             }
             currentTimeOut = DEFAULT_MAX_TIMEOUT;
         } catch (Exception e) {
@@ -270,7 +273,7 @@ public class MetadataUpdater {
             if (t instanceof RetriableException || t instanceof TimeoutException) {
                 LOG.warn("Failed to update metadata, but the exception is re-triable.", t);
                 if (t instanceof TimeoutException) {
-                    currentTimeOut = Math.min(currentTimeOut + 10, 5 * 60);
+                    currentTimeOut = Math.min(currentTimeOut + 30, 10 * 60);
                     LOG.warn(
                             "Metadata is time out, try to increase timeout to {}s", currentTimeOut);
                 } else {
@@ -320,7 +323,12 @@ public class MetadataUpdater {
         AdminReadOnlyGateway adminReadOnlyGateway =
                 GatewayClientProxy.createGatewayProxy(
                         () -> serverNode, rpcClient, AdminReadOnlyGateway.class);
-        return sendMetadataRequestAndRebuildCluster(adminReadOnlyGateway, Collections.emptySet());
+        Cluster cluster =
+                sendMetadataRequestAndRebuildCluster(adminReadOnlyGateway, Collections.emptySet());
+        for (ServerNode serverNode1 : cluster.getAliveTabletServers().values()) {
+            rpcClient.connect(serverNode1);
+        }
+        return cluster;
     }
 
     /** Invalid the bucket metadata for the given physical table paths. */

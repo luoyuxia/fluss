@@ -18,6 +18,7 @@ package com.alibaba.fluss.rpc.netty.server;
 
 import com.alibaba.fluss.rpc.messages.ApiMessage;
 import com.alibaba.fluss.rpc.protocol.ApiError;
+import com.alibaba.fluss.rpc.protocol.ApiKeys;
 import com.alibaba.fluss.rpc.protocol.ApiManager;
 import com.alibaba.fluss.rpc.protocol.ApiMethod;
 import com.alibaba.fluss.rpc.protocol.MessageCodec;
@@ -94,6 +95,9 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                             buffer,
                             listenerName,
                             ctx);
+            if (apiKey == ApiKeys.GET_METADATA.id) {
+                LOG.info("Get metadata request, request id {}", requestId);
+            }
             // TODO: we can introduce a smarter and dynamic strategy to distribute requests to
             //  channels
             int channelIndex =

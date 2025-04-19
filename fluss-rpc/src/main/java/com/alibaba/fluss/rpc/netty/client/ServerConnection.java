@@ -37,11 +37,13 @@ import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFuture;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
 import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.MapUtils;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
+
 import java.io.IOException;
 import java.net.ConnectException;
 import java.nio.channels.ClosedChannelException;
@@ -60,6 +62,7 @@ final class ServerConnection {
     // TODO: add max inflight requests limit like Kafka's "max.in.flight.requests.per.connection"
     private final Map<Integer, InflightRequest> inflightRequests = MapUtils.newConcurrentHashMap();
     private final CompletableFuture<Void> closeFuture = new CompletableFuture<>();
+    private final CompletableFuture<Void> readyFuture = new CompletableFuture<>();
     private final ConnectionMetricGroup connectionMetricGroup;
 
     private final Object lock = new Object();
@@ -112,6 +115,10 @@ final class ServerConnection {
     /** Register a callback to be called when the connection is closed. */
     public void whenClose(Consumer<Throwable> closeCallback) {
         closeFuture.whenComplete((v, throwable) -> closeCallback.accept(throwable));
+    }
+
+    public void whenReady(Runnable readyCallback) {
+        readyFuture.whenComplete((v, t) -> readyCallback.run());
     }
 
     /** Close the connection. */
@@ -219,6 +226,9 @@ final class ServerConnection {
         public void onRequestResult(int requestId, ApiMessage response) {
             InflightRequest request = inflightRequests.remove(requestId);
             if (request != null && !request.responseFuture.isDone()) {
+                if (request.apiKey == ApiKeys.GET_METADATA.id) {
+                    LOG.info("onRequestResult not null, request id {}", request.requestId);
+                }
                 connectionMetricGroup.updateMetricsAfterGetResponse(
                         ApiKeys.forId(request.apiKey),
                         request.requestStartTime,
@@ -231,6 +241,9 @@ final class ServerConnection {
         public void onRequestFailure(int requestId, Throwable cause) {
             InflightRequest request = inflightRequests.remove(requestId);
             if (request != null && !request.responseFuture.isDone()) {
+                if (request.apiKey == ApiKeys.GET_METADATA.id) {
+                    LOG.info("onRequestFailure not null, request id {}", request.requestId);
+                }
                 connectionMetricGroup.updateMetricsAfterGetResponse(
                         ApiKeys.forId(request.apiKey), request.requestStartTime, 0);
                 request.responseFuture.completeExceptionally(cause);
@@ -254,6 +267,7 @@ final class ServerConnection {
                         .addLast("handler", new NettyClientHandler(new ResponseCallback()));
                 // start checking api versions
                 state = ConnectionState.CHECKING_API_VERSIONS;
+                readyFuture.complete(null);
                 // TODO: set correct client software name and version, used for metrics in server
                 ApiVersionsRequest request =
                         new ApiVersionsRequest()
@@ -343,7 +357,7 @@ final class ServerConnection {
             connectionMetricGroup.updateMetricsBeforeSendRequest(apiKey, rawRequest.totalSize());
 
             if (isGetMetadata) {
-                LOG.info("do send {}.", apiKey);
+                LOG.info("do send {}, request id {}.", apiKey, inflight.requestId);
             }
             channel.writeAndFlush(byteBuf)
                     .addListener(
@@ -364,6 +378,9 @@ final class ServerConnection {
                                             inflightRequests.remove(inflight.requestId);
                                         }
                                     });
+            if (isGetMetadata) {
+                LOG.info("finish flush to node {}, request id {}.", node, inflight.requestId);
+            }
             return inflight.responseFuture;
         }
     }

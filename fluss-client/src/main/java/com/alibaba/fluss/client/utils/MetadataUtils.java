@@ -90,8 +90,13 @@ public class MetadataUtils {
         AdminReadOnlyGateway gateway =
                 GatewayClientProxy.createGatewayProxy(
                         () -> {
-                            ServerNode serverNode = getOneAvailableTabletServerNode(cluster);
-                            LOG.info("Send metadata use node {}", serverNode);
+                            ServerNode serverNode = client.getRandomReadyServerNode();
+                            if (serverNode != null) {
+                                LOG.info("Send metadata use ready node {}", serverNode);
+                            } else {
+                                serverNode = getOneAvailableTabletServerNode(cluster);
+                                LOG.info("Send metadata use node {}", serverNode);
+                            }
                             return serverNode;
                         },
                         client,
@@ -180,7 +185,7 @@ public class MetadataUtils {
                                     newPartitionIdByPath,
                                     newTablePathToTableInfo);
                         })
-                .get(timeout, TimeUnit.SECONDS); // TODO currently, we don't have timeout logic in
+                .get(3 * 60, TimeUnit.SECONDS); // TODO currently, we don't have timeout logic in
         // RpcClient, it will let the get() block forever. So we
         // time out here
     }

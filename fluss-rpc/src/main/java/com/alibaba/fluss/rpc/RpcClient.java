@@ -23,6 +23,8 @@ import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.rpc.netty.client.NettyClient;
 import com.alibaba.fluss.rpc.protocol.ApiKeys;
 
+import javax.annotation.Nullable;
+
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -67,6 +69,9 @@ public interface RpcClient extends AutoCloseable {
      * @return true if the node is ready
      */
     boolean isReady(String serverUid);
+
+    @Nullable
+    ServerNode getRandomReadyServerNode();
 
     /**
      * Send an RPC request to the given server and return a future for the response. If the

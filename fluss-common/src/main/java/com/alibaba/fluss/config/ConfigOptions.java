@@ -651,7 +651,7 @@ public class ConfigOptions {
     public static final ConfigOption<Duration> NETTY_CONNECTION_MAX_IDLE_TIME =
             key("client.netty.connection.max-idle-time")
                     .durationType()
-                    .defaultValue(Duration.ofMinutes(10))
+                    .defaultValue(Duration.ofMinutes(100))
                     .withDescription(
                             "Close idle connections after the number of milliseconds specified by this config.");
 

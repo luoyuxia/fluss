@@ -17,6 +17,7 @@
 package com.alibaba.fluss.rpc.netty.server;
 
 import com.alibaba.fluss.rpc.RpcGatewayService;
+import com.alibaba.fluss.rpc.protocol.ApiKeys;
 import com.alibaba.fluss.rpc.protocol.RequestType;
 
 import org.slf4j.Logger;
@@ -53,6 +54,13 @@ final class RequestProcessor implements Runnable {
         while (isRunning) {
             RpcRequest request = requestChannel.pollRequest(300);
             if (request != null) {
+                if (request instanceof FlussRequest) {
+                    FlussRequest flussRequest = (FlussRequest) request;
+                    if (flussRequest.getApiKey() == ApiKeys.GET_METADATA.id) {
+                        LOG.info(
+                                "Get metadata request, request id{}.", flussRequest.getRequestId());
+                    }
+                }
                 if (request == ShutdownRequest.INSTANCE) {
                     LOG.debug(
                             "Request processor {} on server {} received shutdown command.",

@@ -36,11 +36,13 @@ import com.alibaba.fluss.utils.concurrent.FutureUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -67,6 +69,8 @@ public final class NettyClient implements RpcClient {
      */
     private final Map<String, ServerConnection> connections;
 
+    private final Map<String, ServerNode> readyNodes;
+
     /** Metric groups for client. */
     private final ClientMetricGroup clientMetricGroup;
 
@@ -74,6 +78,7 @@ public final class NettyClient implements RpcClient {
 
     public NettyClient(Configuration conf, ClientMetricGroup clientMetricGroup) {
         this.connections = MapUtils.newConcurrentHashMap();
+        this.readyNodes = MapUtils.newConcurrentHashMap();
 
         // build bootstrap
         this.eventGroup =
@@ -144,6 +149,16 @@ public final class NettyClient implements RpcClient {
         return connection.isReady();
     }
 
+    @Nullable
+    @Override
+    public ServerNode getRandomReadyServerNode() {
+        List<ServerNode> readyServerNodes = new ArrayList<>(readyNodes.values());
+        if (readyServerNodes.isEmpty()) {
+            return null;
+        }
+        return readyServerNodes.get(new Random().nextInt(readyServerNodes.size()));
+    }
+
     /** Send an RPC request to the given server and return a future for the response. */
     @Override
     public CompletableFuture<ApiMessage> sendRequest(
@@ -179,7 +194,12 @@ public final class NettyClient implements RpcClient {
                     LOG.debug("Creating connection to server {}.", node);
                     ServerConnection connection =
                             new ServerConnection(bootstrap, node, clientMetricGroup);
-                    connection.whenClose(ignore -> connections.remove(serverId, connection));
+                    connection.whenReady(() -> readyNodes.put(serverId, node));
+                    connection.whenClose(
+                            ignore -> {
+                                connections.remove(serverId, connection);
+                                readyNodes.remove(serverId);
+                            });
                     return connection;
                 });
     }

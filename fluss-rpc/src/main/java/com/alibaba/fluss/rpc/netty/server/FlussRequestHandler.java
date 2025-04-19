@@ -65,6 +65,9 @@ public class FlussRequestHandler implements RequestHandler<FlussRequest> {
             service.setCurrentSession(
                     new Session(request.getApiVersion(), request.getListenerName()));
             // invoke the corresponding method on RpcGateway instance.
+            if (request.getApiKey() == ApiKeys.GET_METADATA.id) {
+                LOG.info("try to invoke get metadata, request id {}", request.getRequestId());
+            }
             CompletableFuture<?> responseFuture =
                     (CompletableFuture<?>) api.getMethod().invoke(service, message);
             responseFuture.whenComplete(
@@ -73,6 +76,11 @@ public class FlussRequestHandler implements RequestHandler<FlussRequest> {
                             sendError(request, throwable);
                         } else {
                             if (response instanceof ApiMessage) {
+                                if (request.getApiKey() == ApiKeys.GET_METADATA.id) {
+                                    LOG.info(
+                                            "finish invoke get metadata, request id {}",
+                                            request.getRequestId());
+                                }
                                 sendResponse(request, requestDequeTimeMs, (ApiMessage) response);
                             } else {
                                 sendError(
@@ -103,6 +111,9 @@ public class FlussRequestHandler implements RequestHandler<FlussRequest> {
             long requestEndTimeMs = System.currentTimeMillis();
             updateRequestMetrics(
                     request, requestDequeTimeMs, requestCompletedTimeMs, requestEndTimeMs);
+            if (request.getApiKey() == ApiKeys.GET_METADATA.id) {
+                LOG.info("send response of get metadata, request id {}", request.getRequestId());
+            }
         } catch (Throwable t) {
             LOG.error("Failed to send response to client.", t);
             sendError(request, t);
