@@ -45,6 +45,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -194,7 +195,7 @@ class AutoPartitionManagerTest {
 
         TableInfo table = createPartitionedTable(2, 4, params.timeUnit);
         TablePath tablePath = table.getTablePath();
-        autoPartitionManager.addAutoPartitionTable(table);
+        autoPartitionManager.addAutoPartitionTable(table, true);
         // the first auto-partition task is a non-periodic task
         periodicExecutor.triggerNonPeriodicScheduledTask();
 
@@ -271,7 +272,7 @@ class AutoPartitionManagerTest {
         // create a partitioned with -1 retention to never auto-drop partitions
         TableInfo table = createPartitionedTable(-1, 4, AutoPartitionTimeUnit.DAY);
         TablePath tablePath = table.getTablePath();
-        autoPartitionManager.addAutoPartitionTable(table);
+        autoPartitionManager.addAutoPartitionTable(table, true);
         // the first auto-partition task is a non-periodic task
         periodicExecutor.triggerPeriodicScheduledTasks();
 
@@ -317,6 +318,44 @@ class AutoPartitionManagerTest {
                         "20250102",
                         "20250103",
                         "20250104");
+    }
+
+    @Test
+    void testDayPartitionDelay() throws Exception {
+        long startMs = Instant.now().toEpochMilli();
+        ManualClock clock = new ManualClock(startMs);
+        ManuallyTriggeredScheduledExecutorService periodicExecutor =
+                new ManuallyTriggeredScheduledExecutorService();
+        AutoPartitionManager autoPartitionManager =
+                new AutoPartitionManager(
+                        new TestingMetadataCache(3),
+                        metadataManager,
+                        new Configuration(),
+                        clock,
+                        periodicExecutor);
+        autoPartitionManager.start();
+
+        // create a partitioned with -1 retention to never auto-drop partitions
+        TableInfo table = createPartitionedTable(-1, 4, AutoPartitionTimeUnit.DAY);
+        TablePath tablePath = table.getTablePath();
+        autoPartitionManager.addAutoPartitionTable(table, true);
+        // the first auto-partition task is a non-periodic task
+        periodicExecutor.triggerNonPeriodicScheduledTasks();
+
+        Map<String, Long> partitions = zookeeperClient.getPartitionNameAndIds(tablePath);
+        // pre-create 4 partitions including current partition
+        assertThat(partitions.keySet())
+                .containsExactlyInAnyOrder("20250419", "20250420", "20250422", "20250421");
+
+        System.out.println(autoPartitionManager.getDelay(table.getTableId()));
+
+        for (int i = 0; i < 90; i++) {
+            clock.advanceTime(Duration.ofHours(1));
+            System.out.println("------------------");
+            System.out.println(clock.instant().atZone(ZoneId.systemDefault()));
+            periodicExecutor.triggerPeriodicScheduledTasks();
+            System.out.println(zookeeperClient.getPartitionNameAndIds(tablePath));
+        }
     }
 
     private static class TestParams {

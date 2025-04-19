@@ -520,7 +520,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 tableInfo.getTableId(),
                 createTableEvent.getTableAssignment());
         if (createTableEvent.isAutoPartitionTable()) {
-            autoPartitionManager.addAutoPartitionTable(tableInfo);
+            autoPartitionManager.addAutoPartitionTable(tableInfo, true);
         }
     }
 
