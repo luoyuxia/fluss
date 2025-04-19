@@ -418,16 +418,22 @@ public class ReplicaStateMachine {
                 // isr doesn't contain the replica, skip
                 continue;
             }
-            // don't remove the replica id from isr when isr size is 1,
-            // if isr is empty, we can't elect leader any more
-            if (leaderAndIsr.isr().size() == 1) {
-                continue;
-            }
+            int newLeader =
+                    replicaId == leaderAndIsr.leader()
+                            ?
+                            // the leader become offline, set it to no leader
+                            LeaderAndIsr.NO_LEADER
+                            // otherwise, keep the origin as leader
+                            : leaderAndIsr.leader();
             List<Integer> newIsr =
-                    leaderAndIsr.isr().stream()
-                            .filter(id -> id != replicaId)
-                            .collect(Collectors.toList());
-            LeaderAndIsr adjustLeaderAndIsr = leaderAndIsr.newLeaderAndIsr(newIsr);
+                    leaderAndIsr.isr().size() == 1
+                            // don't remove the replica id from isr when isr size is 1,
+                            // if isr is empty, we can't elect leader any more
+                            ? leaderAndIsr.isr()
+                            : leaderAndIsr.isr().stream()
+                                    .filter(id -> id != replicaId)
+                                    .collect(Collectors.toList());
+            LeaderAndIsr adjustLeaderAndIsr = leaderAndIsr.newLeaderAndIsr(newLeader, newIsr);
             try {
                 zooKeeperClient.updateLeaderAndIsr(tableBucket, adjustLeaderAndIsr);
             } catch (Exception e) {
