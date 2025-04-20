@@ -215,12 +215,14 @@ class ReplicaStateMachineTest {
         assertThat(leaderAndIsr)
                 .isEqualTo(new LeaderAndIsr(0, 0, Collections.singletonList(0), 0, 2));
 
-        // set replica 0 to offline, isr shouldn't be empty
+        // set replica 0 to offline, isr shouldn't be empty, leader should be NO_LEADER
         replicaStateMachine.handleStateChanges(
                 Collections.singleton(new TableBucketReplica(tableBucket, 0)), OfflineReplica);
         leaderAndIsr = coordinatorContext.getBucketLeaderAndIsr(tableBucket).get();
         assertThat(leaderAndIsr)
-                .isEqualTo(new LeaderAndIsr(0, 0, Collections.singletonList(0), 0, 2));
+                .isEqualTo(
+                        new LeaderAndIsr(
+                                LeaderAndIsr.NO_LEADER, 0, Collections.singletonList(0), 0, 3));
     }
 
     private void toReplicaDeletionStartedState(

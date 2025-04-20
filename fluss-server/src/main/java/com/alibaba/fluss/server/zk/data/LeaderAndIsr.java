@@ -31,6 +31,7 @@ public class LeaderAndIsr {
 
     public static final int INITIAL_LEADER_EPOCH = 0;
     public static final int INITIAL_BUCKET_EPOCH = 0;
+    public static final int NO_LEADER = -1;
 
     /** The leader replica id. */
     private final int leader;
@@ -68,8 +69,8 @@ public class LeaderAndIsr {
         this.bucketEpoch = bucketEpoch;
     }
 
-    public LeaderAndIsr newLeaderAndIsr(List<Integer> newIsr) {
-        return new LeaderAndIsr(leader, leaderEpoch, newIsr, coordinatorEpoch, bucketEpoch + 1);
+    public LeaderAndIsr newLeaderAndIsr(int newLeader, List<Integer> newIsr) {
+        return new LeaderAndIsr(newLeader, leaderEpoch, newIsr, coordinatorEpoch, bucketEpoch + 1);
     }
 
     public int leader() {
