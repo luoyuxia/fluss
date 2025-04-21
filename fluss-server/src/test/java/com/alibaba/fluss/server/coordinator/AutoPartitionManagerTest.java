@@ -350,8 +350,9 @@ class AutoPartitionManagerTest {
         assertThat(partitions.keySet())
                 .containsExactlyInAnyOrder("20250419", "20250420", "20250422", "20250421");
 
-        Long delayInMinutes = autoPartitionManager.getAutoCreateDayDelayMinutes(table.getTableId());
-        // advance 1 day + (delayInMinutes - 1), should till no next partition to create
+        Integer delayInMinutes =
+                autoPartitionManager.getAutoCreateDayDelayMinutes(table.getTableId());
+        // advance 1 day + (delayInMinutes - 1), should still no next partition to create
         // since the current minutes in day don't advance the delayInMinutes
         clock.advanceTime(Duration.ofDays(1).plusMinutes(delayInMinutes - 1));
         periodicExecutor.triggerPeriodicScheduledTasks();

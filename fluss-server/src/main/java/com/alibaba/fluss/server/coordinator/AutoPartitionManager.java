@@ -31,7 +31,6 @@ import com.alibaba.fluss.server.utils.TableAssignmentUtils;
 import com.alibaba.fluss.server.zk.data.BucketAssignment;
 import com.alibaba.fluss.server.zk.data.PartitionAssignment;
 import com.alibaba.fluss.utils.AutoPartitionStrategy;
-import com.alibaba.fluss.utils.MathUtils;
 import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.clock.SystemClock;
 import com.alibaba.fluss.utils.concurrent.ExecutorThreadFactory;
@@ -42,13 +41,10 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -59,6 +55,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
@@ -93,7 +90,7 @@ public class AutoPartitionManager implements AutoCloseable {
 
     // table id -> the minutes in day when auto partition will be triggered
     // now, only consider day partition, todo: need to consider all partition unit
-    private final Map<Long, Long> autoCreateDayPartitionDelayMinutes = new HashMap<>();
+    private final Map<Long, Integer> autoCreateDayPartitionDelayMinutes = new HashMap<>();
 
     @GuardedBy("lock")
     private final Map<Long, TreeSet<String>> partitionsByTable = new HashMap<>();
@@ -145,14 +142,7 @@ public class AutoPartitionManager implements AutoCloseable {
                     if (tableInfo.getTableConfig().getAutoPartitionStrategy().timeUnit()
                             == AutoPartitionTimeUnit.DAY) {
                         // get the delay minutes to create partition
-                        long delayMinutes =
-                                MathUtils.murmurHash(
-                                                Arrays.hashCode(
-                                                        tableInfo
-                                                                .getTablePath()
-                                                                .toString()
-                                                                .getBytes(StandardCharsets.UTF_8)))
-                                        % (Duration.ofHours(23).toMinutes() - 1);
+                        int delayMinutes = ThreadLocalRandom.current().nextInt(60 * 23);
 
                         autoCreateDayPartitionDelayMinutes.put(tableId, delayMinutes);
                     }
@@ -233,24 +223,14 @@ public class AutoPartitionManager implements AutoCloseable {
 
     private void doAutoPartition(Instant now, Set<Long> tableIds, boolean forceDoAutoPartition) {
         for (Long tableId : tableIds) {
+            Instant createPartitionInstant = now;
             TableInfo tableInfo = autoPartitionTables.get(tableId);
             if (!forceDoAutoPartition) {
-                // not to force do auto partition, just do auto partition if current time
-                // satisfies the delay
-                Long delayMinutes = autoCreateDayPartitionDelayMinutes.get(tableId);
+                // not to force do auto partition and delay exist,
+                // we use now - delayMinutes as current instant to mock the delay
+                Integer delayMinutes = autoCreateDayPartitionDelayMinutes.get(tableId);
                 if (delayMinutes != null) {
-                    long minutesOfCurrent =
-                            getMinutesInCurrentDay(
-                                    now,
-                                    tableInfo
-                                            .getTableConfig()
-                                            .getAutoPartitionStrategy()
-                                            .timeZone()
-                                            .toZoneId());
-                    if (minutesOfCurrent < delayMinutes) {
-                        // skip auto create partition for this table
-                        continue;
-                    }
+                    createPartitionInstant = now.minus(Duration.ofMinutes(delayMinutes));
                 }
             }
             TreeSet<String> currentPartitions =
@@ -258,10 +238,10 @@ public class AutoPartitionManager implements AutoCloseable {
             dropPartitions(
                     tableInfo.getTablePath(),
                     tableInfo.getPartitionKeys(),
-                    now,
+                    createPartitionInstant,
                     tableInfo.getTableConfig().getAutoPartitionStrategy(),
                     currentPartitions);
-            createPartitions(tableInfo, now, currentPartitions);
+            createPartitions(tableInfo, createPartitionInstant, currentPartitions);
         }
     }
 
@@ -396,7 +376,7 @@ public class AutoPartitionManager implements AutoCloseable {
 
     @VisibleForTesting
     @Nullable
-    protected Long getAutoCreateDayDelayMinutes(long tableId) {
+    protected Integer getAutoCreateDayDelayMinutes(long tableId) {
         return autoCreateDayPartitionDelayMinutes.get(tableId);
     }
 
@@ -405,11 +385,5 @@ public class AutoPartitionManager implements AutoCloseable {
         if (isClosed.compareAndSet(false, true)) {
             periodicExecutor.shutdownNow();
         }
-    }
-
-    private static long getMinutesInCurrentDay(Instant instant, ZoneId zoneId) {
-        ZonedDateTime zdt = instant.atZone(zoneId);
-        ZonedDateTime startOfDay = zdt.toLocalDate().atStartOfDay(zoneId);
-        return Duration.between(startOfDay, zdt).toMinutes();
     }
 }
