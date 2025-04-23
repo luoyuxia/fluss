@@ -21,6 +21,7 @@ import com.alibaba.fluss.exception.TableAlreadyExistException;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeCatalog;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeStorage;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeStoragePlugin;
+import com.alibaba.fluss.lakehouse.writer.LakeTieringContext;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -48,7 +49,7 @@ public class TestingPaimonStoragePlugin implements LakeStoragePlugin {
     public static class TestingPaimonLakeStorage implements LakeStorage {
 
         @Override
-        public LakeTieringFactory createLakeTieringFactory() {
+        public LakeTieringFactory createLakeTieringFactory(LakeTieringContext lakeTieringContext) {
             throw new UnsupportedOperationException("createLakeTieringFactory is not supported.");
         }
 

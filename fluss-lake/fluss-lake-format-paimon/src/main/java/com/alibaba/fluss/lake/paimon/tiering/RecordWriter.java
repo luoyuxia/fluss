@@ -16,25 +16,21 @@
 
 package com.alibaba.fluss.lake.paimon.tiering;
 
+import com.alibaba.fluss.record.LogRecord;
+
+import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.table.sink.CommitMessage;
 
 import javax.annotation.Nullable;
 
-import java.io.Serializable;
-import java.util.Optional;
+import java.io.IOException;
 
-/** The write result of {@link PaimonLakeWriter} . */
-public class PaimonWriteResult implements Serializable {
+public interface RecordWriter {
 
-    private final @Nullable CommitMessage commitMessage;
+    void write(BinaryRow partition, int bucket, LogRecord logRecord) throws IOException;
 
-    private static final long serialVersionUID = 1L;
+    @Nullable
+    CommitMessage complete() throws IOException;
 
-    public PaimonWriteResult(@Nullable CommitMessage commitMessage) {
-        this.commitMessage = commitMessage;
-    }
-
-    public Optional<CommitMessage> getCommitMessage() {
-        return Optional.ofNullable(commitMessage);
-    }
+    void close() throws Exception;
 }

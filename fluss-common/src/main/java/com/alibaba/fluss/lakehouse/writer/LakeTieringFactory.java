@@ -57,7 +57,8 @@ public interface LakeTieringFactory<WriteResult, CommitableT> {
      * @return the lake committer
      * @throws IOException if an I/O error occurs
      */
-    LakeCommitter<WriteResult, CommitableT> createLakeCommitter() throws IOException;
+    LakeCommitter<WriteResult, CommitableT> createLakeCommitter(
+            CommitterInitContext committerInitContext) throws IOException;
 
     /**
      * Returns the serializer for committable objects.

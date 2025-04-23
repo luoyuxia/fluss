@@ -17,8 +17,10 @@
 package com.alibaba.fluss.lake.paimon.tiering;
 
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
+
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.table.sink.TableCommitImpl;
 
 import java.io.IOException;
 import java.util.List;
@@ -30,7 +32,9 @@ public class PaimonCommitter implements LakeCommitter<PaimonWriteResult, Manifes
 
     private final FileStoreTable fileStoreTable;
 
-    private PaimonCommitter(FileStoreTable fileStoreTable) {
+    private TableCommitImpl tableCommit;
+
+    public PaimonCommitter(FileStoreTable fileStoreTable) {
         this.fileStoreTable = fileStoreTable;
     }
 
@@ -39,16 +43,21 @@ public class PaimonCommitter implements LakeCommitter<PaimonWriteResult, Manifes
             throws IOException {
         ManifestCommittable committable = new ManifestCommittable(COMMIT_IDENTIFIER);
         for (PaimonWriteResult paimonWriteResult : paimonWriteResults) {
-            committable.addFileCommittable(paimonWriteResult.getCommitMessage());
+            paimonWriteResult.getCommitMessage().ifPresent(committable::addFileCommittable);
         }
         return committable;
     }
 
     @Override
-    public void commit(ManifestCommittable committable) throws IOException {
-        fileStoreTable.newCommit("todo_user").commit(committable);
+    public void commit(ManifestCommittable committable) {
+        tableCommit = fileStoreTable.newCommit("fluss_tiering_service");
+        tableCommit.commit(committable);
     }
 
     @Override
-    public void close() throws Exception {}
+    public void close() throws Exception {
+        if (tableCommit != null) {
+            tableCommit.close();
+        }
+    }
 }
