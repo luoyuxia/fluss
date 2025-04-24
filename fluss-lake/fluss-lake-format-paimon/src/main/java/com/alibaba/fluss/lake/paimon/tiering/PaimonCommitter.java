@@ -17,7 +17,10 @@
 package com.alibaba.fluss.lake.paimon.tiering;
 
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
+import com.alibaba.fluss.metadata.TablePath;
 
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.TableCommitImpl;
@@ -30,12 +33,15 @@ import static org.apache.paimon.table.sink.BatchWriteBuilder.COMMIT_IDENTIFIER;
 /** Implementation of {@link LakeCommitter} for Paimon. */
 public class PaimonCommitter implements LakeCommitter<PaimonWriteResult, ManifestCommittable> {
 
+    private final Catalog paimonCatalog;
     private final FileStoreTable fileStoreTable;
 
     private TableCommitImpl tableCommit;
 
-    public PaimonCommitter(FileStoreTable fileStoreTable) {
-        this.fileStoreTable = fileStoreTable;
+    public PaimonCommitter(PaimonCatalogProvider paimonCatalogProvider, TablePath tablePath)
+            throws IOException {
+        this.paimonCatalog = paimonCatalogProvider.getCatalog();
+        this.fileStoreTable = getTable(tablePath);
     }
 
     @Override
@@ -59,5 +65,19 @@ public class PaimonCommitter implements LakeCommitter<PaimonWriteResult, Manifes
         if (tableCommit != null) {
             tableCommit.close();
         }
+    }
+
+    private FileStoreTable getTable(TablePath tablePath) throws IOException {
+        FileStoreTable table;
+        try {
+            table =
+                    (FileStoreTable)
+                            paimonCatalog.getTable(
+                                    Identifier.create(
+                                            tablePath.getDatabaseName(), tablePath.getTableName()));
+        } catch (Catalog.TableNotExistException e) {
+            throw new IOException("The table  " + tablePath + " doesn't exist in Paimon", e);
+        }
+        return table;
     }
 }

@@ -16,23 +16,42 @@
 
 package com.alibaba.fluss.lake.paimon.tiering;
 
+import com.alibaba.fluss.lake.paimon.tiering.append.AppendOnlyWriter;
+import com.alibaba.fluss.lake.paimon.tiering.mergetree.MergeTreeWriter;
 import com.alibaba.fluss.lakehouse.writer.LakeWriter;
+import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.record.LogRecord;
 
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.schema.Schema;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.types.DataTypes;
 
 import java.io.IOException;
 
 /** Implementation of {@link LakeWriter} for Paimon. */
 public class PaimonLakeWriter implements LakeWriter<PaimonWriteResult> {
 
+    private final Catalog paimonCatalog;
     private final RecordWriter recordWriter;
     private final BinaryRow partition;
     private final int bucket;
 
-    public PaimonLakeWriter(RecordWriter recordWriter, BinaryRow partition, int bucket) {
-        this.recordWriter = recordWriter;
+    public PaimonLakeWriter(
+            PaimonCatalogProvider paimonCatalogProvider,
+            TablePath tablePath,
+            BinaryRow partition,
+            int bucket)
+            throws IOException {
+        this.paimonCatalog = paimonCatalogProvider.getCatalog();
+        FileStoreTable table = getTable(tablePath);
+        this.recordWriter =
+                table.primaryKeys().isEmpty()
+                        ? new AppendOnlyWriter(table)
+                        : new MergeTreeWriter(table);
         this.partition = partition;
         this.bucket = bucket;
     }
@@ -53,16 +72,50 @@ public class PaimonLakeWriter implements LakeWriter<PaimonWriteResult> {
             CommitMessage commitMessage = recordWriter.complete();
             return new PaimonWriteResult(commitMessage);
         } catch (Exception e) {
-            throw new IOException("Fail to complete the paimon writer.");
+            throw new IOException("Fail to complete the paimon writer.", e);
         }
     }
 
     @Override
     public void close() throws IOException {
         try {
+            paimonCatalog.close();
             recordWriter.close();
         } catch (Exception e) {
             throw new IOException("Fail to close Paimon RecordWriter.");
         }
+    }
+
+    private FileStoreTable getTable(TablePath tablePath) throws IOException {
+        FileStoreTable table;
+        try {
+            table =
+                    (FileStoreTable)
+                            paimonCatalog.getTable(
+                                    Identifier.create(
+                                            tablePath.getDatabaseName(), tablePath.getTableName()));
+        } catch (Catalog.TableNotExistException e) {
+            try {
+                paimonCatalog.createDatabase(tablePath.getDatabaseName(), true);
+                paimonCatalog.createTable(
+                        Identifier.create(tablePath.getDatabaseName(), tablePath.getTableName()),
+                        Schema.newBuilder()
+                                .column("c1", DataTypes.INT())
+                                .column("c2", DataTypes.INT())
+                                .build(),
+                        true);
+                table =
+                        (FileStoreTable)
+                                paimonCatalog.getTable(
+                                        Identifier.create(
+                                                tablePath.getDatabaseName(),
+                                                tablePath.getTableName()));
+            } catch (Exception e1) {
+                throw new IOException("The table  " + tablePath + " doesn't exist in Paimon", e1);
+            }
+            //            throw new IOException("The table  " + tablePath + " doesn't exist in
+            // Paimon", e);
+        }
+        return table;
     }
 }

@@ -14,10 +14,7 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.lakehouse.writer;
+package com.alibaba.fluss.flink.laketiering;
 
-/** * . */
-public interface LakeTieringContext {
-
-    FileSystemProvider fileSystemProvider();
-}
+/** . */
+public class LakeTieringEnumeratorState {}

@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.lake.paimon.record;
 
+import com.alibaba.fluss.record.ChangeType;
 import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.row.TimestampLtz;
 
@@ -40,15 +41,8 @@ public class FlussRecordAsPaimonRow implements InternalRow {
         this.rowFieldCount = internalRow.getFieldCount();
     }
 
-    @Override
-    public int getFieldCount() {
-        // plus two fields: offset, timestamp
-        return rowFieldCount + 2;
-    }
-
-    @Override
-    public RowKind getRowKind() {
-        switch (logRecord.getChangeType()) {
+    public static RowKind toRowKind(ChangeType changeType) {
+        switch (changeType) {
             case APPEND_ONLY:
             case INSERT:
                 return RowKind.INSERT;
@@ -59,9 +53,19 @@ public class FlussRecordAsPaimonRow implements InternalRow {
             case DELETE:
                 return RowKind.DELETE;
             default:
-                throw new IllegalArgumentException(
-                        "Unsupported change type: " + logRecord.getChangeType());
+                throw new IllegalArgumentException("Unsupported change type: " + changeType);
         }
+    }
+
+    @Override
+    public int getFieldCount() {
+        // plus two fields: offset, timestamp
+        return rowFieldCount + 2;
+    }
+
+    @Override
+    public RowKind getRowKind() {
+        return toRowKind(logRecord.getChangeType());
     }
 
     @Override

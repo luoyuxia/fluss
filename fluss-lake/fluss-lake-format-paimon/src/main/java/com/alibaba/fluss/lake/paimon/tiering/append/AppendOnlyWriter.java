@@ -69,6 +69,8 @@ public class AppendOnlyWriter implements RecordWriter {
 
     @Override
     public void close() throws Exception {
-        tableWrite.close();
+        if (tableWrite != null) {
+            tableWrite.close();
+        }
     }
 }

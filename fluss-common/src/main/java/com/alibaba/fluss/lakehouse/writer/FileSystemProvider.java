@@ -16,8 +16,12 @@
 
 package com.alibaba.fluss.lakehouse.writer;
 
-/** * . */
-public interface LakeTieringContext {
+import com.alibaba.fluss.fs.FileSystem;
 
-    FileSystemProvider fileSystemProvider();
+import java.io.Serializable;
+import java.net.URI;
+
+public interface FileSystemProvider extends Serializable {
+
+    FileSystem getFileSystem(URI uri);
 }

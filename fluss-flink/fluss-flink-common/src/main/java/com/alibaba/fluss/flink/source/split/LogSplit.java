@@ -19,7 +19,6 @@ package com.alibaba.fluss.flink.source.split;
 import com.alibaba.fluss.metadata.TableBucket;
 
 import javax.annotation.Nullable;
-
 import java.util.Objects;
 import java.util.Optional;
 

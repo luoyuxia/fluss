@@ -21,6 +21,7 @@ import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.lakehouse.serializer.SimpleVersionedSerializer;
 
 import java.io.IOException;
+import java.io.Serializable;
 
 /**
  * The LakeTieringFactory interface defines how to create lake writers and committers. It provides
@@ -32,7 +33,7 @@ import java.io.IOException;
  * @since 0.7
  */
 @PublicEvolving
-public interface LakeTieringFactory<WriteResult, CommitableT> {
+public interface LakeTieringFactory<WriteResult, CommitableT> extends Serializable {
 
     /**
      * Creates a lake writer to write Fluss's rows to Paimon/Iceberg rows.

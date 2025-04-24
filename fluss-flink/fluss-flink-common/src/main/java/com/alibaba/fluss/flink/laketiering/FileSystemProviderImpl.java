@@ -14,30 +14,20 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.lake.paimon.fs;
+package com.alibaba.fluss.flink.laketiering;
 
+import com.alibaba.fluss.fs.FileSystem;
 import com.alibaba.fluss.lakehouse.writer.FileSystemProvider;
 
-import org.apache.paimon.fs.FileIO;
-import org.apache.paimon.fs.FileIOLoader;
-import org.apache.paimon.fs.Path;
+import org.apache.flink.core.fs.Path;
 
-/** . */
-public class FlussFileIoLoader implements FileIOLoader {
+import java.net.URI;
 
-    private final FileSystemProvider fsProvider;
+public class FileSystemProviderImpl implements FileSystemProvider {
 
-    public FlussFileIoLoader(FileSystemProvider fsProvider) {
-        this.fsProvider = fsProvider;
-    }
+    private static final long serialVersionUID = 1L;
 
-    @Override
-    public String getScheme() {
-        throw new UnsupportedOperationException("Method getScheme is not supported.");
-    }
-
-    @Override
-    public FileIO load(Path path) {
-        return new FlussFileIO(fsProvider.getFileSystem(path.toUri()));
+    public FileSystem getFileSystem(URI uri) {
+        return new FlinkFileSystemAsFluss(new Path(uri));
     }
 }

@@ -29,6 +29,7 @@ import com.alibaba.fluss.exception.InvalidPartitionException;
 import com.alibaba.fluss.exception.InvalidReplicationFactorException;
 import com.alibaba.fluss.exception.InvalidTableException;
 import com.alibaba.fluss.exception.KvSnapshotNotExistException;
+import com.alibaba.fluss.exception.LakeTableSnapshotNotExistException;
 import com.alibaba.fluss.exception.NonPrimaryKeyTableException;
 import com.alibaba.fluss.exception.PartitionAlreadyExistsException;
 import com.alibaba.fluss.exception.PartitionNotExistException;
@@ -355,6 +356,7 @@ public interface Admin extends AutoCloseable {
      *
      * <ul>
      *   <li>{@link TableNotExistException} if the table does not exist.
+     *   <li>{@link LakeTableSnapshotNotExistException} of the lake snapshot does not exist.
      * </ul>
      *
      * @param tablePath the table path of the table.
