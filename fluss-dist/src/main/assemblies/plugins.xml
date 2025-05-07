@@ -81,9 +81,9 @@
 
         <!-- lake formats -->
         <file>
-            <source>../fluss-lake/fluss-lake-format-paimon/target/fluss-lake-format-paimon-${project.version}.jar</source>
+            <source>../fluss-lake/fluss-lake-paimon/target/fluss-lake-paimon-${project.version}.jar</source>
             <outputDirectory>plugins/paimon/</outputDirectory>
-            <destName>fluss-lake-format-paimon-${project.version}.jar</destName>
+            <destName>fluss-lake-paimon-${project.version}.jar</destName>
             <fileMode>0644</fileMode>
         </file>
     </files>

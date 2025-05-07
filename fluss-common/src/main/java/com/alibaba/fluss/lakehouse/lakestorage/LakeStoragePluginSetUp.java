@@ -63,10 +63,10 @@ public class LakeStoragePluginSetUp {
             @Nullable PluginManager pluginManager) {
         final Iterator<LakeStoragePlugin> pluginIteratorSPI =
                 ServiceLoader.load(LakeStoragePlugin.class).iterator();
-        final Iterator<LakeStoragePlugin> iteratorPlugins =
-                pluginManager == null
-                        ? pluginIteratorSPI
-                        : pluginManager.load(LakeStoragePlugin.class);
-        return Iterators.concat(iteratorPlugins, pluginIteratorSPI);
+        if (pluginManager == null) {
+            return pluginIteratorSPI;
+        } else {
+            return Iterators.concat(pluginManager.load(LakeStoragePlugin.class), pluginIteratorSPI);
+        }
     }
 }

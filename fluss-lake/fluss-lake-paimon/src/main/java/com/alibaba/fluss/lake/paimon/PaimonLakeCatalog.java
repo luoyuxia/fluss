@@ -162,10 +162,15 @@ public class PaimonLakeCatalog implements LakeCatalog {
         // set partition keys
         schemaBuilder.partitionKeys(tableDescriptor.getPartitionKeys());
 
-        // set custom properties to paimon schema
-        tableDescriptor.getCustomProperties().forEach(options::set);
+        // set properties to paimon schema
+        tableDescriptor.getProperties().forEach((k, v) -> setFlussProperty(k, v, options));
+        tableDescriptor.getCustomProperties().forEach((k, v) -> setFlussProperty(k, v, options));
         schemaBuilder.options(options.toMap());
         return schemaBuilder.build();
+    }
+
+    private void setFlussProperty(String key, String value, Options options) {
+        options.set("fluss." + key, value);
     }
 
     @Override

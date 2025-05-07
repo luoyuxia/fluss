@@ -26,8 +26,6 @@ import com.alibaba.fluss.exception.TableAlreadyExistException;
 import com.alibaba.fluss.exception.TableNotPartitionedException;
 import com.alibaba.fluss.fs.FileSystem;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeCatalog;
-import com.alibaba.fluss.lakehouse.lakestorage.LakeStorage;
-import com.alibaba.fluss.lakehouse.lakestorage.LakeStorage;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.PartitionSpec;
@@ -82,6 +80,7 @@ import com.alibaba.fluss.server.zk.data.BucketAssignment;
 import com.alibaba.fluss.server.zk.data.PartitionAssignment;
 import com.alibaba.fluss.server.zk.data.TableAssignment;
 import com.alibaba.fluss.server.zk.data.TableRegistration;
+import com.alibaba.fluss.utils.IOUtils;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
 import javax.annotation.Nullable;
@@ -104,6 +103,7 @@ import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.toTablePath;
 import static com.alibaba.fluss.server.utils.TableDescriptorValidation.validateTableDescriptor;
 import static com.alibaba.fluss.utils.PartitionUtils.validatePartitionSpec;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
+import static com.alibaba.fluss.utils.Preconditions.checkState;
 
 /** An RPC Gateway service for coordinator server. */
 public final class CoordinatorService extends RpcServiceBase implements CoordinatorGateway {
@@ -114,9 +114,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
     // null if the cluster hasn't configured datalake format
     private final @Nullable DataLakeFormat dataLakeFormat;
-    private final @Nullable LakeStorage lakeStorage;
-
-    private volatile @Nullable LakeCatalog lakeCatalog;
+    private final @Nullable LakeCatalog lakeCatalog;
 
     public CoordinatorService(
             Configuration conf,
@@ -126,7 +124,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             ServerMetadataCache metadataCache,
             MetadataManager metadataManager,
             @Nullable Authorizer authorizer,
-            @Nullable LakeStorage lakeStorage) {
+            @Nullable LakeCatalog lakeCatalog) {
         super(
                 remoteFileSystem,
                 ServerType.COORDINATOR,
@@ -138,7 +136,12 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         this.defaultReplicationFactor = conf.getInt(ConfigOptions.DEFAULT_REPLICATION_FACTOR);
         this.eventManagerSupplier = eventManagerSupplier;
         this.dataLakeFormat = conf.getOptional(ConfigOptions.DATALAKE_FORMAT).orElse(null);
-        this.lakeStorage = lakeStorage;
+        this.lakeCatalog = lakeCatalog;
+        checkState(
+                (dataLakeFormat == null) == (lakeCatalog == null),
+                "dataLakeFormat and lakeCatalog must both be null or both non-null, but dataLakeFormat is %s, lakeCatalog is %s.",
+                dataLakeFormat,
+                lakeCatalog);
     }
 
     @Override
@@ -148,7 +151,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
     @Override
     public void shutdown() {
-        // no resources hold by coordinator service by now, nothing to do
+        IOUtils.closeQuietly(lakeCatalog, "lake catalog");
     }
 
     @Override
@@ -238,7 +241,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         // before create table in fluss, we may create in lake
         if (isDataLakeEnabled(tableDescriptor)) {
             try {
-                getLakeCatalog().createTable(tablePath, tableDescriptor);
+                checkNotNull(lakeCatalog).createTable(tablePath, tableDescriptor);
             } catch (TableAlreadyExistException e) {
                 throw new TableAlreadyExistException(
                         String.format(
@@ -445,17 +448,5 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         new CommitLakeTableSnapshotEvent(
                                 getCommitLakeTableSnapshotData(request), response));
         return response;
-    }
-
-    private LakeCatalog getLakeCatalog() {
-        if (lakeCatalog == null) {
-            synchronized (this) {
-                if (lakeCatalog == null) {
-                    checkNotNull(lakeStorage);
-                    lakeCatalog = lakeStorage.createLakeCatalog();
-                }
-            }
-        }
-        return lakeCatalog;
     }
 }

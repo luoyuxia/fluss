@@ -25,8 +25,8 @@
         <version>0.7-SNAPSHOT</version>
     </parent>
 
-    <artifactId>fluss-lake-format-paimon</artifactId>
-    <name>Fluss : Lake Format : Paimon</name>
+    <artifactId>fluss-lake-paimon</artifactId>
+    <name>Fluss : Lake : Paimon</name>
 
     <packaging>jar</packaging>
 

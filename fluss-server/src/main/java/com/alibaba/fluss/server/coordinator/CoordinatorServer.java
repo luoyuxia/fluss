@@ -22,6 +22,7 @@ import com.alibaba.fluss.cluster.ServerType;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
+import com.alibaba.fluss.lakehouse.lakestorage.LakeCatalog;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeStorage;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeStoragePlugin;
 import com.alibaba.fluss.lakehouse.lakestorage.LakeStoragePluginSetUp;
@@ -181,7 +182,7 @@ public class CoordinatorServer extends ServerBase {
                             metadataCache,
                             metadataManager,
                             authorizer,
-                            createLakeStorage());
+                            createLakeCatalog());
 
             this.rpcServer =
                     RpcServer.create(
@@ -230,15 +231,17 @@ public class CoordinatorServer extends ServerBase {
     }
 
     @Nullable
-    private LakeStorage createLakeStorage() {
+    private LakeCatalog createLakeCatalog() {
         LakeStoragePlugin lakeStoragePlugin =
                 LakeStoragePluginSetUp.fromConfiguration(conf, pluginManager);
         if (lakeStoragePlugin == null) {
             return null;
         }
         Map<String, String> lakeProperties = extractLakeProperties(conf);
-        return lakeStoragePlugin.createLakeStorage(
-                Configuration.fromMap(checkNotNull(lakeProperties)));
+        LakeStorage lakeStorage =
+                lakeStoragePlugin.createLakeStorage(
+                        Configuration.fromMap(checkNotNull(lakeProperties)));
+        return lakeStorage.createLakeCatalog();
     }
 
     @Override

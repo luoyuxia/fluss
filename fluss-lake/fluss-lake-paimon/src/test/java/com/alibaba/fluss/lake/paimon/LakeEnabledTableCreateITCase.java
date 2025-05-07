@@ -47,7 +47,6 @@ import javax.annotation.Nullable;
 
 import java.nio.file.Files;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -159,8 +158,7 @@ class LakeEnabledTableCreateITCase {
                             TIMESTAMP_COLUMN_NAME
                         }),
                 "log_c1,log_c2",
-                BUCKET_NUM,
-                customProperties);
+                BUCKET_NUM);
 
         // test log no bucket key table
         TableDescriptor logNoBucketKeyTable =
@@ -199,8 +197,7 @@ class LakeEnabledTableCreateITCase {
                             TIMESTAMP_COLUMN_NAME
                         }),
                 null,
-                BUCKET_NUM,
-                customProperties);
+                BUCKET_NUM);
 
         // test pk table
         TableDescriptor pkTable =
@@ -229,8 +226,7 @@ class LakeEnabledTableCreateITCase {
                         },
                         new String[] {"pk_c1", "pk_c2"}),
                 "pk_c1",
-                BUCKET_NUM,
-                customProperties);
+                BUCKET_NUM);
 
         // test partitioned table
         TablePath partitionedTablePath = TablePath.of(DATABASE, "partitioned_table");
@@ -263,8 +259,7 @@ class LakeEnabledTableCreateITCase {
                         },
                         new String[] {"c1", "c2", "c3"}),
                 "c1",
-                BUCKET_NUM,
-                customProperties);
+                BUCKET_NUM);
     }
 
     @Test
@@ -344,8 +339,7 @@ class LakeEnabledTableCreateITCase {
                             TIMESTAMP_COLUMN_NAME
                         }),
                 null,
-                BUCKET_NUM,
-                Collections.emptyMap());
+                BUCKET_NUM);
     }
 
     @Test
@@ -377,10 +371,11 @@ class LakeEnabledTableCreateITCase {
             TableDescriptor flussTable,
             RowType expectedRowType,
             @Nullable String expectedBucketKey,
-            int bucketNum,
-            Map<String, String> expectedCustomProperties) {
+            int bucketNum) {
         // check pk
-        if (!paimonTable.primaryKeys().isEmpty()) {
+        if (!flussTable.hasPrimaryKey()) {
+            assertThat(paimonTable.primaryKeys()).isEmpty();
+        } else {
             assertThat(paimonTable.primaryKeys())
                     .isEqualTo(flussTable.getSchema().getPrimaryKey().get().getColumnNames());
         }
@@ -396,8 +391,11 @@ class LakeEnabledTableCreateITCase {
                                 : bucketNum);
         assertThat(options.get(CoreOptions.BUCKET_KEY)).isEqualTo(expectedBucketKey);
 
-        // check custom properties
-        assertThat(paimonTable.options()).containsAllEntriesOf(expectedCustomProperties);
+        // check table properties
+        Map<String, String> expectedProperties = new HashMap<>();
+        flussTable.getProperties().forEach((k, v) -> expectedProperties.put("fluss." + k, v));
+        flussTable.getCustomProperties().forEach((k, v) -> expectedProperties.put("fluss." + k, v));
+        assertThat(paimonTable.options()).containsAllEntriesOf(expectedProperties);
 
         // now, check schema
         RowType paimonRowType = paimonTable.rowType();
