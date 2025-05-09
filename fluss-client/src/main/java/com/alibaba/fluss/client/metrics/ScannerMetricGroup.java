@@ -56,6 +56,7 @@ public class ScannerMetricGroup extends AbstractMetricGroup {
     private volatile double pollIdleRatio;
     private volatile long lastPollMs;
     private volatile long pollStartMs;
+    private volatile long bytesPerFetch;
 
     public ScannerMetricGroup(ClientMetricGroup parent, TablePath tablePath) {
         super(parent.getMetricRegistry(), makeScope(parent, NAME), parent);
@@ -80,6 +81,7 @@ public class ScannerMetricGroup extends AbstractMetricGroup {
         gauge(MetricNames.SCANNER_LAST_POLL_SECONDS_AGO, this::lastPollSecondsAgo);
         gauge(MetricNames.SCANNER_FETCH_LATENCY_MS, () -> fetchLatencyInMs);
         gauge(MetricNames.SCANNER_POLL_IDLE_RATIO, () -> pollIdleRatio);
+        gauge(MetricNames.SCANNER_BYTES_PER_FETCH, () -> bytesPerFetch);
     }
 
     public Counter fetchRequestCount() {
@@ -106,6 +108,10 @@ public class ScannerMetricGroup extends AbstractMetricGroup {
         this.pollStartMs = pollStartMs;
         this.timeMsBetweenPoll = lastPollMs != 0L ? pollStartMs - lastPollMs : 0L;
         this.lastPollMs = pollStartMs;
+    }
+
+    public void recordBytesPerFetch(long bytesPerFetch) {
+        this.bytesPerFetch = bytesPerFetch;
     }
 
     public void recordPollEnd(long pollEndMs) {

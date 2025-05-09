@@ -153,6 +153,7 @@ public class MetricNames {
     public static final String SCANNER_FETCH_LATENCY_MS = "fetchLatencyMs";
     public static final String SCANNER_FETCH_RATE = "fetchRequestsPerSecond";
     public static final String SCANNER_BYTES_PER_REQUEST = "bytesPerRequest";
+    public static final String SCANNER_BYTES_PER_FETCH = "bytesPerFetch";
     public static final String SCANNER_REMOTE_FETCH_BYTES_RATE = "remoteFetchBytesPerSecond";
     public static final String SCANNER_REMOTE_FETCH_RATE = "remoteFetchRequestsPerSecond";
     public static final String SCANNER_REMOTE_FETCH_ERROR_RATE = "remoteFetchErrorPerSecond";
