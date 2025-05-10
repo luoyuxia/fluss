@@ -285,7 +285,7 @@ public class RemoteLogManager implements Closeable {
                     ScheduledFuture<?> future =
                             rlManagerScheduledThreadPool.scheduleWithFixedDelay(
                                     task,
-                                    ThreadLocalRandom.current().nextLong(taskInterval),
+                                    Math.abs(ThreadLocalRandom.current().nextLong(taskInterval)),
                                     taskInterval,
                                     TimeUnit.MILLISECONDS);
                     return new TaskWithFuture(task, future);
