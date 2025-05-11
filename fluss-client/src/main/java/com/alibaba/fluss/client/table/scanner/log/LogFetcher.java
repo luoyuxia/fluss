@@ -299,7 +299,6 @@ public class LogFetcher implements Closeable {
             // update fetch metrics only when request success
             scannerMetricGroup.updateFetchLatency(System.currentTimeMillis() - requestStartTime);
             scannerMetricGroup.bytesPerRequest().update(fetchLogResponse.totalSize());
-            scannerMetricGroup.recordBytesPerFetch(fetchLogResponse.totalSize());
 
             for (PbFetchLogRespForTable respForTable : fetchLogResponse.getTablesRespsList()) {
                 long tableId = respForTable.getTableId();

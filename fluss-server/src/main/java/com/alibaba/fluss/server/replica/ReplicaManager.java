@@ -96,6 +96,7 @@ import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.MapUtils;
 import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.concurrent.Scheduler;
+import com.alibaba.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -860,8 +861,12 @@ public class ReplicaManager {
                 tableMetrics = replica.tableMetrics();
                 tableMetrics.totalProduceLogRequests().inc();
                 LOG.trace("Append records to local log tablet for table bucket {}", tb);
-                LogAppendInfo appendInfo =
+                Tuple2<LogAppendInfo, Boolean> appendInfoAndHighWaterMake =
                         replica.appendRecordsToLeader(entry.getValue(), requiredAcks);
+                LogAppendInfo appendInfo = appendInfoAndHighWaterMake.f0;
+                if (appendInfoAndHighWaterMake.f1) {
+                    replica.tryCompleteDelayedOperations();
+                }
 
                 long baseOffset = appendInfo.firstOffset();
                 LOG.trace(

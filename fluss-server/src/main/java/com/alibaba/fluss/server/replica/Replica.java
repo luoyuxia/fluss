@@ -804,8 +804,8 @@ public final class Replica {
         return logTablet.getLeaderEndOffsetSnapshot();
     }
 
-    public LogAppendInfo appendRecordsToLeader(MemoryLogRecords memoryLogRecords, int requiredAcks)
-            throws Exception {
+    public Tuple2<LogAppendInfo, Boolean> appendRecordsToLeader(
+            MemoryLogRecords memoryLogRecords, int requiredAcks) throws Exception {
         return inReadLock(
                 leaderIsrUpdateLock,
                 () -> {
@@ -828,9 +828,9 @@ public final class Replica {
                         throw new LogStorageException(
                                 "Error while appending records to " + tableBucket, e);
                     }
-                    maybeIncrementLeaderHW(logTablet, clock.milliseconds());
+                    boolean hwIncreased = maybeIncrementLeaderHW(logTablet, clock.milliseconds());
 
-                    return appendInfo;
+                    return Tuple2.of(appendInfo, hwIncreased);
                 });
     }
 
@@ -1333,7 +1333,7 @@ public final class Replica {
         return new LogReadInfo(fetchDataInfo, initialHighWatermark, initialLogEndOffset);
     }
 
-    private void tryCompleteDelayedOperations() {
+    public void tryCompleteDelayedOperations() {
         DelayedTableBucketKey delayedTableBucketKey = new DelayedTableBucketKey(tableBucket);
         delayedWriteManager.checkAndComplete(delayedTableBucketKey);
         delayedFetchLogManager.checkAndComplete(delayedTableBucketKey);

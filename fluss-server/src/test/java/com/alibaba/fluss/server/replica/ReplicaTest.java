@@ -113,7 +113,7 @@ final class ReplicaTest extends ReplicaTestBase {
         makeLogReplicaAsLeader(logReplica);
 
         MemoryLogRecords mr = genMemoryLogRecordsByObject(DATA1);
-        LogAppendInfo appendInfo = logReplica.appendRecordsToLeader(mr, 0);
+        LogAppendInfo appendInfo = logReplica.appendRecordsToLeader(mr, 0).f0;
         assertThat(appendInfo.shallowCount()).isEqualTo(1);
 
         FetchParams fetchParams =
