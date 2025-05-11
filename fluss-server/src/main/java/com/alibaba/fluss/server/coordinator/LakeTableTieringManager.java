@@ -17,14 +17,22 @@
 package com.alibaba.fluss.server.coordinator;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
+import com.alibaba.fluss.exception.FencedTieringEpochException;
 import com.alibaba.fluss.exception.FlussRuntimeException;
+import com.alibaba.fluss.exception.InvalidCoordinatorException;
+import com.alibaba.fluss.exception.TableNotExistException;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.server.entity.LakeTieringTableInfo;
 import com.alibaba.fluss.server.utils.timer.DefaultTimer;
 import com.alibaba.fluss.server.utils.timer.Timer;
 import com.alibaba.fluss.server.utils.timer.TimerTask;
+import com.alibaba.fluss.server.zk.ZkSequenceIDCounter;
+import com.alibaba.fluss.server.zk.ZooKeeperClient;
+import com.alibaba.fluss.server.zk.data.ZkData.LakeTableTieringEpochZNode;
 import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.clock.SystemClock;
+import com.alibaba.fluss.utils.concurrent.ExecutorThreadFactory;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
 import com.alibaba.fluss.utils.types.Tuple2;
 
@@ -41,6 +49,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -56,31 +67,39 @@ import static com.alibaba.fluss.utils.concurrent.LockUtils.inLock;
  *
  * <ul>
  *   <li>New: when a new lake table is created
- *   <li>ReInitialized: when the coordinator server is restarted, the state of all existing lake
- *       table will be ReInitialized state
+ *   <li>Initialized: when the coordinator server is restarted, the state of all existing lake table
+ *       will be Initialized state
  *   <li>Scheduled: when the lake table is waiting for a period of time to be tiered
  *   <li>Pending: when the lake table is waiting for tiering service to request the table
  *   <li>Tiering: when the lake table is being tiered by tiering service
+ *   <li>Tiered: when the lake table finish one round of tiering
+ *   <li>Failed: when the lake table tiering failed
  * </ul>
  *
  * <p>The state machine of table to be tiered is as follows:
  *
  * <pre>{@code
  * New -> Scheduled
- * ReInitialized --> Scheduled
+ * Initialized --> |the interval from last lake snapshot is not less than tiering interval| Pending
+ * Initialized --> |the interval from last lake snapshot is less than tiering interval| Scheduled
  * Scheduled --> |after waiting for a period of tiering interval| Pending
  * Pending --> |lake tiering service request table| Tiering
- * Tiering --> |once lake tiering finish| Scheduled
+ * Tiering --> |once lake tiering finish| Tiered
  * Tiering --> |lake tiering heartbeat timout| Pending
+ * Tiering --> |lake tiering report tiering| Failed
+ * Tiered -> Scheduled
+ * Failed -> Pending
  * }</pre>
  */
 public class LakeTableTieringManager implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeTableTieringManager.class);
 
-    protected static final long TIERING_SERVICE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+    protected static final long TIERING_SERVICE_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 
+    private final ZooKeeperClient zkClient;
     private final Timer lakeTieringScheduleTimer;
+    private final ScheduledExecutorService lakeTieringServiceTimeoutChecker;
     private final Clock clock;
     private final Queue<Long> pendingTieringTables;
     private final LakeTieringExpiredOperationReaper expirationReaper;
@@ -99,15 +118,31 @@ public class LakeTableTieringManager implements AutoCloseable {
     // table_id -> tiering interval
     private final Map<Long, Long> tieringIntervalByTableId;
 
+    // the table id -> ZkSequenceIDCounter for table tiering epoch
+    private final Map<Long, ZkSequenceIDCounter> tableTierEpochZkCounter;
+    // cache table_id -> table tiering epoch
+    private final Map<Long, Long> tableTierEpoch;
+
     private final Lock lock = new ReentrantLock();
 
-    public LakeTableTieringManager() {
-        this(new DefaultTimer("delay lake tiering", 1_000, 20), SystemClock.getInstance());
+    public LakeTableTieringManager(ZooKeeperClient zkClient) {
+        this(
+                zkClient,
+                new DefaultTimer("delay lake tiering", 1_000, 20),
+                Executors.newSingleThreadScheduledExecutor(
+                        new ExecutorThreadFactory("fluss-lake-tiering-timeout-checker")),
+                SystemClock.getInstance());
     }
 
     @VisibleForTesting
-    protected LakeTableTieringManager(Timer lakeTieringScheduleTimer, Clock clock) {
+    protected LakeTableTieringManager(
+            ZooKeeperClient zkClient,
+            Timer lakeTieringScheduleTimer,
+            ScheduledExecutorService lakeTieringServiceTimeoutChecker,
+            Clock clock) {
+        this.zkClient = zkClient;
         this.lakeTieringScheduleTimer = lakeTieringScheduleTimer;
+        this.lakeTieringServiceTimeoutChecker = lakeTieringServiceTimeoutChecker;
         this.clock = clock;
         this.pendingTieringTables = new ArrayDeque<>();
         this.tieringStates = new HashMap<>();
@@ -116,34 +151,71 @@ public class LakeTableTieringManager implements AutoCloseable {
         this.tieringIntervalByTableId = new HashMap<>();
         this.expirationReaper = new LakeTieringExpiredOperationReaper();
         expirationReaper.start();
+        this.lakeTieringServiceTimeoutChecker.scheduleWithFixedDelay(
+                this::checkTieringServiceTimeout, 0, 30, TimeUnit.SECONDS);
+        this.tableTierEpochZkCounter = new HashMap<>();
+        this.tableTierEpoch = new HashMap<>();
     }
 
-    public void initWithLakeTables(List<TableInfo> lakeTables) {
-        for (TableInfo tableInfo : lakeTables) {
-            doHandleStateChange(tableInfo.getTableId(), TieringState.ReInitialized);
-            addLakeTableToTier(tableInfo);
-        }
-    }
-
-    public void addNewLakeTable(TableInfo tableInfo) {
-        doHandleStateChange(tableInfo.getTableId(), TieringState.New);
-        addLakeTableToTier(tableInfo);
-    }
-
-    private void addLakeTableToTier(TableInfo tableInfo) {
+    public void initWithLakeTables(
+            List<Tuple2<TableInfo, Long>> tableInfoAndLastLakeSnapshotTimestamp) {
         inLock(
                 lock,
                 () -> {
-                    tablePathById.put(tableInfo.getTableId(), tableInfo.getTablePath());
-                    tieringIntervalByTableId.put(
-                            tableInfo.getTableId(),
-                            tableInfo.getTableConfig().getDataLakeTieringInterval().toMillis());
+                    for (Tuple2<TableInfo, Long> tableInfoAndLastLakeTime :
+                            tableInfoAndLastLakeSnapshotTimestamp) {
+                        TableInfo tableInfo = tableInfoAndLastLakeTime.f0;
+                        long tableId = tableInfo.getTableId();
+                        long lastLakeSnapshotTimestamp = tableInfoAndLastLakeTime.f1;
+                        putLakeTable(tableInfo);
+
+                        doHandleStateChange(tableInfo.getTableId(), TieringState.Initialized);
+
+                        // the interval from last lake snapshot is greater than the tiering
+                        // interval, put into pending directly
+                        long currentTime = clock.milliseconds();
+                        long tieringInterval = tieringIntervalByTableId.get(tableInfo.getTableId());
+                        if (currentTime - lastLakeSnapshotTimestamp >= tieringInterval) {
+                            doHandleStateChange(tableId, TieringState.Pending);
+                        } else {
+                            // otherwise, schedule it to be tiered after the remain time interval
+                            doHandleStateChange(
+                                    tableId,
+                                    TieringState.Scheduled,
+                                    tieringInterval - (currentTime - lastLakeSnapshotTimestamp));
+                        }
+                    }
+                });
+    }
+
+    public void addNewLakeTable(TableInfo tableInfo) {
+        inLock(
+                lock,
+                () -> {
+                    putLakeTable(tableInfo);
+                    doHandleStateChange(tableInfo.getTableId(), TieringState.New);
+                    // schedule it to be tiered after the tiering interval
                     doHandleStateChange(tableInfo.getTableId(), TieringState.Scheduled);
                 });
     }
 
-    private void scheduleTableTiering(long tableId) {
-        scheduleTableTiering(tableId, null);
+    private void putLakeTable(TableInfo tableInfo) {
+        long tableId = tableInfo.getTableId();
+        tablePathById.put(tableId, tableInfo.getTablePath());
+        tieringIntervalByTableId.put(
+                tableId, tableInfo.getTableConfig().getDataLakeTieringInterval().toMillis());
+        ZkSequenceIDCounter counter =
+                new ZkSequenceIDCounter(
+                        zkClient.getCuratorClient(), LakeTableTieringEpochZNode.path(tableId));
+        tableTierEpochZkCounter.put(tableId, counter);
+        try {
+            tableTierEpoch.put(tableId, counter.get());
+        } catch (Exception e) {
+            throw new FlussRuntimeException(
+                    String.format(
+                            "Fail to get current tier epoch for table id: %d of table path: %s",
+                            tableId, tableInfo.getTablePath()));
+        }
     }
 
     private void scheduleTableTiering(long tableId, @Nullable Long delayMs) {
@@ -163,11 +235,33 @@ public class LakeTableTieringManager implements AutoCloseable {
                     tablePathById.remove(tableId);
                     tieringIntervalByTableId.remove(tableId);
                     tieringStates.remove(tableId);
+                    liveTieringTableIds.remove(tableId);
+
+                    tableTierEpochZkCounter.remove(tableId);
+                    tableTierEpoch.remove(tableId);
+                });
+    }
+
+    @VisibleForTesting
+    protected void checkTieringServiceTimeout() {
+        inLock(
+                lock,
+                () -> {
+                    for (Map.Entry<Long, Long> tableIdAndLastTimeHeartbeat :
+                            liveTieringTableIds.entrySet()) {
+                        Long tableId = tableIdAndLastTimeHeartbeat.getKey();
+                        long lastHeartbeat = tableIdAndLastTimeHeartbeat.getValue();
+                        if (isTieringServiceTimeout(lastHeartbeat)) {
+                            // change it to pending to wait to be requested by other
+                            // lake tiering service
+                            doHandleStateChange(tableId, TieringState.Pending);
+                        }
+                    }
                 });
     }
 
     @Nullable
-    public Tuple2<Long, TablePath> requestTable() {
+    public LakeTieringTableInfo requestTable() {
         return inLock(
                 lock,
                 () -> {
@@ -181,57 +275,93 @@ public class LakeTableTieringManager implements AutoCloseable {
                     if (tablePath == null) {
                         return requestTable();
                     }
-                    registerTieringTimeout(tableId);
+                    long tieringEpoch = increaseTieringEpoch(tableId);
                     doHandleStateChange(tableId, TieringState.Tiering);
-                    return new Tuple2<>(tableId, tablePath);
+                    return new LakeTieringTableInfo(tableId, tablePath, tieringEpoch);
                 });
     }
 
-    private void registerTieringTimeout(long tableId) {
-        // we put the table to a timout timer,
-        // if no liveness heartbeat for the table in this period of time, we consider the tiering is
-        // invalid and put it back to Pending state to wait to be requested by other tiering service
-        lakeTieringScheduleTimer.add(
-                new TimerTask(TIERING_SERVICE_TIMEOUT_MS) {
-                    @Override
-                    public void run() {
-                        inLock(
-                                lock,
-                                () -> {
-                                    if (isTieringServiceTimeout(tableId)) {
-                                        // change it to pending to wait to be requested by other
-                                        // lake tiering service
-                                        doHandleStateChange(tableId, TieringState.Pending);
-                                    } else {
-                                        // register the next round of tiering
-                                        // timeout again
-                                        registerTieringTimeout(tableId);
-                                    }
-                                });
-                    }
-                });
+    private boolean isTieringServiceTimeout(long lastHeartbeat) {
+        return clock.milliseconds() - lastHeartbeat >= TIERING_SERVICE_TIMEOUT_MS;
     }
 
-    private boolean isTieringServiceTimeout(long tableId) {
-        Long lastHeartbeat = liveTieringTableIds.get(tableId);
-        return lastHeartbeat == null
-                || clock.milliseconds() - lastHeartbeat >= TIERING_SERVICE_TIMEOUT_MS;
+    private long increaseTieringEpoch(long tableId) {
+        long tieringEpoch;
+        try {
+            tieringEpoch = tableTierEpochZkCounter.get(tableId).incrementAndGet();
+        } catch (Exception e) {
+            throw new FlussRuntimeException(
+                    String.format(
+                            "Fail to increase current tier epoch for table id: %d of table path: %s",
+                            tableId, tablePathById.get(tableId)));
+        }
+        tableTierEpoch.put(tableId, tieringEpoch);
+        return tieringEpoch;
     }
 
-    public void finishTableTiering(long tableId) {
-        inLock(
-                lock,
-                () ->
-                        // schedule it again if one round of tiering is finished
-                        doHandleStateChange(tableId, TieringState.Scheduled));
-    }
-
-    public void renewTieringHeartbeat(long tableId) {
+    public void finishTableTiering(long tableId, long tieredEpoch) {
         inLock(
                 lock,
                 () -> {
+                    validateTieringServiceRequest(tableId, tieredEpoch);
+                    // to tiered state firstly
+                    doHandleStateChange(tableId, TieringState.Tiered);
+                    // then to scheduled state to enable other tiering service can pick it
+                    doHandleStateChange(tableId, TieringState.Scheduled);
+                });
+    }
+
+    public void reportTieringFail(long tableId, long tieringEpoch) {
+        inLock(
+                lock,
+                () -> {
+                    validateTieringServiceRequest(tableId, tieringEpoch);
+                    // to fail state firstly
+                    doHandleStateChange(tableId, TieringState.Failed);
+                    // then to pending state to enable other tiering service can pick it
+                    doHandleStateChange(tableId, TieringState.Pending);
+                });
+    }
+
+    public void renewTieringHeartbeat(long tableId, long tieringEpoch) {
+        inLock(
+                lock,
+                () -> {
+                    validateTieringServiceRequest(tableId, tieringEpoch);
+                    TieringState tieringState = tieringStates.get(tableId);
+                    if (tieringState != TieringState.Tiering) {
+                        throw new IllegalStateException(
+                                String.format(
+                                        "The table %d to renew tiering heartbeat must in Tiering state, but in %s state.",
+                                        tableId, tieringState));
+                    }
                     liveTieringTableIds.put(tableId, clock.milliseconds());
                 });
+    }
+
+    private void validateTieringServiceRequest(long tableId, long tieringEpoch) {
+        Long currentEpoch = tableTierEpoch.get(tableId);
+        // the table has been dropped, return false
+        if (currentEpoch == null) {
+            throw new TableNotExistException("The table " + tableId + " doesn't exist.");
+        }
+        if (tieringEpoch < currentEpoch) {
+            throw new FencedTieringEpochException(
+                    String.format(
+                            "The tiering epoch %d is lower than current epoch %d in coordinator for table %d.",
+                            tieringEpoch, currentEpoch, tableId));
+        }
+        if (tieringEpoch > currentEpoch) {
+            throw new InvalidCoordinatorException(
+                    String.format(
+                            "Coordinator Server has been moved, "
+                                    + "the tiering epoch in request is %d for table %d, but the tiering epoch in the target coordinator server is %d.",
+                            tieringEpoch, tableId, currentEpoch));
+        }
+    }
+
+    private void doHandleStateChange(long tableId, TieringState targetState) {
+        doHandleStateChange(tableId, targetState, null);
     }
 
     /**
@@ -243,17 +373,13 @@ public class LakeTableTieringManager implements AutoCloseable {
      * <p>-- When the lake table is newly created, do: schedule a timer to wait for a tiering
      * interval configured in table, transmit the table to Pending
      *
-     * <p>ReInitialized -> Scheduled：
+     * <p>Initialized -> Pending:
      *
-     * <p>-- When the coordinator server is restarted, for all existing lake table, do: schedule a
-     * timer to wait for a tiering service timeout, transmit the tables to Pending. Note, we must
-     * wait for the tiering service timeout in case any existing tiering service is tiering the
-     * table
+     * <p>Initialized -> Scheduled：
      *
-     * <p>Tiering -> Scheduled
-     *
-     * <p>-- When the tiering service finished one-round of tiering, do: schedule a timer to wait
-     * for a tiering interval configured in table, transmit the table to Pending
+     * <p>-- When the coordinator server is restarted, for all existing lake table, if the interval
+     * from last lake snapshot is not less than tiering interval, do: transmit to Pending, otherwise
+     * Scheduled which will wait for {@code delay} time to be Pending.
      *
      * <p>Scheduled -> Pending
      *
@@ -268,7 +394,7 @@ public class LakeTableTieringManager implements AutoCloseable {
      * <p>-- When the table is assigned to a tiering service after tiering service request the
      * table, do: transmit to Tiering state
      */
-    private void doHandleStateChange(long tableId, TieringState targetState) {
+    private void doHandleStateChange(long tableId, TieringState targetState, @Nullable Long delay) {
         TieringState currentState = tieringStates.get(tableId);
         if (!isValidStateTransition(currentState, targetState)) {
             LOG.error(
@@ -280,28 +406,21 @@ public class LakeTableTieringManager implements AutoCloseable {
         }
         switch (targetState) {
             case New:
-            case ReInitialized:
+            case Initialized:
                 // do nothing
                 break;
             case Scheduled:
-                if (currentState == TieringState.New) {
-                    scheduleTableTiering(tableId);
-                } else if (currentState == TieringState.ReInitialized) {
-                    // schedule the table, but we wait for a period of TIMEOUT
-                    // to avoid the existing tiering services are still tiering it since
-                    // it's a table reinitialized by coordinator server
-                    scheduleTableTiering(tableId, TIERING_SERVICE_TIMEOUT_MS);
-                } else if (currentState == TieringState.Tiering) {
-                    // should happens the table has finished one-round of tiering,
-                    // schedule it again
-                    liveTieringTableIds.remove(tableId);
-                    scheduleTableTiering(tableId);
-                }
+                scheduleTableTiering(tableId, delay);
                 break;
             case Pending:
                 pendingTieringTables.add(tableId);
                 break;
             case Tiering:
+                liveTieringTableIds.put(tableId, clock.milliseconds());
+                break;
+            case Tiered:
+            case Failed:
+                liveTieringTableIds.remove(tableId);
                 // do nothing
                 break;
         }
@@ -310,8 +429,8 @@ public class LakeTableTieringManager implements AutoCloseable {
 
     private boolean isValidStateTransition(
             @Nullable TieringState curState, TieringState targetState) {
-        if (targetState == TieringState.New || targetState == TieringState.ReInitialized) {
-            // when target state is new or reinitialized, it's valid when current state is null
+        if (targetState == TieringState.New || targetState == TieringState.Initialized) {
+            // when target state is new or Initialized, it's valid when current state is null
             return curState == null;
         }
         return targetState.validPreviousStates().contains(curState);
@@ -320,7 +439,7 @@ public class LakeTableTieringManager implements AutoCloseable {
     private void doStateChange(long tableId, TieringState fromState, TieringState toState) {
         tieringStates.put(tableId, toState);
         LOG.debug(
-                "Successfully changed state for table {} from {} to {}.",
+                "Successfully changed tiering state for table {} from {} to {}.",
                 tableId,
                 fromState,
                 fromState);
@@ -328,6 +447,7 @@ public class LakeTableTieringManager implements AutoCloseable {
 
     @Override
     public void close() throws Exception {
+        lakeTieringServiceTimeoutChecker.shutdown();
         expirationReaper.initiateShutdown();
         // improve shutdown time by waking up any ShutdownableThread(s) blocked on poll by
         // sending a no-op.
@@ -390,8 +510,8 @@ public class LakeTableTieringManager implements AutoCloseable {
             }
         },
         // When the coordinator server is restarted, the state of existing lake table
-        // will be ReInitialized
-        ReInitialized {
+        // will be Initialized
+        Initialized {
             @Override
             public Set<TieringState> validPreviousStates() {
                 return Collections.emptySet();
@@ -402,7 +522,7 @@ public class LakeTableTieringManager implements AutoCloseable {
         Scheduled {
             @Override
             public Set<TieringState> validPreviousStates() {
-                return EnumSet.of(New, ReInitialized, Tiering);
+                return EnumSet.of(New, Initialized, Tiered);
             }
         },
         // When the period of tiering interval has passed, but no any tiering service requesting
@@ -410,7 +530,7 @@ public class LakeTableTieringManager implements AutoCloseable {
         Pending {
             @Override
             public Set<TieringState> validPreviousStates() {
-                return EnumSet.of(Scheduled, Tiering);
+                return EnumSet.of(Scheduled, Initialized, Tiering, Failed);
             }
         },
         // When one tiering service is tiering the table, the state will be Tiering
@@ -418,6 +538,21 @@ public class LakeTableTieringManager implements AutoCloseable {
             @Override
             public Set<TieringState> validPreviousStates() {
                 return EnumSet.of(Pending);
+            }
+        },
+
+        // When one tiering service has tiered the table, the state will be TIERED
+        Tiered {
+            @Override
+            public Set<TieringState> validPreviousStates() {
+                return EnumSet.of(Tiering);
+            }
+        },
+        // When one tiering service fail to tier the table, the state will be Failed
+        Failed {
+            @Override
+            public Set<TieringState> validPreviousStates() {
+                return EnumSet.of(Tiering);
             }
         };
 

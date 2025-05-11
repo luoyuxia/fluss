@@ -331,7 +331,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // load all tables
         List<TableInfo> autoPartitionTables = new ArrayList<>();
-        List<TableInfo> lakeTables = new ArrayList<>();
+        List<Tuple2<TableInfo, Long>> lakeTables = new ArrayList<>();
         for (String database : metadataManager.listDatabases()) {
             for (String tableName : metadataManager.listTables(database)) {
                 TablePath tablePath = TablePath.of(database, tableName);
@@ -339,7 +339,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 coordinatorContext.putTablePath(tableInfo.getTableId(), tablePath);
                 coordinatorContext.putTableInfo(tableInfo);
                 if (tableInfo.getTableConfig().isDataLakeEnabled()) {
-                    lakeTables.add(tableInfo);
+                    // always set to current time,
+                    // todo: should get from the last lake snapshot
+                    lakeTables.add(Tuple2.of(tableInfo, System.currentTimeMillis()));
                 }
                 if (tableInfo.isPartitioned()) {
                     Map<String, Long> partitions =

@@ -56,4 +56,30 @@ public class ZkSequenceIDCounter implements SequenceIDCounter {
             throw new Exception("Failed to increment sequence id counter.");
         }
     }
+
+    /** Get the current sequence ID. */
+    @Override
+    public long get() throws Exception {
+        AtomicValue<Long> value = sequenceIdCounter.get();
+        if (value.succeeded()) {
+            return value.postValue();
+        } else {
+            throw new Exception("Failed to get sequence id counter.");
+        }
+    }
+
+    /**
+     * Atomically increments the sequence ID.
+     *
+     * @return The current sequence ID
+     */
+    @Override
+    public long incrementAndGet() throws Exception {
+        AtomicValue<Long> incrementValue = sequenceIdCounter.increment();
+        if (incrementValue.succeeded()) {
+            return incrementValue.postValue();
+        } else {
+            throw new Exception("Failed to increment sequence id counter.");
+        }
+    }
 }

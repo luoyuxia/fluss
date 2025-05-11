@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,25 +14,12 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.server;
+package com.alibaba.fluss.exception;
 
-/** A counter for generating unique sequence IDs. */
-public interface SequenceIDCounter {
+/** Exception thrown when the tiering epoch is invalid. */
+public class FencedTieringEpochException extends ApiException {
 
-    /**
-     * Atomically increments the sequence ID.
-     *
-     * @return The previous sequence ID
-     */
-    long getAndIncrement() throws Exception;
-
-    /** Get the current sequence ID. */
-    long get() throws Exception;
-
-    /**
-     * Atomically increments the sequence ID.
-     *
-     * @return The current sequence ID
-     */
-    long incrementAndGet() throws Exception;
+    public FencedTieringEpochException(String message) {
+        super(message);
+    }
 }
