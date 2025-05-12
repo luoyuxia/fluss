@@ -53,6 +53,7 @@ import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.exception.PartitionAlreadyExistsException;
 import com.alibaba.fluss.exception.PartitionNotExistException;
 import com.alibaba.fluss.exception.RecordTooLargeException;
+import com.alibaba.fluss.exception.RetriableAuthenticationException;
 import com.alibaba.fluss.exception.SchemaNotExistException;
 import com.alibaba.fluss.exception.SecurityDisabledException;
 import com.alibaba.fluss.exception.SecurityTokenException;
@@ -199,7 +200,11 @@ public enum Errors {
     SECURITY_DISABLED_EXCEPTION(47, "Security is disabled.", SecurityDisabledException::new),
     AUTHORIZATION_EXCEPTION(48, "Authorization failed", AuthorizationException::new),
     BUCKET_MAX_NUM_EXCEPTION(
-            49, "Exceed the maximum number of buckets", TooManyBucketsException::new);
+            49, "Exceed the maximum number of buckets", TooManyBucketsException::new),
+    RETRIABLE_AUTHENTICATE_EXCEPTION(
+            50,
+            "Authentication failed with retriable exception. ",
+            RetriableAuthenticationException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 
