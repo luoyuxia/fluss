@@ -11,7 +11,6 @@ target
 *.class
 *.iml
 *.swp
-*.jar
 *.log
 *.pyc
 build-target
