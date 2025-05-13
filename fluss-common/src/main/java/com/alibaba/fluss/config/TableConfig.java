@@ -85,8 +85,12 @@ public class TableConfig {
         return config.getOptional(ConfigOptions.TABLE_DATALAKE_FORMAT);
     }
 
-    public Duration getDataLakeTieringInterval() {
-        return config.get(ConfigOptions.TABLE_DATALAKE_TIERING_INTERVAL);
+    /**
+     * Gets the data lake freshness of the table. It defines the maximum amount of time that the
+     * datalake table's content should lag behind updates to the Fluss table.
+     */
+    public Duration getDataLakeFreshness() {
+        return config.get(ConfigOptions.TABLE_DATALAKE_FRESHNESS);
     }
 
     /** Gets the optional merge engine type of the table. */

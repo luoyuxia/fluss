@@ -18,6 +18,8 @@ package com.alibaba.fluss.server.entity;
 
 import com.alibaba.fluss.metadata.TablePath;
 
+import java.util.Objects;
+
 /** The info for the table assigned from Coordinator to lake tiering service to do tiering. */
 public class LakeTieringTableInfo {
 
@@ -41,5 +43,33 @@ public class LakeTieringTableInfo {
 
     public long tieringEpoch() {
         return tieringEpoch;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        LakeTieringTableInfo that = (LakeTieringTableInfo) o;
+        return tableId == that.tableId
+                && tieringEpoch == that.tieringEpoch
+                && Objects.equals(tablePath, that.tablePath);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(tableId, tablePath, tieringEpoch);
+    }
+
+    @Override
+    public String toString() {
+        return "LakeTieringTableInfo{"
+                + "tableId="
+                + tableId
+                + ", tablePath="
+                + tablePath
+                + ", tieringEpoch="
+                + tieringEpoch
+                + '}';
     }
 }

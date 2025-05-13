@@ -104,7 +104,7 @@ class TableBucketStateMachineTest {
                         serverMetadataCache,
                         new MetadataManager(zookeeperClient, new Configuration()),
                         new Configuration());
-        lakeTableTieringManager = new LakeTableTieringManager(zookeeperClient);
+        lakeTableTieringManager = new LakeTableTieringManager();
     }
 
     @Test

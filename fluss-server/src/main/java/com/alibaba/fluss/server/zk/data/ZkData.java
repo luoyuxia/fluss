@@ -553,19 +553,6 @@ public final class ZkData {
         }
     }
 
-    /**
-     * The znode used to generate a sequence unique id for the tiering epoch.
-     *
-     * <p>The znode path is:
-     *
-     * <p>/tabletservers/tables/[tableId]/laketable/tiering_epoch
-     */
-    public static final class LakeTableTieringEpochZNode {
-        public static String path(long tableId) {
-            return LakeTableZNode.path(tableId) + "/tiering_epoch";
-        }
-    }
-
     // ------------------------------------------------------------------------------------------
     // ZNodes for ACL(Access Control List).
     // ------------------------------------------------------------------------------------------

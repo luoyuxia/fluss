@@ -25,14 +25,4 @@ public interface SequenceIDCounter {
      * @return The previous sequence ID
      */
     long getAndIncrement() throws Exception;
-
-    /** Get the current sequence ID. */
-    long get() throws Exception;
-
-    /**
-     * Atomically increments the sequence ID.
-     *
-     * @return The current sequence ID
-     */
-    long incrementAndGet() throws Exception;
 }

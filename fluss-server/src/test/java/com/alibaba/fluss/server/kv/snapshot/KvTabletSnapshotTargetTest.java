@@ -437,16 +437,6 @@ class KvTabletSnapshotTargetTest {
         public long getAndIncrement() {
             return snapshotIdGenerator.getAndIncrement();
         }
-
-        @Override
-        public long get() throws Exception {
-            return snapshotIdGenerator.get();
-        }
-
-        @Override
-        public long incrementAndGet() throws Exception {
-            return snapshotIdGenerator.incrementAndGet();
-        }
     }
 
     private enum SnapshotFailType {

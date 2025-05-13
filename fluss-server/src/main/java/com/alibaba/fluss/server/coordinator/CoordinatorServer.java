@@ -175,7 +175,7 @@ public class CoordinatorServer extends ServerBase {
                 authorizer.startup();
             }
 
-            this.lakeTableTieringManager = new LakeTableTieringManager(zkClient);
+            this.lakeTableTieringManager = new LakeTableTieringManager();
 
             MetadataManager metadataManager = new MetadataManager(zkClient, conf);
             this.coordinatorService =
