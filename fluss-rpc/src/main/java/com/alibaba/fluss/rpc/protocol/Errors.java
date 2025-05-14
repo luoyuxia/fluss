@@ -208,7 +208,7 @@ public enum Errors {
     INVALID_SERVER_RACK_INFO_EXCEPTION(
             51, "The server rack info is invalid.", InvalidServerRackInfoException::new),
     RETRIABLE_AUTHENTICATE_EXCEPTION(
-            51,
+            52,
             "Authentication failed with retriable exception. ",
             RetriableAuthenticationException::new);
 
