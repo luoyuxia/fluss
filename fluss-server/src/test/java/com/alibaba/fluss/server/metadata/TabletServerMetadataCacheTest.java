@@ -18,6 +18,7 @@ package com.alibaba.fluss.server.metadata;
 
 import com.alibaba.fluss.cluster.Endpoint;
 import com.alibaba.fluss.cluster.ServerType;
+import com.alibaba.fluss.cluster.TabletServerInfo;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
@@ -30,6 +31,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.record.TestData.DATA1_PARTITIONED_TABLE_DESCRIPTOR;
 import static com.alibaba.fluss.record.TestData.DATA1_TABLE_DESCRIPTOR;
@@ -66,6 +68,7 @@ public class TabletServerMetadataCacheTest {
         coordinatorServer =
                 new ServerInfo(
                         0,
+                        null,
                         Endpoint.fromListenersString(
                                 "CLIENT://localhost:99,INTERNAL://localhost:100"),
                         ServerType.COORDINATOR);
@@ -74,15 +77,18 @@ public class TabletServerMetadataCacheTest {
                         Arrays.asList(
                                 new ServerInfo(
                                         0,
+                                        null,
                                         Endpoint.fromListenersString(
                                                 "CLIENT://localhost:101, INTERNAL://localhost:102"),
                                         ServerType.TABLET_SERVER),
                                 new ServerInfo(
                                         1,
+                                        null,
                                         Endpoint.fromListenersString("INTERNAL://localhost:103"),
                                         ServerType.TABLET_SERVER),
                                 new ServerInfo(
                                         2,
+                                        null,
                                         Endpoint.fromListenersString("INTERNAL://localhost:104"),
                                         ServerType.TABLET_SERVER)));
 
@@ -129,7 +135,10 @@ public class TabletServerMetadataCacheTest {
         assertThat(serverMetadataCache.isAliveTabletServer(0)).isTrue();
         assertThat(serverMetadataCache.getAllAliveTabletServers("CLIENT").size()).isEqualTo(1);
         assertThat(serverMetadataCache.getAllAliveTabletServers("INTERNAL").size()).isEqualTo(3);
-        assertThat(serverMetadataCache.getAliveTabletServerIds())
+        assertThat(
+                        serverMetadataCache.getAliveTabletServerInfos().stream()
+                                .map(TabletServerInfo::getId)
+                                .collect(Collectors.toList()))
                 .containsExactlyInAnyOrder(0, 1, 2);
 
         assertThat(serverMetadataCache.getTablePath(DATA1_TABLE_ID).get())

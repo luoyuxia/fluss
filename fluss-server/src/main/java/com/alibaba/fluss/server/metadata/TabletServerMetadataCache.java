@@ -17,6 +17,7 @@
 package com.alibaba.fluss.server.metadata;
 
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.cluster.TabletServerInfo;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePartition;
@@ -64,8 +65,14 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
 
     @Override
     public boolean isAliveTabletServer(int serverId) {
-        Set<Integer> aliveTabletServersById = serverMetadataSnapshot.getAliveTabletServerIds();
-        return aliveTabletServersById.contains(serverId);
+        Set<TabletServerInfo> aliveTabletServersById =
+                serverMetadataSnapshot.getAliveTabletServerInfos();
+        for (TabletServerInfo tabletServerInfo : aliveTabletServersById) {
+            if (tabletServerInfo.getId() == serverId) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -84,8 +91,8 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
     }
 
     @Override
-    public Set<Integer> getAliveTabletServerIds() {
-        return serverMetadataSnapshot.getAliveTabletServerIds();
+    public Set<TabletServerInfo> getAliveTabletServerInfos() {
+        return serverMetadataSnapshot.getAliveTabletServerInfos();
     }
 
     @Override

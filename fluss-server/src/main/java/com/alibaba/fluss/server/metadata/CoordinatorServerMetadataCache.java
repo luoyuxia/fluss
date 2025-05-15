@@ -17,6 +17,7 @@
 package com.alibaba.fluss.server.metadata;
 
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.cluster.TabletServerInfo;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
@@ -31,6 +32,7 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -81,8 +83,16 @@ public class CoordinatorServerMetadataCache implements ServerMetadataCache {
     }
 
     @Override
-    public Set<Integer> getAliveTabletServerIds() {
-        return Collections.unmodifiableSet(coordinatorContext.getLiveTabletServers().keySet());
+    public Set<TabletServerInfo> getAliveTabletServerInfos() {
+        Set<TabletServerInfo> tabletServerInfos = new HashSet<>();
+        coordinatorContext
+                .getLiveTabletServers()
+                .values()
+                .forEach(
+                        serverInfo ->
+                                tabletServerInfos.add(
+                                        new TabletServerInfo(serverInfo.id(), serverInfo.rack())));
+        return Collections.unmodifiableSet(tabletServerInfos);
     }
 
     @Override

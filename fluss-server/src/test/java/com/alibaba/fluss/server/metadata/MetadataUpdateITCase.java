@@ -327,7 +327,7 @@ class MetadataUpdateITCase {
                     assertThat(serverMetadataCache.getCoordinatorServer("FLUSS"))
                             .isEqualTo(expectedCoordinatorServer);
 
-                    assertThat(serverMetadataCache.getAliveTabletServerIds().size())
+                    assertThat(serverMetadataCache.getLiveServers().length)
                             .isEqualTo(expectedTabletServerSize);
 
                     expectedTablePathById.forEach(

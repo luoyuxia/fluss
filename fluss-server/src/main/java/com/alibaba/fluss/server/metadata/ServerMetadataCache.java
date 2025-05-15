@@ -17,6 +17,7 @@
 package com.alibaba.fluss.server.metadata;
 
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.cluster.TabletServerInfo;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
@@ -62,7 +63,7 @@ public interface ServerMetadataCache {
      */
     Map<Integer, ServerNode> getAllAliveTabletServers(String listenerName);
 
-    Set<Integer> getAliveTabletServerIds();
+    Set<TabletServerInfo> getAliveTabletServerInfos();
 
     Optional<TablePath> getTablePath(long tableId);
 
@@ -75,11 +76,11 @@ public interface ServerMetadataCache {
     Optional<PartitionMetadata> getPartitionMetadata(PhysicalTablePath partitionPath);
 
     /** Get ids of all alive tablet server nodes. */
-    default int[] getLiveServerIds() {
-        Set<Integer> aliveTabletServerIds = getAliveTabletServerIds();
-        int[] server = new int[aliveTabletServerIds.size()];
-        Iterator<Integer> iterator = aliveTabletServerIds.iterator();
-        for (int i = 0; i < aliveTabletServerIds.size(); i++) {
+    default TabletServerInfo[] getLiveServers() {
+        Set<TabletServerInfo> aliveTabletServerInfos = getAliveTabletServerInfos();
+        TabletServerInfo[] server = new TabletServerInfo[aliveTabletServerInfos.size()];
+        Iterator<TabletServerInfo> iterator = aliveTabletServerInfos.iterator();
+        for (int i = 0; i < aliveTabletServerInfos.size(); i++) {
             server[i] = iterator.next();
         }
         return server;

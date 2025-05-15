@@ -1447,6 +1447,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
         ServerInfo csServerInfo =
                 new ServerInfo(
                         0,
+                        null,
                         Endpoint.fromListenersString(
                                 "CLIENT://localhost:1234,INTERNAL://localhost:1235"),
                         ServerType.COORDINATOR);
@@ -1455,18 +1456,22 @@ class ReplicaManagerTest extends ReplicaTestBase {
                         Arrays.asList(
                                 new ServerInfo(
                                         TABLET_SERVER_ID,
+                                        null,
                                         Endpoint.fromListenersString("CLIENT://localhost:90"),
                                         ServerType.TABLET_SERVER),
                                 new ServerInfo(
                                         2,
+                                        null,
                                         Endpoint.fromListenersString("CLIENT://localhost:91"),
                                         ServerType.TABLET_SERVER),
                                 new ServerInfo(
                                         3,
+                                        null,
                                         Endpoint.fromListenersString("CLIENT://localhost:92"),
                                         ServerType.TABLET_SERVER),
                                 new ServerInfo(
                                         4,
+                                        null,
                                         Endpoint.fromListenersString("CLIENT://localhost:93"),
                                         ServerType.TABLET_SERVER)));
         List<TableMetadata> tableMetadataList =
@@ -1681,7 +1686,7 @@ class ReplicaManagerTest extends ReplicaTestBase {
                         assertThat(serverMetadataCache.getCoordinatorServer(k)).isNull();
                     }
                 });
-        assertThat(serverMetadataCache.getAliveTabletServerIds().size())
+        assertThat(serverMetadataCache.getAliveTabletServerInfos().size())
                 .isEqualTo(expectedTabletServerSize);
         expectedTablePathById.forEach(
                 (k, v) -> {

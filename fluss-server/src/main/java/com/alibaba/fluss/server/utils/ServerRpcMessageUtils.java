@@ -321,7 +321,10 @@ public class ServerRpcMessageUtils {
                                             ConfigOptions.INTERNAL_LISTENER_NAME.defaultValue()));
             coordinatorServer =
                     new ServerInfo(
-                            pbCoordinatorServer.getNodeId(), endpoints, ServerType.COORDINATOR);
+                            pbCoordinatorServer.getNodeId(),
+                            pbCoordinatorServer.hasRack() ? pbCoordinatorServer.getRack() : null,
+                            endpoints,
+                            ServerType.COORDINATOR);
         }
 
         Set<ServerInfo> aliveTabletServers = new HashSet<>();
@@ -337,7 +340,11 @@ public class ServerRpcMessageUtils {
                                             // TODO: maybe use internal listener name from conf
                                             ConfigOptions.INTERNAL_LISTENER_NAME.defaultValue()));
             aliveTabletServers.add(
-                    new ServerInfo(tabletServer.getNodeId(), endpoints, ServerType.TABLET_SERVER));
+                    new ServerInfo(
+                            tabletServer.getNodeId(),
+                            tabletServer.hasRack() ? tabletServer.getRack() : null,
+                            endpoints,
+                            ServerType.TABLET_SERVER));
         }
 
         List<TableMetadata> tableMetadataList = new ArrayList<>();
