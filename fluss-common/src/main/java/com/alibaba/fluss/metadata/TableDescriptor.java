@@ -55,6 +55,9 @@ import static java.util.Collections.unmodifiableMap;
 public final class TableDescriptor implements Serializable {
     private static final long serialVersionUID = 1L;
 
+    public static final TableDescriptor EMPTY =
+            TableDescriptor.builder().schema(Schema.EMPTY).distributedBy(0).build();
+
     private final Schema schema;
     private final @Nullable String comment;
     private final List<String> partitionKeys;
