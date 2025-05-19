@@ -210,7 +210,7 @@ public enum Errors {
             "Authentication failed with retriable exception. ",
             RetriableAuthenticationException::new),
     INVALID_SERVER_RACK_INFO_EXCEPTION(
-            51, "The server rack info is invalid.", InvalidServerRackInfoException::new);
+            52, "The server rack info is invalid.", InvalidServerRackInfoException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 
