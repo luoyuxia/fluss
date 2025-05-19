@@ -38,7 +38,6 @@ import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
-import org.apache.flink.util.FlinkRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,7 +59,9 @@ import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /** The {@link SplitReader} implementation which will read Fluss and write to paimon. */
 public class LakeTieringSplitReader<WriteResult>
-        implements SplitReader<TableBucketWriteResult<WriteResult>, LogSplit> {
+        implements SplitReader<TableBucketWriteResult<WriteResult>, SourceSplitBase> {
+
+    public static final TablePath DEFAULT_TABLE_PATH = TablePath.of("fluss", "fluss_test_tiering");
 
     private static final Logger LOG = LoggerFactory.getLogger(LakeTieringSplitReader.class);
 
@@ -109,6 +110,9 @@ public class LakeTieringSplitReader<WriteResult>
         if (!currentTableEmptyLogSplits.isEmpty()) {
             LOG.info("Empty split(s) {} finished.", currentTableEmptyLogSplits);
             TableBucketWriteResultWithSplitIds records = forEmptySplits(currentTableEmptyLogSplits);
+            currentTableEmptyLogSplits.forEach(
+                    split -> currentTableSplitsByBucket.remove(split.getTableBucket()));
+            mayFinishCurrentTable();
             currentTableEmptyLogSplits.clear();
             return records;
         }
@@ -135,14 +139,14 @@ public class LakeTieringSplitReader<WriteResult>
     }
 
     @Override
-    public void handleSplitsChanges(SplitsChange<LogSplit> splitsChange) {
+    public void handleSplitsChanges(SplitsChange<SourceSplitBase> splitsChange) {
         if (!(splitsChange instanceof SplitsAddition)) {
             throw new UnsupportedOperationException(
                     String.format(
                             "The SplitChange type of %s is not supported.",
                             splitsChange.getClass()));
         }
-        for (LogSplit split : splitsChange.splits()) {
+        for (SourceSplitBase split : splitsChange.splits()) {
             LOG.info("add split {}", split.splitId());
             long tableId = split.getTableBucket().getTableId();
             // the split belongs to the current table
@@ -168,6 +172,7 @@ public class LakeTieringSplitReader<WriteResult>
         if (split instanceof SnapshotSplit) {
             this.currentPendingSnapshotSplits.add((SnapshotSplit) split);
         } else if (split instanceof LogSplit) {
+            getOrMoveToTable(split);
             subscribeLog((LogSplit) split);
         }
     }
@@ -205,13 +210,7 @@ public class LakeTieringSplitReader<WriteResult>
 
         Set<SourceSplitBase> pendingSplits = pendingTieringSplits.remove(pendingTableId);
         for (SourceSplitBase split : pendingSplits) {
-            if (split instanceof SnapshotSplit) {
-                this.currentPendingSnapshotSplits.add((SnapshotSplit) split);
-            } else if (split instanceof LogSplit) {
-                Table table = getOrMoveToTable(split);
-                currentLogScanner = table.newScan().createLogScanner();
-                subscribeLog((LogSplit) split);
-            }
+            addSplitToCurrentTable(split);
         }
     }
 
@@ -222,8 +221,17 @@ public class LakeTieringSplitReader<WriteResult>
             currentTablePath = tablePath;
             currentTableId = split.getTableBucket().getTableId();
             LOG.info("Start to tier table {} with table id {}.", currentTablePath, currentTableId);
+            // todo: check currentTable's id is same with currentTableId, if not, it means
+            // the currentTableId is for a previous dropped table, skip this table id and
+            // notify enumerator that the table id is not tiering now
         }
         return currentTable;
+    }
+
+    private void mayCreateLogScanner() {
+        if (currentLogScanner == null) {
+            currentLogScanner = checkNotNull(currentTable).newScan().createLogScanner();
+        }
     }
 
     private RecordsWithSplitIds<TableBucketWriteResult<WriteResult>> forLogRecords(
@@ -242,7 +250,10 @@ public class LakeTieringSplitReader<WriteResult>
             }
             LakeWriter<WriteResult> lakeWriter = getOrCreateLakeWriter(bucket);
             for (ScanRecord record : bucketScanRecords) {
-                lakeWriter.write(record);
+                // if record is less than stopping offset
+                if (record.logOffset() < stoppingOffset) {
+                    lakeWriter.write(record);
+                }
             }
             ScanRecord lastRecord = bucketScanRecords.get(bucketScanRecords.size() - 1);
             // has arrived into the end of the split,
@@ -255,7 +266,7 @@ public class LakeTieringSplitReader<WriteResult>
                     // un-partitioned table is supported
                 }
                 // put write result of the bucket
-                writeResults.put(bucket, completeLakeWriter(bucket));
+                writeResults.put(bucket, completeLakeWriter(bucket, stoppingOffset));
                 String currentSplitId = currentTableSplitsByBucket.remove(bucket);
                 // put split of the bucket
                 finishedSplitIds.put(bucket, currentSplitId);
@@ -281,12 +292,12 @@ public class LakeTieringSplitReader<WriteResult>
         return lakeWriter;
     }
 
-    private TableBucketWriteResult<WriteResult> completeLakeWriter(TableBucket bucket)
-            throws IOException {
+    private TableBucketWriteResult<WriteResult> completeLakeWriter(
+            TableBucket bucket, long logEndOffset) throws IOException {
         LakeWriter<WriteResult> lakeWriter = lakeWriters.remove(bucket);
         WriteResult writeResult = lakeWriter.complete();
         lakeWriter.close();
-        return toTableBucketWriteResult(currentTablePath, bucket, writeResult);
+        return toTableBucketWriteResult(currentTablePath, bucket, writeResult, logEndOffset);
     }
 
     private TableBucketWriteResultWithSplitIds forEmptySplits(Set<LogSplit> emptySplits) {
@@ -297,7 +308,15 @@ public class LakeTieringSplitReader<WriteResult>
             finishedSplitIds.put(tableBucket, logSplit.splitId());
             writeResults.put(
                     tableBucket,
-                    toTableBucketWriteResult(getTablePath(logSplit), tableBucket, null));
+                    toTableBucketWriteResult(
+                            getTablePath(logSplit),
+                            tableBucket,
+                            null,
+                            logSplit.getStoppingOffset()
+                                    .orElseThrow(
+                                            () ->
+                                                    new IllegalStateException(
+                                                            "stopping offset should not be null"))));
         }
         return new TableBucketWriteResultWithSplitIds(writeResults, finishedSplitIds);
     }
@@ -316,10 +335,13 @@ public class LakeTieringSplitReader<WriteResult>
     private TableBucketWriteResultWithSplitIds finishCurrentSnapshotSplit() throws IOException {
         TableBucket tableBucket = currentSnapshotSplit.getTableBucket();
         String splitId = currentTableSplitsByBucket.remove(tableBucket);
+        // todo: get the real log end offset
+        long logEndOffset = 0;
         closeCurrentSnapshotSplit();
         mayFinishCurrentTable();
         return new TableBucketWriteResultWithSplitIds(
-                Collections.singletonMap(tableBucket, completeLakeWriter(tableBucket)),
+                Collections.singletonMap(
+                        tableBucket, completeLakeWriter(tableBucket, logEndOffset)),
                 Collections.singletonMap(tableBucket, splitId));
     }
 
@@ -407,17 +429,14 @@ public class LakeTieringSplitReader<WriteResult>
                                         new IllegalStateException(
                                                 "stopping offset should not be null"));
         long startingOffset = logSplit.getStartingOffset();
-        if (startingOffset >= stoppingOffset) {
+        if (startingOffset >= stoppingOffset || stoppingOffset <= 0) {
             currentTableEmptyLogSplits.add(logSplit);
-        } else if (stoppingOffset >= 0) {
-            currentTableStoppingOffsets.put(tableBucket, stoppingOffset);
+            return;
         } else {
-            throw new FlinkRuntimeException(
-                    String.format(
-                            "Invalid stopping offset %d for bucket %s",
-                            stoppingOffset, tableBucket));
+            currentTableStoppingOffsets.put(tableBucket, stoppingOffset);
         }
 
+        mayCreateLogScanner();
         Long partitionId = tableBucket.getPartitionId();
         int bucket = tableBucket.getBucket();
         checkNotNull(currentLogScanner, "current log scanner shouldn't be null.");
@@ -435,13 +454,15 @@ public class LakeTieringSplitReader<WriteResult>
     }
 
     private TablePath getTablePath(SourceSplitBase split) {
-        //
-        return TablePath.of("test", "test");
+        return DEFAULT_TABLE_PATH;
     }
 
     private TableBucketWriteResult<WriteResult> toTableBucketWriteResult(
-            TablePath tablePath, TableBucket tableBucket, @Nullable WriteResult writeResult) {
-        return new TableBucketWriteResult<>(tablePath, tableBucket, writeResult);
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable WriteResult writeResult,
+            long endLogOffset) {
+        return new TableBucketWriteResult<>(tablePath, tableBucket, writeResult, endLogOffset);
     }
 
     private class TableBucketWriteResultWithSplitIds

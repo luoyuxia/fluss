@@ -39,11 +39,17 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
 
     @Nullable private final WriteResult writeResult;
 
+    private final long logEndOffset;
+
     public TableBucketWriteResult(
-            TablePath tablePath, TableBucket tableBucket, WriteResult writeResult) {
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable WriteResult writeResult,
+            long logEndOffset) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.writeResult = writeResult;
+        this.logEndOffset = logEndOffset;
     }
 
     public TablePath tablePath() {
@@ -57,5 +63,9 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
     @Nullable
     public WriteResult writeResult() {
         return writeResult;
+    }
+
+    public long logEndOffset() {
+        return logEndOffset;
     }
 }

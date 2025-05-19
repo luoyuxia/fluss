@@ -18,8 +18,12 @@ package com.alibaba.fluss.flink.laketiering;
 
 import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.flink.source.split.HybridSnapshotLogSplit;
+import com.alibaba.fluss.flink.source.split.HybridSnapshotLogSplitState;
 import com.alibaba.fluss.flink.source.split.LogSplit;
 import com.alibaba.fluss.flink.source.split.LogSplitState;
+import com.alibaba.fluss.flink.source.split.SourceSplitBase;
+import com.alibaba.fluss.flink.source.split.SourceSplitState;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 
 import org.apache.flink.api.connector.source.SourceReader;
@@ -34,8 +38,8 @@ public final class LakeTieringSourceReader<WriteResult>
         extends SingleThreadMultiplexSourceReaderBase<
                 TableBucketWriteResult<WriteResult>,
                 TableBucketWriteResult<WriteResult>,
-                LogSplit,
-                LogSplitState> {
+                SourceSplitBase,
+                SourceSplitState> {
 
     public LakeTieringSourceReader(
             SourceReaderContext context,
@@ -57,17 +61,23 @@ public final class LakeTieringSourceReader<WriteResult>
     }
 
     @Override
-    protected void onSplitFinished(Map<String, LogSplitState> finishedSplitIds) {
+    protected void onSplitFinished(Map<String, SourceSplitState> finishedSplitIds) {
         context.sendSplitRequest();
     }
 
     @Override
-    protected LogSplitState initializedState(LogSplit logSplit) {
-        return new LogSplitState(logSplit);
+    protected SourceSplitState initializedState(SourceSplitBase split) {
+        if (split instanceof HybridSnapshotLogSplit) {
+            return new HybridSnapshotLogSplitState((HybridSnapshotLogSplit) split);
+        } else if (split instanceof LogSplit) {
+            return new LogSplitState(split.asLogSplit());
+        } else {
+            throw new UnsupportedOperationException("Unsupported split type: " + split);
+        }
     }
 
     @Override
-    protected LogSplit toSplitType(String splitId, LogSplitState splitState) {
+    protected SourceSplitBase toSplitType(String splitId, SourceSplitState splitState) {
         return splitState.toSourceSplit();
     }
 }

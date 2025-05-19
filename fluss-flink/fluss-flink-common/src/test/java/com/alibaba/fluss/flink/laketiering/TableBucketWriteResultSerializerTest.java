@@ -40,7 +40,7 @@ class TableBucketWriteResultSerializerTest {
         TableBucket tableBucket =
                 isPartitioned ? new TableBucket(1, 2) : new TableBucket(1, 1000L, 2);
         TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
-                new TableBucketWriteResult<>(tablePath, tableBucket, testingWriteResult);
+                new TableBucketWriteResult<>(tablePath, tableBucket, testingWriteResult, 10);
 
         // test serialize and deserialize
         byte[] serialized = tableBucketWriteResultSerializer.serialize(tableBucketWriteResult);
@@ -54,7 +54,7 @@ class TableBucketWriteResultSerializerTest {
                 .isEqualTo(testingWriteResult.getWriteResult());
 
         // verify when writeResult is null
-        tableBucketWriteResult = new TableBucketWriteResult<>(tablePath, tableBucket, null);
+        tableBucketWriteResult = new TableBucketWriteResult<>(tablePath, tableBucket, null, 20);
         serialized = tableBucketWriteResultSerializer.serialize(tableBucketWriteResult);
         deserialized =
                 tableBucketWriteResultSerializer.deserialize(
