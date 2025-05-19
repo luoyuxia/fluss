@@ -80,6 +80,10 @@ public class TableBucketWriteResultSerializer<WriteResult>
             out.writeInt(serializeBytes.length);
             out.write(serializeBytes);
         }
+
+        // serialize log end offset
+        out.writeLong(tableBucketWriteResult.logEndOffset());
+
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -116,6 +120,9 @@ public class TableBucketWriteResultSerializer<WriteResult>
         } else {
             writeResult = null;
         }
-        return new TableBucketWriteResult<>(tablePath, tableBucket, writeResult);
+
+        // deserialize log end offset
+        long logEndOffset = in.readLong();
+        return new TableBucketWriteResult<>(tablePath, tableBucket, writeResult, logEndOffset);
     }
 }

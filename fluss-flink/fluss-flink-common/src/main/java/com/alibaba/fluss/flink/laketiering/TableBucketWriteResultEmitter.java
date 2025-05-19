@@ -16,7 +16,7 @@
 
 package com.alibaba.fluss.flink.laketiering;
 
-import com.alibaba.fluss.flink.source.split.LogSplitState;
+import com.alibaba.fluss.flink.source.split.SourceSplitState;
 
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
@@ -26,12 +26,12 @@ public class TableBucketWriteResultEmitter<WriteResult>
         implements RecordEmitter<
                 TableBucketWriteResult<WriteResult>,
                 TableBucketWriteResult<WriteResult>,
-                LogSplitState> {
+                SourceSplitState> {
     @Override
     public void emitRecord(
             TableBucketWriteResult<WriteResult> writeResult,
             SourceOutput<TableBucketWriteResult<WriteResult>> sourceOutput,
-            LogSplitState logSplitState)
+            SourceSplitState logSplitState)
             throws Exception {
         sourceOutput.collect(writeResult);
     }
