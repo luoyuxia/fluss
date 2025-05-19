@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.flink.tiering.source;
+package com.alibaba.fluss.flink.tiering;
 
 /** A WriteResult for testing purpose. */
 public class TestingWriteResult {
