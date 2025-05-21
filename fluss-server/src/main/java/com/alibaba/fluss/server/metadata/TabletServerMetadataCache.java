@@ -23,6 +23,9 @@ import com.alibaba.fluss.metadata.TablePartition;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.server.tablet.TabletServer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
@@ -32,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -43,6 +47,8 @@ import static com.alibaba.fluss.utils.concurrent.LockUtils.inLock;
 
 /** The implement of {@link ServerMetadataCache} for {@link TabletServer}. */
 public class TabletServerMetadataCache implements ServerMetadataCache {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TabletServerMetadataCache.class);
 
     private final Lock bucketMetadataLock = new ReentrantLock();
 
@@ -56,6 +62,8 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
      */
     @GuardedBy("bucketMetadataLock")
     private volatile ServerMetadataSnapshot serverMetadataSnapshot;
+
+    private volatile AtomicInteger updateCount = new AtomicInteger(0);
 
     public TabletServerMetadataCache() {
         // no coordinator server address while creating.
@@ -150,6 +158,8 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
         inLock(
                 bucketMetadataLock,
                 () -> {
+                    updateCount.incrementAndGet();
+
                     // 1. update coordinator server.
                     ServerInfo coordinatorServer = clusterMetadata.getCoordinatorServer();
 
@@ -245,6 +255,58 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
                                                                     bucketMetadata.getBucketId(),
                                                                     bucketMetadata));
                         }
+                    }
+
+                    if (updateCount.get() % 10 == 0) {
+                        StringBuilder sb = new StringBuilder();
+                        sb.append("coordinatorServer: ").append(coordinatorServer).append("____");
+                        sb.append("aliveTabletServers: ")
+                                .append(newAliveTableServers.keySet())
+                                .append("____");
+                        tableIdByPath.forEach(
+                                (tablePath, tableId) ->
+                                        sb.append(tablePath)
+                                                .append(":")
+                                                .append(tableId)
+                                                .append("/"));
+                        sb.append("____");
+                        partitionsIdByPath.forEach(
+                                (physicalTablePath, partitionId) ->
+                                        sb.append(physicalTablePath)
+                                                .append(":")
+                                                .append(partitionId)
+                                                .append("/"));
+                        sb.append("____");
+                        tableInfoByTableId.forEach(
+                                (tableId, tableInfo) ->
+                                        sb.append(tableId)
+                                                .append(":")
+                                                .append(tableInfo)
+                                                .append("/"));
+                        sb.append("____");
+                        bucketMetadataMap.forEach(
+                                (tableId, bucketMap) -> {
+                                    sb.append(tableId).append("'s bucket info:");
+                                    bucketMap.forEach(
+                                            (bucketId, bucketMetadata) ->
+                                                    sb.append(bucketId)
+                                                            .append(":")
+                                                            .append(bucketMetadata)
+                                                            .append("/"));
+                                });
+                        sb.append("____");
+                        bucketMetadataMapForPartitionTable.forEach(
+                                (tablePartition, bucketMap) -> {
+                                    sb.append(tablePartition).append("'s bucket info:");
+                                    bucketMap.forEach(
+                                            (bucketId, bucketMetadata) ->
+                                                    sb.append(bucketId)
+                                                            .append(":")
+                                                            .append(bucketMetadata)
+                                                            .append("/"));
+                                });
+                        sb.append("____end");
+                        LOG.info("server metadata cache after update: {}", sb);
                     }
 
                     serverMetadataSnapshot =

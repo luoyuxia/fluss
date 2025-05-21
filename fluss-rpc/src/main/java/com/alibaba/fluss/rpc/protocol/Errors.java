@@ -206,7 +206,7 @@ public enum Errors {
             50, "The tiering epoch is invalid.", FencedTieringEpochException::new),
     RETRIABLE_AUTHENTICATE_EXCEPTION(
             51,
-                    "Authentication failed with retriable exception. ",
+            "Authentication failed with retriable exception. ",
             RetriableAuthenticationException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
