@@ -16,15 +16,20 @@
 
 package com.alibaba.fluss.client.table.writer;
 
+import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.table.getter.PartitionGetter;
 import com.alibaba.fluss.client.write.WriteRecord;
 import com.alibaba.fluss.client.write.WriterClient;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
+import com.alibaba.fluss.metadata.ResolvedPartitionSpec;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -32,6 +37,8 @@ import java.util.concurrent.CompletableFuture;
 
 /** A base class for {@link AppendWriter} and {@link UpsertWriter} to write data to table. */
 public abstract class AbstractTableWriter implements TableWriter {
+
+    private static final Logger LOG = LoggerFactory.getLogger(AbstractTableWriter.class);
 
     // the table path that the data will write to
     protected final TablePath tablePath;
@@ -80,7 +87,8 @@ public abstract class AbstractTableWriter implements TableWriter {
         return future;
     }
 
-    protected PhysicalTablePath getPhysicalPath(InternalRow row) {
+    protected PhysicalTablePath getPhysicalPath(
+            InternalRow row, Admin admin, boolean isDynamicCreatePartition) {
         // not partitioned table, return the original physical path
         if (partitionFieldGetter == null) {
             return PhysicalTablePath.of(tablePath);
@@ -89,7 +97,13 @@ public abstract class AbstractTableWriter implements TableWriter {
             String partition = partitionFieldGetter.getPartition(row);
             PhysicalTablePath partitionPath = PhysicalTablePath.of(tablePath, partition);
             // may update partition info
-            metadataUpdater.checkAndUpdatePartitionMetadata(partitionPath);
+            boolean isExists = metadataUpdater.checkAndUpdatePartitionMetadata(partitionPath);
+            if (!isExists && isDynamicCreatePartition) {
+                ResolvedPartitionSpec resolvedPartitionSpec =
+                        partitionFieldGetter.getResolvedPartitionSpec(row);
+                LOG.info("partition {} don't exists, try to create it", resolvedPartitionSpec);
+                admin.createPartition(tablePath, resolvedPartitionSpec.toPartitionSpec(), true);
+            }
             return partitionPath;
         }
     }
