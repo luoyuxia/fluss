@@ -236,6 +236,7 @@ public class ZooKeeperClient implements AutoCloseable {
     /** Register bucket LeaderAndIsr to ZK. */
     public void registerLeaderAndIsr(TableBucket tableBucket, LeaderAndIsr leaderAndIsr)
             throws Exception {
+        LOG.info("Registering {} for bucket {} in Zookeeper.", leaderAndIsr, tableBucket);
         String path = LeaderAndIsrZNode.path(tableBucket);
         zkClient.create()
                 .creatingParentsIfNeeded()
