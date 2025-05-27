@@ -21,7 +21,7 @@ import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 
 import java.util.List;
 
-/** The data for register LeaderAndIsr in zk */
+/** The data for register LeaderAndIsr in zk. */
 public class RegisterTableBucketLeadAndIsrInfo {
     private TableBucket tableBucket;
     private LeaderAndIsr leaderAndIsr;
