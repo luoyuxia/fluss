@@ -152,6 +152,8 @@ public class TableManager {
         Set<TableBucketReplica> replicas = coordinatorContext.getBucketReplicas(tableBuckets);
         // transmit all the replicas to state NewReplica
         replicaStateMachine.handleStateChanges(replicas, ReplicaState.NewReplica);
+        // batch register table bucket lead and isr
+        tableBucketStateMachine.batchInitLeaderForTableBuckets(tableBuckets);
         // transmit it to state Online
         tableBucketStateMachine.handleStateChange(tableBuckets, BucketState.OnlineBucket);
         // transmit all the replicas to state online

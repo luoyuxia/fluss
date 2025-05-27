@@ -20,6 +20,7 @@ import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.server.coordinator.CoordinatorContext;
 import com.alibaba.fluss.server.coordinator.CoordinatorRequestBatch;
+import com.alibaba.fluss.server.entity.RegisterTableBucketLeadAndIsrInfo;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 import com.alibaba.fluss.shaded.guava32.com.google.common.collect.Sets;
@@ -29,6 +30,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -188,28 +190,7 @@ public class TableBucketStateMachine {
                         return;
                     }
                 }
-                if (currentState == BucketState.NewBucket) {
-                    List<Integer> assignedServers = coordinatorContext.getAssignment(tableBucket);
-                    // init the leader for table bucket
-                    Optional<ElectionResult> optionalElectionResult =
-                            initLeaderForTableBuckets(tableBucket, assignedServers);
-                    if (!optionalElectionResult.isPresent()) {
-                        logFailedStateChange(tableBucket, currentState, targetState);
-                    } else {
-                        // transmit state
-                        doStateChange(tableBucket, targetState);
-                        // then send request to the tablet servers
-                        coordinatorRequestBatch.addNotifyLeaderRequestForTabletServers(
-                                new HashSet<>(optionalElectionResult.get().liveReplicas),
-                                PhysicalTablePath.of(
-                                        coordinatorContext.getTablePathById(
-                                                tableBucket.getTableId()),
-                                        partitionName),
-                                tableBucket,
-                                coordinatorContext.getAssignment(tableBucket),
-                                optionalElectionResult.get().leaderAndIsr);
-                    }
-                } else {
+                if (currentState != BucketState.NewBucket) {
                     // current state is Online or Offline
                     // not new bucket, we then need to update leader/epoch for the bucket
                     Optional<ElectionResult> optionalElectionResult =
@@ -242,61 +223,127 @@ public class TableBucketStateMachine {
         }
     }
 
-    private Optional<ElectionResult> initLeaderForTableBuckets(
-            TableBucket tableBucket, List<Integer> assignedServers) {
-        // filter out the live servers
-        List<Integer> liveServers =
-                assignedServers.stream()
-                        .filter(
-                                (server) ->
-                                        coordinatorContext.isReplicaAndServerOnline(
-                                                server, tableBucket))
-                        .collect(Collectors.toList());
-        // todo, consider this case, may reassign with other servers?
-        if (liveServers.isEmpty()) {
-            LOG.error(
-                    "Encountered error during state change of table bucket {} from "
-                            + "New to Online, assigned replicas are {}, live tablet servers are empty, "
-                            + "No assigned replica is alive.",
-                    stringifyBucket(tableBucket),
-                    assignedServers);
-            return Optional.empty();
+    public void batchInitLeaderForTableBuckets(Set<TableBucket> tableBuckets) {
+        List<RegisterTableBucketLeadAndIsrInfo> tableBucketLeadAndIsrInfos = new ArrayList<>();
+
+        for (TableBucket tableBucket : tableBuckets) {
+            // precheck partition name
+            BucketState currentState = coordinatorContext.getBucketState(tableBucket);
+            String partitionName = null;
+            if (tableBucket.getPartitionId() != null) {
+                partitionName = coordinatorContext.getPartitionName(tableBucket.getPartitionId());
+                if (partitionName == null) {
+                    LOG.error(
+                            "Can't find partition name for partition: {}.",
+                            tableBucket.getBucket());
+                    logFailedStateChange(tableBucket, currentState, BucketState.OnlineBucket);
+                    continue;
+                }
+            }
+
+            List<Integer> assignedServers = coordinatorContext.getAssignment(tableBucket);
+
+            // filter out the live servers
+            List<Integer> liveServers =
+                    assignedServers.stream()
+                            .filter(
+                                    (server) ->
+                                            coordinatorContext.isReplicaAndServerOnline(
+                                                    server, tableBucket))
+                            .collect(Collectors.toList());
+            // todo, consider this case, may reassign with other servers?
+            if (liveServers.isEmpty()) {
+                LOG.error(
+                        "Encountered error during state change of table bucket {} from "
+                                + "New to Online, assigned replicas are {}, live tablet servers are empty, "
+                                + "No assigned replica is alive.",
+                        stringifyBucket(tableBucket),
+                        assignedServers);
+                logFailedStateChange(tableBucket, currentState, BucketState.OnlineBucket);
+                continue;
+            }
+            if (liveServers.size() != assignedServers.size()) {
+                LOG.warn(
+                        "The assigned replicas are {}, but the live tablet servers are {}, which is less than "
+                                + "assigned replicas.",
+                        assignedServers,
+                        liveServers);
+            }
+            // For the case that the table bucket has been initialized, we use all the live assigned
+            // servers as inSyncReplica set.
+            List<Integer> isr = liveServers;
+            Optional<Integer> leaderOpt =
+                    ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection(
+                            assignedServers, liveServers, isr);
+            if (!leaderOpt.isPresent()) {
+                LOG.error(
+                        "The leader election for table bucket {} is empty.",
+                        stringifyBucket(tableBucket));
+                logFailedStateChange(tableBucket, currentState, BucketState.OnlineBucket);
+                continue;
+            }
+            int leader = leaderOpt.get();
+
+            LeaderAndIsr leaderAndIsr =
+                    new LeaderAndIsr(leader, 0, isr, coordinatorContext.getCoordinatorEpoch(), 0);
+            tableBucketLeadAndIsrInfos.add(
+                    new RegisterTableBucketLeadAndIsrInfo(
+                            tableBucket, leaderAndIsr, partitionName, liveServers));
         }
-        if (liveServers.size() != assignedServers.size()) {
-            LOG.warn(
-                    "The assigned replicas are {}, but the live tablet servers are {}, which is less than "
-                            + "assigned replicas.",
-                    assignedServers,
-                    liveServers);
-        }
-        // For the case that the table bucket has been initialized, we use all the live assigned
-        // servers as inSyncReplica set.
-        List<Integer> isr = liveServers;
-        Optional<Integer> leaderOpt =
-                ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection(
-                        assignedServers, liveServers, isr);
-        if (!leaderOpt.isPresent()) {
-            LOG.error(
-                    "The leader election for table bucket {} is empty.",
-                    stringifyBucket(tableBucket));
-            return Optional.empty();
-        }
-        int leader = leaderOpt.get();
+
+        List<RegisterTableBucketLeadAndIsrInfo> registerSuccessList = new ArrayList<>();
 
         // Register the initial leader and isr.
-        LeaderAndIsr leaderAndIsr =
-                new LeaderAndIsr(leader, 0, isr, coordinatorContext.getCoordinatorEpoch(), 0);
-        try {
-            zooKeeperClient.registerLeaderAndIsr(tableBucket, leaderAndIsr);
-        } catch (Exception e) {
-            LOG.error(
-                    "Fail to create state node for table bucket {} in zookeeper.",
-                    stringifyBucket(tableBucket),
-                    e);
-            return Optional.empty();
+        if (!tableBucketLeadAndIsrInfos.isEmpty()) {
+            try {
+                zooKeeperClient.batchRegisterLeaderAndIsrForTablePartition(
+                        tableBucketLeadAndIsrInfos);
+                registerSuccessList.addAll(tableBucketLeadAndIsrInfos);
+            } catch (Exception e) {
+                LOG.error(
+                        "Fail to batch create state node for table buckets in zookeeper. The first bucket info: {}",
+                        stringifyBucket(tableBucketLeadAndIsrInfos.get(0).getTableBucket()),
+                        e);
+                // Failed in batch mode, try to register one by one.
+                registerSuccessList.addAll(
+                        tryRegisterLeaderAndIsrOneByOne(tableBucketLeadAndIsrInfos));
+            }
         }
-        coordinatorContext.putBucketLeaderAndIsr(tableBucket, leaderAndIsr);
-        return Optional.of(new ElectionResult(liveServers, leaderAndIsr));
+
+        for (RegisterTableBucketLeadAndIsrInfo info : registerSuccessList) {
+            TableBucket tableBucket = info.getTableBucket();
+            LeaderAndIsr leaderAndIsr = info.getLeaderAndIsr();
+            coordinatorContext.putBucketLeaderAndIsr(tableBucket, leaderAndIsr);
+
+            // transmit state
+            doStateChange(tableBucket, BucketState.OnlineBucket);
+            // then send request to the tablet servers
+            coordinatorRequestBatch.addNotifyLeaderRequestForTabletServers(
+                    new HashSet<>(info.getLiveReplicas()),
+                    PhysicalTablePath.of(
+                            coordinatorContext.getTablePathById(tableBucket.getTableId()),
+                            info.getPartitionName()),
+                    tableBucket,
+                    coordinatorContext.getAssignment(tableBucket),
+                    leaderAndIsr);
+        }
+    }
+
+    private List<RegisterTableBucketLeadAndIsrInfo> tryRegisterLeaderAndIsrOneByOne(
+            List<RegisterTableBucketLeadAndIsrInfo> registerList) {
+        List<RegisterTableBucketLeadAndIsrInfo> registerSuccessList = new ArrayList<>();
+        for (RegisterTableBucketLeadAndIsrInfo info : registerList) {
+            try {
+                zooKeeperClient.registerLeaderAndIsr(info.getTableBucket(), info.getLeaderAndIsr());
+                registerSuccessList.add(info);
+            } catch (Exception e) {
+                LOG.error(
+                        "Fail to create state node for table bucket {} in zookeeper.",
+                        stringifyBucket(info.getTableBucket()),
+                        e);
+            }
+        }
+        return registerSuccessList;
     }
 
     private Optional<ElectionResult> electNewLeaderForTableBuckets(TableBucket tableBucket) {
