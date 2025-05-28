@@ -469,6 +469,20 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         LakeTieringHeartbeatResponse heartbeatResponse = new LakeTieringHeartbeatResponse();
         int currentCoordinatorEpoch = coordinatorEpochSupplier.get();
         heartbeatResponse.setCoordinatorEpoch(currentCoordinatorEpoch);
+
+        // process failed tables
+        for (PbHeartbeatReqForTable failedTable : request.getFailedTablesList()) {
+            PbHeartbeatRespForTable pbHeartbeatRespForTable =
+                    heartbeatResponse.addFailedTableResp().setTableId(failedTable.getTableId());
+            try {
+                validateHeartbeatRequest(failedTable, currentCoordinatorEpoch);
+                lakeTableTieringManager.reportTieringFail(
+                        failedTable.getTableId(), failedTable.getTieringEpoch());
+            } catch (Throwable e) {
+                pbHeartbeatRespForTable.setError(ApiError.fromThrowable(e).toErrorResponse());
+            }
+        }
+
         // process tiering tables
         for (PbHeartbeatReqForTable tieringTable : request.getTieringTablesList()) {
             PbHeartbeatRespForTable pbHeartbeatRespForTable =
@@ -490,19 +504,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 validateHeartbeatRequest(finishTable, currentCoordinatorEpoch);
                 lakeTableTieringManager.finishTableTiering(
                         finishTable.getTableId(), finishTable.getTieringEpoch());
-            } catch (Throwable e) {
-                pbHeartbeatRespForTable.setError(ApiError.fromThrowable(e).toErrorResponse());
-            }
-        }
-
-        // process failed tables
-        for (PbHeartbeatReqForTable failedTable : request.getFailedTablesList()) {
-            PbHeartbeatRespForTable pbHeartbeatRespForTable =
-                    heartbeatResponse.addFailedTableResp().setTableId(failedTable.getTableId());
-            try {
-                validateHeartbeatRequest(failedTable, currentCoordinatorEpoch);
-                lakeTableTieringManager.reportTieringFail(
-                        failedTable.getTableId(), failedTable.getTieringEpoch());
             } catch (Throwable e) {
                 pbHeartbeatRespForTable.setError(ApiError.fromThrowable(e).toErrorResponse());
             }

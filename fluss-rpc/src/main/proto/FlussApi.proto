@@ -507,11 +507,11 @@ message DropAclsResponse{
 }
 
 message LakeTieringHeartbeatRequest {
-  repeated PbHeartbeatReqForTable tiering_tables = 2;
-  repeated PbHeartbeatReqForTable finished_tables = 3;
-  repeated PbHeartbeatReqForTable failed_tables = 4;
+  repeated PbHeartbeatReqForTable tiering_tables = 1;
+  repeated PbHeartbeatReqForTable finished_tables = 2;
+  repeated PbHeartbeatReqForTable failed_tables = 3;
   // whether to request a table
-  optional bool request_table = 5;
+  optional bool request_table = 4;
 }
 
 message LakeTieringHeartbeatResponse {
