@@ -25,7 +25,6 @@ import com.alibaba.fluss.flink.source.split.LogSplitState;
 import com.alibaba.fluss.flink.source.split.SourceSplitBase;
 import com.alibaba.fluss.flink.source.split.SourceSplitState;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
-
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.connector.base.source.reader.SingleThreadMultiplexSourceReaderBase;

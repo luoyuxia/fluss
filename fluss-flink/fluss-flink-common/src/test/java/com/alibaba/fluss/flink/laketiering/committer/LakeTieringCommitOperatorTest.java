@@ -24,7 +24,7 @@ import com.alibaba.fluss.flink.laketiering.TestingWriteResult;
 import com.alibaba.fluss.flink.utils.FlinkTestBase;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
-
+import org.apache.flink.runtime.operators.coordination.MockOperatorEventGateway;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,16 +37,18 @@ import static com.alibaba.fluss.record.TestData.DATA1_PARTITIONED_TABLE_DESCRIPT
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** UT for {@link LakeTieringCommitterOperator}. */
-class LakeTieringCommitterOperatorTest extends FlinkTestBase {
+/** UT for {@link LakeTieringCommitOperator}. */
+class LakeTieringCommitOperatorTest extends FlinkTestBase {
 
-    private LakeTieringCommitterOperator<TestingWriteResult, TestingCommittable> committerOperator;
+    private LakeTieringCommitOperator<TestingWriteResult, TestingCommittable> committerOperator;
 
     @BeforeEach
     void beforeEach() {
         committerOperator =
-                new LakeTieringCommitterOperator<>(
-                        FLUSS_CLUSTER_EXTENSION.getClientConfig(), new TestingLakeTieringFactory());
+                new LakeTieringCommitOperator<>(
+                        FLUSS_CLUSTER_EXTENSION.getClientConfig(),
+                        new MockOperatorEventGateway(),
+                        new TestingLakeTieringFactory());
         committerOperator.open();
     }
 

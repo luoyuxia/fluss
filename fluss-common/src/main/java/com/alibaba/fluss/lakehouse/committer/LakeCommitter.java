@@ -18,7 +18,6 @@ package com.alibaba.fluss.lakehouse.committer;
 
 import com.alibaba.fluss.annotation.PublicEvolving;
 
-import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.List;
 
@@ -45,11 +44,9 @@ public interface LakeCommitter<WriteResult, CommittableT> extends AutoCloseable 
     /**
      * Commits the given committable object.
      *
-     * @param latestFlussCommittedSnapshotId the latest snapshot id committed to Fluss
      * @param committable the committable object
      * @return the committed snapshot ID
      * @throws IOException if an I/O error occurs
      */
-    long commit(@Nullable Long latestFlussCommittedSnapshotId, CommittableT committable)
-            throws IOException;
+    long commit(CommittableT committable) throws IOException;
 }

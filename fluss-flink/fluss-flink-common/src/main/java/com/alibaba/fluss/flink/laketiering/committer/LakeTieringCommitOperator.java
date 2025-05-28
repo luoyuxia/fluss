@@ -18,18 +18,21 @@ package com.alibaba.fluss.flink.laketiering.committer;
 
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.laketiering.TableBucketWriteResult;
+import com.alibaba.fluss.flink.laketiering.event.FinishTieringEvent;
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
-
+import org.apache.flink.runtime.operators.coordination.OperatorEvent;
+import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
+import org.apache.flink.runtime.operators.coordination.OperatorEventHandler;
+import org.apache.flink.runtime.source.event.SourceEventWrapper;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -42,13 +45,15 @@ import java.util.stream.Collectors;
  * A Flink operator to combine {@link WriteResult} to {@link Committable} which will then be
  * committed to lake & Fluss cluster.
  */
-public class LakeTieringCommitterOperator<WriteResult, Committable>
+public class LakeTieringCommitOperator<WriteResult, Committable>
         extends AbstractStreamOperator<Committable>
-        implements OneInputStreamOperator<TableBucketWriteResult<WriteResult>, Committable> {
+        implements OneInputStreamOperator<TableBucketWriteResult<WriteResult>, Committable>,
+                OperatorEventHandler {
 
     private static final long serialVersionUID = 1L;
 
     private final LakeTieringFactory<WriteResult, Committable> lakeTieringFactory;
+    private final OperatorEventGateway operatorEventGateway;
     private final TableLakeSnapshotCommitter tableLakeSnapshotCommitter;
 
     private final Map<Long, Map<Long, List<TableBucketWriteResult<WriteResult>>>>
@@ -57,10 +62,12 @@ public class LakeTieringCommitterOperator<WriteResult, Committable>
             nonPartitionedTableCollectedResult;
     private final Map<Long, Integer> bucketNumByTableId;
 
-    public LakeTieringCommitterOperator(
+    public LakeTieringCommitOperator(
             Configuration flussConf,
+            OperatorEventGateway operatorEventGateway,
             LakeTieringFactory<WriteResult, Committable> lakeTieringFactory) {
         this.lakeTieringFactory = lakeTieringFactory;
+        this.operatorEventGateway = operatorEventGateway;
         this.tableLakeSnapshotCommitter = new TableLakeSnapshotCommitter(flussConf);
         this.partitionedTableCollectedResult = new HashMap<>();
         this.nonPartitionedTableCollectedResult = new HashMap<>();
@@ -86,8 +93,7 @@ public class LakeTieringCommitterOperator<WriteResult, Committable>
                 collectTableAllBucketWriteResult(tableId, isPartitioned);
 
         if (committableWriteResults != null) {
-            commitWriteResults(
-                    tableId, tableBucketWriteResult.tablePath(), committableWriteResults);
+            commitWriteResults(tableId, committableWriteResults);
             // clear the table id
             bucketNumByTableId.remove(tableId);
             if (isPartitioned) {
@@ -95,14 +101,13 @@ public class LakeTieringCommitterOperator<WriteResult, Committable>
             } else {
                 nonPartitionedTableCollectedResult.remove(tableId);
             }
-            // todo: mark the table as tiered finished
+            operatorEventGateway.sendEventToCoordinator(
+                    new SourceEventWrapper(new FinishTieringEvent(tableId)));
         }
     }
 
     private void commitWriteResults(
-            long tableId,
-            TablePath tablePath,
-            List<TableBucketWriteResult<WriteResult>> committableWriteResults)
+            long tableId, List<TableBucketWriteResult<WriteResult>> committableWriteResults)
             throws Exception {
         try (LakeCommitter<WriteResult, Committable> lakeCommitter =
                 lakeTieringFactory.createLakeCommitter()) {
@@ -112,12 +117,7 @@ public class LakeTieringCommitterOperator<WriteResult, Committable>
                             .collect(Collectors.toList());
             // to committable
             Committable committable = lakeCommitter.toCommitable(writeResults);
-            // get latest snapshot
-            Long latestSnapshot = tableLakeSnapshotCommitter.getLatestLakeSnapshot(tablePath);
-            // commit to lake
-            // todo: underlying lake should check the latest snapshot of Fluss
-            // is less than lake's current snapshot
-            long commitedSnapshotId = lakeCommitter.commit(latestSnapshot, committable);
+            long commitedSnapshotId = lakeCommitter.commit(committable);
             // commit to fluss
             Map<TableBucket, Long> logEndOffsets = new HashMap<>();
             for (TableBucketWriteResult<WriteResult> writeResult : committableWriteResults) {
@@ -207,5 +207,10 @@ public class LakeTieringCommitterOperator<WriteResult, Committable>
     @Override
     public void close() throws Exception {
         tableLakeSnapshotCommitter.close();
+    }
+
+    @Override
+    public void handleOperatorEvent(OperatorEvent operatorEvent) {
+        // do-nothing
     }
 }

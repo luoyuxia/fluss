@@ -24,8 +24,6 @@ import com.alibaba.fluss.lakehouse.writer.LakeWriter;
 import com.alibaba.fluss.lakehouse.writer.WriterInitContext;
 import com.alibaba.fluss.record.LogRecord;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -90,9 +88,7 @@ public class TestingLakeTieringFactory
         }
 
         @Override
-        public long commit(
-                @Nullable Long latestFlussCommittedSnapshotId, TestingCommittable committable)
-                throws IOException {
+        public long commit(TestingCommittable committable) throws IOException {
             return currentSnapshot++;
         }
 
