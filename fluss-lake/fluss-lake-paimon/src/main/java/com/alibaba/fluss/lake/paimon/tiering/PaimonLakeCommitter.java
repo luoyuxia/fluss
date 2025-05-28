@@ -18,15 +18,25 @@ package com.alibaba.fluss.lake.paimon.tiering;
 
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.metadata.TablePath;
-
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.manifest.ManifestCommittable;
+import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.table.source.ScanMode;
+import org.apache.paimon.utils.SnapshotManager;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 import static com.alibaba.fluss.lake.paimon.tiering.PaimonLakeTieringFactory.FLUSS_LAKE_TIERING_COMMIT_USER;
 import static com.alibaba.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
@@ -62,6 +72,46 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
         batchTableCommit.commit(commitMessages);
     }
 
+    public void getLatestKnownSnapshotAndOffset() throws Exception {
+        SnapshotManager snapshotManager = fileStoreTable.snapshotManager();
+        Long flussCommittedSnapshotIdOrLatestCommitId =
+                fileStoreTable
+                        .snapshotManager()
+                        .pickOrLatest(
+                                (snapshot ->
+                                        snapshot.commitUser()
+                                                .equals(FLUSS_LAKE_TIERING_COMMIT_USER)));
+        if (flussCommittedSnapshotIdOrLatestCommitId == null) {
+            return;
+        }
+        Snapshot snapshot =
+                snapshotManager.tryGetSnapshot(flussCommittedSnapshotIdOrLatestCommitId);
+        if (!snapshot.commitUser().equals(FLUSS_LAKE_TIERING_COMMIT_USER)) {
+            // the snapshot is still not commited by Fluss
+            return;
+        }
+
+        Map<CommittedBucket, Long> committedBucketOffset = new HashMap<>();
+        ScanMode scanMode =
+                fileStoreTable.primaryKeys().isEmpty() ? ScanMode.DELTA : ScanMode.CHANGELOG;
+        Iterator<ManifestEntry> manifestEntryIterator =
+                fileStoreTable
+                        .store()
+                        .newScan()
+                        .withSnapshot(snapshot.id())
+                        .withKind(scanMode)
+                        .readFileIterator();
+        while (manifestEntryIterator.hasNext()) {
+            ManifestEntry manifestEntry = manifestEntryIterator.next();
+            CommittedBucketLogOffset committedBucketLogOffset =
+                    CommittedBucketLogOffset.fromManifestEntry(manifestEntry);
+            committedBucketOffset.put(
+                    committedBucketLogOffset.committedBucket, committedBucketLogOffset.logOffset);
+        }
+
+        System.out.println(committedBucketOffset);
+    }
+
     @Override
     public void close() throws Exception {
         try {
@@ -81,6 +131,87 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
             return (FileStoreTable) paimonCatalog.getTable(toPaimon(tablePath));
         } catch (Exception e) {
             throw new IOException("Fail to get table " + tablePath + " in Paimon.");
+        }
+    }
+
+    private static class CommittedBucket {
+        @Nullable private final String partitionName;
+        private final int bucketId;
+
+        public CommittedBucket(@Nullable BinaryRow partition, int bucketId) {
+            this.partitionName = toPartitionName(partition);
+            this.bucketId = bucketId;
+        }
+
+        @Nullable
+        private String toPartitionName(BinaryRow partition) {
+            if (partition.getFieldCount() == 0) {
+                return null;
+            }
+            // todo: support multiple partitions
+            return partition.getString(0).toString();
+        }
+
+        @Override
+        public String toString() {
+            return "CommittedBucket{"
+                    + "partitionName='"
+                    + partitionName
+                    + '\''
+                    + ", bucketId="
+                    + bucketId
+                    + '}';
+        }
+
+        @Override
+        public boolean equals(Object object) {
+            if (this == object) {
+                return true;
+            }
+            if (!(object instanceof CommittedBucket)) {
+                return false;
+            }
+            CommittedBucket that = (CommittedBucket) object;
+            return bucketId == that.bucketId && Objects.equals(partitionName, that.partitionName);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(partitionName, bucketId);
+        }
+    }
+
+    private static class CommittedBucketLogOffset {
+        private final CommittedBucket committedBucket;
+        private final long logOffset;
+
+        static CommittedBucketLogOffset fromManifestEntry(ManifestEntry manifestEntry) {
+            // always get bucket, log_offset from status
+            DataFileMeta dataFileMeta = manifestEntry.file();
+            BinaryRow maxStatisticRow = dataFileMeta.valueStats().maxValues();
+
+            // the system columns orders are: __bucket, __offset, __timestamp
+            int fieldCount = maxStatisticRow.getFieldCount();
+            int bucketId = maxStatisticRow.getInt(fieldCount - 3);
+            long offset = maxStatisticRow.getLong(fieldCount - 2);
+
+            return new CommittedBucketLogOffset(
+                    new CommittedBucket(manifestEntry.partition(), bucketId), offset);
+        }
+
+        private CommittedBucketLogOffset(CommittedBucket committedBucket, long logOffset) {
+            this.committedBucket = committedBucket;
+            this.logOffset = logOffset;
+        }
+
+        @Override
+        public String toString() {
+            return "CommittedBucketLogOffset{"
+                    + "committedBucket="
+                    + committedBucket
+                    + ", logOffset="
+                    + logOffset
+                    + '}';
         }
     }
 }

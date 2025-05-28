@@ -29,7 +29,6 @@ import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.row.BinaryString;
 import com.alibaba.fluss.row.GenericRow;
 import com.alibaba.fluss.utils.types.Tuple2;
-
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
@@ -52,7 +51,6 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -158,6 +156,9 @@ class PaimonTieringTest {
                     committableSerializer.deserialize(
                             committableSerializer.getVersion(), serialized);
             lakeCommitter.commit(paimonCommittable);
+
+            PaimonLakeCommitter paimonLakeCommitter = (PaimonLakeCommitter) lakeCommitter;
+            paimonLakeCommitter.getLatestKnownSnapshotAndOffset();
         }
 
         for (int bucket = 0; bucket < 3; bucket++) {
@@ -172,6 +173,46 @@ class PaimonTieringTest {
                     verifyLogTableRecords(actualRecords, expectRecords, bucket);
                 }
             }
+        }
+
+        for (int bucket = 0; bucket < bucketNum; bucket++) {
+            for (String partition : partitions) {
+                try (LakeWriter<PaimonWriteResult> lakeWriter =
+                        createLakeWriter(tablePath, bucket, partition)) {
+                    Tuple2<String, Integer> partitionBucket = Tuple2.of(partition, bucket);
+                    Tuple2<List<LogRecord>, List<LogRecord>> writeAndExpectRecords =
+                            isPrimaryKeyTable
+                                    ? genPrimaryKeyTableRecords(partition, bucket)
+                                    : genLogTableRecords(partition, bucket, 20);
+                    List<LogRecord> writtenRecords = writeAndExpectRecords.f0;
+                    List<LogRecord> expectRecords = writeAndExpectRecords.f1;
+                    recordsByBucket.put(partitionBucket, expectRecords);
+                    for (LogRecord logRecord : writtenRecords) {
+                        lakeWriter.write(logRecord);
+                    }
+                    // serialize/deserialize writeResult
+                    PaimonWriteResult paimonWriteResult = lakeWriter.complete();
+                    byte[] serialized = writeResultSerializer.serialize(paimonWriteResult);
+                    paimonWriteResults.add(
+                            writeResultSerializer.deserialize(
+                                    writeResultSerializer.getVersion(), serialized));
+                }
+            }
+        }
+
+        // second, commit data
+        try (LakeCommitter<PaimonWriteResult, PaimonCommittable> lakeCommitter =
+                createLakeCommitter(tablePath)) {
+            // serialize/deserialize committable
+            PaimonCommittable paimonCommittable = lakeCommitter.toCommitable(paimonWriteResults);
+            byte[] serialized = committableSerializer.serialize(paimonCommittable);
+            paimonCommittable =
+                    committableSerializer.deserialize(
+                            committableSerializer.getVersion(), serialized);
+            lakeCommitter.commit(paimonCommittable);
+
+            PaimonLakeCommitter paimonLakeCommitter = (PaimonLakeCommitter) lakeCommitter;
+            paimonLakeCommitter.getLatestKnownSnapshotAndOffset();
         }
     }
 
@@ -375,11 +416,11 @@ class PaimonTieringTest {
             } else {
                 builder.primaryKey("c1");
             }
-        } else {
-            builder.column(BUCKET_COLUMN_NAME, DataTypes.INT());
-            builder.column(OFFSET_COLUMN_NAME, DataTypes.BIGINT());
-            builder.column(TIMESTAMP_COLUMN_NAME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE());
         }
+
+        builder.column(BUCKET_COLUMN_NAME, DataTypes.INT());
+        builder.column(OFFSET_COLUMN_NAME, DataTypes.BIGINT());
+        builder.column(TIMESTAMP_COLUMN_NAME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE());
 
         if (numBuckets != null) {
             builder.option(CoreOptions.BUCKET.key(), String.valueOf(numBuckets));
