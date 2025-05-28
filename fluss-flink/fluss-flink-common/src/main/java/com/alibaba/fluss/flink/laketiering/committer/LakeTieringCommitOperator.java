@@ -24,15 +24,18 @@ import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
 import org.apache.flink.runtime.operators.coordination.OperatorEventHandler;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
+import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -63,6 +66,7 @@ public class LakeTieringCommitOperator<WriteResult, Committable>
     private final Map<Long, Integer> bucketNumByTableId;
 
     public LakeTieringCommitOperator(
+            StreamOperatorParameters<Committable> parameters,
             Configuration flussConf,
             OperatorEventGateway operatorEventGateway,
             LakeTieringFactory<WriteResult, Committable> lakeTieringFactory) {
@@ -72,6 +76,10 @@ public class LakeTieringCommitOperator<WriteResult, Committable>
         this.partitionedTableCollectedResult = new HashMap<>();
         this.nonPartitionedTableCollectedResult = new HashMap<>();
         this.bucketNumByTableId = new HashMap<>();
+        this.setup(
+                parameters.getContainingTask(),
+                parameters.getStreamConfig(),
+                parameters.getOutput());
     }
 
     @Override

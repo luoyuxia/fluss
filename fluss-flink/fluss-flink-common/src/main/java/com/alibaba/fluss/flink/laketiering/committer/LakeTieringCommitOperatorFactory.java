@@ -19,6 +19,7 @@ package com.alibaba.fluss.flink.laketiering.committer;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.laketiering.TableBucketWriteResult;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
+
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.runtime.jobgraph.OperatorID;
@@ -63,7 +64,8 @@ public class LakeTieringCommitOperatorFactory<WriteResult, Committable>
                 parameters.getOperatorEventDispatcher().getOperatorEventGateway(operatorId);
 
         LakeTieringCommitOperator<WriteResult, Committable> commitOperator =
-                new LakeTieringCommitOperator<>(flussConfig, gateway, lakeTieringFactory);
+                new LakeTieringCommitOperator<>(
+                        parameters, flussConfig, gateway, lakeTieringFactory);
         parameters.getOperatorEventDispatcher().registerEventHandler(operatorId, commitOperator);
 
         @SuppressWarnings("unchecked")

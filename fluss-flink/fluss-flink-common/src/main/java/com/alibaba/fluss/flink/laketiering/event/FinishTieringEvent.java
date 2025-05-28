@@ -20,7 +20,7 @@ import org.apache.flink.api.connector.source.SourceEvent;
 
 import java.util.Objects;
 
-/** Event for finish tiering . */
+/** Event for mark a table as tiering finished. */
 public class FinishTieringEvent implements SourceEvent {
 
     private static final long serialVersionUID = 1L;
