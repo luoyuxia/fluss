@@ -114,8 +114,14 @@ public class TableBucketStateMachine {
     public void handleStateChange(Set<TableBucket> tableBuckets, BucketState targetState) {
         try {
             coordinatorRequestBatch.newBatch();
-            for (TableBucket tableBucket : tableBuckets) {
-                doHandleStateChange(tableBucket, targetState);
+
+            if (checkIfCreateTablePartitionRequest(tableBuckets, targetState)) {
+                // batch register table bucket lead and isr
+                batchHandleOnlineChangeAndInitLeader(tableBuckets);
+            } else {
+                for (TableBucket tableBucket : tableBuckets) {
+                    doHandleStateChange(tableBucket, targetState);
+                }
             }
             coordinatorRequestBatch.sendRequestToTabletServers(
                     coordinatorContext.getCoordinatorEpoch());
@@ -190,7 +196,28 @@ public class TableBucketStateMachine {
                         return;
                     }
                 }
-                if (currentState != BucketState.NewBucket) {
+                if (currentState == BucketState.NewBucket) {
+                    List<Integer> assignedServers = coordinatorContext.getAssignment(tableBucket);
+                    // init the leader for table bucket
+                    Optional<ElectionResult> optionalElectionResult =
+                            initLeaderForTableBuckets(tableBucket, assignedServers);
+                    if (!optionalElectionResult.isPresent()) {
+                        logFailedStateChange(tableBucket, currentState, targetState);
+                    } else {
+                        // transmit state
+                        doStateChange(tableBucket, targetState);
+                        // then send request to the tablet servers
+                        coordinatorRequestBatch.addNotifyLeaderRequestForTabletServers(
+                                new HashSet<>(optionalElectionResult.get().liveReplicas),
+                                PhysicalTablePath.of(
+                                        coordinatorContext.getTablePathById(
+                                                tableBucket.getTableId()),
+                                        partitionName),
+                                tableBucket,
+                                coordinatorContext.getAssignment(tableBucket),
+                                optionalElectionResult.get().leaderAndIsr);
+                    }
+                } else {
                     // current state is Online or Offline
                     // not new bucket, we then need to update leader/epoch for the bucket
                     Optional<ElectionResult> optionalElectionResult =
@@ -223,7 +250,82 @@ public class TableBucketStateMachine {
         }
     }
 
-    public void batchInitLeaderForTableBuckets(Set<TableBucket> tableBuckets) {
+    private boolean checkIfCreateTablePartitionRequest(
+            Set<TableBucket> tableBuckets, BucketState targetState) {
+        // Check if the state is from NewBucket -> OnlineBucket
+        // and all buckets belong to a same table (partition).
+        // If so, we will merge the register zk requests to speed up
+        if (targetState != BucketState.OnlineBucket) {
+            return false;
+        }
+
+        for (TableBucket tableBucket : tableBuckets) {
+            BucketState currentState = coordinatorContext.getBucketState(tableBucket);
+            if (currentState != BucketState.NewBucket) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Optional<ElectionResult> initLeaderForTableBuckets(
+            TableBucket tableBucket, List<Integer> assignedServers) {
+        // filter out the live servers
+        List<Integer> liveServers =
+                assignedServers.stream()
+                        .filter(
+                                (server) ->
+                                        coordinatorContext.isReplicaAndServerOnline(
+                                                server, tableBucket))
+                        .collect(Collectors.toList());
+        // todo, consider this case, may reassign with other servers?
+        if (liveServers.isEmpty()) {
+            LOG.error(
+                    "Encountered error during state change of table bucket {} from "
+                            + "New to Online, assigned replicas are {}, live tablet servers are empty, "
+                            + "No assigned replica is alive.",
+                    stringifyBucket(tableBucket),
+                    assignedServers);
+            return Optional.empty();
+        }
+        if (liveServers.size() != assignedServers.size()) {
+            LOG.warn(
+                    "The assigned replicas are {}, but the live tablet servers are {}, which is less than "
+                            + "assigned replicas.",
+                    assignedServers,
+                    liveServers);
+        }
+        // For the case that the table bucket has been initialized, we use all the live assigned
+        // servers as inSyncReplica set.
+        List<Integer> isr = liveServers;
+        Optional<Integer> leaderOpt =
+                ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection(
+                        assignedServers, liveServers, isr);
+        if (!leaderOpt.isPresent()) {
+            LOG.error(
+                    "The leader election for table bucket {} is empty.",
+                    stringifyBucket(tableBucket));
+            return Optional.empty();
+        }
+        int leader = leaderOpt.get();
+
+        // Register the initial leader and isr.
+        LeaderAndIsr leaderAndIsr =
+                new LeaderAndIsr(leader, 0, isr, coordinatorContext.getCoordinatorEpoch(), 0);
+        try {
+            zooKeeperClient.registerLeaderAndIsr(tableBucket, leaderAndIsr);
+        } catch (Exception e) {
+            LOG.error(
+                    "Fail to create state node for table bucket {} in zookeeper.",
+                    stringifyBucket(tableBucket),
+                    e);
+            return Optional.empty();
+        }
+        coordinatorContext.putBucketLeaderAndIsr(tableBucket, leaderAndIsr);
+        return Optional.of(new ElectionResult(liveServers, leaderAndIsr));
+    }
+
+    public void batchHandleOnlineChangeAndInitLeader(Set<TableBucket> tableBuckets) {
         List<RegisterTableBucketLeadAndIsrInfo> tableBucketLeadAndIsrInfos = new ArrayList<>();
 
         for (TableBucket tableBucket : tableBuckets) {
