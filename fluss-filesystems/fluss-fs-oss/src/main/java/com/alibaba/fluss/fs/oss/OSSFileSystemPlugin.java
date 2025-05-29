@@ -68,7 +68,7 @@ public class OSSFileSystemPlugin implements FileSystemPlugin {
 
         // set credential provider
         if (hadoopConfig.get(ACCESS_KEY_ID) == null) {
-            String credentialsProvider = hadoopConfig.get(CREDENTIALS_PROVIDER_KEY);
+            String credentialsProvider = null;
             if (credentialsProvider != null) {
                 LOG.info(
                         "{} is not set, but {} is set, using credential provider {}.",
