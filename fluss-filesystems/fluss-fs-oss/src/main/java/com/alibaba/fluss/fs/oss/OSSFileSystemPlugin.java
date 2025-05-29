@@ -36,7 +36,6 @@ import java.lang.reflect.Field;
 import java.net.URI;
 
 import static org.apache.hadoop.fs.aliyun.oss.Constants.ACCESS_KEY_ID;
-import static org.apache.hadoop.fs.aliyun.oss.Constants.CREDENTIALS_PROVIDER_KEY;
 
 /* This file is based on source code of Apache Flink Project (https://flink.apache.org/), licensed by the Apache
  * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
@@ -68,19 +67,7 @@ public class OSSFileSystemPlugin implements FileSystemPlugin {
 
         // set credential provider
         if (hadoopConfig.get(ACCESS_KEY_ID) == null) {
-            String credentialsProvider = null;
-            if (credentialsProvider != null) {
-                LOG.info(
-                        "{} is not set, but {} is set, using credential provider {}.",
-                        ACCESS_KEY_ID,
-                        CREDENTIALS_PROVIDER_KEY,
-                        credentialsProvider);
-            } else {
-                // no ak, no credentialsProvider,
-                // set default credential provider which will get token from
-                // OSSSecurityTokenReceiver
-                setDefaultCredentialProvider(flussConfig, hadoopConfig);
-            }
+            setDefaultCredentialProvider(flussConfig, hadoopConfig);
         } else {
             LOG.info("{} is set, using provided access key id and secret.", ACCESS_KEY_ID);
         }
