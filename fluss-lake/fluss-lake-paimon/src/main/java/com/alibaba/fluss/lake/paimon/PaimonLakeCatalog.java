@@ -48,6 +48,11 @@ public class PaimonLakeCatalog implements LakeCatalog {
     private static final LinkedHashMap<String, DataType> SYSTEM_COLUMNS = new LinkedHashMap<>();
 
     static {
+        // We need __bucket system column to filter out the given bucket
+        // for paimon bucket-unaware append only table.
+        // It's not required for paimon bucket-aware table like primary key table
+        // and bucket-aware append only table, but we always add the system column
+        // for consistent behavior
         SYSTEM_COLUMNS.put(BUCKET_COLUMN_NAME, DataTypes.INT());
         SYSTEM_COLUMNS.put(OFFSET_COLUMN_NAME, DataTypes.BIGINT());
         SYSTEM_COLUMNS.put(TIMESTAMP_COLUMN_NAME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE());
