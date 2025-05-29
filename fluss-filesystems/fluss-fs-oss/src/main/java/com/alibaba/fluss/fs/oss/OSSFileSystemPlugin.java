@@ -67,7 +67,7 @@ public class OSSFileSystemPlugin implements FileSystemPlugin {
 
         // set credential provider
         if (hadoopConfig.get(ACCESS_KEY_ID) == null) {
-            setDefaultCredentialProvider(flussConfig, hadoopConfig);
+            setCredentialProvider(flussConfig, hadoopConfig);
         } else {
             LOG.info("{} is set, using provided access key id and secret.", ACCESS_KEY_ID);
         }
@@ -122,7 +122,7 @@ public class OSSFileSystemPlugin implements FileSystemPlugin {
         return conf;
     }
 
-    protected void setDefaultCredentialProvider(
+    protected void setCredentialProvider(
             Configuration flussConfig, org.apache.hadoop.conf.Configuration hadoopConfig) {
         OSSSecurityTokenReceiver.updateHadoopConfig(hadoopConfig);
     }
