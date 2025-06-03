@@ -31,6 +31,7 @@ import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 import com.alibaba.fluss.lakehouse.writer.LakeWriter;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.utils.CloseableIterator;
 
@@ -55,13 +56,14 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 
+import static com.alibaba.fluss.utils.Preconditions.checkArgument;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /** The {@link SplitReader} implementation which will read Fluss and write to lake. */
-public class LakeTieringSplitReader<WriteResult>
+public class TieringSplitReader<WriteResult>
         implements SplitReader<TableBucketWriteResult<WriteResult>, TieringSplit> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(LakeTieringSplitReader.class);
+    private static final Logger LOG = LoggerFactory.getLogger(TieringSplitReader.class);
 
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(10000L);
 
@@ -89,7 +91,7 @@ public class LakeTieringSplitReader<WriteResult>
     private final Map<TableBucket, Long> currentTableStoppingOffsets;
     private final Set<TieringLogSplit> currentTableEmptyLogSplits;
 
-    public LakeTieringSplitReader(
+    public TieringSplitReader(
             Configuration flussConf, LakeTieringFactory<WriteResult, ?> lakeTieringFactory) {
         this.lakeTieringFactory = lakeTieringFactory;
         this.connection = ConnectionFactory.createConnection(flussConf);
@@ -218,10 +220,19 @@ public class LakeTieringSplitReader<WriteResult>
             currentTable = connection.getTable(tablePath);
             currentTablePath = tablePath;
             currentTableId = split.getTableBucket().getTableId();
+            TableInfo currentTableInfo = checkNotNull(currentTable).getTableInfo();
+            // check currentTable's id for the table path is same with table id of the tiering
+            // split, if not, it means the tiering split is for a previous dropped table. let's fail
+            // directly
+            // todo: we should skip and notify enumerator that the table id is not tiering now
+            // instead of fail directly
+            checkArgument(
+                    currentTableInfo.getTableId() == split.getTableBucket().getTableId(),
+                    "The current table id %s for table path % is different from the table id %s in TieringSplit split.",
+                    currentTableInfo.getTableId(),
+                    tablePath,
+                    split.getTableBucket().getTableId());
             LOG.info("Start to tier table {} with table id {}.", currentTablePath, currentTableId);
-            // todo: check currentTable's id is same with currentTableId, if not, it means
-            // the currentTableId is for a previous dropped table, skip this table id and
-            // notify enumerator that the table id is not tiering now
         }
         return currentTable;
     }
@@ -284,7 +295,7 @@ public class LakeTieringSplitReader<WriteResult>
         if (lakeWriter == null) {
             lakeWriter =
                     lakeTieringFactory.createLakeWriter(
-                            new LakeTieringWriterInitContext(currentTablePath, bucket));
+                            new TieringWriterInitContext(currentTablePath, bucket));
             lakeWriters.put(bucket, lakeWriter);
         }
         return lakeWriter;

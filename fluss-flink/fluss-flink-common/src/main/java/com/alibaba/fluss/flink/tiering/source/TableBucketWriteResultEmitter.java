@@ -17,11 +17,12 @@
 package com.alibaba.fluss.flink.tiering.source;
 
 import com.alibaba.fluss.flink.tiering.source.state.TieringSplitState;
+import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
 
-/** The emitter to emit {@link TableBucketWriteResult} to downstream operator. */
+/** The emitter to emit {@link TableBucketWriteResult} to downstream {@link LakeCommitter}. */
 public class TableBucketWriteResultEmitter<WriteResult>
         implements RecordEmitter<
                 TableBucketWriteResult<WriteResult>,

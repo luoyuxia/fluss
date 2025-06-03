@@ -88,9 +88,21 @@ public class FlinkTestBase extends AbstractTestBase {
                     .column("name", DataTypes.STRING())
                     .build();
 
+    protected static final Schema DEFAULT_LOG_TABLE_SCHEMA =
+            Schema.newBuilder()
+                    .column("id", DataTypes.INT())
+                    .column("name", DataTypes.STRING())
+                    .build();
+
     protected static final TableDescriptor DEFAULT_PK_TABLE_DESCRIPTOR =
             TableDescriptor.builder()
                     .schema(DEFAULT_PK_TABLE_SCHEMA)
+                    .distributedBy(DEFAULT_BUCKET_NUM, "id")
+                    .build();
+
+    protected static final TableDescriptor DEFAULT_LOG_TABLE_DESCRIPTOR =
+            TableDescriptor.builder()
+                    .schema(DEFAULT_LOG_TABLE_SCHEMA)
                     .distributedBy(DEFAULT_BUCKET_NUM, "id")
                     .build();
 

@@ -30,19 +30,19 @@ import java.util.Map;
 
 /** A {@link SourceReader} that read records from Fluss and write to lake. */
 @Internal
-public final class LakeTieringSourceReader<WriteResult>
+public final class TieringSourceReader<WriteResult>
         extends SingleThreadMultiplexSourceReaderBase<
                 TableBucketWriteResult<WriteResult>,
                 TableBucketWriteResult<WriteResult>,
                 TieringSplit,
                 TieringSplitState> {
 
-    public LakeTieringSourceReader(
+    public TieringSourceReader(
             SourceReaderContext context,
             Configuration flussConf,
             LakeTieringFactory<WriteResult, ?> lakeTieringFactory) {
         super(
-                () -> new LakeTieringSplitReader<>(flussConf, lakeTieringFactory),
+                () -> new TieringSplitReader<>(flussConf, lakeTieringFactory),
                 new TableBucketWriteResultEmitter<>(),
                 context.getConfiguration(),
                 context);

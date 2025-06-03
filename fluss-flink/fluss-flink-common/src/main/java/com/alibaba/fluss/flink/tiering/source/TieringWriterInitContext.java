@@ -23,17 +23,17 @@ import com.alibaba.fluss.metadata.TablePath;
 import javax.annotation.Nullable;
 
 /** The implementation of {@link WriterInitContext}. */
-public class LakeTieringWriterInitContext implements WriterInitContext {
+public class TieringWriterInitContext implements WriterInitContext {
 
     private final TablePath tablePath;
     private final TableBucket tableBucket;
     @Nullable private final String partition;
 
-    public LakeTieringWriterInitContext(TablePath tablePath, TableBucket tableBucket) {
+    public TieringWriterInitContext(TablePath tablePath, TableBucket tableBucket) {
         this(tablePath, tableBucket, null);
     }
 
-    public LakeTieringWriterInitContext(
+    public TieringWriterInitContext(
             TablePath tablePath, TableBucket tableBucket, @Nullable String partition) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;

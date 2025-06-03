@@ -17,6 +17,8 @@
 package com.alibaba.fluss.flink.tiering.source;
 
 import com.alibaba.fluss.client.table.Table;
+import com.alibaba.fluss.client.table.writer.AppendWriter;
+import com.alibaba.fluss.client.table.writer.TableWriter;
 import com.alibaba.fluss.client.table.writer.UpsertWriter;
 import com.alibaba.fluss.client.write.HashBucketAssigner;
 import com.alibaba.fluss.flink.tiering.source.split.TieringLogSplit;
@@ -49,15 +51,14 @@ import static com.alibaba.fluss.client.table.scanner.log.LogScanner.EARLIEST_OFF
 import static com.alibaba.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** UT for {@link LakeTieringSplitReader}. */
-class LakeTieringSplitReaderTest extends FlinkTestBase {
+/** UT for {@link TieringSplitReader}. */
+class TieringSplitReaderTest extends FlinkTestBase {
 
     @Test
     void testTieringTable() throws Exception {
         TablePath tablePath = TablePath.of("fluss", "fluss_test_tiering_one_table");
         long tableId = createTable(tablePath, DEFAULT_PK_TABLE_DESCRIPTOR);
-        try (LakeTieringSplitReader<TestingWriteResult> tieringSplitReader =
-                createTieringReader()) {
+        try (TieringSplitReader<TestingWriteResult> tieringSplitReader = createTieringReader()) {
             // test empty splits
             SplitsAddition<TieringSplit> splitsAddition =
                     new SplitsAddition<>(
@@ -151,27 +152,18 @@ class LakeTieringSplitReaderTest extends FlinkTestBase {
         TablePath tablePath1 = TablePath.of("fluss", "tiering_table1");
         long tableId1 = createTable(tablePath1, DEFAULT_PK_TABLE_DESCRIPTOR);
 
-        try (LakeTieringSplitReader<TestingWriteResult> tieringSplitReader =
-                createTieringReader()) {
+        try (TieringSplitReader<TestingWriteResult> tieringSplitReader = createTieringReader()) {
             Map<TableBucket, List<InternalRow>> table0Rows = putRows(tableId0, tablePath0, 10);
             Map<TableBucket, List<InternalRow>> table1Rows = putRows(tableId1, tablePath1, 10);
+            waitUntilSnapshot(tableId0, 0);
+            waitUntilSnapshot(tableId1, 0);
 
-            // first add bucket 0, bucket 1 of table id 0
+            // first add snapshot split of bucket 0, bucket 1 of table id 0
             SplitsAddition<TieringSplit> splitsAddition =
                     new SplitsAddition<>(
                             Arrays.asList(
-                                    createLogSplit(
-                                            tablePath0,
-                                            tableId0,
-                                            0,
-                                            EARLIEST_OFFSET,
-                                            table0Rows.get(new TableBucket(tableId0, 0)).size()),
-                                    createLogSplit(
-                                            tablePath0,
-                                            tableId0,
-                                            1,
-                                            EARLIEST_OFFSET,
-                                            table0Rows.get(new TableBucket(tableId0, 1)).size())));
+                                    createSnapshotSplit(tablePath0, tableId0, 0, 0),
+                                    createSnapshotSplit(tablePath0, tableId0, 1, 0)));
             Set<String> table0Splits =
                     splitsAddition.splits().stream()
                             .map(TieringSplit::splitId)
@@ -188,12 +180,7 @@ class LakeTieringSplitReaderTest extends FlinkTestBase {
                                             0,
                                             EARLIEST_OFFSET,
                                             table1Rows.get(new TableBucket(tableId1, 0)).size()),
-                                    createLogSplit(
-                                            tablePath1,
-                                            tableId1,
-                                            1,
-                                            EARLIEST_OFFSET,
-                                            table1Rows.get(new TableBucket(tableId1, 1)).size()),
+                                    createSnapshotSplit(tablePath1, tableId1, 1, 0),
                                     createLogSplit(
                                             tablePath1,
                                             tableId1,
@@ -238,16 +225,51 @@ class LakeTieringSplitReaderTest extends FlinkTestBase {
             expectedFinishSplits.put(tableId1, table1Splits);
 
             verifyTieringRows(tieringSplitReader, expectTierRows, expectedFinishSplits);
+
+            // test tiering another log table2
+            TablePath tablePath2 = TablePath.of("fluss", "tiering_table2");
+            long tableId2 = createTable(tablePath2, DEFAULT_LOG_TABLE_DESCRIPTOR);
+            Map<TableBucket, List<InternalRow>> table2Rows = putRows(tableId2, tablePath2, 10);
+            splitsAddition =
+                    new SplitsAddition<>(
+                            Arrays.asList(
+                                    createLogSplit(
+                                            tablePath2,
+                                            tableId2,
+                                            0,
+                                            EARLIEST_OFFSET,
+                                            table2Rows.get(new TableBucket(tableId2, 0)).size()),
+                                    createLogSplit(
+                                            tablePath2,
+                                            tableId2,
+                                            1,
+                                            EARLIEST_OFFSET,
+                                            table2Rows.get(new TableBucket(tableId2, 1)).size()),
+                                    createLogSplit(
+                                            tablePath2,
+                                            tableId2,
+                                            2,
+                                            EARLIEST_OFFSET,
+                                            table2Rows.get(new TableBucket(tableId2, 2)).size())));
+            Set<String> table2Splits =
+                    splitsAddition.splits().stream()
+                            .map(TieringSplit::splitId)
+                            .collect(Collectors.toSet());
+            tieringSplitReader.handleSplitsChanges(splitsAddition);
+            Map<TableBucket, Integer> expectedRowCount =
+                    table2Rows.entrySet().stream()
+                            .collect(Collectors.toMap(Map.Entry::getKey, e -> e.getValue().size()));
+            verifyTieringRows(tieringSplitReader, tableId2, expectedRowCount, table2Splits);
         }
     }
 
-    private LakeTieringSplitReader<TestingWriteResult> createTieringReader() {
-        return new LakeTieringSplitReader<>(
+    private TieringSplitReader<TestingWriteResult> createTieringReader() {
+        return new TieringSplitReader<>(
                 FLUSS_CLUSTER_EXTENSION.getClientConfig(), new TestingLakeTieringFactory());
     }
 
     private void verifyTieringRows(
-            LakeTieringSplitReader<TestingWriteResult> tieringSplitReader,
+            TieringSplitReader<TestingWriteResult> tieringSplitReader,
             long tableId,
             Map<TableBucket, Integer> expectTierRows,
             Set<String> expectedFinishSplits)
@@ -262,7 +284,7 @@ class LakeTieringSplitReaderTest extends FlinkTestBase {
     }
 
     private void verifyTieringRows(
-            LakeTieringSplitReader<TestingWriteResult> tieringSplitReader,
+            TieringSplitReader<TestingWriteResult> tieringSplitReader,
             LinkedHashMap<Long, Map<TableBucket, Integer>> expectTierRows,
             LinkedHashMap<Long, Set<String>> expectedFinishSplits)
             throws IOException {
@@ -313,14 +335,22 @@ class LakeTieringSplitReaderTest extends FlinkTestBase {
             throws Exception {
         Map<TableBucket, List<InternalRow>> rowsByBuckets = new HashMap<>();
         try (Table table = conn.getTable(tablePath)) {
-            UpsertWriter upsertWriter = table.newUpsert().createWriter();
+            boolean isPrimaryKey = table.getTableInfo().hasPrimaryKey();
+            TableWriter tableWriter =
+                    isPrimaryKey
+                            ? table.newUpsert().createWriter()
+                            : table.newAppend().createWriter();
             for (int i = 0; i < rows; i++) {
                 InternalRow row = row(i, "v" + i);
-                upsertWriter.upsert(row);
+                if (tableWriter instanceof UpsertWriter) {
+                    ((UpsertWriter) tableWriter).upsert(row);
+                } else {
+                    ((AppendWriter) tableWriter).append(row);
+                }
                 TableBucket tableBucket = new TableBucket(tableId, getBucketId(row));
                 rowsByBuckets.computeIfAbsent(tableBucket, k -> new ArrayList<>()).add(row);
             }
-            upsertWriter.flush();
+            tableWriter.flush();
         }
         return rowsByBuckets;
     }
