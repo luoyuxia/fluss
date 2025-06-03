@@ -92,6 +92,19 @@
             <fileMode>0644</fileMode>
         </file>
 
+        <file>
+            <source>../docker-inner/fluss-paimon-ali-dlf-${project.version}.jar</source>
+            <outputDirectory>lib/</outputDirectory>
+            <destName>fluss-paimon-ali-dlf-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+
+        <file>
+            <source>../docker-inner/fluss-paimon-ali-pangu-${project.version}.jar</source>
+            <outputDirectory>lib/</outputDirectory>
+            <destName>fluss-paimon-ali-pangu-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
         <!-- metrics -->
         <file>
             <source>../fluss-metrics/fluss-metrics-prometheus/target/fluss-metrics-prometheus-${project.version}.jar</source>
