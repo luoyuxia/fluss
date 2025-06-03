@@ -45,7 +45,7 @@ import java.util.HashMap;
 import java.util.List;
 
 import static com.alibaba.fluss.client.utils.MetadataUtils.getOneAvailableTabletServerNode;
-import static com.alibaba.fluss.config.FlussConfigUtils.FS_PREFIX;
+import static com.alibaba.fluss.config.FlussConfigUtils.CLIENT_PREFIX;
 import static com.alibaba.fluss.utils.PropertiesUtils.extractPrefix;
 
 /** A connection to Fluss cluster, and holds the client session resources. */
@@ -68,9 +68,11 @@ public final class FlussConnection implements Connection {
     FlussConnection(Configuration conf, MetricRegistry metricRegistry) {
         this.conf = conf;
         // init Filesystem with configuration from FlussConnection,
-        // only pass configure with 'fs.' prefix
+        // only pass options with 'client.fs.' prefix
         FileSystem.initialize(
-                Configuration.fromMap(extractPrefix(new HashMap<>(conf.toMap()), FS_PREFIX)), null);
+                Configuration.fromMap(
+                        extractPrefix(new HashMap<>(conf.toMap()), CLIENT_PREFIX + "fs.")),
+                null);
         // for client metrics.
         setupClientMetricsConfiguration();
         String clientId = conf.getString(ConfigOptions.CLIENT_ID);

@@ -1167,7 +1167,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
     @Test
     void testFileSystemRecognizeConnectionConf() throws Exception {
         Configuration config = new Configuration(clientConf);
-        config.setString("fs.test.key", "fs_test_value");
+        config.setString("client.fs.test.key", "fs_test_value");
         config.setString("client.test.key", "client_test_value");
         try (Connection ignore = ConnectionFactory.createConnection(config)) {
             FsPath fsPath = new FsPath("test:///f1");
@@ -1175,7 +1175,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
             Configuration filesystemConf = testFileSystem.getConfiguration();
             assertThat(filesystemConf.toMap())
                     .containsExactlyEntriesOf(
-                            Collections.singletonMap("fs.test.key", "fs_test_value"));
+                            Collections.singletonMap("client.fs.test.key", "fs_test_value"));
         }
     }
 }

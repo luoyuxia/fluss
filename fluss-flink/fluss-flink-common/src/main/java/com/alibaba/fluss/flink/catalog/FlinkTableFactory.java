@@ -58,7 +58,6 @@ import java.util.Set;
 
 import static com.alibaba.fluss.config.ConfigOptions.TABLE_DATALAKE_FORMAT;
 import static com.alibaba.fluss.config.FlussConfigUtils.CLIENT_PREFIX;
-import static com.alibaba.fluss.config.FlussConfigUtils.FS_PREFIX;
 import static com.alibaba.fluss.flink.catalog.FlinkCatalog.LAKE_TABLE_SPLITTER;
 import static com.alibaba.fluss.flink.utils.DataLakeUtils.getDatalakeFormat;
 import static com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils.getBucketKeyIndexes;
@@ -84,8 +83,7 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
         final ReadableConfig tableOptions = helper.getOptions();
         Optional<DataLakeFormat> datalakeFormat = getDatalakeFormat(tableOptions);
-        List<String> prefixesToSkip =
-                new ArrayList<>(Arrays.asList("table.", "client.", FS_PREFIX));
+        List<String> prefixesToSkip = new ArrayList<>(Arrays.asList("table.", "client."));
         datalakeFormat.ifPresent(dataLakeFormat -> prefixesToSkip.add(dataLakeFormat + "."));
         helper.validateExcept(prefixesToSkip.toArray(new String[0]));
 
@@ -225,10 +223,10 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 ConfigOptions.BOOTSTRAP_SERVERS.key(),
                 tableOptions.get(FlinkConnectorOptions.BOOTSTRAP_SERVERS.key()));
 
-        // forward all client&fs configs
+        // forward all client configs
         tableOptions.forEach(
                 (key, value) -> {
-                    if (key.startsWith(CLIENT_PREFIX) || key.startsWith(FS_PREFIX)) {
+                    if (key.startsWith(CLIENT_PREFIX)) {
                         flussConfig.setString(key, value);
                     }
                 });
