@@ -32,6 +32,8 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 
+import static com.alibaba.fluss.flink.tiering.source.TieringSourceOptions.POLL_TIERING_TABLE_INTERVAL;
+
 /**
  * The flink source implementation for tiering data from Fluss to downstream lake.
  *
@@ -43,11 +45,15 @@ public class TieringSource<WriteResult>
 
     private final Configuration flussConf;
     private final LakeTieringFactory<WriteResult, ?> lakeTieringFactory;
+    private final long pollTieringTableIntervalMs;
 
     public TieringSource(
-            Configuration flussConf, LakeTieringFactory<WriteResult, ?> lakeTieringFactory) {
+            Configuration flussConf,
+            LakeTieringFactory<WriteResult, ?> lakeTieringFactory,
+            long pollTieringTableIntervalMs) {
         this.flussConf = flussConf;
         this.lakeTieringFactory = lakeTieringFactory;
+        this.pollTieringTableIntervalMs = pollTieringTableIntervalMs;
     }
 
     @Override
@@ -58,7 +64,8 @@ public class TieringSource<WriteResult>
     @Override
     public SplitEnumerator<TieringSplit, TieringSourceEnumeratorState> createEnumerator(
             SplitEnumeratorContext<TieringSplit> splitEnumeratorContext) throws Exception {
-        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext);
+        return new TieringSourceEnumerator(
+                flussConf, splitEnumeratorContext, pollTieringTableIntervalMs);
     }
 
     @Override
@@ -67,7 +74,8 @@ public class TieringSource<WriteResult>
             TieringSourceEnumeratorState tieringSourceEnumeratorState)
             throws Exception {
         // stateless operator
-        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext);
+        return new TieringSourceEnumerator(
+                flussConf, splitEnumeratorContext, pollTieringTableIntervalMs);
     }
 
     @Override
@@ -92,6 +100,8 @@ public class TieringSource<WriteResult>
 
         private final Configuration flussConf;
         private final LakeTieringFactory<WriteResult, ?> lakeTieringFactory;
+        private long pollTieringTableIntervalMs =
+                POLL_TIERING_TABLE_INTERVAL.defaultValue().toMillis();
 
         public Builder(
                 Configuration flussConf, LakeTieringFactory<WriteResult, ?> lakeTieringFactory) {
@@ -99,8 +109,13 @@ public class TieringSource<WriteResult>
             this.lakeTieringFactory = lakeTieringFactory;
         }
 
+        public Builder<WriteResult> withPollTieringTableIntervalMs(long pollTieringTableInterval) {
+            this.pollTieringTableIntervalMs = pollTieringTableInterval;
+            return this;
+        }
+
         public TieringSource<WriteResult> build() {
-            return new TieringSource<>(flussConf, lakeTieringFactory);
+            return new TieringSource<>(flussConf, lakeTieringFactory, pollTieringTableIntervalMs);
         }
     }
 }

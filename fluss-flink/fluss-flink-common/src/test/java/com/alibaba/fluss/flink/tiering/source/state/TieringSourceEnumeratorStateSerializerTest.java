@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.flink.tiering.source.state;
 
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -29,11 +30,11 @@ class TieringSourceEnumeratorStateSerializerTest {
 
     @Test
     void testSerDeserialize() throws Exception {
-        //        TieringSourceEnumeratorState state = new TieringSourceEnumeratorState();
-        //        byte[] serialized = serializer.serialize(state);
-        //        assertEquals(0, serialized.length);
-        //        TieringSourceEnumeratorState deserialized =
-        //                serializer.deserialize(serializer.getVersion(), serialized);
-        //        assertEquals(state, deserialized);
+        TieringSourceEnumeratorState state = new TieringSourceEnumeratorState();
+        byte[] serialized = serializer.serialize(state);
+        Assertions.assertThat(serialized).hasSize(0); // 使用 AssertJ 风格断言
+        TieringSourceEnumeratorState deserialized =
+                serializer.deserialize(serializer.getVersion(), serialized);
+        Assertions.assertThat(deserialized).isEqualTo(state); // 使用 AssertJ 风格断言
     }
 }
