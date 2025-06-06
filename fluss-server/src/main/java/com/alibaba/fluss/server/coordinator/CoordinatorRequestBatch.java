@@ -614,40 +614,9 @@ public class CoordinatorRequestBatch {
     private UpdateMetadataRequest buildUpdateMetadataRequest() {
         List<TableMetadata> tableMetadataList = new ArrayList<>();
         updateMetadataRequestBucketMap.forEach(
-                (tableId, bucketMetadataList) -> {
-                    TableInfo tableInfo = coordinatorContext.getTableInfoById(tableId);
-                    boolean tableQueuedForDeletion =
-                            coordinatorContext.isTableQueuedForDeletion(tableId);
-                    TableInfo newTableInfo;
-                    if (tableInfo == null) {
-                        if (tableQueuedForDeletion) {
-                            newTableInfo =
-                                    TableInfo.of(
-                                            DELETED_TABLE_PATH,
-                                            tableId,
-                                            0,
-                                            EMPTY_TABLE_DESCRIPTOR,
-                                            -1L,
-                                            -1L);
-                        } else {
-                            throw new IllegalStateException(
-                                    "Table info is null for table " + tableId);
-                        }
-                    } else {
-                        newTableInfo =
-                                tableQueuedForDeletion
-                                        ? TableInfo.of(
-                                                tableInfo.getTablePath(),
-                                                DELETED_TABLE_ID,
-                                                0,
-                                                EMPTY_TABLE_DESCRIPTOR,
-                                                -1L,
-                                                -1L)
-                                        : tableInfo;
-                    }
-
-                    tableMetadataList.add(new TableMetadata(newTableInfo, bucketMetadataList));
-                });
+                (tableId, bucketMetadataList) ->
+                        tableMetadataList.add(
+                                new TableMetadata(getTableInfo(tableId), bucketMetadataList)));
 
         List<PartitionMetadata> partitionMetadataList = new ArrayList<>();
         updateMetadataRequestPartitionMap.forEach(
@@ -682,8 +651,12 @@ public class CoordinatorRequestBatch {
                                                     : partitionId,
                                             kvEntry.getValue());
                         }
+                        // table
                         partitionMetadataList.add(partitionMetadata);
                     }
+                    // no bucket metadata, use empty metadata list
+                    tableMetadataList.add(
+                            new TableMetadata(getTableInfo(tableId), Collections.emptyList()));
                 });
 
         // TODO Todo Distinguish which tablet servers need to be updated instead of sending all live
@@ -693,5 +666,28 @@ public class CoordinatorRequestBatch {
                 new HashSet<>(coordinatorContext.getLiveTabletServers().values()),
                 tableMetadataList,
                 partitionMetadataList);
+    }
+
+    private TableInfo getTableInfo(long tableId) {
+        TableInfo tableInfo = coordinatorContext.getTableInfoById(tableId);
+        boolean tableQueuedForDeletion = coordinatorContext.isTableQueuedForDeletion(tableId);
+        if (tableInfo == null) {
+            if (tableQueuedForDeletion) {
+                return TableInfo.of(
+                        DELETED_TABLE_PATH, tableId, 0, EMPTY_TABLE_DESCRIPTOR, -1L, -1L);
+            } else {
+                throw new IllegalStateException("Table info is null for table " + tableId);
+            }
+        } else {
+            return tableQueuedForDeletion
+                    ? TableInfo.of(
+                            tableInfo.getTablePath(),
+                            DELETED_TABLE_ID,
+                            0,
+                            EMPTY_TABLE_DESCRIPTOR,
+                            -1L,
+                            -1L)
+                    : tableInfo;
+        }
     }
 }
