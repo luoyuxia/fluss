@@ -246,9 +246,6 @@ public class TabletServer extends ServerBase {
             rpcServer.start();
 
             registerTabletServer();
-            // when init session, register tablet server again
-            ZooKeeperUtils.registerZookeeperClientReInitSessionListener(
-                    zkClient, this::registerTabletServer, this);
         }
     }
 
