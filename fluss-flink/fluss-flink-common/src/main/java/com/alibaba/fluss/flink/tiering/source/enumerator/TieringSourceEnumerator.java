@@ -16,6 +16,11 @@
 
 package com.alibaba.fluss.flink.tiering.source.enumerator;
 
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
+import org.apache.flink.util.FlinkRuntimeException;
+
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
@@ -23,8 +28,8 @@ import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.metrics.FlinkMetricRegistry;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
+import com.alibaba.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
-import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.GatewayClientProxy;
 import com.alibaba.fluss.rpc.RpcClient;
@@ -35,11 +40,6 @@ import com.alibaba.fluss.rpc.messages.PbHeartbeatReqForTable;
 import com.alibaba.fluss.rpc.messages.PbLakeTieringTableInfo;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.types.Tuple2;
-
-import org.apache.flink.api.connector.source.SplitEnumerator;
-import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
-import org.apache.flink.util.FlinkRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,7 +53,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.utils.Preconditions.checkState;
@@ -80,7 +79,6 @@ public class TieringSourceEnumerator
     private final Configuration flussConf;
     private final SplitEnumeratorContext<TieringSplit> context;
     private final SplitEnumeratorMetricGroup enumeratorMetricGroup;
-    private final long rpcRequestTimeoutMs;
     private final List<TieringSplit> pendingSplits;
     private final Set<Integer> readersAwaitingSplit;
 
@@ -89,18 +87,15 @@ public class TieringSourceEnumerator
     private CoordinatorGateway coordinatorGateway;
     private Connection connection;
     private Admin flussAdmin;
+    private TieringSplitGenerator splitGenerator;
     private long tieringServiceEpoch;
     private long coordinatorEpoch;
 
     public TieringSourceEnumerator(
-            Configuration flussConf,
-            SplitEnumeratorContext<TieringSplit> context,
-            SplitEnumeratorMetricGroup enumeratorMetricGroup,
-            long rpcRequestTimeoutMs) {
+            Configuration flussConf, SplitEnumeratorContext<TieringSplit> context) {
         this.flussConf = flussConf;
         this.context = context;
-        this.enumeratorMetricGroup = enumeratorMetricGroup;
-        this.rpcRequestTimeoutMs = rpcRequestTimeoutMs;
+        this.enumeratorMetricGroup = context.metricGroup();
         this.pendingSplits = new ArrayList<>();
         this.readersAwaitingSplit = new TreeSet<>();
     }
@@ -118,6 +113,7 @@ public class TieringSourceEnumerator
                 GatewayClientProxy.createGatewayProxy(
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
         this.tieringServiceEpoch = System.currentTimeMillis();
+        this.splitGenerator = new TieringSplitGenerator(flussAdmin);
 
         LOGGER.info(
                 "Starting register Tiering Service(epoch={}) to Fluss Coordinator...",
@@ -126,8 +122,7 @@ public class TieringSourceEnumerator
             LakeTieringHeartbeatResponse heartbeatResponse =
                     HeartBeatHelper.waitHeartbeatResponse(
                             coordinatorGateway.lakeTieringHeartbeat(
-                                    HeartBeatHelper.registerHeartBeat()),
-                            rpcRequestTimeoutMs);
+                                    HeartBeatHelper.registerHeartBeat()));
             this.coordinatorEpoch = heartbeatResponse.getCoordinatorEpoch();
             LOGGER.info(
                     "Register Tiering Service(epoch={}) to Fluss Coordinator(epoch={}) ",
@@ -179,8 +174,7 @@ public class TieringSourceEnumerator
             LakeTieringHeartbeatResponse heartbeatResponse =
                     HeartBeatHelper.waitHeartbeatResponse(
                             coordinatorGateway.lakeTieringHeartbeat(
-                                    HeartBeatHelper.requestTieringSplitHeartBeat()),
-                            rpcRequestTimeoutMs);
+                                    HeartBeatHelper.requestTieringTableHeartBeat()));
             if (heartbeatResponse.hasTieringTable()) {
                 if (coordinatorEpoch != heartbeatResponse.getCoordinatorEpoch()) {
                     LOGGER.warn(
@@ -201,23 +195,34 @@ public class TieringSourceEnumerator
         return null;
     }
 
-    private void generateTieringSplits(Tuple2<Long, TablePath> tieringTable) {
+    private void generateTieringSplits(Tuple2<Long, TablePath> tieringTable)
+            throws FlinkRuntimeException {
         if (tieringTable == null) {
             return;
         }
-        LOGGER.info("Generating Tiering splits for table {}.", tieringTable.f1);
+        long start = System.currentTimeMillis();
+        LOGGER.info("Generate Tiering splits for table {}.", tieringTable.f1);
         try {
-            TableInfo tableInfo = flussAdmin.getTableInfo(tieringTable.f1).get();
-            if (tableInfo.hasPrimaryKey()) {
-                // snapshotSplit
+            List<TieringSplit> tieringSplits = splitGenerator.generateTableSplits(tieringTable.f1);
+            LOGGER.info(
+                    "Generate Tiering {} splits for table {} with cost {}ms.",
+                    tieringSplits.size(),
+                    tieringTable.f1,
+                    System.currentTimeMillis() - start);
+            if (tieringSplits.isEmpty()) {
+                LOGGER.info(
+                        "Generate Tiering splits for table {} is empty, no need to tier data.",
+                        tieringTable.f1.getTableName());
+                reportFinishedTieringTable(tieringTable.f0);
 
             } else {
-                // TODO generate Tiering splits for table, how to decide the tiering offset
-                // logSplit
+                pendingSplits.addAll(tieringSplits);
             }
-            // pendingSplits.add()
         } catch (Exception e) {
-            throw new FlinkRuntimeException(e);
+            throw new FlinkRuntimeException(
+                    String.format(
+                            "Generate Tiering splits for table %s failed due to:", tieringTable.f1),
+                    e);
         }
     }
 
@@ -244,21 +249,7 @@ public class TieringSourceEnumerator
     @Override
     public void close() throws IOException {
         if (rpcClient != null) {
-            try {
-                LakeTieringHeartbeatResponse response =
-                        HeartBeatHelper.waitHeartbeatResponse(
-                                coordinatorGateway.lakeTieringHeartbeat(
-                                        HeartBeatHelper.failedSplitHeartBeat(
-                                                pendingSplits,
-                                                coordinatorEpoch,
-                                                tieringServiceEpoch)),
-                                rpcRequestTimeoutMs);
-
-                response.getFailedTableRespsCount();
-
-            } catch (Exception e) {
-                LOGGER.error("Failed to un-register Tiering Service from Fluss cluster.", e);
-            }
+            reportFailedTieringTable();
             try {
                 LOGGER.info(
                         "Closing Tiering Source Enumerator of epoch {} at epoch {}.",
@@ -267,7 +258,6 @@ public class TieringSourceEnumerator
                 rpcClient.close();
             } catch (Exception e) {
                 LOGGER.error("Failed to close Tiering Source enumerator.", e);
-                throw new RuntimeException(e);
             }
         }
         try {
@@ -288,6 +278,35 @@ public class TieringSourceEnumerator
         }
     }
 
+    private void reportFailedTieringTable() throws FlinkRuntimeException {
+        try {
+            HeartBeatHelper.waitHeartbeatResponse(
+                    coordinatorGateway.lakeTieringHeartbeat(
+                            HeartBeatHelper.failedTieringTableHeartBeat(
+                                    pendingSplits, coordinatorEpoch, tieringServiceEpoch)));
+            LOGGER.info("Report failed table to Fluss Coordinator success");
+
+        } catch (Exception e) {
+            LOGGER.error("Errors happens when report failed table to Fluss cluster.", e);
+            throw new FlinkRuntimeException(
+                    "Errors happens when report failed table to Fluss cluster.", e);
+        }
+    }
+
+    private void reportFinishedTieringTable(long tableId) throws FlinkRuntimeException {
+        try {
+            HeartBeatHelper.waitHeartbeatResponse(
+                    coordinatorGateway.lakeTieringHeartbeat(
+                            HeartBeatHelper.finishedTieringTableHeartBeat(
+                                    tableId, coordinatorEpoch, tieringServiceEpoch)));
+            LOGGER.info("Report finished table to Fluss Coordinator success");
+        } catch (Exception e) {
+            LOGGER.error("Errors happens when report finished table to Fluss cluster.", e);
+            throw new FlinkRuntimeException(
+                    "Errors happens when report finished table to Fluss cluster.", e);
+        }
+    }
+
     /** A helper class to build heartbeat request. */
     private static class HeartBeatHelper {
 
@@ -295,13 +314,24 @@ public class TieringSourceEnumerator
             return new LakeTieringHeartbeatRequest();
         }
 
-        public static LakeTieringHeartbeatRequest requestTieringSplitHeartBeat() {
+        public static LakeTieringHeartbeatRequest requestTieringTableHeartBeat() {
             LakeTieringHeartbeatRequest heartbeatRequest = new LakeTieringHeartbeatRequest();
             heartbeatRequest.setRequestTable(true);
             return heartbeatRequest;
         }
 
-        public static LakeTieringHeartbeatRequest failedSplitHeartBeat(
+        public static LakeTieringHeartbeatRequest finishedTieringTableHeartBeat(
+                long tableId, long coordinatorEpoch, long tieringSererviceEpoch) {
+            Set<PbHeartbeatReqForTable> finishedTables = new HashSet<>();
+            finishedTables.add(
+                    new PbHeartbeatReqForTable()
+                            .setTableId(tableId)
+                            .setCoordinatorEpoch(coordinatorEpoch)
+                            .setTieringEpoch(tieringSererviceEpoch));
+            return new LakeTieringHeartbeatRequest().addAllFinishedTables(finishedTables);
+        }
+
+        public static LakeTieringHeartbeatRequest failedTieringTableHeartBeat(
                 List<TieringSplit> pendingSplits,
                 long coordinatorEpoch,
                 long tieringSererviceEpoch) {
@@ -324,17 +354,12 @@ public class TieringSourceEnumerator
         }
 
         public static LakeTieringHeartbeatResponse waitHeartbeatResponse(
-                CompletableFuture<LakeTieringHeartbeatResponse> responseCompletableFuture,
-                long timeoutMs) {
+                CompletableFuture<LakeTieringHeartbeatResponse> responseCompletableFuture) {
             try {
-                return responseCompletableFuture.get(timeoutMs, TimeUnit.MILLISECONDS);
+                return responseCompletableFuture.get();
             } catch (Exception e) {
-                LOGGER.error("Failed to wait heartbeat response due to timeout after %s mills.", e);
-                throw new FlinkRuntimeException(
-                        String.format(
-                                "Failed to wait heartbeat response due to timeout after %s mills.",
-                                timeoutMs),
-                        e);
+                LOGGER.error("Failed to wait heartbeat response due to ", e);
+                throw new FlinkRuntimeException("Failed to wait heartbeat response due to ", e);
             }
         }
     }
