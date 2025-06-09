@@ -22,6 +22,7 @@ import com.alibaba.fluss.flink.tiering.source.TableBucketWriteResult;
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.metadata.TablePath;
 
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
 import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
@@ -96,7 +97,8 @@ public class LakeTieringCommitOperator<WriteResult, Committable>
                 collectTableAllBucketWriteResult(tableId);
 
         if (committableWriteResults != null) {
-            commitWriteResults(tableId, committableWriteResults);
+            commitWriteResults(
+                    tableId, tableBucketWriteResult.tablePath(), committableWriteResults);
             collectedTableBucketWriteResults.remove(tableId);
             // notify that the table id has been finished tier
             operatorEventGateway.sendEventToCoordinator(
@@ -105,10 +107,13 @@ public class LakeTieringCommitOperator<WriteResult, Committable>
     }
 
     private void commitWriteResults(
-            long tableId, List<TableBucketWriteResult<WriteResult>> committableWriteResults)
+            long tableId,
+            TablePath tablePath,
+            List<TableBucketWriteResult<WriteResult>> committableWriteResults)
             throws Exception {
         try (LakeCommitter<WriteResult, Committable> lakeCommitter =
-                lakeTieringFactory.createLakeCommitter()) {
+                lakeTieringFactory.createLakeCommitter(
+                        new TieringCommitterInitContext(tablePath))) {
             List<WriteResult> writeResults =
                     committableWriteResults.stream()
                             .map(TableBucketWriteResult::writeResult)

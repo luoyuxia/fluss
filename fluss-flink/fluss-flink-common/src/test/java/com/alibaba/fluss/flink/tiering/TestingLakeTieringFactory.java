@@ -46,8 +46,8 @@ public class TestingLakeTieringFactory
     }
 
     @Override
-    public LakeCommitter<TestingWriteResult, TestingCommittable> createLakeCommitter()
-            throws IOException {
+    public LakeCommitter<TestingWriteResult, TestingCommittable> createLakeCommitter(
+            CommitterInitContext committerInitContext) throws IOException {
         return new TestingLakeCommitter();
     }
 
