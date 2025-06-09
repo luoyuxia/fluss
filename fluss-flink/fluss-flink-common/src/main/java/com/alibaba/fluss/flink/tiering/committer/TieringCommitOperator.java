@@ -49,9 +49,10 @@ import static com.alibaba.fluss.utils.Preconditions.checkState;
  * A Flink operator to aggregate {@link WriteResult}s by table to {@link Committable} which will
  * then be committed to lake & Fluss cluster.
  */
-public class LakeTieringCommitOperator<WriteResult, Committable>
-        extends AbstractStreamOperator<Committable>
-        implements OneInputStreamOperator<TableBucketWriteResult<WriteResult>, Committable>,
+public class TieringCommitOperator<WriteResult, Committable>
+        extends AbstractStreamOperator<CommittableMessage<Committable>>
+        implements OneInputStreamOperator<
+                        TableBucketWriteResult<WriteResult>, CommittableMessage<Committable>>,
                 OperatorEventHandler {
 
     private static final long serialVersionUID = 1L;
@@ -64,8 +65,8 @@ public class LakeTieringCommitOperator<WriteResult, Committable>
     private final Map<Long, List<TableBucketWriteResult<WriteResult>>>
             collectedTableBucketWriteResults;
 
-    public LakeTieringCommitOperator(
-            StreamOperatorParameters<Committable> parameters,
+    public TieringCommitOperator(
+            StreamOperatorParameters<CommittableMessage<Committable>> parameters,
             Configuration flussConf,
             OperatorEventGateway operatorEventGateway,
             LakeTieringFactory<WriteResult, Committable> lakeTieringFactory) {
@@ -97,16 +98,18 @@ public class LakeTieringCommitOperator<WriteResult, Committable>
                 collectTableAllBucketWriteResult(tableId);
 
         if (committableWriteResults != null) {
-            commitWriteResults(
-                    tableId, tableBucketWriteResult.tablePath(), committableWriteResults);
+            Committable committable =
+                    commitWriteResults(
+                            tableId, tableBucketWriteResult.tablePath(), committableWriteResults);
             collectedTableBucketWriteResults.remove(tableId);
             // notify that the table id has been finished tier
             operatorEventGateway.sendEventToCoordinator(
                     new SourceEventWrapper(new FinishTieringEvent(tableId)));
+            output.collect(new StreamRecord<>(new CommittableMessage<>(committable)));
         }
     }
 
-    private void commitWriteResults(
+    private Committable commitWriteResults(
             long tableId,
             TablePath tablePath,
             List<TableBucketWriteResult<WriteResult>> committableWriteResults)
@@ -128,6 +131,7 @@ public class LakeTieringCommitOperator<WriteResult, Committable>
             }
             tableLakeSnapshotCommitter.commit(
                     new TableLakeSnapshot(tableId, commitedSnapshotId, logEndOffsets));
+            return committable;
         }
     }
 

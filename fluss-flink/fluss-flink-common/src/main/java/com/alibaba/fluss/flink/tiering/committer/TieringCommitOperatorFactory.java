@@ -31,10 +31,10 @@ import org.apache.flink.streaming.api.operators.CoordinatedOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 
-/** The factory to create {@link LakeTieringCommitOperator}. */
-public class LakeTieringCommitOperatorFactory<WriteResult, Committable>
-        extends AbstractStreamOperatorFactory<Committable>
-        implements CoordinatedOperatorFactory<Committable> {
+/** The factory to create {@link TieringCommitOperator}. */
+public class TieringCommitOperatorFactory<WriteResult, Committable>
+        extends AbstractStreamOperatorFactory<CommittableMessage<Committable>>
+        implements CoordinatedOperatorFactory<CommittableMessage<Committable>> {
 
     /** The number of worker thread for the source coordinator. */
     private final int numCoordinatorWorkerThread;
@@ -44,7 +44,7 @@ public class LakeTieringCommitOperatorFactory<WriteResult, Committable>
     private final WatermarkStrategy<TableBucketWriteResult<WriteResult>> watermarkStrategy;
     private final LakeTieringFactory<WriteResult, Committable> lakeTieringFactory;
 
-    public LakeTieringCommitOperatorFactory(
+    public TieringCommitOperatorFactory(
             Configuration flussConfig,
             Source<TableBucketWriteResult<WriteResult>, ?, ?> source,
             WatermarkStrategy<TableBucketWriteResult<WriteResult>> watermarkStrategy,
@@ -57,15 +57,14 @@ public class LakeTieringCommitOperatorFactory<WriteResult, Committable>
     }
 
     @Override
-    public <T extends StreamOperator<Committable>> T createStreamOperator(
-            StreamOperatorParameters<Committable> parameters) {
+    public <T extends StreamOperator<CommittableMessage<Committable>>> T createStreamOperator(
+            StreamOperatorParameters<CommittableMessage<Committable>> parameters) {
         final OperatorID operatorId = parameters.getStreamConfig().getOperatorID();
         final OperatorEventGateway gateway =
                 parameters.getOperatorEventDispatcher().getOperatorEventGateway(operatorId);
 
-        LakeTieringCommitOperator<WriteResult, Committable> commitOperator =
-                new LakeTieringCommitOperator<>(
-                        parameters, flussConfig, gateway, lakeTieringFactory);
+        TieringCommitOperator<WriteResult, Committable> commitOperator =
+                new TieringCommitOperator<>(parameters, flussConfig, gateway, lakeTieringFactory);
         parameters.getOperatorEventDispatcher().registerEventHandler(operatorId, commitOperator);
 
         @SuppressWarnings("unchecked")
@@ -89,6 +88,6 @@ public class LakeTieringCommitOperatorFactory<WriteResult, Committable>
     @SuppressWarnings("rawtypes")
     @Override
     public Class<? extends StreamOperator> getStreamOperatorClass(ClassLoader classLoader) {
-        return LakeTieringCommitOperator.class;
+        return TieringCommitOperator.class;
     }
 }

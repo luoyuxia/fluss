@@ -17,19 +17,18 @@
 package com.alibaba.fluss.flink.tiering.committer;
 
 import java.io.Serializable;
-import java.util.List;
 
-/** A committable for testing purpose. */
-public class TestingCommittable implements Serializable {
+/** A class wrapping {@link Committable} to commit to lake. */
+public class CommittableMessage<Committable> implements Serializable {
     private static final long serialVersionUID = 1L;
 
-    private final List<Integer> writeResults;
+    private final Committable committable;
 
-    public TestingCommittable(List<Integer> writeResults) {
-        this.writeResults = writeResults;
+    public CommittableMessage(Committable committable) {
+        this.committable = committable;
     }
 
-    public List<Integer> writeResults() {
-        return writeResults;
+    public Committable committable() {
+        return committable;
     }
 }

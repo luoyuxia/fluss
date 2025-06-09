@@ -16,20 +16,18 @@
 
 package com.alibaba.fluss.flink.tiering.committer;
 
-import java.io.Serializable;
-import java.util.List;
+import org.apache.flink.api.common.typeutils.TypeInformationTestBase;
 
-/** A committable for testing purpose. */
-public class TestingCommittable implements Serializable {
-    private static final long serialVersionUID = 1L;
+/** Test for {@link CommittableMessageTypeInfo}. */
+class CommittableMessageTypeInfoTest
+        extends TypeInformationTestBase<CommittableMessageTypeInfo<?>> {
 
-    private final List<Integer> writeResults;
-
-    public TestingCommittable(List<Integer> writeResults) {
-        this.writeResults = writeResults;
-    }
-
-    public List<Integer> writeResults() {
-        return writeResults;
+    @SuppressWarnings("rawtypes")
+    @Override
+    protected CommittableMessageTypeInfo<?>[] getTestData() {
+        return new CommittableMessageTypeInfo[] {
+            (CommittableMessageTypeInfo)
+                    CommittableMessageTypeInfo.of(TestingCommittableSerializer::new)
+        };
     }
 }

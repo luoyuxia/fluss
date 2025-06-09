@@ -49,16 +49,16 @@ import static com.alibaba.fluss.record.TestData.DATA1_PARTITIONED_TABLE_DESCRIPT
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** UT for {@link LakeTieringCommitOperator}. */
-class LakeTieringCommitOperatorTest extends FlinkTestBase {
+/** UT for {@link TieringCommitOperator}. */
+class TieringCommitOperatorTest extends FlinkTestBase {
 
-    private LakeTieringCommitOperator<TestingWriteResult, TestingCommittable> committerOperator;
+    private TieringCommitOperator<TestingWriteResult, TestingCommittable> committerOperator;
     private MockOperatorEventGateway mockOperatorEventGateway;
 
     @BeforeEach
     void beforeEach() throws Exception {
         mockOperatorEventGateway = new MockOperatorEventGateway();
-        StreamOperatorParameters<TestingCommittable> parameters =
+        StreamOperatorParameters<CommittableMessage<TestingCommittable>> parameters =
                 new StreamOperatorParameters<>(
                         new SourceOperatorStreamTask<String>(new DummyEnvironment()),
                         new MockStreamConfig(new Configuration(), 1),
@@ -68,7 +68,7 @@ class LakeTieringCommitOperatorTest extends FlinkTestBase {
                         null);
 
         committerOperator =
-                new LakeTieringCommitOperator<>(
+                new TieringCommitOperator<>(
                         parameters,
                         FLUSS_CLUSTER_EXTENSION.getClientConfig(),
                         mockOperatorEventGateway,
