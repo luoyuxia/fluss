@@ -31,7 +31,7 @@ public class TableBucketWriteResultTypeInfo<WriteResult>
     private final SerializableSupplier<SimpleVersionedSerializer<WriteResult>>
             writeResultSerializerFactory;
 
-    private TableBucketWriteResultTypeInfo(
+    public TableBucketWriteResultTypeInfo(
             SerializableSupplier<SimpleVersionedSerializer<WriteResult>>
                     writeResultSerializerFactory) {
         this.writeResultSerializerFactory = writeResultSerializerFactory;

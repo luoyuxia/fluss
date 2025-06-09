@@ -28,13 +28,15 @@ import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
 import org.apache.flink.runtime.source.coordinator.SourceCoordinatorProvider;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.CoordinatedOperatorFactory;
+import org.apache.flink.streaming.api.operators.OneInputStreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 
 /** The factory to create {@link LakeTieringCommitOperator}. */
 public class LakeTieringCommitOperatorFactory<WriteResult, Committable>
         extends AbstractStreamOperatorFactory<Committable>
-        implements CoordinatedOperatorFactory<Committable> {
+        implements CoordinatedOperatorFactory<Committable>,
+                OneInputStreamOperatorFactory<WriteResult, Committable> {
 
     /** The number of worker thread for the source coordinator. */
     private final int numCoordinatorWorkerThread;

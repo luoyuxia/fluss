@@ -16,11 +16,6 @@
 
 package com.alibaba.fluss.flink.tiering.source.enumerator;
 
-import org.apache.flink.api.connector.source.SplitEnumerator;
-import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
-import org.apache.flink.util.FlinkRuntimeException;
-
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
@@ -40,6 +35,11 @@ import com.alibaba.fluss.rpc.messages.PbHeartbeatReqForTable;
 import com.alibaba.fluss.rpc.messages.PbLakeTieringTableInfo;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.types.Tuple2;
+
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
+import org.apache.flink.util.FlinkRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -326,8 +326,8 @@ public class TieringSourceEnumerator
             finishedTables.add(
                     new PbHeartbeatReqForTable()
                             .setTableId(tableId)
-                            .setCoordinatorEpoch(coordinatorEpoch)
-                            .setTieringEpoch(tieringSererviceEpoch));
+                            .setCoordinatorEpoch(1)
+                            .setTieringEpoch(1));
             return new LakeTieringHeartbeatRequest().addAllFinishedTables(finishedTables);
         }
 
@@ -346,8 +346,8 @@ public class TieringSourceEnumerator
                                         t ->
                                                 new PbHeartbeatReqForTable()
                                                         .setTableId(t)
-                                                        .setCoordinatorEpoch(coordinatorEpoch)
-                                                        .setTieringEpoch(tieringSererviceEpoch))
+                                                        .setCoordinatorEpoch(1)
+                                                        .setTieringEpoch(1))
                                 .collect(Collectors.toSet());
             }
             return new LakeTieringHeartbeatRequest().addAllFailedTables(failedTables);

@@ -347,6 +347,7 @@
                                         <exclude>com.alibaba.fluss.flink.tiering.source.TableBucketWriteResultEmitter</exclude>
                                         <exclude>com.alibaba.fluss.flink.tiering.source.TableBucketWriteResultTypeInfo*</exclude>
                                         <exclude>com.alibaba.fluss.flink.tiering.committer.LakeTieringCommitOperatorFactory</exclude>
+                                        <exclude>com.alibaba.fluss.flink.tiering.FlussLakeTiering</exclude>
                                         <!-- end exclude for flink tiering service -->
                                     </excludes>
                                 </rule>
