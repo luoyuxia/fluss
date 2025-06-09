@@ -16,14 +16,6 @@
 
 package com.alibaba.fluss.flink.tiering.source;
 
-import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.flink.tiering.source.enumerator.TieringSourceEnumerator;
-import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
-import com.alibaba.fluss.flink.tiering.source.split.TieringSplitSerializer;
-import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
-import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorStateSerializer;
-import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
-
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.connector.source.SourceReader;
@@ -32,7 +24,13 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 
-import static com.alibaba.fluss.flink.tiering.source.TieringSourceOptions.RPC_REQUEST_TIMEOUT;
+import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.flink.tiering.source.enumerator.TieringSourceEnumerator;
+import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
+import com.alibaba.fluss.flink.tiering.source.split.TieringSplitSerializer;
+import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
+import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorStateSerializer;
+import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 
 /**
  * The flink source implementation for tiering data from Fluss to downstream lake.
@@ -46,15 +44,10 @@ public class TieringSource<WriteResult>
     private final Configuration flussConf;
     private final LakeTieringFactory<WriteResult, ?> lakeTieringFactory;
 
-    private final long rpcRequestTimeoutMs;
-
     public TieringSource(
-            Configuration flussConf,
-            LakeTieringFactory<WriteResult, ?> lakeTieringFactory,
-            long rpcRequestTimeoutMs) {
+            Configuration flussConf, LakeTieringFactory<WriteResult, ?> lakeTieringFactory) {
         this.flussConf = flussConf;
         this.lakeTieringFactory = lakeTieringFactory;
-        this.rpcRequestTimeoutMs = rpcRequestTimeoutMs;
     }
 
     @Override
@@ -65,11 +58,7 @@ public class TieringSource<WriteResult>
     @Override
     public SplitEnumerator<TieringSplit, TieringSourceEnumeratorState> createEnumerator(
             SplitEnumeratorContext<TieringSplit> splitEnumeratorContext) throws Exception {
-        return new TieringSourceEnumerator(
-                flussConf,
-                splitEnumeratorContext,
-                splitEnumeratorContext.metricGroup(),
-                rpcRequestTimeoutMs);
+        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext);
     }
 
     @Override
@@ -78,11 +67,7 @@ public class TieringSource<WriteResult>
             TieringSourceEnumeratorState tieringSourceEnumeratorState)
             throws Exception {
         // stateless operator
-        return new TieringSourceEnumerator(
-                flussConf,
-                splitEnumeratorContext,
-                splitEnumeratorContext.metricGroup(),
-                rpcRequestTimeoutMs);
+        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext);
     }
 
     @Override
@@ -107,7 +92,6 @@ public class TieringSource<WriteResult>
 
         private final Configuration flussConf;
         private final LakeTieringFactory<WriteResult, ?> lakeTieringFactory;
-        private long rpcRequestTimeoutMs = RPC_REQUEST_TIMEOUT.defaultValue().toMillis();
 
         public Builder(
                 Configuration flussConf, LakeTieringFactory<WriteResult, ?> lakeTieringFactory) {
@@ -115,14 +99,8 @@ public class TieringSource<WriteResult>
             this.lakeTieringFactory = lakeTieringFactory;
         }
 
-        /** Set RPC request timeout. */
-        public Builder withRpcRequestTimeoutMs(long rpcRequestTimeoutMs) {
-            this.rpcRequestTimeoutMs = rpcRequestTimeoutMs;
-            return this;
-        }
-
         public TieringSource<WriteResult> build() {
-            return new TieringSource<>(flussConf, lakeTieringFactory, rpcRequestTimeoutMs);
+            return new TieringSource<>(flussConf, lakeTieringFactory);
         }
     }
 }
