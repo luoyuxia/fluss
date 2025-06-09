@@ -16,14 +16,6 @@
 
 package com.alibaba.fluss.flink.tiering.source;
 
-import org.apache.flink.api.connector.source.Boundedness;
-import org.apache.flink.api.connector.source.Source;
-import org.apache.flink.api.connector.source.SourceReader;
-import org.apache.flink.api.connector.source.SourceReaderContext;
-import org.apache.flink.api.connector.source.SplitEnumerator;
-import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.core.io.SimpleVersionedSerializer;
-
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.tiering.source.enumerator.TieringSourceEnumerator;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
@@ -31,6 +23,14 @@ import com.alibaba.fluss.flink.tiering.source.split.TieringSplitSerializer;
 import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
 import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorStateSerializer;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
+
+import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.connector.source.SourceReader;
+import org.apache.flink.api.connector.source.SourceReaderContext;
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.core.io.SimpleVersionedSerializer;
 
 /**
  * The flink source implementation for tiering data from Fluss to downstream lake.
@@ -58,7 +58,7 @@ public class TieringSource<WriteResult>
     @Override
     public SplitEnumerator<TieringSplit, TieringSourceEnumeratorState> createEnumerator(
             SplitEnumeratorContext<TieringSplit> splitEnumeratorContext) throws Exception {
-        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext);
+        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext, lakeTieringFactory);
     }
 
     @Override
@@ -67,7 +67,7 @@ public class TieringSource<WriteResult>
             TieringSourceEnumeratorState tieringSourceEnumeratorState)
             throws Exception {
         // stateless operator
-        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext);
+        return new TieringSourceEnumerator(flussConf, splitEnumeratorContext, lakeTieringFactory);
     }
 
     @Override

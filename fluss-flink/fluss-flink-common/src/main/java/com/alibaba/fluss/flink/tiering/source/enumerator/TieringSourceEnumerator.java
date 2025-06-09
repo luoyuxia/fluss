@@ -16,20 +16,23 @@
 
 package com.alibaba.fluss.flink.tiering.source.enumerator;
 
-import org.apache.flink.api.connector.source.SplitEnumerator;
-import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
-import org.apache.flink.util.FlinkRuntimeException;
-
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
+import com.alibaba.fluss.client.metadata.LakeSnapshot;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.exception.LakeTableSnapshotNotExistException;
 import com.alibaba.fluss.flink.metrics.FlinkMetricRegistry;
+import com.alibaba.fluss.flink.tiering.committer.TableLakeSnapshotCommitter;
+import com.alibaba.fluss.flink.tiering.committer.TieringCommitterInitContext;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
+import com.alibaba.fluss.lakehouse.committer.CommittedOffsets;
+import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
+import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
+import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.GatewayClientProxy;
 import com.alibaba.fluss.rpc.RpcClient;
@@ -40,6 +43,11 @@ import com.alibaba.fluss.rpc.messages.PbHeartbeatReqForTable;
 import com.alibaba.fluss.rpc.messages.PbLakeTieringTableInfo;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.types.Tuple2;
+
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
+import org.apache.flink.util.FlinkRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,22 +90,29 @@ public class TieringSourceEnumerator
     private final List<TieringSplit> pendingSplits;
     private final Set<Integer> readersAwaitingSplit;
 
+    private final LakeTieringFactory<?, ?> lakeTieringFactory;
+
     // lazily instantiated
     private RpcClient rpcClient;
     private CoordinatorGateway coordinatorGateway;
     private Connection connection;
     private Admin flussAdmin;
+
+    private TableLakeSnapshotCommitter tableLakeSnapshotCommitter;
     private TieringSplitGenerator splitGenerator;
     private long tieringServiceEpoch;
     private long coordinatorEpoch;
 
     public TieringSourceEnumerator(
-            Configuration flussConf, SplitEnumeratorContext<TieringSplit> context) {
+            Configuration flussConf,
+            SplitEnumeratorContext<TieringSplit> context,
+            LakeTieringFactory<?, ?> tieringFactory) {
         this.flussConf = flussConf;
         this.context = context;
         this.enumeratorMetricGroup = context.metricGroup();
         this.pendingSplits = new ArrayList<>();
         this.readersAwaitingSplit = new TreeSet<>();
+        this.lakeTieringFactory = tieringFactory;
     }
 
     @Override
@@ -114,6 +129,8 @@ public class TieringSourceEnumerator
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
         this.tieringServiceEpoch = System.currentTimeMillis();
         this.splitGenerator = new TieringSplitGenerator(flussAdmin);
+        this.tableLakeSnapshotCommitter = new TableLakeSnapshotCommitter(flussConf);
+        this.tableLakeSnapshotCommitter.open();
 
         LOGGER.info(
                 "Starting register Tiering Service(epoch={}) to Fluss Coordinator...",
@@ -183,6 +200,7 @@ public class TieringSourceEnumerator
                             heartbeatResponse.getCoordinatorEpoch());
                 }
                 PbLakeTieringTableInfo tieringTable = heartbeatResponse.getTieringTable();
+
                 return Tuple2.of(
                         tieringTable.getTableId(),
                         TablePath.of(
@@ -203,7 +221,8 @@ public class TieringSourceEnumerator
         long start = System.currentTimeMillis();
         LOGGER.info("Generate Tiering splits for table {}.", tieringTable.f1);
         try {
-            List<TieringSplit> tieringSplits = splitGenerator.generateTableSplits(tieringTable.f1);
+            List<TieringSplit> tieringSplits =
+                    doGenerateTieringSplits(tieringTable.f0, tieringTable.f1);
             LOGGER.info(
                     "Generate Tiering {} splits for table {} with cost {}ms.",
                     tieringSplits.size(),
@@ -223,6 +242,37 @@ public class TieringSourceEnumerator
                     String.format(
                             "Generate Tiering splits for table %s failed due to:", tieringTable.f1),
                     e);
+        }
+    }
+
+    private List<TieringSplit> doGenerateTieringSplits(long tableId, TablePath tablePath)
+            throws Exception {
+        // Get table lake snapshot info of the given table.
+        LakeSnapshot lakeSnapshotInfo = null;
+        try {
+            lakeSnapshotInfo = flussAdmin.getLatestLakeSnapshot(tablePath).get();
+            LOGGER.info("Last committed lake table snapshot info is:{}", lakeSnapshotInfo);
+        } catch (LakeTableSnapshotNotExistException e) {
+            // TODO: we can improve here without judging by specific exception int the future
+        }
+
+        final TableInfo tableInfo = flussAdmin.getTableInfo(tablePath).get();
+        try (LakeCommitter<?, ?> lakeCommitter =
+                lakeTieringFactory.createLakeCommitter(
+                        new TieringCommitterInitContext(tablePath))) {
+            CommittedOffsets missingOffset =
+                    lakeCommitter.getMissingCommittedOffsets(
+                            lakeSnapshotInfo == null ? null : lakeSnapshotInfo.getSnapshotId());
+            if (missingOffset == null) {
+                return splitGenerator.generateTableSplits(tablePath, tableInfo, lakeSnapshotInfo);
+            } else {
+                // fluss still mussing offset info in lake, we commit to fluss
+                tableLakeSnapshotCommitter.commit(
+                        tablePath, tableId, tableInfo.isPartitioned(), missingOffset);
+
+                // then, we can generate split then
+                return doGenerateTieringSplits(tableId, tablePath);
+            }
         }
     }
 
@@ -326,8 +376,8 @@ public class TieringSourceEnumerator
             finishedTables.add(
                     new PbHeartbeatReqForTable()
                             .setTableId(tableId)
-                            .setCoordinatorEpoch(coordinatorEpoch)
-                            .setTieringEpoch(tieringSererviceEpoch));
+                            .setCoordinatorEpoch(1)
+                            .setTieringEpoch(1));
             return new LakeTieringHeartbeatRequest().addAllFinishedTables(finishedTables);
         }
 
@@ -346,8 +396,8 @@ public class TieringSourceEnumerator
                                         t ->
                                                 new PbHeartbeatReqForTable()
                                                         .setTableId(t)
-                                                        .setCoordinatorEpoch(coordinatorEpoch)
-                                                        .setTieringEpoch(tieringSererviceEpoch))
+                                                        .setCoordinatorEpoch(1)
+                                                        .setTieringEpoch(1))
                                 .collect(Collectors.toSet());
             }
             return new LakeTieringHeartbeatRequest().addAllFailedTables(failedTables);

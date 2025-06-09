@@ -19,7 +19,6 @@ package com.alibaba.fluss.flink.tiering.source.split;
 import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.client.metadata.KvSnapshots;
 import com.alibaba.fluss.client.metadata.LakeSnapshot;
-import com.alibaba.fluss.exception.LakeTableSnapshotNotExistException;
 import com.alibaba.fluss.flink.source.enumerator.initializer.BucketOffsetsRetrieverImpl;
 import com.alibaba.fluss.flink.source.enumerator.initializer.OffsetsInitializer.BucketOffsetsRetriever;
 import com.alibaba.fluss.metadata.PartitionInfo;
@@ -54,21 +53,12 @@ public class TieringSplitGenerator {
         this.flussAdmin = flussAdmin;
     }
 
-    public List<TieringSplit> generateTableSplits(TablePath tablePath) throws Exception {
-
-        final TableInfo tableInfo = flussAdmin.getTableInfo(tablePath).get();
+    public List<TieringSplit> generateTableSplits(
+            TablePath tablePath, TableInfo tableInfo, @Nullable LakeSnapshot lakeSnapshotInfo)
+            throws Exception {
         final BucketOffsetsRetriever bucketOffsetsRetriever =
                 new BucketOffsetsRetrieverImpl(flussAdmin, tablePath);
 
-        // Get table lake snapshot info of the given table.
-        LakeSnapshot lakeSnapshotInfo;
-        try {
-            lakeSnapshotInfo = flussAdmin.getLatestLakeSnapshot(tableInfo.getTablePath()).get();
-            LOGGER.info("Last committed lake table snapshot info is:{}", lakeSnapshotInfo);
-        } catch (LakeTableSnapshotNotExistException e) {
-            // TODO: we can improve here without judging by specific exception int the future
-            lakeSnapshotInfo = null;
-        }
         // partitioned table
         if (tableInfo.isPartitioned()) {
             List<PartitionInfo> partitionInfos =
@@ -244,7 +234,8 @@ public class TieringSplitGenerator {
                                 tableBucket,
                                 partitionName,
                                 EARLIEST_OFFSET,
-                                latestBucketOffset));
+                                latestBucketOffset,
+                                0));
             } else {
                 // bucket with snapshot, read kv to latest snapshotId + latestOffsetOfSnapshot
                 checkState(latestOffsetOfSnapshot != null);
@@ -254,7 +245,8 @@ public class TieringSplitGenerator {
                                 tableBucket,
                                 partitionName,
                                 latestSnapshotId,
-                                latestOffsetOfSnapshot));
+                                latestOffsetOfSnapshot,
+                                0));
             }
         } else {
             // the bucket has been tiered, read bounded log
@@ -265,7 +257,8 @@ public class TieringSplitGenerator {
                                 tableBucket,
                                 partitionName,
                                 lastCommittedBucketOffset,
-                                latestBucketOffset));
+                                latestBucketOffset,
+                                0));
             } else {
                 return Optional.empty();
             }
@@ -288,7 +281,8 @@ public class TieringSplitGenerator {
                             tableBucket,
                             partitionName,
                             EARLIEST_OFFSET,
-                            latestBucketOffset));
+                            latestBucketOffset,
+                            0));
         } else {
             // the bucket has been tiered, scan remain fluss log
             if (lastCommittedBucketOffset < latestBucketOffset) {
@@ -298,7 +292,8 @@ public class TieringSplitGenerator {
                                 tableBucket,
                                 partitionName,
                                 lastCommittedBucketOffset,
-                                latestBucketOffset));
+                                latestBucketOffset,
+                                0));
             }
         }
         return Optional.empty();

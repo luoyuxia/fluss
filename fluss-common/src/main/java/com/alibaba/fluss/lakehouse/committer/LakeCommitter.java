@@ -18,6 +18,7 @@ package com.alibaba.fluss.lakehouse.committer;
 
 import com.alibaba.fluss.annotation.PublicEvolving;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.List;
 
@@ -49,4 +50,15 @@ public interface LakeCommitter<WriteResult, CommittableT> extends AutoCloseable 
      * @throws IOException if an I/O error occurs
      */
     long commit(CommittableT committable) throws IOException;
+
+    /**
+     * Get the missing committed bucket offsets from the view of the knownSnapshotId.
+     *
+     * @param knownSnapshotId the known snapshot id to judge what bucket offset missing for the
+     *     knownSnapshotId based the lake current snapshot. Will be null if no any knownSnapshotId.
+     * @return the missing committed bucket offsets
+     * @throws IOException if an I/O error occurs
+     */
+    @Nullable
+    CommittedOffsets getMissingCommittedOffsets(@Nullable Long knownSnapshotId) throws IOException;
 }

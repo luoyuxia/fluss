@@ -18,9 +18,13 @@ package com.alibaba.fluss.flink.tiering.committer;
 
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.FlussConnection;
+import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.lakehouse.committer.CommittedOffsets;
+import com.alibaba.fluss.metadata.PartitionInfo;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.GatewayClientProxy;
 import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
@@ -28,8 +32,11 @@ import com.alibaba.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
 import com.alibaba.fluss.rpc.messages.PbLakeTableOffsetForBucket;
 import com.alibaba.fluss.rpc.messages.PbLakeTableSnapshotInfo;
 import com.alibaba.fluss.utils.ExceptionUtils;
+import com.alibaba.fluss.utils.types.Tuple2;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /** Committer to commit {@link TableLakeSnapshot} of lake to Fluss. */
@@ -39,6 +46,7 @@ public class TableLakeSnapshotCommitter implements AutoCloseable {
 
     private CoordinatorGateway coordinatorGateway;
     private FlussConnection connection;
+    private Admin admin;
 
     public TableLakeSnapshotCommitter(Configuration flussConf) {
         this.flussConf = flussConf;
@@ -49,6 +57,7 @@ public class TableLakeSnapshotCommitter implements AutoCloseable {
         connection = (FlussConnection) ConnectionFactory.createConnection(flussConf);
         RpcClient rpcClient = connection.getRpcClient();
         MetadataUpdater metadataUpdater = new MetadataUpdater(flussConf, rpcClient);
+        admin = connection.getAdmin();
         this.coordinatorGateway =
                 GatewayClientProxy.createGatewayProxy(
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
@@ -65,6 +74,45 @@ public class TableLakeSnapshotCommitter implements AutoCloseable {
                             "Fail to commit table lake snapshot %s to Fluss.", tableLakeSnapshot),
                     ExceptionUtils.stripExecutionException(e));
         }
+    }
+
+    public void commit(
+            TablePath tablePath,
+            long tableId,
+            boolean isPartitioned,
+            CommittedOffsets toCommitOffsets)
+            throws Exception {
+        TableLakeSnapshot tableLakeSnapshot =
+                new TableLakeSnapshot(tableId, toCommitOffsets.getSnapshotId());
+        Map<String, Long> partitionIdByName = new HashMap<>();
+        if (isPartitioned) {
+            List<PartitionInfo> partitionInfos = admin.listPartitionInfos(tablePath).get();
+            for (PartitionInfo partitionInfo : partitionInfos) {
+                partitionIdByName.put(
+                        partitionInfo.getPartitionName(), partitionInfo.getPartitionId());
+            }
+        }
+        for (Map.Entry<Tuple2<String, Integer>, Long> entry :
+                toCommitOffsets.getCommitedOffsets().entrySet()) {
+            Tuple2<String, Integer> partitionBucket = entry.getKey();
+            TableBucket tableBucket;
+            if (partitionBucket.f0 == null) {
+                tableBucket = new TableBucket(tableId, partitionBucket.f1);
+            } else {
+                String partitionName = partitionBucket.f0;
+                // todo: what if partition rename, drop + create?
+                Long partitionId = partitionIdByName.get(partitionName);
+                if (partitionId != null) {
+                    tableBucket = new TableBucket(tableId, partitionId, partitionBucket.f1);
+                } else {
+                    // let's skip the bucket
+                    continue;
+                }
+            }
+            tableLakeSnapshot.addBucketOffset(tableBucket, entry.getValue());
+        }
+
+        commit(tableLakeSnapshot);
     }
 
     private CommitLakeTableSnapshotRequest toCommitLakeTableSnapshotRequest(
@@ -93,6 +141,9 @@ public class TableLakeSnapshotCommitter implements AutoCloseable {
 
     @Override
     public void close() throws Exception {
+        if (admin != null) {
+            admin.close();
+        }
         if (connection != null) {
             connection.close();
         }

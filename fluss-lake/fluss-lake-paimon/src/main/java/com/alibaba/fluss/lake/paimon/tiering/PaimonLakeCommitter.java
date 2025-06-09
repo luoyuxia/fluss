@@ -16,23 +16,31 @@
 
 package com.alibaba.fluss.lake.paimon.tiering;
 
+import com.alibaba.fluss.lakehouse.committer.CommittedOffsets;
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.metadata.TablePath;
-
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.manifest.ManifestEntry;
 import org.apache.paimon.operation.FileStoreCommit;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.CommitCallback;
+import org.apache.paimon.table.source.ScanMode;
+import org.apache.paimon.utils.SnapshotManager;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 
 import static com.alibaba.fluss.lake.paimon.tiering.PaimonLakeTieringFactory.FLUSS_LAKE_TIERING_COMMIT_USER;
 import static com.alibaba.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
+import static com.alibaba.fluss.metadata.ResolvedPartitionSpec.PARTITION_SPEC_SEPARATOR;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.paimon.table.sink.BatchWriteBuilder.COMMIT_IDENTIFIER;
 
@@ -83,6 +91,56 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
         }
     }
 
+    @Nullable
+    @Override
+    public CommittedOffsets getMissingCommittedOffsets(@Nullable Long knownSnapshotId)
+            throws IOException {
+        // get the fluss committed snapshot id
+        SnapshotManager snapshotManager = fileStoreTable.snapshotManager();
+        Long flussCommittedSnapshotIdOrLatestCommitId =
+                fileStoreTable
+                        .snapshotManager()
+                        .pickOrLatest(
+                                (snapshot ->
+                                        snapshot.commitUser()
+                                                .equals(FLUSS_LAKE_TIERING_COMMIT_USER)));
+        // no any snapshot
+        if (flussCommittedSnapshotIdOrLatestCommitId == null) {
+            return null;
+        }
+
+        Snapshot snapshot =
+                snapshotManager.tryGetSnapshot(flussCommittedSnapshotIdOrLatestCommitId);
+        if (!snapshot.commitUser().equals(FLUSS_LAKE_TIERING_COMMIT_USER)) {
+            // the snapshot is still not commited by Fluss
+            return null;
+        }
+
+        // then it should be commit by Fluss
+
+        // but the latest snapshot if not greater than knownSnapshotId, no any missing
+        // snapshot, return directly
+        if (knownSnapshotId != null && snapshot.id() <= knownSnapshotId) {
+            return null;
+        }
+
+        CommittedOffsets committedOffsets = new CommittedOffsets(snapshot.id());
+        ScanMode scanMode =
+                fileStoreTable.primaryKeys().isEmpty() ? ScanMode.DELTA : ScanMode.CHANGELOG;
+
+        Iterator<ManifestEntry> manifestEntryIterator =
+                fileStoreTable
+                        .store()
+                        .newScan()
+                        .withSnapshot(snapshot.id())
+                        .withKind(scanMode)
+                        .readFileIterator();
+        while (manifestEntryIterator.hasNext()) {
+            updateCommittedOffsets(committedOffsets, manifestEntryIterator.next());
+        }
+        return committedOffsets;
+    }
+
     @Override
     public void close() throws Exception {
         try {
@@ -122,6 +180,34 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
         @Override
         public void close() throws Exception {
             // do-nothing
+        }
+    }
+
+    private void updateCommittedOffsets(
+            CommittedOffsets committedOffsets, ManifestEntry manifestEntry) {
+        // always get bucket, log_offset from statistic
+        DataFileMeta dataFileMeta = manifestEntry.file();
+        BinaryRow maxStatisticRow = dataFileMeta.valueStats().maxValues();
+
+        // the system columns orders are: __bucket, __offset, __timestampAdd commentMore actions
+        int fieldCount = maxStatisticRow.getFieldCount();
+        int bucketId = maxStatisticRow.getInt(fieldCount - 3);
+        long offset = maxStatisticRow.getLong(fieldCount - 2);
+
+        String partition = null;
+        BinaryRow partitionRow = manifestEntry.partition();
+        if (partitionRow.getFieldCount() > 0) {
+            List<String> partitionFields = new ArrayList<>(partitionRow.getFieldCount());
+            for (int i = 0; i < partitionRow.getFieldCount(); i++) {
+                partitionFields.add(partitionRow.getString(i).toString());
+            }
+            partition = String.join(PARTITION_SPEC_SEPARATOR, partitionFields);
+        }
+
+        if (partition == null) {
+            committedOffsets.addBucket(bucketId, offset);
+        } else {
+            committedOffsets.addPartitionBucket(partition, bucketId, offset);
         }
     }
 }

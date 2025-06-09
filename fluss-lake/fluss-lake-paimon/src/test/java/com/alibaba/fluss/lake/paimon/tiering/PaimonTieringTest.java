@@ -17,6 +17,7 @@
 package com.alibaba.fluss.lake.paimon.tiering;
 
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.lakehouse.committer.CommittedOffsets;
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.lakehouse.serializer.SimpleVersionedSerializer;
 import com.alibaba.fluss.lakehouse.writer.LakeWriter;
@@ -29,7 +30,6 @@ import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.row.BinaryString;
 import com.alibaba.fluss.row.GenericRow;
 import com.alibaba.fluss.utils.types.Tuple2;
-
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
@@ -52,7 +52,6 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
-
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -174,6 +173,27 @@ class PaimonTieringTest {
                     verifyLogTableRecords(actualRecords, expectRecords, bucket);
                 }
             }
+        }
+
+        // then, let's verify getMissingCommittedOffsets works
+        try (LakeCommitter<PaimonWriteResult, PaimonCommittable> lakeCommitter =
+                createLakeCommitter(tablePath)) {
+            CommittedOffsets committedOffsets = lakeCommitter.getMissingCommittedOffsets(0L);
+            assertThat(committedOffsets).isNotNull();
+            Map<Tuple2<String, Integer>, Long> offsets = committedOffsets.getCommitedOffsets();
+            for (int bucket = 0; bucket < 3; bucket++) {
+                for (String partition : partitions) {
+                    // we only write 10 records, so expected log offset should be 9
+                    assertThat(offsets.get(Tuple2.of(partition, bucket))).isEqualTo(9);
+                }
+            }
+            assertThat(committedOffsets.getSnapshotId()).isOne();
+
+            assertThat(lakeCommitter.getMissingCommittedOffsets(null)).isEqualTo(committedOffsets);
+
+            committedOffsets = lakeCommitter.getMissingCommittedOffsets(1L);
+            // no any missing committed offset since the latest snapshot is 1L
+            assertThat(committedOffsets).isNull();
         }
     }
 
@@ -394,6 +414,10 @@ class PaimonTieringTest {
 
         if (numBuckets != null) {
             builder.option(CoreOptions.BUCKET.key(), String.valueOf(numBuckets));
+        }
+
+        if (isPrimaryTable) {
+            builder.option(CoreOptions.CHANGELOG_PRODUCER.key(), "input");
         }
 
         paimonCatalog.createDatabase(tablePath.getDatabaseName(), true);

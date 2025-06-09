@@ -18,6 +18,7 @@ package com.alibaba.fluss.flink.tiering;
 
 import com.alibaba.fluss.flink.tiering.committer.TestingCommittable;
 import com.alibaba.fluss.flink.tiering.source.TestingWriteResultSerializer;
+import com.alibaba.fluss.lakehouse.committer.CommittedOffsets;
 import com.alibaba.fluss.lakehouse.committer.CommitterInitContext;
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.lakehouse.serializer.SimpleVersionedSerializer;
@@ -25,6 +26,8 @@ import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 import com.alibaba.fluss.lakehouse.writer.LakeWriter;
 import com.alibaba.fluss.lakehouse.writer.WriterInitContext;
 import com.alibaba.fluss.record.LogRecord;
+
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -92,6 +95,12 @@ public class TestingLakeTieringFactory
         @Override
         public long commit(TestingCommittable committable) throws IOException {
             return currentSnapshot++;
+        }
+
+        @Override
+        public @Nullable CommittedOffsets getMissingCommittedOffsets(@Nullable Long knownSnapshotId)
+                throws IOException {
+            return null;
         }
 
         @Override
