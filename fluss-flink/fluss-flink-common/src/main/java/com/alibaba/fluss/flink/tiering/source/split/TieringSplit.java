@@ -30,6 +30,7 @@ public abstract class TieringSplit implements SourceSplit {
 
     public static final byte TIERING_SNAPSHOT_SPLIT_FLAG = 1;
     public static final byte TIERING_LOG_SPLIT_FLAG = 2;
+    protected static final int UNKNOWN_NUMBER_OF_SPLITS = -1;
 
     protected final TablePath tablePath;
     protected final TableBucket tableBucket;
@@ -113,6 +114,8 @@ public abstract class TieringSplit implements SourceSplit {
     public String getPartitionName() {
         return partitionName;
     }
+
+    public abstract TieringSplit updateNumberOfSplits(int numberOfSplits);
 
     @Override
     public boolean equals(Object object) {

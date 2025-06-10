@@ -77,7 +77,10 @@ public class LakeTieringBuilder {
 
         LakeTieringFactory lakeTieringFactory = lakeStorage.createLakeTieringFactory();
         // build tiering source
-        TieringSource<?> tieringSource = new TieringSource<>(flussConfig, lakeTieringFactory);
+        TieringSource<?> tieringSource =
+                new TieringSource.Builder(flussConfig, lakeTieringFactory)
+                        .withPollTieringTableIntervalMs(1_000)
+                        .build();
 
         DataStreamSource<?> source =
                 env.fromSource(

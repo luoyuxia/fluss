@@ -23,6 +23,7 @@ import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.metrics.FlinkMetricRegistry;
+import com.alibaba.fluss.flink.tiering.event.FinishTieringEvent;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
@@ -37,6 +38,7 @@ import com.alibaba.fluss.rpc.messages.PbLakeTieringTableInfo;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.types.Tuple2;
 
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
@@ -223,6 +225,7 @@ public class TieringSourceEnumerator
         LOG.info("Generate Tiering splits for table {}.", tieringTable.f1);
         try {
             List<TieringSplit> tieringSplits = splitGenerator.generateTableSplits(tieringTable.f1);
+            tieringSplits = updateWithNumberOfSplits(tieringSplits);
             LOG.info(
                     "Generate Tiering {} splits for table {} with cost {}ms.",
                     tieringSplits.size(),
@@ -243,6 +246,15 @@ public class TieringSourceEnumerator
                             "Generate Tiering splits for table %s failed due to:", tieringTable.f1),
                     e);
         }
+    }
+
+    private List<TieringSplit> updateWithNumberOfSplits(List<TieringSplit> tieringSplits) {
+        List<TieringSplit> newTieringSplits = new ArrayList<>(tieringSplits.size());
+        int numberOfSplits = tieringSplits.size();
+        for (TieringSplit tieringSplit : tieringSplits) {
+            newTieringSplits.add(tieringSplit.updateNumberOfSplits(numberOfSplits));
+        }
+        return newTieringSplits;
     }
 
     @Override
@@ -306,6 +318,15 @@ public class TieringSourceEnumerator
             LOG.error("Errors happens when report finished table to Fluss cluster.", e);
             throw new FlinkRuntimeException(
                     "Errors happens when report finished table to Fluss cluster.", e);
+        }
+    }
+
+    public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
+        if (sourceEvent instanceof FinishTieringEvent) {
+            FinishTieringEvent tieringEvent = (FinishTieringEvent) sourceEvent;
+            reportFinishedTieringTable(tieringEvent.getTableId());
+            this.context.callAsync(
+                    this::requestTieringTableSplitsViaHeartBeat, this::generateAndAssignSplits);
         }
     }
 

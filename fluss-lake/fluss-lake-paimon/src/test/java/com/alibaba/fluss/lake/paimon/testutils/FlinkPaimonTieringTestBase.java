@@ -38,6 +38,7 @@ import com.alibaba.fluss.server.replica.Replica;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.types.DataTypes;
+
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.paimon.catalog.Catalog;
@@ -50,6 +51,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import javax.annotation.Nullable;
+
 import java.nio.file.Files;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -293,6 +295,7 @@ public class FlinkPaimonTieringTestBase {
                                         .build())
                         .distributedBy(bucketNum)
                         .property(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true")
+                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500))
                         .build();
         return createTable(tablePath, table1Descriptor);
     }
