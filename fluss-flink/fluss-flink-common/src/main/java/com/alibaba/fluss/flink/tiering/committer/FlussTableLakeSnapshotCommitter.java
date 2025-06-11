@@ -33,7 +33,7 @@ import com.alibaba.fluss.utils.ExceptionUtils;
 import java.io.IOException;
 import java.util.Map;
 
-/** Committer to commit {@link TableLakeSnapshot} of lake to Fluss. */
+/** Committer to commit {@link FlussTableLakeSnapshot} of lake to Fluss. */
 public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
 
     private final Configuration flussConf;
@@ -57,30 +57,31 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
     }
 
-    public void commit(TableLakeSnapshot tableLakeSnapshot) throws IOException {
+    public void commit(FlussTableLakeSnapshot flussTableLakeSnapshot) throws IOException {
         try {
             CommitLakeTableSnapshotRequest request =
-                    toCommitLakeTableSnapshotRequest(tableLakeSnapshot);
+                    toCommitLakeTableSnapshotRequest(flussTableLakeSnapshot);
             coordinatorGateway.commitLakeTableSnapshot(request).get();
         } catch (Exception e) {
             throw new IOException(
                     String.format(
-                            "Fail to commit table lake snapshot %s to Fluss.", tableLakeSnapshot),
+                            "Fail to commit table lake snapshot %s to Fluss.",
+                            flussTableLakeSnapshot),
                     ExceptionUtils.stripExecutionException(e));
         }
     }
 
     private CommitLakeTableSnapshotRequest toCommitLakeTableSnapshotRequest(
-            TableLakeSnapshot tableLakeSnapshot) {
+            FlussTableLakeSnapshot flussTableLakeSnapshot) {
         CommitLakeTableSnapshotRequest commitLakeTableSnapshotRequest =
                 new CommitLakeTableSnapshotRequest();
         PbLakeTableSnapshotInfo pbLakeTableSnapshotInfo =
                 commitLakeTableSnapshotRequest.addTablesReq();
 
-        pbLakeTableSnapshotInfo.setTableId(tableLakeSnapshot.tableId());
-        pbLakeTableSnapshotInfo.setSnapshotId(tableLakeSnapshot.lakeSnapshotId());
+        pbLakeTableSnapshotInfo.setTableId(flussTableLakeSnapshot.tableId());
+        pbLakeTableSnapshotInfo.setSnapshotId(flussTableLakeSnapshot.lakeSnapshotId());
         for (Map.Entry<TableBucket, Long> bucketEndOffsetEntry :
-                tableLakeSnapshot.logEndOffsets().entrySet()) {
+                flussTableLakeSnapshot.logEndOffsets().entrySet()) {
             PbLakeTableOffsetForBucket pbLakeTableOffsetForBucket =
                     pbLakeTableSnapshotInfo.addBucketsReq();
             TableBucket tableBucket = bucketEndOffsetEntry.getKey();

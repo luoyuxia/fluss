@@ -151,7 +151,7 @@ public class TieringCommitOperator<WriteResult, Committable>
                 logEndOffsets.put(writeResult.tableBucket(), writeResult.logEndOffset());
             }
             flussTableLakeSnapshotCommitter.commit(
-                    new TableLakeSnapshot(tableId, commitedSnapshotId, logEndOffsets));
+                    new FlussTableLakeSnapshot(tableId, commitedSnapshotId, logEndOffsets));
             return committable;
         }
     }

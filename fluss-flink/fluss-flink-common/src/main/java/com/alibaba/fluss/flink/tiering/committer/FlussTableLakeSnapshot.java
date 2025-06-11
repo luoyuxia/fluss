@@ -20,8 +20,8 @@ import com.alibaba.fluss.metadata.TableBucket;
 
 import java.util.Map;
 
-/** A lake snapshot for a table. */
-public class TableLakeSnapshot {
+/** A lake snapshot for a Fluss table. */
+public class FlussTableLakeSnapshot {
 
     private final long tableId;
 
@@ -29,7 +29,7 @@ public class TableLakeSnapshot {
 
     private final Map<TableBucket, Long> logEndOffsets;
 
-    public TableLakeSnapshot(
+    public FlussTableLakeSnapshot(
             long tableId, long lakeSnapshotId, Map<TableBucket, Long> logEndOffsets) {
         this.tableId = tableId;
         this.lakeSnapshotId = lakeSnapshotId;
@@ -50,7 +50,7 @@ public class TableLakeSnapshot {
 
     @Override
     public String toString() {
-        return "TableLakeSnapshot{"
+        return "FlussTableLakeSnapshot{"
                 + "tableId="
                 + tableId
                 + ", lakeSnapshotId="
