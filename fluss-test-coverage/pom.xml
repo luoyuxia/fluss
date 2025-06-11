@@ -86,14 +86,6 @@
             <version>${project.version}</version>
             <scope>compile</scope>
         </dependency>
-
-
-        <dependency>
-            <groupId>com.alibaba.fluss</groupId>
-            <artifactId>fluss-lakehouse-paimon</artifactId>
-            <version>${project.version}</version>
-            <scope>compile</scope>
-        </dependency>
     </dependencies>
 
     <profiles>
@@ -124,7 +116,6 @@
                                                 <exclude>fluss-test-coverage/**</exclude>
                                                 <exclude>fluss-test-utils/**</exclude>
                                                 <exclude>fluss-flink/**</exclude>
-                                                <exclude>fluss-lakehouse/**</exclude>
                                                 <exclude>fluss-lake/**</exclude>
                                             </excludes>
                                         </resource>
@@ -160,7 +151,6 @@
                                             <directory>${project.basedir}/../</directory>
                                             <includes>
                                                 <include>fluss-flink/**/target/classes/**</include>
-                                                <include>fluss-lakehouse/**/target/classes/**</include>
                                                 <include>fluss-lake/**/target/classes/**</include>
                                             </includes>
                                             <excludes>
@@ -326,15 +316,13 @@
                                         <!-- start exclude for metric -->
                                         <exclude>com.alibaba.fluss.metrics.*</exclude>
                                         <!-- end exclude for metric -->
-                                        <!-- start exclude for lakehouse-paimon -->
-                                        <exclude>com.alibaba.fluss.lakehouse.*</exclude>
                                         <exclude>com.alibaba.fluss.flink.lakehouse.*</exclude>
-                                        <!-- end exclude for lakehouse-paimon -->
                                         <exclude>com.alibaba.fluss.kafka.*</exclude>
                                         <!-- exclude for fluss-ci-tools -->
                                         <exclude>com.alibaba.fluss.tools.ci.*</exclude>
                                         <!-- exclude for fluss-dist -->
                                         <exclude>com.alibaba.fluss.dist.DummyClass</exclude>
+                                        <exclude>com.alibaba.fluss.lakehouse.batch.ArrowRecordBatch</exclude>
                                         <exclude>com.alibaba.fluss.lake.paimon.FlussDataTypeToPaimonDataType</exclude>
                                         <!-- start exclude for flink tiering service -->
                                         <exclude>com.alibaba.fluss.flink.tiering.source.TieringSourceOptions</exclude>
