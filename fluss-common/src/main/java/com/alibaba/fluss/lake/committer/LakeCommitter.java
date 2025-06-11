@@ -53,6 +53,14 @@ public interface LakeCommitter<WriteResult, CommittableT> extends AutoCloseable 
     long commit(CommittableT committable) throws IOException;
 
     /**
+     * Aborts the given committable object.
+     *
+     * @param committable the committable object
+     * @throws IOException if an I/O error occurs
+     */
+    void abort(CommittableT committable) throws IOException;
+
+    /**
      * Get the missing committed snapshot from the view of the knownSnapshotId.
      *
      * @param knownSnapshotId the known snapshot id to judge which snapshot missing based the lake

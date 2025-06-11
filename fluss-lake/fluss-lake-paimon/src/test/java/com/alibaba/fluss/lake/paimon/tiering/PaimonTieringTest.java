@@ -17,6 +17,7 @@
 package com.alibaba.fluss.lake.paimon.tiering;
 
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
 import com.alibaba.fluss.lake.committer.LakeCommitter;
 import com.alibaba.fluss.lake.serializer.SimpleVersionedSerializer;
 import com.alibaba.fluss.lake.writer.LakeWriter;

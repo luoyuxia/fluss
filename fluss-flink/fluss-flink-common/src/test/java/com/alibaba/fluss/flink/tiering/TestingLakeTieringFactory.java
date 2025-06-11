@@ -19,6 +19,7 @@ package com.alibaba.fluss.flink.tiering;
 import com.alibaba.fluss.flink.tiering.committer.TestingCommittable;
 import com.alibaba.fluss.flink.tiering.source.TestingWriteResultSerializer;
 import com.alibaba.fluss.lake.committer.CommitterInitContext;
+import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
 import com.alibaba.fluss.lake.committer.LakeCommitter;
 import com.alibaba.fluss.lake.serializer.SimpleVersionedSerializer;
 import com.alibaba.fluss.lake.writer.LakeTieringFactory;
@@ -90,7 +91,7 @@ public class TestingLakeTieringFactory
     public static final class TestingLakeCommitter
             implements LakeCommitter<TestingWriteResult, TestingCommittable> {
 
-        private long currentSnapshot = 0;
+        private long currentSnapshot;
 
         @Nullable private final LakeCommittedSnapshot mockCommittedSnapshot;
 
@@ -100,6 +101,8 @@ public class TestingLakeTieringFactory
 
         public TestingLakeCommitter(@Nullable LakeCommittedSnapshot mockCommittedSnapshot) {
             this.mockCommittedSnapshot = mockCommittedSnapshot;
+            this.currentSnapshot =
+                    mockCommittedSnapshot == null ? 0 : mockCommittedSnapshot.getLakeSnapshotId();
         }
 
         @Override
@@ -114,7 +117,12 @@ public class TestingLakeTieringFactory
 
         @Override
         public long commit(TestingCommittable committable) throws IOException {
-            return currentSnapshot++;
+            return ++currentSnapshot;
+        }
+
+        @Override
+        public void abort(TestingCommittable committable) throws IOException {
+            // do nothing
         }
 
         @Override

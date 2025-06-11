@@ -18,7 +18,7 @@ package com.alibaba.fluss.flink.tiering.committer;
 
 import com.alibaba.fluss.client.metadata.LakeSnapshot;
 import com.alibaba.fluss.flink.utils.FlinkTestBase;
-import com.alibaba.fluss.lakehouse.committer.LakeCommittedSnapshot;
+import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
 import com.alibaba.fluss.metadata.PartitionInfo;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;

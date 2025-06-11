@@ -19,7 +19,7 @@ package com.alibaba.fluss.flink.tiering.committer;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.lakehouse.committer.LakeCommittedSnapshot;
+import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metrics.registry.MetricRegistry;
 import com.alibaba.fluss.rpc.GatewayClientProxy;
@@ -91,7 +91,9 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                 tableBucket = new TableBucket(tableId, partitionBucket.f1);
             } else {
                 String partitionName = partitionBucket.f0;
-                // todo: consider what if partition rename, drop + create?
+                // todo: remove this
+                // in paimon 1.12, we can store this offsets(including partitionId) into snapshot
+                // properties, then, we won't need to get partitionId from partition name
                 Long partitionId = partitionIdByName.get(partitionName);
                 if (partitionId != null) {
                     tableBucket = new TableBucket(tableId, partitionId, partitionBucket.f1);

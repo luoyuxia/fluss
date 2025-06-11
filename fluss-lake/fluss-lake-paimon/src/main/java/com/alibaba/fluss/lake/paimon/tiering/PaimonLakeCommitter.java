@@ -16,6 +16,7 @@
 
 package com.alibaba.fluss.lake.paimon.tiering;
 
+import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
 import com.alibaba.fluss.lake.committer.LakeCommitter;
 import com.alibaba.fluss.metadata.TablePath;
 
@@ -90,6 +91,12 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
             }
             throw new IOException(t);
         }
+    }
+
+    @Override
+    public void abort(PaimonCommittable committable) throws IOException {
+        fileStoreCommit = fileStoreTable.store().newCommit(FLUSS_LAKE_TIERING_COMMIT_USER);
+        fileStoreCommit.abort(committable.manifestCommittable().fileCommittables());
     }
 
     @Nullable
