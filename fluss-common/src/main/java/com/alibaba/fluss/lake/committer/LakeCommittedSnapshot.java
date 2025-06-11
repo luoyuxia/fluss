@@ -29,14 +29,13 @@ import java.util.Objects;
 public class LakeCommittedSnapshot {
 
     private final long lakeSnapshotId;
+    // <partition_name, bucket> -> log offset, partition_name will be null if it's not a
+    // partition bucket
+    private final Map<Tuple2<String, Integer>, Long> logEndOffsets = new HashMap<>();
 
     public LakeCommittedSnapshot(long lakeSnapshotId) {
         this.lakeSnapshotId = lakeSnapshotId;
     }
-
-    // <partition_name, bucket> -> log offset, partition_name will be null if it's not a
-    // partition bucket
-    private final Map<Tuple2<String, Integer>, Long> logEndOffsets = new HashMap<>();
 
     public long getLakeSnapshotId() {
         return lakeSnapshotId;
