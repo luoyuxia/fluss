@@ -26,6 +26,8 @@ import com.alibaba.fluss.lake.writer.LakeWriter;
 import com.alibaba.fluss.lake.writer.WriterInitContext;
 import com.alibaba.fluss.record.LogRecord;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,6 +35,16 @@ import java.util.List;
 /** An implementation of {@link LakeTieringFactory} for testing purpose. */
 public class TestingLakeTieringFactory
         implements LakeTieringFactory<TestingWriteResult, TestingCommittable> {
+
+    @Nullable private final TestingLakeCommitter testingLakeCommitter;
+
+    public TestingLakeTieringFactory(@Nullable TestingLakeCommitter testingLakeCommitter) {
+        this.testingLakeCommitter = testingLakeCommitter;
+    }
+
+    public TestingLakeTieringFactory() {
+        this(null);
+    }
 
     @Override
     public LakeWriter<TestingWriteResult> createLakeWriter(WriterInitContext writerInitContext)
@@ -48,7 +60,7 @@ public class TestingLakeTieringFactory
     @Override
     public LakeCommitter<TestingWriteResult, TestingCommittable> createLakeCommitter(
             CommitterInitContext committerInitContext) throws IOException {
-        return new TestingLakeCommitter();
+        return testingLakeCommitter == null ? new TestingLakeCommitter() : testingLakeCommitter;
     }
 
     @Override
@@ -74,10 +86,21 @@ public class TestingLakeTieringFactory
         public void close() throws IOException {}
     }
 
-    private static final class TestingLakeCommitter
+    /** A lake committer for testing purpose. */
+    public static final class TestingLakeCommitter
             implements LakeCommitter<TestingWriteResult, TestingCommittable> {
 
         private long currentSnapshot = 0;
+
+        @Nullable private final LakeCommittedSnapshot mockCommittedSnapshot;
+
+        public TestingLakeCommitter() {
+            this(null);
+        }
+
+        public TestingLakeCommitter(@Nullable LakeCommittedSnapshot mockCommittedSnapshot) {
+            this.mockCommittedSnapshot = mockCommittedSnapshot;
+        }
 
         @Override
         public TestingCommittable toCommitable(List<TestingWriteResult> testingWriteResults)
@@ -92,6 +115,16 @@ public class TestingLakeTieringFactory
         @Override
         public long commit(TestingCommittable committable) throws IOException {
             return currentSnapshot++;
+        }
+
+        @Override
+        public @Nullable LakeCommittedSnapshot getMissingCommittedSnapshot(
+                @Nullable Long knownSnapshotId) throws IOException {
+            if (knownSnapshotId == null) {
+                return mockCommittedSnapshot;
+            } else {
+                return null;
+            }
         }
 
         @Override

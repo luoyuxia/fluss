@@ -20,13 +20,22 @@ import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.admin.Admin;
+import com.alibaba.fluss.client.metadata.LakeSnapshot;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.exception.LakeTableSnapshotNotExistException;
 import com.alibaba.fluss.flink.metrics.FlinkMetricRegistry;
+import com.alibaba.fluss.flink.tiering.committer.FlussTableLakeSnapshotCommitter;
+import com.alibaba.fluss.flink.tiering.committer.TieringCommitterInitContext;
 import com.alibaba.fluss.flink.tiering.event.FinishTieringEvent;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
+import com.alibaba.fluss.lakehouse.committer.LakeCommittedSnapshot;
+import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
+import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
+import com.alibaba.fluss.metadata.PartitionInfo;
+import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.GatewayClientProxy;
 import com.alibaba.fluss.rpc.RpcClient;
@@ -36,6 +45,7 @@ import com.alibaba.fluss.rpc.messages.LakeTieringHeartbeatResponse;
 import com.alibaba.fluss.rpc.messages.PbHeartbeatReqForTable;
 import com.alibaba.fluss.rpc.messages.PbLakeTieringTableInfo;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
+import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.MapUtils;
 
 import org.apache.flink.api.connector.source.SourceEvent;
@@ -87,6 +97,7 @@ public class TieringSourceEnumerator
     private final Configuration flussConf;
     private final SplitEnumeratorContext<TieringSplit> context;
     private final SplitEnumeratorMetricGroup enumeratorMetricGroup;
+    private final LakeTieringFactory<?, ?> lakeTieringFactory;
     private final long pollTieringTableIntervalMs;
     private final List<TieringSplit> pendingSplits;
     private final Set<Integer> readersAwaitingSplit;
@@ -99,16 +110,19 @@ public class TieringSourceEnumerator
     private CoordinatorGateway coordinatorGateway;
     private Connection connection;
     private Admin flussAdmin;
+    private FlussTableLakeSnapshotCommitter flussTableLakeSnapshotCommitter;
     private TieringSplitGenerator splitGenerator;
     private int flussCoordinatorEpoch;
 
     public TieringSourceEnumerator(
             Configuration flussConf,
             SplitEnumeratorContext<TieringSplit> context,
+            LakeTieringFactory<?, ?> lakeTieringFactory,
             long pollTieringTableIntervalMs) {
         this.flussConf = flussConf;
         this.context = context;
         this.enumeratorMetricGroup = context.metricGroup();
+        this.lakeTieringFactory = lakeTieringFactory;
         this.pollTieringTableIntervalMs = pollTieringTableIntervalMs;
         this.pendingSplits = new ArrayList<>();
         this.readersAwaitingSplit = new TreeSet<>();
@@ -130,6 +144,8 @@ public class TieringSourceEnumerator
                 GatewayClientProxy.createGatewayProxy(
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
         this.splitGenerator = new TieringSplitGenerator(flussAdmin);
+        this.flussTableLakeSnapshotCommitter = new FlussTableLakeSnapshotCommitter(flussConf);
+        this.flussTableLakeSnapshotCommitter.open();
 
         LOG.info("Starting register Tiering Service to Fluss Coordinator...");
         try {
@@ -284,7 +300,7 @@ public class TieringSourceEnumerator
         try {
             List<TieringSplit> tieringSplits =
                     populateNumberOfTieringSplits(
-                            splitGenerator.generateTableSplits(tieringTable.f2));
+                            doGenerateTieringSplits(tieringTable.f0, tieringTable.f2));
             LOG.info(
                     "Generate Tiering {} splits for table {} with cost {}ms.",
                     tieringSplits.size(),
@@ -310,6 +326,55 @@ public class TieringSourceEnumerator
         return tieringSplits.stream()
                 .map(split -> split.copy(numberOfSplits))
                 .collect(Collectors.toList());
+    }
+
+    private List<TieringSplit> doGenerateTieringSplits(long tableId, TablePath tablePath)
+            throws Exception {
+        // Get table lake snapshot info of the given table.
+        LakeSnapshot lakeSnapshotInfo;
+        try {
+            lakeSnapshotInfo = flussAdmin.getLatestLakeSnapshot(tablePath).get();
+            LOG.info("Last committed lake table snapshot info is:{}", lakeSnapshotInfo);
+        } catch (Exception e) {
+            Throwable t = ExceptionUtils.stripExecutionException(e);
+            if (t instanceof LakeTableSnapshotNotExistException) {
+                lakeSnapshotInfo = null;
+            } else {
+                throw new FlinkRuntimeException(
+                        String.format("Failed to get table snapshot for table %s", tablePath),
+                        ExceptionUtils.stripCompletionException(e));
+            }
+        }
+
+        final TableInfo tableInfo = flussAdmin.getTableInfo(tablePath).get();
+
+        // we need to check whether the Fluss cluster is missing some lake snapshot
+        try (LakeCommitter<?, ?> lakeCommitter =
+                lakeTieringFactory.createLakeCommitter(
+                        new TieringCommitterInitContext(tablePath))) {
+            LakeCommittedSnapshot lakeCommittedSnapshot =
+                    lakeCommitter.getMissingCommittedSnapshot(
+                            lakeSnapshotInfo == null ? null : lakeSnapshotInfo.getSnapshotId());
+            if (lakeCommittedSnapshot == null) {
+                return splitGenerator.generateTableSplits(tableInfo, lakeSnapshotInfo);
+            } else {
+                // fluss still mussing offset info in lake, we commit to fluss firstly before
+                // requesting splits
+                Map<String, Long> partitionIdByName = null;
+                if (tableInfo.isPartitioned()) {
+                    partitionIdByName =
+                            flussAdmin.listPartitionInfos(tablePath).get().stream()
+                                    .collect(
+                                            Collectors.toMap(
+                                                    PartitionInfo::getPartitionName,
+                                                    PartitionInfo::getPartitionId));
+                }
+                flussTableLakeSnapshotCommitter.commit(
+                        tableId, partitionIdByName, lakeCommittedSnapshot);
+                // then, we can generate split thenAdd commentMore actions
+                return doGenerateTieringSplits(tableId, tablePath);
+            }
+        }
     }
 
     @Override

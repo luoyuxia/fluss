@@ -120,6 +120,12 @@ class PaimonTieringTest {
         SimpleVersionedSerializer<PaimonCommittable> committableSerializer =
                 paimonLakeTieringFactory.getCommitableSerializer();
 
+        try (LakeCommitter<PaimonWriteResult, PaimonCommittable> lakeCommitter =
+                createLakeCommitter(tablePath)) {
+            // should no any missing snapshot
+            assertThat(lakeCommitter.getMissingCommittedSnapshot(1L)).isNull();
+        }
+
         Map<Tuple2<String, Integer>, List<LogRecord>> recordsByBucket = new HashMap<>();
         List<String> partitions =
                 isPartitioned ? Arrays.asList("p1", "p2", "p3") : Collections.singletonList(null);
@@ -176,6 +182,33 @@ class PaimonTieringTest {
                             actualRecords, expectRecords, bucket, isPartitioned, partition);
                 }
             }
+        }
+
+        // then, let's verify getMissingCommittedSnapshot works
+        try (LakeCommitter<PaimonWriteResult, PaimonCommittable> lakeCommitter =
+                createLakeCommitter(tablePath)) {
+            // use snapshot id 0 as the known snapshot id
+            LakeCommittedSnapshot lakeCommittedSnapshot =
+                    lakeCommitter.getMissingCommittedSnapshot(0L);
+            assertThat(lakeCommittedSnapshot).isNotNull();
+            Map<Tuple2<String, Integer>, Long> offsets = lakeCommittedSnapshot.getLogEndOffsets();
+            for (int bucket = 0; bucket < 3; bucket++) {
+                for (String partition : partitions) {
+                    // we only write 10 records, so expected log offset should be 9
+                    assertThat(offsets.get(Tuple2.of(partition, bucket))).isEqualTo(9);
+                }
+            }
+            assertThat(lakeCommittedSnapshot.getLakeSnapshotId()).isOne();
+
+            // use null as the known snapshot id
+            LakeCommittedSnapshot lakeCommittedSnapshot2 =
+                    lakeCommitter.getMissingCommittedSnapshot(null);
+            assertThat(lakeCommittedSnapshot2).isEqualTo(lakeCommittedSnapshot);
+
+            // use snapshot id 1 as the known snapshot id
+            lakeCommittedSnapshot = lakeCommitter.getMissingCommittedSnapshot(1L);
+            // no any missing committed offset since the latest snapshot is 1L
+            assertThat(lakeCommittedSnapshot).isNull();
         }
     }
 
@@ -652,6 +685,9 @@ class PaimonTieringTest {
             } else {
                 builder.primaryKey("c1");
             }
+            builder.option(
+                    CoreOptions.CHANGELOG_PRODUCER.key(),
+                    CoreOptions.ChangelogProducer.INPUT.toString());
         }
         if (numBuckets != null) {
             builder.option(CoreOptions.BUCKET.key(), String.valueOf(numBuckets));

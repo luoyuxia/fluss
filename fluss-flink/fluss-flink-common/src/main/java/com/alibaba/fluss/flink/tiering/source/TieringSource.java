@@ -77,7 +77,7 @@ public class TieringSource<WriteResult>
     public SplitEnumerator<TieringSplit, TieringSourceEnumeratorState> createEnumerator(
             SplitEnumeratorContext<TieringSplit> splitEnumeratorContext) throws Exception {
         return new TieringSourceEnumerator(
-                flussConf, splitEnumeratorContext, pollTieringTableIntervalMs);
+                flussConf, splitEnumeratorContext, lakeTieringFactory, pollTieringTableIntervalMs);
     }
 
     @Override
@@ -87,7 +87,7 @@ public class TieringSource<WriteResult>
             throws Exception {
         // stateless operator
         return new TieringSourceEnumerator(
-                flussConf, splitEnumeratorContext, pollTieringTableIntervalMs);
+                flussConf, splitEnumeratorContext, lakeTieringFactory, pollTieringTableIntervalMs);
     }
 
     @Override
