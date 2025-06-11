@@ -43,7 +43,7 @@ public class TieringLogSplit extends TieringSplit {
                 partitionName,
                 startingOffset,
                 stoppingOffset,
-                UNKNOW_NUMBER_OF_SPLITS);
+                UNKNOWN_NUMBER_OF_SPLITS);
     }
 
     public TieringLogSplit(

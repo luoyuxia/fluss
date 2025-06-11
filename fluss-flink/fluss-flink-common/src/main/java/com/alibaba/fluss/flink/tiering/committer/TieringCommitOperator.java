@@ -18,8 +18,10 @@ package com.alibaba.fluss.flink.tiering.committer;
 
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.tiering.source.TableBucketWriteResult;
+import com.alibaba.fluss.flink.tiering.source.TieringSource;
 import com.alibaba.fluss.lakehouse.committer.LakeCommitter;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
+import com.alibaba.fluss.lakehouse.writer.LakeWriter;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
 
@@ -35,7 +37,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -44,6 +45,17 @@ import static com.alibaba.fluss.utils.Preconditions.checkState;
 /**
  * A Flink operator to aggregate {@link WriteResult}s by table to {@link Committable} which will
  * then be committed to lake & Fluss cluster.
+ *
+ * <p>It will collect all {@link TableBucketWriteResult}s which wraps {@link WriteResult} written by
+ * {@link LakeWriter} in {@link TieringSource} operator.
+ *
+ * <p>When it collects all {@link TableBucketWriteResult}s of a round of tiering for a table, it
+ * will combine all the {@link WriteResult}s to {@link Committable} via method {@link
+ * LakeCommitter#toCommitable(List)}, and then call method {@link LakeCommitter#commit(Object)} to
+ * commit to lake.
+ *
+ * <p>Finally, it will also commit the commited lake snapshot to Fluss cluster to make Fluss aware
+ * of the tiering progress.
  */
 public class TieringCommitOperator<WriteResult, Committable>
         extends AbstractStreamOperator<CommittableMessage<Committable>>
@@ -53,7 +65,7 @@ public class TieringCommitOperator<WriteResult, Committable>
     private static final long serialVersionUID = 1L;
 
     private final LakeTieringFactory<WriteResult, Committable> lakeTieringFactory;
-    private final TableLakeSnapshotCommitter tableLakeSnapshotCommitter;
+    private final FlussTableLakeSnapshotCommitter flussTableLakeSnapshotCommitter;
 
     // tableid -> write results
     private final Map<Long, List<TableBucketWriteResult<WriteResult>>>
@@ -64,7 +76,7 @@ public class TieringCommitOperator<WriteResult, Committable>
             Configuration flussConf,
             LakeTieringFactory<WriteResult, Committable> lakeTieringFactory) {
         this.lakeTieringFactory = lakeTieringFactory;
-        this.tableLakeSnapshotCommitter = new TableLakeSnapshotCommitter(flussConf);
+        this.flussTableLakeSnapshotCommitter = new FlussTableLakeSnapshotCommitter(flussConf);
         this.collectedTableBucketWriteResults = new HashMap<>();
         this.setup(
                 parameters.getContainingTask(),
@@ -74,7 +86,7 @@ public class TieringCommitOperator<WriteResult, Committable>
 
     @Override
     public void open() {
-        tableLakeSnapshotCommitter.open();
+        flussTableLakeSnapshotCommitter.open();
     }
 
     @Override
@@ -97,7 +109,6 @@ public class TieringCommitOperator<WriteResult, Committable>
             // todo: uncomment it in next pr // notify that the table id has been finished tier
             //            operatorEventGateway.sendEventToCoordinator(
             //                    new SourceEventWrapper(new FinishTieringEvent(tableId)));
-            output.collect(new StreamRecord<>(new CommittableMessage<>(committable)));
             // only emit when committable is not-null
             if (committable != null) {
                 output.collect(new StreamRecord<>(new CommittableMessage<>(committable)));
@@ -112,19 +123,25 @@ public class TieringCommitOperator<WriteResult, Committable>
             List<TableBucketWriteResult<WriteResult>> committableWriteResults)
             throws Exception {
         // filter out non-null write result
-        List<WriteResult> writeResults =
+        committableWriteResults =
                 committableWriteResults.stream()
-                        .map(TableBucketWriteResult::writeResult)
-                        .filter(Objects::nonNull)
+                        .filter(
+                                writeResultTableBucketWriteResult ->
+                                        writeResultTableBucketWriteResult.writeResult() != null)
                         .collect(Collectors.toList());
+
         // empty, means all write result is null, which is a empty commit,
         // return null to skip the empty commit
-        if (writeResults.isEmpty()) {
+        if (committableWriteResults.isEmpty()) {
             return null;
         }
         try (LakeCommitter<WriteResult, Committable> lakeCommitter =
                 lakeTieringFactory.createLakeCommitter(
                         new TieringCommitterInitContext(tablePath))) {
+            List<WriteResult> writeResults =
+                    committableWriteResults.stream()
+                            .map(TableBucketWriteResult::writeResult)
+                            .collect(Collectors.toList());
             // to committable
             Committable committable = lakeCommitter.toCommitable(writeResults);
             long commitedSnapshotId = lakeCommitter.commit(committable);
@@ -133,7 +150,7 @@ public class TieringCommitOperator<WriteResult, Committable>
             for (TableBucketWriteResult<WriteResult> writeResult : committableWriteResults) {
                 logEndOffsets.put(writeResult.tableBucket(), writeResult.logEndOffset());
             }
-            tableLakeSnapshotCommitter.commit(
+            flussTableLakeSnapshotCommitter.commit(
                     new TableLakeSnapshot(tableId, commitedSnapshotId, logEndOffsets));
             return committable;
         }
@@ -186,6 +203,6 @@ public class TieringCommitOperator<WriteResult, Committable>
 
     @Override
     public void close() throws Exception {
-        tableLakeSnapshotCommitter.close();
+        flussTableLakeSnapshotCommitter.close();
     }
 }

@@ -31,7 +31,7 @@ public abstract class TieringSplit implements SourceSplit {
     public static final byte TIERING_SNAPSHOT_SPLIT_FLAG = 1;
     public static final byte TIERING_LOG_SPLIT_FLAG = 2;
 
-    protected static final int UNKNOW_NUMBER_OF_SPLITS = -1;
+    protected static final int UNKNOWN_NUMBER_OF_SPLITS = -1;
 
     protected final TablePath tablePath;
     protected final TableBucket tableBucket;

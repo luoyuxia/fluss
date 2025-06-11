@@ -16,38 +16,41 @@
 
 package com.alibaba.fluss.flink.tiering.committer;
 
-import com.alibaba.fluss.client.ConnectionFactory;
-import com.alibaba.fluss.client.FlussConnection;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
+import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.metrics.registry.MetricRegistry;
 import com.alibaba.fluss.rpc.GatewayClientProxy;
 import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
 import com.alibaba.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
 import com.alibaba.fluss.rpc.messages.PbLakeTableOffsetForBucket;
 import com.alibaba.fluss.rpc.messages.PbLakeTableSnapshotInfo;
+import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.utils.ExceptionUtils;
 
 import java.io.IOException;
 import java.util.Map;
 
 /** Committer to commit {@link TableLakeSnapshot} of lake to Fluss. */
-public class TableLakeSnapshotCommitter implements AutoCloseable {
+public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
 
     private final Configuration flussConf;
 
     private CoordinatorGateway coordinatorGateway;
-    private FlussConnection connection;
+    private RpcClient rpcClient;
 
-    public TableLakeSnapshotCommitter(Configuration flussConf) {
+    public FlussTableLakeSnapshotCommitter(Configuration flussConf) {
         this.flussConf = flussConf;
     }
 
     public void open() {
         // init coordinator gateway
-        connection = (FlussConnection) ConnectionFactory.createConnection(flussConf);
-        RpcClient rpcClient = connection.getRpcClient();
+        String clientId = flussConf.getString(ConfigOptions.CLIENT_ID);
+        MetricRegistry metricRegistry = MetricRegistry.create(flussConf, null);
+        // don't care about metrics, but pass a ClientMetricGroup to make compiler happy
+        rpcClient = RpcClient.create(flussConf, new ClientMetricGroup(metricRegistry, clientId));
         MetadataUpdater metadataUpdater = new MetadataUpdater(flussConf, rpcClient);
         this.coordinatorGateway =
                 GatewayClientProxy.createGatewayProxy(
@@ -75,7 +78,7 @@ public class TableLakeSnapshotCommitter implements AutoCloseable {
                 commitLakeTableSnapshotRequest.addTablesReq();
 
         pbLakeTableSnapshotInfo.setTableId(tableLakeSnapshot.tableId());
-        pbLakeTableSnapshotInfo.setSnapshotId(tableLakeSnapshot.snapshotId());
+        pbLakeTableSnapshotInfo.setSnapshotId(tableLakeSnapshot.lakeSnapshotId());
         for (Map.Entry<TableBucket, Long> bucketEndOffsetEntry :
                 tableLakeSnapshot.logEndOffsets().entrySet()) {
             PbLakeTableOffsetForBucket pbLakeTableOffsetForBucket =
@@ -93,8 +96,8 @@ public class TableLakeSnapshotCommitter implements AutoCloseable {
 
     @Override
     public void close() throws Exception {
-        if (connection != null) {
-            connection.close();
+        if (rpcClient != null) {
+            rpcClient.close();
         }
     }
 }

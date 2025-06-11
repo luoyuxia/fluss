@@ -36,6 +36,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -170,18 +172,56 @@ class TieringCommitOperatorTest extends FlinkTestBase {
         }
     }
 
+    @Test
+    void testCommitMeetsEmptyWriteResult() throws Exception {
+        TablePath tablePath1 = TablePath.of("fluss", "test_commit_empty_write_result");
+        long tableId = createTable(tablePath1, DATA1_PARTITIONED_TABLE_DESCRIPTOR);
+        int numberOfWriteResults = 3;
+
+        // verify when all are empty
+        for (int bucket = 0; bucket < 3; bucket++) {
+            TableBucket tableBucket = new TableBucket(tableId, bucket);
+            committerOperator.processElement(
+                    createTableBucketWriteResultStreamRecord(
+                            tablePath1, tableBucket, null, 3, numberOfWriteResults));
+        }
+
+        verifyNoLakeSnapshot(tablePath1);
+
+        // verify when one bucket result is empty
+        for (int bucket = 1; bucket < 3; bucket++) {
+            TableBucket tableBucket = new TableBucket(tableId, bucket);
+            committerOperator.processElement(
+                    createTableBucketWriteResultStreamRecord(
+                            tablePath1,
+                            tableBucket,
+                            bucket,
+                            // just use bucket as log offset
+                            bucket,
+                            numberOfWriteResults));
+        }
+        committerOperator.processElement(
+                createTableBucketWriteResultStreamRecord(
+                        tablePath1, new TableBucket(tableId, 0), null, 3, numberOfWriteResults));
+
+        Map<TableBucket, Long> expectedLogEndOffsets = new HashMap<>();
+        expectedLogEndOffsets.put(new TableBucket(tableId, 1), 1L);
+        expectedLogEndOffsets.put(new TableBucket(tableId, 2), 2L);
+        verifyLakeSnapshot(tablePath1, 0, expectedLogEndOffsets);
+    }
+
     private StreamRecord<TableBucketWriteResult<TestingWriteResult>>
             createTableBucketWriteResultStreamRecord(
                     TablePath tablePath,
                     TableBucket tableBucket,
-                    int writeResult,
+                    @Nullable Integer writeResult,
                     long logEndOffset,
                     int numberOfWriteResults) {
         TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
                 new TableBucketWriteResult<>(
                         tablePath,
                         tableBucket,
-                        new TestingWriteResult(writeResult),
+                        writeResult == null ? null : new TestingWriteResult(writeResult),
                         logEndOffset,
                         numberOfWriteResults);
         return new StreamRecord<>(tableBucketWriteResult);

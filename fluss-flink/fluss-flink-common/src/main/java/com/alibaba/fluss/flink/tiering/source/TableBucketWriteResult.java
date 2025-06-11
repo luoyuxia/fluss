@@ -38,6 +38,7 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
 
     private final TableBucket tableBucket;
 
+    // will be null when no any data write, such as for tiering a empty log split
     @Nullable private final WriteResult writeResult;
 
     // the end offset of tiering, should be the last tiered record's offset + 1

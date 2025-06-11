@@ -43,7 +43,7 @@ public class TieringSnapshotSplit extends TieringSplit {
             @Nullable String partitionName,
             long snapshotId,
             long logOffsetOfSnapshot) {
-        super(tablePath, tableBucket, partitionName, UNKNOW_NUMBER_OF_SPLITS);
+        super(tablePath, tableBucket, partitionName, UNKNOWN_NUMBER_OF_SPLITS);
         this.snapshotId = snapshotId;
         this.logOffsetOfSnapshot = logOffsetOfSnapshot;
     }
