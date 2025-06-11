@@ -25,7 +25,6 @@ import com.alibaba.fluss.lake.writer.LakeTieringFactory;
 import com.alibaba.fluss.lake.writer.LakeWriter;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
-
 import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
@@ -34,7 +33,6 @@ import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -165,6 +163,8 @@ public class TieringCommitOperator<WriteResult, Committable>
             return committable;
         }
     }
+
+    private boolean canCommit() {}
 
     private void registerTableBucketWriteResult(
             long tableId, TableBucketWriteResult<WriteResult> tableBucketWriteResult) {

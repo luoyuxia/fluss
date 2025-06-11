@@ -19,6 +19,7 @@ package com.alibaba.fluss.flink.tiering.source.split;
 import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.client.metadata.KvSnapshots;
 import com.alibaba.fluss.client.metadata.LakeSnapshot;
+import com.alibaba.fluss.exception.LakeTableSnapshotNotExistException;
 import com.alibaba.fluss.flink.source.enumerator.initializer.BucketOffsetsRetrieverImpl;
 import com.alibaba.fluss.flink.source.enumerator.initializer.OffsetsInitializer.BucketOffsetsRetriever;
 import com.alibaba.fluss.metadata.PartitionInfo;
@@ -26,13 +27,11 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.utils.ExceptionUtils;
-
 import org.apache.flink.util.FlinkRuntimeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -54,13 +53,29 @@ public class TieringSplitGenerator {
         this.flussAdmin = flussAdmin;
     }
 
-    public List<TieringSplit> generateTableSplits(
-            TableInfo tableInfo, @Nullable LakeSnapshot lakeSnapshot) throws Exception {
+    public List<TieringSplit> generateTableSplits(TablePath tablePath) throws Exception {
 
-        TablePath tablePath = tableInfo.getTablePath();
+        final TableInfo tableInfo = flussAdmin.getTableInfo(tablePath).get();
         final BucketOffsetsRetriever bucketOffsetsRetriever =
                 new BucketOffsetsRetrieverImpl(flussAdmin, tablePath);
 
+        // Get table lake snapshot info of the given table.
+        LakeSnapshot lakeSnapshotInfo;
+        try {
+            lakeSnapshotInfo = flussAdmin.getLatestLakeSnapshot(tableInfo.getTablePath()).get();
+            LOG.info("Last committed lake table snapshot info is:{}", lakeSnapshotInfo);
+        } catch (Exception e) {
+            Throwable t = ExceptionUtils.stripExecutionException(e);
+            if (t instanceof LakeTableSnapshotNotExistException) {
+                lakeSnapshotInfo = null;
+            } else {
+                throw new FlinkRuntimeException(
+                        String.format(
+                                "Failed to get table snapshot for table %s",
+                                tableInfo.getTablePath()),
+                        ExceptionUtils.stripCompletionException(e));
+            }
+        }
         // partitioned table
         if (tableInfo.isPartitioned()) {
             List<PartitionInfo> partitionInfos =
@@ -73,11 +88,11 @@ public class TieringSplitGenerator {
                                             PartitionInfo::getPartitionName));
 
             return generatePartitionTableSplit(
-                    tableInfo, partitionNameById, bucketOffsetsRetriever, lakeSnapshot);
+                    tableInfo, partitionNameById, bucketOffsetsRetriever, lakeSnapshotInfo);
         } else {
             // non-partitioned table
             return generateNonPartitionedTableSplit(
-                    tableInfo, bucketOffsetsRetriever, lakeSnapshot);
+                    tableInfo, bucketOffsetsRetriever, lakeSnapshotInfo);
         }
     }
 

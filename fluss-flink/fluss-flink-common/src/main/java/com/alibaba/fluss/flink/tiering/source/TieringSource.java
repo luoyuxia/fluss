@@ -26,7 +26,6 @@ import com.alibaba.fluss.lake.writer.LakeTieringFactory;
 import com.alibaba.fluss.shaded.guava32.com.google.common.hash.HashFunction;
 import com.alibaba.fluss.shaded.guava32.com.google.common.hash.Hasher;
 import com.alibaba.fluss.shaded.guava32.com.google.common.hash.Hashing;
-
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.connector.source.SourceReader;
@@ -77,7 +76,7 @@ public class TieringSource<WriteResult>
     public SplitEnumerator<TieringSplit, TieringSourceEnumeratorState> createEnumerator(
             SplitEnumeratorContext<TieringSplit> splitEnumeratorContext) throws Exception {
         return new TieringSourceEnumerator(
-                flussConf, splitEnumeratorContext, lakeTieringFactory, pollTieringTableIntervalMs);
+                flussConf, splitEnumeratorContext, pollTieringTableIntervalMs);
     }
 
     @Override
@@ -87,7 +86,7 @@ public class TieringSource<WriteResult>
             throws Exception {
         // stateless operator
         return new TieringSourceEnumerator(
-                flussConf, splitEnumeratorContext, lakeTieringFactory, pollTieringTableIntervalMs);
+                flussConf, splitEnumeratorContext, pollTieringTableIntervalMs);
     }
 
     @Override
