@@ -25,13 +25,14 @@ public class TableLakeSnapshot {
 
     private final long tableId;
 
-    private final long snapshotId;
+    private final long lakeSnapshotId;
 
     private final Map<TableBucket, Long> logEndOffsets;
 
-    public TableLakeSnapshot(long tableId, long snapshotId, Map<TableBucket, Long> logEndOffsets) {
+    public TableLakeSnapshot(
+            long tableId, long lakeSnapshotId, Map<TableBucket, Long> logEndOffsets) {
         this.tableId = tableId;
-        this.snapshotId = snapshotId;
+        this.lakeSnapshotId = lakeSnapshotId;
         this.logEndOffsets = logEndOffsets;
     }
 
@@ -39,11 +40,23 @@ public class TableLakeSnapshot {
         return tableId;
     }
 
-    public long snapshotId() {
-        return snapshotId;
+    public long lakeSnapshotId() {
+        return lakeSnapshotId;
     }
 
     public Map<TableBucket, Long> logEndOffsets() {
         return logEndOffsets;
+    }
+
+    @Override
+    public String toString() {
+        return "TableLakeSnapshot{"
+                + "tableId="
+                + tableId
+                + ", lakeSnapshotId="
+                + lakeSnapshotId
+                + ", logEndOffsets="
+                + logEndOffsets
+                + '}';
     }
 }
