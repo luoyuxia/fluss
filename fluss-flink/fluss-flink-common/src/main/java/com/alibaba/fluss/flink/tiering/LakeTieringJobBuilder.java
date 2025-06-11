@@ -28,6 +28,7 @@ import com.alibaba.fluss.lakehouse.lakestorage.LakeStoragePluginSetUp;
 import com.alibaba.fluss.lakehouse.writer.LakeTieringFactory;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
@@ -39,14 +40,14 @@ import static com.alibaba.fluss.flink.tiering.source.TieringSourceOptions.POLL_T
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /** The builder to build Flink lake tiering job. */
-public class LakeTieringBuilder {
+public class LakeTieringJobBuilder {
 
     private final StreamExecutionEnvironment env;
     private final Configuration flussConfig;
     private final Configuration dataLakeConfig;
     private final String dataLakeFormat;
 
-    private LakeTieringBuilder(
+    private LakeTieringJobBuilder(
             StreamExecutionEnvironment env,
             Configuration flussConfig,
             Configuration dataLakeConfig,
@@ -57,16 +58,16 @@ public class LakeTieringBuilder {
         this.dataLakeFormat = checkNotNull(dataLakeFormat);
     }
 
-    public static LakeTieringBuilder newBuilder(
+    public static LakeTieringJobBuilder newBuilder(
             StreamExecutionEnvironment env,
             Configuration flussConfig,
             Configuration dataLakeConfig,
             String dataLakeFormat) {
-        return new LakeTieringBuilder(env, flussConfig, dataLakeConfig, dataLakeFormat);
+        return new LakeTieringJobBuilder(env, flussConfig, dataLakeConfig, dataLakeFormat);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    public void build() {
+    public JobClient build() throws Exception {
         // get the lake storage plugin
         LakeStoragePlugin lakeStoragePlugin =
                 LakeStoragePluginSetUp.fromConfiguration(
@@ -105,5 +106,7 @@ public class LakeTieringBuilder {
                 .setParallelism(1)
                 .setMaxParallelism(1)
                 .sinkTo(new DiscardingSink());
+
+        return env.executeAsync();
     }
 }

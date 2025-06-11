@@ -60,8 +60,7 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
     @ValueSource(booleans = {true, false})
     void testPrimaryKeyTable(boolean isPartitioned) throws Exception {
         // first of all, start tiering job
-        buildTierignJob(execEnv);
-        JobClient jobClient = execEnv.executeAsync();
+        JobClient jobClient = buildTieringJob(execEnv);
 
         String tableName = "pkTable_" + (isPartitioned ? "partitioned" : "non_partitioned");
 

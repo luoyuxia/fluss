@@ -48,8 +48,7 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
     @ValueSource(booleans = {false, true})
     void testReadLogTable(boolean isPartitioned) throws Exception {
         // first of all, start tiering
-        buildTierignJob(execEnv);
-        JobClient jobClient = execEnv.executeAsync();
+        JobClient jobClient = buildTieringJob(execEnv);
 
         String tableName = "logTable_" + (isPartitioned ? "partitioned" : "non_partitioned");
 

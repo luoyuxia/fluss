@@ -25,10 +25,11 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import java.util.Map;
 
+import static com.alibaba.fluss.flink.tiering.source.TieringSourceOptions.DATA_LAKE_CONFIG_PREFIX;
 import static com.alibaba.fluss.utils.PropertiesUtils.extractAndRemovePrefix;
 
 /** The entrypoint for Flink to tiering fluss data to Paimon. */
-public class FlussLakeTiering {
+public class FlussLakeTieringEntrypoint {
 
     private static final String FLUSS_CONF_PREFIX = "fluss.";
 
@@ -49,19 +50,21 @@ public class FlussLakeTiering {
 
         String dataLake = paramsMap.get(ConfigOptions.DATALAKE_FORMAT.key());
         if (dataLake == null) {
-            throw new IllegalArgumentException("datalake.format is not configured");
+            throw new IllegalArgumentException(
+                    ConfigOptions.DATALAKE_FORMAT.key() + " is not configured");
         }
 
         // extract lake config
         Map<String, String> lakeConfigMap =
-                extractAndRemovePrefix(paramsMap, String.format("datalake.%s.", dataLake));
+                extractAndRemovePrefix(
+                        paramsMap, String.format("%s%s.", DATA_LAKE_CONFIG_PREFIX, dataLake));
 
         // build tiering source
         final StreamExecutionEnvironment execEnv =
                 StreamExecutionEnvironment.getExecutionEnvironment();
 
         // build lake tiering job
-        LakeTieringBuilder.newBuilder(
+        LakeTieringJobBuilder.newBuilder(
                         execEnv,
                         Configuration.fromMap(flussConfigMap),
                         Configuration.fromMap(lakeConfigMap),
@@ -71,7 +74,7 @@ public class FlussLakeTiering {
         JobClient jobClient = execEnv.executeAsync();
 
         System.out.printf(
-                "Starting data tiering service to %s, jobId is %s.....%n",
+                "Starting data tiering service from Fluss to %s, jobId is %s.....%n",
                 dataLake, jobClient.getJobID());
     }
 }

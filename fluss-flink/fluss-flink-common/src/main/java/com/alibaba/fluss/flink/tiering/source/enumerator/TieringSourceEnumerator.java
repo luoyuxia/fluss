@@ -401,7 +401,7 @@ public class TieringSourceEnumerator
                 heartbeatRequest.addAllFinishedTables(
                         toPbHeartbeatReqForTable(finishedTableEpochs, coordinatorEpoch));
             }
-            // add failed table tiering to heart beat request
+            // add failed tiering table to heart beat request
             return failedTableHeartBeat(heartbeatRequest, failedTableEpochs, coordinatorEpoch);
         }
 

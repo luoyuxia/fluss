@@ -35,6 +35,7 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.streaming.api.graph.StreamGraphHasherV2;
 
 import java.nio.charset.StandardCharsets;
 
@@ -106,6 +107,7 @@ public class TieringSource<WriteResult>
         return new TieringSourceReader<>(sourceReaderContext, flussConf, lakeTieringFactory);
     }
 
+    /** This follows the operator uid hash generation logic of flink {@link StreamGraphHasherV2}. */
     private static byte[] generateOperatorHash() {
         final HashFunction hashFunction = Hashing.murmur3_128(0);
         Hasher hasher = hashFunction.newHasher();

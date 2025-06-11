@@ -27,7 +27,7 @@ import com.alibaba.fluss.config.AutoPartitionTimeUnit;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FlussRuntimeException;
-import com.alibaba.fluss.flink.tiering.LakeTieringBuilder;
+import com.alibaba.fluss.flink.tiering.LakeTieringJobBuilder;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.Schema;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -40,6 +40,7 @@ import com.alibaba.fluss.server.zk.ZooKeeperClient;
 import com.alibaba.fluss.types.DataTypes;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
@@ -123,10 +124,10 @@ public class FlinkPaimonTieringTestBase {
         execEnv = StreamExecutionEnvironment.getExecutionEnvironment();
     }
 
-    protected void buildTierignJob(StreamExecutionEnvironment execEnv) {
+    protected JobClient buildTieringJob(StreamExecutionEnvironment execEnv) throws Exception {
         Configuration flussConfig = new Configuration(clientConf);
         flussConfig.set(POLL_TIERING_TABLE_INTERVAL, Duration.ofMillis(500));
-        LakeTieringBuilder.newBuilder(
+        return LakeTieringJobBuilder.newBuilder(
                         execEnv,
                         flussConfig,
                         Configuration.fromMap(getPaimonCatalogConf()),

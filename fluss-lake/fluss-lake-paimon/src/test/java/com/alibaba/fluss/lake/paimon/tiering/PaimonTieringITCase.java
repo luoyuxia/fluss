@@ -73,13 +73,11 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
         TableBucket t1Bucket = new TableBucket(t1Id, 0);
         // write records
         List<InternalRow> rows = Arrays.asList(row(1, "v1"), row(2, "v2"), row(3, "v3"));
-        // write records
         writeRows(t1, rows, false);
         waitUntilSnapshot(t1Id, 1, 0);
 
         // then start tiering job
-        buildTierignJob(execEnv);
-        JobClient jobClient = execEnv.executeAsync();
+        JobClient jobClient = buildTieringJob(execEnv);
 
         // check the status of replica after synced
         assertReplicaStatus(t1Bucket, 3);
