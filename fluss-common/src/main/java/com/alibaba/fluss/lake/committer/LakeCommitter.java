@@ -61,14 +61,14 @@ public interface LakeCommitter<WriteResult, CommittableT> extends AutoCloseable 
     void abort(CommittableT committable) throws IOException;
 
     /**
-     * Get the missing committed snapshot from the view of the knownSnapshotId.
+     * Get missing lake snapshot that has been committed to lake but didn't commit to fluss.
      *
-     * @param knownSnapshotId the known snapshot id to judge which snapshot missing based the lake
-     *     current snapshot. Will be null if no any knownSnapshotId.
-     * @return the missing committed snapshot, will be null if no any missing snapshot
+     * @param latestLakeSnapshotIdOfFluss the latest lake snapshot id in fluss, used to judge which
+     *     lake snapshot is missing.
+     * @return the missing lake snapshot, returns null if no any missing snapshot found
      * @throws IOException if an I/O error occurs
      */
     @Nullable
-    LakeCommittedSnapshot getMissingCommittedSnapshot(@Nullable Long knownSnapshotId)
+    CommittedLakeSnapshot getMissingLakeSnapshot(@Nullable Long latestLakeSnapshotIdOfFluss)
             throws IOException;
 }

@@ -19,7 +19,7 @@ package com.alibaba.fluss.flink.tiering.committer;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
+import com.alibaba.fluss.lake.committer.CommittedLakeSnapshot;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metrics.registry.MetricRegistry;
 import com.alibaba.fluss.rpc.GatewayClientProxy;
@@ -78,13 +78,13 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
     public void commit(
             long tableId,
             @Nullable Map<String, Long> partitionIdByName,
-            LakeCommittedSnapshot lakeCommittedSnapshot)
+            CommittedLakeSnapshot committedLakeSnapshot)
             throws IOException {
         // construct lake snapshot to commit to Fluss
         FlussTableLakeSnapshot flussTableLakeSnapshot =
-                new FlussTableLakeSnapshot(tableId, lakeCommittedSnapshot.getLakeSnapshotId());
+                new FlussTableLakeSnapshot(tableId, committedLakeSnapshot.getLakeSnapshotId());
         for (Map.Entry<Tuple2<String, Integer>, Long> entry :
-                lakeCommittedSnapshot.getLogEndOffsets().entrySet()) {
+                committedLakeSnapshot.getLogEndOffsets().entrySet()) {
             Tuple2<String, Integer> partitionBucket = entry.getKey();
             TableBucket tableBucket;
             if (partitionBucket.f0 == null) {

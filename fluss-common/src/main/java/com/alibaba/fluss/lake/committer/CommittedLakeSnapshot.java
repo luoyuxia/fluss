@@ -26,14 +26,14 @@ import java.util.Objects;
  * The lake already committed snapshot, containing the lake snapshot id and the bucket end offsets
  * in this snapshot.
  */
-public class LakeCommittedSnapshot {
+public class CommittedLakeSnapshot {
 
     private final long lakeSnapshotId;
     // <partition_name, bucket> -> log offset, partition_name will be null if it's not a
     // partition bucket
     private final Map<Tuple2<String, Integer>, Long> logEndOffsets = new HashMap<>();
 
-    public LakeCommittedSnapshot(long lakeSnapshotId) {
+    public CommittedLakeSnapshot(long lakeSnapshotId) {
         this.lakeSnapshotId = lakeSnapshotId;
     }
 
@@ -58,7 +58,7 @@ public class LakeCommittedSnapshot {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        LakeCommittedSnapshot that = (LakeCommittedSnapshot) o;
+        CommittedLakeSnapshot that = (CommittedLakeSnapshot) o;
         return lakeSnapshotId == that.lakeSnapshotId
                 && Objects.equals(logEndOffsets, that.logEndOffsets);
     }
@@ -70,7 +70,7 @@ public class LakeCommittedSnapshot {
 
     @Override
     public String toString() {
-        return "LakeCommittedSnapshot{"
+        return "CommittedLakeSnapshot{"
                 + "lakeSnapshotId="
                 + lakeSnapshotId
                 + ", logEndOffsets="

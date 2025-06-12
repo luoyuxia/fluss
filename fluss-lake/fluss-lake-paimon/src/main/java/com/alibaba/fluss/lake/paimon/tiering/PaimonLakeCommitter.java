@@ -16,7 +16,7 @@
 
 package com.alibaba.fluss.lake.paimon.tiering;
 
-import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
+import com.alibaba.fluss.lake.committer.CommittedLakeSnapshot;
 import com.alibaba.fluss.lake.committer.LakeCommitter;
 import com.alibaba.fluss.metadata.TablePath;
 
@@ -43,6 +43,8 @@ import java.util.List;
 import static com.alibaba.fluss.lake.paimon.tiering.PaimonLakeTieringFactory.FLUSS_LAKE_TIERING_COMMIT_USER;
 import static com.alibaba.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 import static com.alibaba.fluss.metadata.ResolvedPartitionSpec.PARTITION_SPEC_SEPARATOR;
+import static com.alibaba.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
+import static com.alibaba.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.paimon.table.sink.BatchWriteBuilder.COMMIT_IDENTIFIER;
 
@@ -52,11 +54,13 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     private final Catalog paimonCatalog;
     private final FileStoreTable fileStoreTable;
     private FileStoreCommit fileStoreCommit;
+    private final TablePath tablePath;
 
     public PaimonLakeCommitter(PaimonCatalogProvider paimonCatalogProvider, TablePath tablePath)
             throws IOException {
         this.paimonCatalog = paimonCatalogProvider.get();
         this.fileStoreTable = getTable(tablePath);
+        this.tablePath = tablePath;
     }
 
     @Override
@@ -101,41 +105,26 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
 
     @Nullable
     @Override
-    public LakeCommittedSnapshot getMissingCommittedSnapshot(@Nullable Long knownSnapshotId)
+    public CommittedLakeSnapshot getMissingLakeSnapshot(@Nullable Long latestLakeSnapshotIdOfFluss)
             throws IOException {
-        // get the latest snapshot commited by fluss or latest commited id
-        SnapshotManager snapshotManager = fileStoreTable.snapshotManager();
-        Long flussCommittedSnapshotIdOrLatestCommitId =
-                fileStoreTable
-                        .snapshotManager()
-                        .pickOrLatest(
-                                (snapshot ->
-                                        snapshot.commitUser()
-                                                .equals(FLUSS_LAKE_TIERING_COMMIT_USER)));
-        // no any snapshot, return null directly
-        if (flussCommittedSnapshotIdOrLatestCommitId == null) {
+        Long latestLakeSnapshotIdOfLake =
+                getCommittedLatestSnapshotIdOfLake(FLUSS_LAKE_TIERING_COMMIT_USER);
+        if (latestLakeSnapshotIdOfLake == null) {
             return null;
         }
 
-        // pick the snapshot
-        Snapshot snapshot =
-                snapshotManager.tryGetSnapshot(flussCommittedSnapshotIdOrLatestCommitId);
-
-        if (!snapshot.commitUser().equals(FLUSS_LAKE_TIERING_COMMIT_USER)) {
-            // the snapshot is still not commited by Fluss, return directly
-            return null;
-        }
-
-        // then it should be commit by Fluss
-        // but the latest snapshot is not greater than knownSnapshotId, no any missing
+        // we get the latest snapshot committed by fluss,
+        // but the latest snapshot is not greater than latestLakeSnapshotIdOfFluss, no any missing
         // snapshot, return directly
-        if (knownSnapshotId != null && snapshot.id() <= knownSnapshotId) {
+        if (latestLakeSnapshotIdOfFluss != null
+                && latestLakeSnapshotIdOfLake <= latestLakeSnapshotIdOfFluss) {
             return null;
         }
 
         // todo: the temporary way to scan the delta to get the log end offset,
         // we should read from snapshot's properties in Paimon 1.2
-        LakeCommittedSnapshot lakeCommittedSnapshot = new LakeCommittedSnapshot(snapshot.id());
+        CommittedLakeSnapshot committedLakeSnapshot =
+                new CommittedLakeSnapshot(latestLakeSnapshotIdOfLake);
         ScanMode scanMode =
                 fileStoreTable.primaryKeys().isEmpty() ? ScanMode.DELTA : ScanMode.CHANGELOG;
 
@@ -143,15 +132,44 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
                 fileStoreTable
                         .store()
                         .newScan()
-                        .withSnapshot(snapshot.id())
+                        .withSnapshot(latestLakeSnapshotIdOfLake)
                         .withKind(scanMode)
                         .readFileIterator();
 
+        int bucketIdColumnIndex = getColumnIndex(BUCKET_COLUMN_NAME);
+        int logOffsetColumnIndex = getColumnIndex(OFFSET_COLUMN_NAME);
         while (manifestEntryIterator.hasNext()) {
-            updateCommittedLakeSnapshot(lakeCommittedSnapshot, manifestEntryIterator.next());
+            updateCommittedLakeSnapshot(
+                    committedLakeSnapshot,
+                    manifestEntryIterator.next(),
+                    bucketIdColumnIndex,
+                    logOffsetColumnIndex);
         }
 
-        return lakeCommittedSnapshot;
+        return committedLakeSnapshot;
+    }
+
+    @Nullable
+    private Long getCommittedLatestSnapshotIdOfLake(String commitUser) throws IOException {
+        // get the latest snapshot commited by fluss or latest commited id
+        SnapshotManager snapshotManager = fileStoreTable.snapshotManager();
+        Long userCommittedSnapshotIdOrLatestCommitId =
+                fileStoreTable
+                        .snapshotManager()
+                        .pickOrLatest((snapshot -> snapshot.commitUser().equals(commitUser)));
+        // no any snapshot, return null directly
+        if (userCommittedSnapshotIdOrLatestCommitId == null) {
+            return null;
+        }
+
+        // pick the snapshot
+        Snapshot snapshot = snapshotManager.tryGetSnapshot(userCommittedSnapshotIdOrLatestCommitId);
+
+        if (!snapshot.commitUser().equals(commitUser)) {
+            // the snapshot is still not commited by Fluss, return directly
+            return null;
+        }
+        return snapshot.id();
     }
 
     @Override
@@ -197,15 +215,16 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     }
 
     private void updateCommittedLakeSnapshot(
-            LakeCommittedSnapshot lakeCommittedSnapshot, ManifestEntry manifestEntry) {
+            CommittedLakeSnapshot committedLakeSnapshot,
+            ManifestEntry manifestEntry,
+            int bucketIdColumnIndex,
+            int logOffsetColumnIndex) {
         // always get bucket, log_offset from statistic
         DataFileMeta dataFileMeta = manifestEntry.file();
         BinaryRow maxStatisticRow = dataFileMeta.valueStats().maxValues();
 
-        // the system columns orders are: __bucket, __offset, __timestampAdd commentMore actions
-        int fieldCount = maxStatisticRow.getFieldCount();
-        int bucketId = maxStatisticRow.getInt(fieldCount - 3);
-        long offset = maxStatisticRow.getLong(fieldCount - 2);
+        int bucketId = maxStatisticRow.getInt(bucketIdColumnIndex);
+        long offset = maxStatisticRow.getLong(logOffsetColumnIndex);
 
         String partition = null;
         BinaryRow partitionRow = manifestEntry.partition();
@@ -218,9 +237,20 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
         }
 
         if (partition == null) {
-            lakeCommittedSnapshot.addBucket(bucketId, offset);
+            committedLakeSnapshot.addBucket(bucketId, offset);
         } else {
-            lakeCommittedSnapshot.addPartitionBucket(partition, bucketId, offset);
+            committedLakeSnapshot.addPartitionBucket(partition, bucketId, offset);
         }
+    }
+
+    private int getColumnIndex(String columnName) {
+        int columnIndex = fileStoreTable.schema().fieldNames().indexOf(columnName);
+        if (columnIndex < 0) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "Column '%s' is not found in paimon table %s, the columns of the table are %s",
+                            columnIndex, tablePath, fileStoreTable.schema().fieldNames()));
+        }
+        return columnIndex;
     }
 }

@@ -18,7 +18,7 @@ package com.alibaba.fluss.flink.tiering.source.enumerator;
 
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.tiering.event.FailedTieringEvent;
-import com.alibaba.fluss.flink.tiering.event.FinishTieringEvent;
+import com.alibaba.fluss.flink.tiering.event.FinishedTieringEvent;
 import com.alibaba.fluss.flink.tiering.source.TieringTestBase;
 import com.alibaba.fluss.flink.tiering.source.split.TieringLogSplit;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSnapshotSplit;
@@ -124,7 +124,7 @@ class TieringSourceEnumeratorTest extends TieringTestBase {
                                     bucketOffsetOfInitialWrite))
                     .get();
 
-            enumerator.handleSourceEvent(1, new FinishTieringEvent(tableId));
+            enumerator.handleSourceEvent(1, new FinishedTieringEvent(tableId));
 
             Map<Integer, Long> bucketOffsetOfSecondWrite =
                     upsertRow(tablePath, DEFAULT_PK_TABLE_DESCRIPTOR, 0, 10);
@@ -223,7 +223,7 @@ class TieringSourceEnumeratorTest extends TieringTestBase {
                                     bucketOffsetOfInitialWrite))
                     .get();
 
-            enumerator.handleSourceEvent(1, new FinishTieringEvent(tableId));
+            enumerator.handleSourceEvent(1, new FinishedTieringEvent(tableId));
 
             Map<Integer, Long> bucketOffsetOfSecondWrite =
                     upsertRow(tablePath, DEFAULT_PK_TABLE_DESCRIPTOR, 10, 20);
@@ -317,7 +317,7 @@ class TieringSourceEnumeratorTest extends TieringTestBase {
                                     bucketOffsetOfEarliest,
                                     bucketOffsetOfInitialWrite))
                     .get();
-            enumerator.handleSourceEvent(1, new FinishTieringEvent(tableId));
+            enumerator.handleSourceEvent(1, new FinishedTieringEvent(tableId));
 
             Map<Integer, Long> bucketOffsetOfSecondWrite =
                     appendRow(tablePath, DEFAULT_LOG_TABLE_DESCRIPTOR, 0, 10);
@@ -427,7 +427,7 @@ class TieringSourceEnumeratorTest extends TieringTestBase {
                         .get();
             }
             // notify this table tiering task finished
-            enumerator.handleSourceEvent(1, new FinishTieringEvent(tableId));
+            enumerator.handleSourceEvent(1, new FinishedTieringEvent(tableId));
 
             Map<Long, Map<Integer, Long>> bucketOffsetOfSecondWrite =
                     upsertRowForPartitionedTable(
@@ -542,7 +542,7 @@ class TieringSourceEnumeratorTest extends TieringTestBase {
                         .get();
             }
             // notify this table tiering task finished
-            enumerator.handleSourceEvent(1, new FinishTieringEvent(tableId));
+            enumerator.handleSourceEvent(1, new FinishedTieringEvent(tableId));
 
             Map<Long, Map<Integer, Long>> bucketOffsetOfSecondWrite =
                     appendRowForPartitionedTable(
@@ -587,7 +587,7 @@ class TieringSourceEnumeratorTest extends TieringTestBase {
     }
 
     @Test
-    void testHandleFailTieringTableEvent() throws Throwable {
+    void testHandleFailedTieringTableEvent() throws Throwable {
         TablePath tablePath = TablePath.of(DEFAULT_DB, "tiering-fail-test-log-table");
         long tableId = createTable(tablePath, DEFAULT_LOG_TABLE_DESCRIPTOR);
         int numSubtasks = 4;

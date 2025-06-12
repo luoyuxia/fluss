@@ -22,10 +22,10 @@ import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.LakeTableSnapshotNotExistException;
 import com.alibaba.fluss.flink.tiering.event.FailedTieringEvent;
-import com.alibaba.fluss.flink.tiering.event.FinishTieringEvent;
+import com.alibaba.fluss.flink.tiering.event.FinishedTieringEvent;
 import com.alibaba.fluss.flink.tiering.source.TableBucketWriteResult;
 import com.alibaba.fluss.flink.tiering.source.TieringSource;
-import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
+import com.alibaba.fluss.lake.committer.CommittedLakeSnapshot;
 import com.alibaba.fluss.lake.committer.LakeCommitter;
 import com.alibaba.fluss.lake.writer.LakeTieringFactory;
 import com.alibaba.fluss.lake.writer.LakeWriter;
@@ -139,7 +139,7 @@ public class TieringCommitOperator<WriteResult, Committable>
                 }
                 // notify that the table id has been finished tier
                 operatorEventGateway.sendEventToCoordinator(
-                        new SourceEventWrapper(new FinishTieringEvent(tableId)));
+                        new SourceEventWrapper(new FinishedTieringEvent(tableId)));
             } catch (Exception e) {
                 // if any exception happens, send to source coordinator to mark it as failed
                 operatorEventGateway.sendEventToCoordinator(
@@ -213,8 +213,8 @@ public class TieringCommitOperator<WriteResult, Committable>
         }
 
         // get Fluss missing lake snapshot in Lake
-        LakeCommittedSnapshot missingCommittedSnapshot =
-                lakeCommitter.getMissingCommittedSnapshot(flussCurrentLakeSnapshot);
+        CommittedLakeSnapshot missingCommittedSnapshot =
+                lakeCommitter.getMissingLakeSnapshot(flussCurrentLakeSnapshot);
 
         // fluss's known snapshot is less than lake snapshot committed by fluss
         // fail this commit since the data is read from the log end-offset of a invalid fluss
@@ -238,9 +238,13 @@ public class TieringCommitOperator<WriteResult, Committable>
             lakeCommitter.abort(committable);
             throw new IllegalStateException(
                     String.format(
-                            "The current Fluss's lake snapshot %d is less than lake actual snapshot %d committed by Fluss, missing snapshot: %s.",
+                            "The current Fluss's lake snapshot %d is less than"
+                                    + " lake actual snapshot %d committed by Fluss for table: {tablePath=%s, tableId=%d},"
+                                    + " missing snapshot: %s.",
                             flussCurrentLakeSnapshot,
                             missingCommittedSnapshot.getLakeSnapshotId(),
+                            tableInfo.getTablePath(),
+                            tableInfo.getTableId(),
                             missingCommittedSnapshot));
         }
     }

@@ -18,7 +18,7 @@ package com.alibaba.fluss.flink.tiering.committer;
 
 import com.alibaba.fluss.client.metadata.LakeSnapshot;
 import com.alibaba.fluss.flink.utils.FlinkTestBase;
-import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
+import com.alibaba.fluss.lake.committer.CommittedLakeSnapshot;
 import com.alibaba.fluss.metadata.PartitionInfo;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
@@ -80,17 +80,17 @@ class FlussTableLakeSnapshotCommitterTest extends FlinkTestBase {
             partitions = new ArrayList<>(partitionNameAndIds.keySet());
         }
 
-        LakeCommittedSnapshot lakeCommittedSnapshot = new LakeCommittedSnapshot(3);
+        CommittedLakeSnapshot committedLakeSnapshot = new CommittedLakeSnapshot(3);
 
         Map<TableBucket, Long> expectedOffsets = new HashMap<>();
         for (int bucket = 0; bucket < 3; bucket++) {
             long bucketOffset = bucket * bucket;
             for (String partition : partitions) {
                 if (partition == null) {
-                    lakeCommittedSnapshot.addBucket(bucket, bucketOffset);
+                    committedLakeSnapshot.addBucket(bucket, bucketOffset);
                     expectedOffsets.put(new TableBucket(tableId, bucket), bucketOffset);
                 } else {
-                    lakeCommittedSnapshot.addPartitionBucket(partition, bucket, bucketOffset);
+                    committedLakeSnapshot.addPartitionBucket(partition, bucket, bucketOffset);
                     expectedOffsets.put(
                             new TableBucket(tableId, partitionNameAndIds.get(partition), bucket),
                             bucketOffset);
@@ -109,7 +109,7 @@ class FlussTableLakeSnapshotCommitterTest extends FlinkTestBase {
         }
 
         // commit offsets
-        flussTableLakeSnapshotCommitter.commit(tableId, partitionIdByName, lakeCommittedSnapshot);
+        flussTableLakeSnapshotCommitter.commit(tableId, partitionIdByName, committedLakeSnapshot);
         LakeSnapshot lakeSnapshot = admin.getLatestLakeSnapshot(tablePath).get();
         assertThat(lakeSnapshot.getSnapshotId()).isEqualTo(3);
 

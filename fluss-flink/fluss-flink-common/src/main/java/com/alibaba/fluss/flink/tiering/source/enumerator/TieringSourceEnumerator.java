@@ -24,7 +24,7 @@ import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.metrics.FlinkMetricRegistry;
 import com.alibaba.fluss.flink.tiering.event.FailedTieringEvent;
-import com.alibaba.fluss.flink.tiering.event.FinishTieringEvent;
+import com.alibaba.fluss.flink.tiering.event.FinishedTieringEvent;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplit;
 import com.alibaba.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import com.alibaba.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
@@ -182,9 +182,9 @@ public class TieringSourceEnumerator
 
     @Override
     public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
-        if (sourceEvent instanceof FinishTieringEvent) {
-            FinishTieringEvent finishTieringEvent = (FinishTieringEvent) sourceEvent;
-            long finishedTableId = finishTieringEvent.getTableId();
+        if (sourceEvent instanceof FinishedTieringEvent) {
+            FinishedTieringEvent finishedTieringEvent = (FinishedTieringEvent) sourceEvent;
+            long finishedTableId = finishedTieringEvent.getTableId();
             Long tieringEpoch = tieringTableEpochs.remove(finishedTableId);
             if (tieringEpoch == null) {
                 // shouldn't happen, warn it
@@ -193,9 +193,6 @@ public class TieringSourceEnumerator
                         finishedTableId);
             } else {
                 finishedTableEpochs.put(finishedTableId, tieringEpoch);
-                // call one round of heartbeat to notify table has been finished
-                this.context.callAsync(
-                        this::requestTieringTableSplitsViaHeartBeat, this::generateAndAssignSplits);
             }
         }
 
@@ -215,6 +212,12 @@ public class TieringSourceEnumerator
             } else {
                 failedTableEpochs.put(failedTableId, tieringEpoch);
             }
+        }
+
+        if (!finishedTableEpochs.isEmpty() || !failedTableEpochs.isEmpty()) {
+            // call one round of heartbeat to notify table has been finished or failed
+            this.context.callAsync(
+                    this::requestTieringTableSplitsViaHeartBeat, this::generateAndAssignSplits);
         }
     }
 

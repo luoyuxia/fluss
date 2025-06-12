@@ -18,8 +18,8 @@ package com.alibaba.fluss.flink.tiering;
 
 import com.alibaba.fluss.flink.tiering.committer.TestingCommittable;
 import com.alibaba.fluss.flink.tiering.source.TestingWriteResultSerializer;
+import com.alibaba.fluss.lake.committer.CommittedLakeSnapshot;
 import com.alibaba.fluss.lake.committer.CommitterInitContext;
-import com.alibaba.fluss.lake.committer.LakeCommittedSnapshot;
 import com.alibaba.fluss.lake.committer.LakeCommitter;
 import com.alibaba.fluss.lake.serializer.SimpleVersionedSerializer;
 import com.alibaba.fluss.lake.writer.LakeTieringFactory;
@@ -93,13 +93,13 @@ public class TestingLakeTieringFactory
 
         private long currentSnapshot;
 
-        @Nullable private final LakeCommittedSnapshot mockCommittedSnapshot;
+        @Nullable private final CommittedLakeSnapshot mockCommittedSnapshot;
 
         public TestingLakeCommitter() {
             this(null);
         }
 
-        public TestingLakeCommitter(@Nullable LakeCommittedSnapshot mockCommittedSnapshot) {
+        public TestingLakeCommitter(@Nullable CommittedLakeSnapshot mockCommittedSnapshot) {
             this.mockCommittedSnapshot = mockCommittedSnapshot;
             this.currentSnapshot =
                     mockCommittedSnapshot == null ? 0 : mockCommittedSnapshot.getLakeSnapshotId();
@@ -126,7 +126,7 @@ public class TestingLakeTieringFactory
         }
 
         @Override
-        public @Nullable LakeCommittedSnapshot getMissingCommittedSnapshot(
+        public @Nullable CommittedLakeSnapshot getMissingLakeSnapshot(
                 @Nullable Long knownSnapshotId) throws IOException {
             if (knownSnapshotId == null) {
                 return mockCommittedSnapshot;

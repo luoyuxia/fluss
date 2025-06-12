@@ -323,7 +323,7 @@
                                         <!-- exclude for fluss-dist -->
                                         <exclude>com.alibaba.fluss.dist.DummyClass</exclude>
                                         <exclude>com.alibaba.fluss.lake.batch.ArrowRecordBatch</exclude>
-                                        <exclude>com.alibaba.fluss.lake.committer.LakeCommittedSnapshot</exclude>
+                                        <exclude>com.alibaba.fluss.lake.committer.CommittedLakeSnapshot</exclude>
                                         <exclude>com.alibaba.fluss.lake.paimon.FlussDataTypeToPaimonDataType</exclude>
                                         <!-- start exclude for flink tiering service -->
                                         <exclude>com.alibaba.fluss.flink.tiering.source.TieringSourceOptions</exclude>
