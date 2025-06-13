@@ -367,7 +367,13 @@ SELECT * FROM fluss_customer WHERE `cust_key` = 1;
 To integrate with [Apache Paimon](https://paimon.apache.org/), you need to start the `Lakehouse Tiering Service`. 
 Open a new terminal, navigate to the `fluss-quickstart-flink` directory, and execute the following command within this directory to start the service:
 ```shell
-docker compose exec jobmanager /opt/flink/bin/flink run /opt/flink/opt/fluss-flink-tiering-0.7-SNAPSHOT.jar --fluss.bootstrap.servers coordinator-server:9123 --datalake.format paimon --datalake.paimon.metastore filesystem --datalake.paimon.warehouse /tmp/paimon
+docker compose exec jobmanager \
+    /opt/flink/bin/flink run \
+    /opt/flink/opt/fluss-flink-tiering-$FLUSS_VERSION_SHORT$.jar \
+    --fluss.bootstrap.servers coordinator-server:9123 \
+    --datalake.format paimon \
+    --datalake.paimon.metastore filesystem \
+    --datalake.paimon.warehouse /tmp/paimon
 ```
 You should see a Flink Job to tier data from Fluss to Paimon running in the [Flink Web UI](http://localhost:8083/).
 
@@ -391,7 +397,10 @@ CREATE TABLE datalake_enriched_orders (
     `cust_mktsegment` STRING,
     `nation_name` STRING,
     PRIMARY KEY (`order_key`) NOT ENFORCED
-) WITH ('table.datalake.enabled' = 'true', 'table.datalake.freshness' = '30s');
+) WITH (
+    'table.datalake.enabled' = 'true',
+    'table.datalake.freshness' = '30s'
+);
 ```
 
 Next, perform streaming data writing into the **datalake-enabled** table, `datalake_enriched_orders`:
