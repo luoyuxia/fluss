@@ -52,6 +52,7 @@ Fluss processes Paimon configurations by removing the `datalake.paimon.` prefix 
 
 For example, if you want to configure to use Hive catalog, you can configure like following:
 ```yaml
+datalake.format: paimon
 datalake.paimon.metastore: hive
 datalake.paimon.uri: thrift://<hive-metastore-host-name>:<port>
 datalake.paimon.warehouse: hdfs:///path/to/warehouse
