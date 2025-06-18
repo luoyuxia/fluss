@@ -64,6 +64,7 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
 
     protected FileSystem remoteFileSystem;
     protected PluginManager pluginManager;
+    protected volatile ServerState serverState = ServerState.NOT_RUNNING;
 
     protected ServerBase(Configuration conf) {
         this.conf = conf;
@@ -107,6 +108,9 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
     public void start() throws Exception {
         try {
             addShutDownHook();
+
+            serverState = ServerState.STARTING;
+
             // at first, we need to initialize the file system
             pluginManager = PluginUtils.createPluginManagerFromRootFolder(conf);
             FileSystem.initialize(conf, pluginManager);
@@ -116,6 +120,7 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
             remoteFileSystem = new FsPath(remoteDir).getFileSystem();
 
             startServices();
+            serverState = ServerState.RUNNING;
         } catch (Throwable t) {
             final Throwable strippedThrowable =
                     ExceptionUtils.stripException(t, UndeclaredThrowableException.class);
