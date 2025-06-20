@@ -632,7 +632,18 @@ public class TableBucketStateMachine {
                 new LeaderAndIsr(
                         leaderOpt.get(),
                         leaderAndIsr.leaderEpoch() + 1,
-                        leaderAndIsr.isr(),
+                        leaderAndIsr.isr().stream()
+                                .filter(
+                                        isr -> {
+                                            if (electionStrategy == CONTROLLED_SHUTDOWN_ELECTION) {
+                                                return !coordinatorContext
+                                                        .shuttingDownTabletServers()
+                                                        .contains(isr);
+                                            } else {
+                                                return true;
+                                            }
+                                        })
+                                .collect(Collectors.toList()),
                         coordinatorContext.getCoordinatorEpoch(),
                         leaderAndIsr.bucketEpoch() + 1);
 
