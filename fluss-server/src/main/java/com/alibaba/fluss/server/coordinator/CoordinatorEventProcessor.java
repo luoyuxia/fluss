@@ -836,7 +836,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         coordinatorContext.removeOfflineBucketInServer(tabletServerId);
         coordinatorContext.removeLiveTabletServer(tabletServerId);
         coordinatorContext.shuttingDownTabletServers().remove(tabletServerId);
-        // coordinatorChannelManager.removeTabletServer(tabletServerId);
+        coordinatorChannelManager.removeTabletServer(tabletServerId);
 
         // Here, we will first update alive tabletServer info for all tabletServers and
         // coordinatorServer metadata. The purpose of this approach is to prevent the scenario where
