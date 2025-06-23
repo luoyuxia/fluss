@@ -22,6 +22,9 @@ import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.utils.AbstractIterator;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.GatheringByteChannel;
@@ -37,6 +40,8 @@ import java.nio.channels.GatheringByteChannel;
  */
 @PublicEvolving
 public class MemoryLogRecords implements LogRecords {
+
+    private static final Logger LOG = LoggerFactory.getLogger(MemoryLogRecords.class);
 
     public static final MemoryLogRecords EMPTY = new MemoryLogRecords(null, -1, 0);
 
@@ -138,6 +143,7 @@ public class MemoryLogRecords implements LogRecords {
             int length = buffer.remaining();
             return pointToBytes(bytes, offset, length);
         } else {
+            LOG.info("The buffer is neither direct nor has array, fallback to copy bytes");
             // fallback to copy bytes
             byte[] bytes = new byte[buffer.remaining()];
             buffer.get(bytes);
