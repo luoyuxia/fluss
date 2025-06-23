@@ -214,7 +214,7 @@ public class CommonRpcMessageUtils {
         if (buf.isDirect()) {
             return buf.nioBuffer();
         } else if (buf.hasArray()) {
-            LOG.info("The buffer is array1");
+            LOG.info("The buffer is array1: " + buf.getClass().getName());
             int offset = buf.arrayOffset() + buf.readerIndex();
             int length = buf.readableBytes();
             return ByteBuffer.wrap(buf.array(), offset, length);
