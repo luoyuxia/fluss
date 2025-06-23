@@ -45,6 +45,9 @@ import com.alibaba.fluss.security.acl.ResourceFilter;
 import com.alibaba.fluss.security.acl.ResourceType;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -57,6 +60,8 @@ import java.util.stream.Collectors;
  * request/response for client and server.
  */
 public class CommonRpcMessageUtils {
+
+    private static final Logger LOG = LoggerFactory.getLogger(CommonRpcMessageUtils.class);
 
     public static List<PbAclInfo> toPbAclInfos(Collection<AclBinding> aclBindings) {
         return aclBindings.stream()
@@ -214,6 +219,7 @@ public class CommonRpcMessageUtils {
             return ByteBuffer.wrap(buf.array(), offset, length);
         } else {
             // fallback to deep copy
+            LOG.info("The buffer is neither direct nor has array, fallback to copy bytes2");
             byte[] bytes = new byte[buf.readableBytes()];
             buf.getBytes(buf.readerIndex(), bytes);
             return ByteBuffer.wrap(bytes);
