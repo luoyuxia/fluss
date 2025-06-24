@@ -19,6 +19,7 @@ package com.alibaba.fluss.rpc.netty.client;
 import com.alibaba.fluss.exception.CorruptMessageException;
 import com.alibaba.fluss.rpc.messages.ApiMessage;
 import com.alibaba.fluss.rpc.messages.ErrorResponse;
+import com.alibaba.fluss.rpc.messages.FetchLogResponse;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.rpc.protocol.ApiMethod;
 import com.alibaba.fluss.rpc.protocol.ResponseType;
@@ -48,7 +49,7 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
     private final ClientHandlerCallback callback;
 
     /**
-     * Whether the client handler is used by inner client (for Fluss server to send msg to other
+     * Whether the NettyClientHandler is used as inner network client (Communicating between Fluss's
      * servers).
      */
     private final boolean isInnerClient;
@@ -87,7 +88,15 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                 }
                 ApiMessage response = apiMethod.getResponseConstructor().get();
                 if (response.isLazilyParsed()) {
-                    if (isInnerClient) {
+                    if (isInnerClient && response instanceof FetchLogResponse) {
+                        // For the FetchLogResponse returned by the FetchLogRequest sent by the
+                        // follower's TabletServer, we needn't perform an unHeap-to-heap memory
+                        // copy to preserve zero-copy capabilities. This requires users to manually
+                        // call ApiMessage#getParsedByteBuf().release() to release the ByteBuf after
+                        // processing the response.
+                        // TODO for the FetchLogResponse returned by the FetchLogRequest sent by the
+                        // Fluss client, We also aim to avoid this memory copy operation, traced by
+                        // https://github.com/alibaba/fluss/issues/1184
                         response.parseFrom(buffer, messageSize);
                     } else {
                         // copy the buffer into a heap buffer, this can avoid the network buffer
@@ -97,7 +106,7 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                         // response parsed from the copied buffer can be safely cached in user
                         // queues.
                         response.parseFrom(copiedBuffer, messageSize);
-                        copiedBuffer.release();
+                        buffer.release();
                     }
                 } else {
                     response.parseFrom(buffer, messageSize);

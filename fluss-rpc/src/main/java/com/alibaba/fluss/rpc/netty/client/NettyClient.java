@@ -75,7 +75,10 @@ public final class NettyClient implements RpcClient {
 
     private final Supplier<ClientAuthenticator> authenticatorSupplier;
 
-    /** Whether it is an inner client used for communicate from server to server. */
+    /**
+     * Whether the NettyClient is used as inner network client (Communicating between Fluss's
+     * servers).
+     */
     private final boolean isInnerClient;
 
     private volatile boolean isClosed = false;

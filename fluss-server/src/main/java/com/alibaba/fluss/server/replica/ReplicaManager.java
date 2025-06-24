@@ -1527,6 +1527,11 @@ public class ReplicaManager {
         return adjustIsrManager;
     }
 
+    @VisibleForTesting
+    public ReplicaFetcherManager getReplicaFetcherManager() {
+        return replicaFetcherManager;
+    }
+
     public TabletServerMetricGroup getServerMetricGroup() {
         return serverMetricGroup;
     }

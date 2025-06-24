@@ -235,8 +235,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         if (responseData != null) {
             bucketStatusMapLock.lock();
             try {
-                handleFetchLogResponse(responseData, bucketsWithError);
+                handleFetchLogResponse(responseData.getFetchLogResultMap(), bucketsWithError);
             } finally {
+                // release buffer handle by fetchLogResponse.
+                responseData.getFetchLogResponse().getParsedByteBuf().release();
                 bucketStatusMapLock.unlock();
             }
         }
@@ -247,46 +249,41 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     }
 
     private void handleFetchLogResponse(
-            FetchData responseData, Set<TableBucket> replicasWithError) {
-        responseData
-                .getFetchLogResultMap()
-                .forEach(
-                        (tableBucket, replicaData) -> {
-                            BucketFetchStatus currentFetchStatus =
-                                    fairBucketStatusMap.statusValue(tableBucket);
-                            if (currentFetchStatus == null
-                                    || !currentFetchStatus.isReadyForFetch()) {
-                                return;
-                            }
+            Map<TableBucket, FetchLogResultForBucket> responseData,
+            Set<TableBucket> replicasWithError) {
+        responseData.forEach(
+                (tableBucket, replicaData) -> {
+                    BucketFetchStatus currentFetchStatus =
+                            fairBucketStatusMap.statusValue(tableBucket);
+                    if (currentFetchStatus == null || !currentFetchStatus.isReadyForFetch()) {
+                        return;
+                    }
 
-                            // TODO different error using different fix way.
-                            switch (replicaData.getError().error()) {
-                                case NONE:
-                                    handleFetchLogResponseOfSuccessBucket(
-                                            tableBucket, currentFetchStatus, replicaData);
-                                    break;
-                                case LOG_OFFSET_OUT_OF_RANGE_EXCEPTION:
-                                    if (!handleOutOfRangeError(tableBucket, currentFetchStatus)) {
-                                        replicasWithError.add(tableBucket);
-                                    }
-                                    break;
-                                case NOT_LEADER_OR_FOLLOWER:
-                                    LOG.debug(
-                                            "Remote server is not the leader for replica {}, which indicate "
-                                                    + "that the replica is being moved.",
-                                            tableBucket);
-                                    break;
-                                default:
-                                    LOG.error(
-                                            "Error in response for fetching replica {}, error message is {}",
-                                            tableBucket,
-                                            replicaData.getErrorMessage());
-                                    replicasWithError.add(tableBucket);
+                    // TODO different error using different fix way.
+                    switch (replicaData.getError().error()) {
+                        case NONE:
+                            handleFetchLogResponseOfSuccessBucket(
+                                    tableBucket, currentFetchStatus, replicaData);
+                            break;
+                        case LOG_OFFSET_OUT_OF_RANGE_EXCEPTION:
+                            if (!handleOutOfRangeError(tableBucket, currentFetchStatus)) {
+                                replicasWithError.add(tableBucket);
                             }
-                        });
-
-        // release buffer handle by fetchLogResponse.
-        responseData.getFetchLogResponse().getParsedByteBuf().release();
+                            break;
+                        case NOT_LEADER_OR_FOLLOWER:
+                            LOG.debug(
+                                    "Remote server is not the leader for replica {}, which indicate "
+                                            + "that the replica is being moved.",
+                                    tableBucket);
+                            break;
+                        default:
+                            LOG.error(
+                                    "Error in response for fetching replica {}, error message is {}",
+                                    tableBucket,
+                                    replicaData.getErrorMessage());
+                            replicasWithError.add(tableBucket);
+                    }
+                });
     }
 
     private void handleFetchLogResponseOfSuccessBucket(
