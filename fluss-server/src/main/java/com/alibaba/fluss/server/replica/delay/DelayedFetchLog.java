@@ -26,7 +26,7 @@ import com.alibaba.fluss.exception.UnknownTableOrBucketException;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
 import com.alibaba.fluss.rpc.messages.FetchLogRequest;
-import com.alibaba.fluss.server.entity.FetchData;
+import com.alibaba.fluss.server.entity.FetchReqInfo;
 import com.alibaba.fluss.server.log.FetchIsolation;
 import com.alibaba.fluss.server.log.FetchParams;
 import com.alibaba.fluss.server.log.LogOffsetMetadata;
@@ -78,7 +78,7 @@ public class DelayedFetchLog extends DelayedOperation {
     public void onComplete() {
         Map<TableBucket, FetchLogResultForBucket> result = new HashMap<>();
 
-        Map<TableBucket, FetchData> reFetchBuckets = new HashMap<>();
+        Map<TableBucket, FetchReqInfo> reFetchBuckets = new HashMap<>();
         for (Map.Entry<TableBucket, FetchBucketStatus> fetchBucketStatusEntry :
                 fetchBucketStatusMap.entrySet()) {
             FetchBucketStatus fetchBucketStatus = fetchBucketStatusEntry.getValue();
@@ -86,7 +86,7 @@ public class DelayedFetchLog extends DelayedOperation {
             if (fetchBucketStatus.previousFetchLogResultForBucket.fetchFromRemote()) {
                 result.put(tb, fetchBucketStatus.previousFetchLogResultForBucket);
             } else {
-                reFetchBuckets.put(tb, fetchBucketStatus.fetchData);
+                reFetchBuckets.put(tb, fetchBucketStatus.fetchReqInfo);
             }
         }
 
@@ -158,7 +158,7 @@ public class DelayedFetchLog extends DelayedOperation {
                             int bytesAvailable =
                                     Math.min(
                                             endOffset.positionDiff(fetchOffset),
-                                            fetchBucketStatus.fetchData.getMaxBytes());
+                                            fetchBucketStatus.fetchReqInfo.getMaxBytes());
                             accumulatedSize += bytesAvailable;
                         }
                     }
@@ -213,15 +213,15 @@ public class DelayedFetchLog extends DelayedOperation {
 
     /** The status of a bucket in a delayed log fetch operation. */
     public static final class FetchBucketStatus {
-        private final FetchData fetchData;
+        private final FetchReqInfo fetchReqInfo;
         private final LogOffsetMetadata startOffsetMetadata;
         private final FetchLogResultForBucket previousFetchLogResultForBucket;
 
         public FetchBucketStatus(
-                FetchData fetchData,
+                FetchReqInfo fetchReqInfo,
                 LogOffsetMetadata startOffsetMetadata,
                 FetchLogResultForBucket previousFetchLogResultForBucket) {
-            this.fetchData = fetchData;
+            this.fetchReqInfo = fetchReqInfo;
             this.startOffsetMetadata = startOffsetMetadata;
             this.previousFetchLogResultForBucket = previousFetchLogResultForBucket;
         }
@@ -230,7 +230,7 @@ public class DelayedFetchLog extends DelayedOperation {
         public String toString() {
             return "FetchBucketStatus{"
                     + "fetchData="
-                    + fetchData
+                    + fetchReqInfo
                     + ", startOffsetMetadata="
                     + startOffsetMetadata
                     + ", previousFetchLogResultForBucket="

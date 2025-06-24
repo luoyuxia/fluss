@@ -252,7 +252,8 @@ class ReplicaStateMachineTest {
                         new CoordinatorChannelManager(
                                 RpcClient.create(
                                         new Configuration(),
-                                        TestingClientMetricGroup.newInstance())),
+                                        TestingClientMetricGroup.newInstance(),
+                                        false)),
                         (event) -> {
                             // do nothing
                         },

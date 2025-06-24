@@ -90,8 +90,7 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
-    public CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> fetchLog(
-            FetchLogContext fetchLogContext) {
+    public CompletableFuture<FetchData> fetchLog(FetchLogContext fetchLogContext) {
         FetchLogRequest fetchLogRequest = fetchLogContext.getFetchLogRequest();
         return tabletServerGateway
                 .fetchLog(fetchLogRequest)
@@ -121,7 +120,7 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
                                 }
                             }
 
-                            return fetchLogResultMap;
+                            return new FetchData(fetchLogResponse, fetchLogResultMap);
                         });
     }
 

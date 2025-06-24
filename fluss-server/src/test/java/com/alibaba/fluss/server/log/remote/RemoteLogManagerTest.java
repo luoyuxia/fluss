@@ -24,7 +24,7 @@ import com.alibaba.fluss.remote.RemoteLogSegment;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.server.coordinator.TestCoordinatorGateway;
-import com.alibaba.fluss.server.entity.FetchData;
+import com.alibaba.fluss.server.entity.FetchReqInfo;
 import com.alibaba.fluss.server.log.FetchParams;
 import com.alibaba.fluss.server.log.LogTablet;
 import com.alibaba.fluss.server.replica.Replica;
@@ -320,7 +320,7 @@ class RemoteLogManagerTest extends RemoteLogTestBase {
                 new CompletableFuture<>();
         replicaManager.fetchLogRecords(
                 new FetchParams(-1, Integer.MAX_VALUE),
-                Collections.singletonMap(tb, new FetchData(tb.getTableId(), 0L, 1024 * 1024)),
+                Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024)),
                 future::complete);
         Map<TableBucket, FetchLogResultForBucket> result = future.get();
         assertThat(result.size()).isEqualTo(1);
@@ -339,7 +339,7 @@ class RemoteLogManagerTest extends RemoteLogTestBase {
         future = new CompletableFuture<>();
         replicaManager.fetchLogRecords(
                 new FetchParams(-1, Integer.MAX_VALUE),
-                Collections.singletonMap(tb, new FetchData(tb.getTableId(), 47, 1024 * 1024)),
+                Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 47, 1024 * 1024)),
                 future::complete);
         result = future.get();
         assertThat(result.size()).isEqualTo(1);
@@ -377,7 +377,7 @@ class RemoteLogManagerTest extends RemoteLogTestBase {
                 new CompletableFuture<>();
         replicaManager.fetchLogRecords(
                 new FetchParams(-1, Integer.MAX_VALUE),
-                Collections.singletonMap(tb, new FetchData(tb.getTableId(), 0L, 1024 * 1024)),
+                Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0L, 1024 * 1024)),
                 future::complete);
         Map<TableBucket, FetchLogResultForBucket> result = future.get();
         assertThat(result.size()).isEqualTo(1);
@@ -396,7 +396,7 @@ class RemoteLogManagerTest extends RemoteLogTestBase {
         future = new CompletableFuture<>();
         replicaManager.fetchLogRecords(
                 new FetchParams(-1, Integer.MAX_VALUE),
-                Collections.singletonMap(tb, new FetchData(tb.getTableId(), 35, 1024 * 1024)),
+                Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 35, 1024 * 1024)),
                 future::complete);
         result = future.get();
         assertThat(result.size()).isEqualTo(1);
@@ -447,7 +447,7 @@ class RemoteLogManagerTest extends RemoteLogTestBase {
                 new CompletableFuture<>();
         replicaManager.fetchLogRecords(
                 new FetchParams(-1, Integer.MAX_VALUE),
-                Collections.singletonMap(tb, new FetchData(tb.getTableId(), 20L, 1024 * 1024)),
+                Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 20L, 1024 * 1024)),
                 future::complete);
         Map<TableBucket, FetchLogResultForBucket> result = future.get();
         assertThat(result.get(tb).fetchFromRemote()).isFalse();
@@ -457,7 +457,7 @@ class RemoteLogManagerTest extends RemoteLogTestBase {
         future = new CompletableFuture<>();
         replicaManager.fetchLogRecords(
                 new FetchParams(-1, Integer.MAX_VALUE),
-                Collections.singletonMap(tb, new FetchData(tb.getTableId(), 0, 1024 * 1024)),
+                Collections.singletonMap(tb, new FetchReqInfo(tb.getTableId(), 0, 1024 * 1024)),
                 future::complete);
         result = future.get();
         assertThat(result.get(tb).fetchFromRemote()).isTrue();

@@ -47,14 +47,20 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
 
     private final ClientHandlerCallback callback;
 
-    public NettyClientHandler(ClientHandlerCallback callback) {
+    /**
+     * Whether the client handler is used by inner client (for Fluss server to send msg to other
+     * servers).
+     */
+    private final boolean isInnerClient;
+
+    public NettyClientHandler(ClientHandlerCallback callback, boolean isInnerClient) {
         this.callback = callback;
+        this.isInnerClient = isInnerClient;
     }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         ByteBuf buffer = (ByteBuf) msg;
-        boolean hasReleased = false;
         try {
             int frameLength = buffer.readInt();
             ResponseType respType = ResponseType.forId(buffer.readByte());
@@ -81,20 +87,24 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                 }
                 ApiMessage response = apiMethod.getResponseConstructor().get();
                 if (response.isLazilyParsed()) {
-                    // copy the buffer into a heap buffer, this can avoid the network buffer
-                    // being released before the bytes fields of the response are lazily parsed.
-                    ByteBuf copiedBuffer = Unpooled.buffer(messageSize, messageSize);
-                    copiedBuffer.writeBytes(buffer, messageSize);
-                    // response parsed from the copied buffer can be safely cached in user queues.
-                    response.parseFrom(copiedBuffer, messageSize);
+                    if (isInnerClient) {
+                        response.parseFrom(buffer, messageSize);
+                    } else {
+                        // copy the buffer into a heap buffer, this can avoid the network buffer
+                        // being released before the bytes fields of the response are lazily parsed.
+                        ByteBuf copiedBuffer = Unpooled.buffer(messageSize, messageSize);
+                        copiedBuffer.writeBytes(buffer, messageSize);
+                        // response parsed from the copied buffer can be safely cached in user
+                        // queues.
+                        response.parseFrom(copiedBuffer, messageSize);
+                        copiedBuffer.release();
+                    }
                 } else {
                     response.parseFrom(buffer, messageSize);
                     // eagerly release the buffer to make the buffer recycle faster
                     buffer.release();
-                    hasReleased = true;
                 }
                 callback.onRequestResult(requestId, response);
-
             } else if (respType == ResponseType.ERROR_RESPONSE) {
                 int requestId = buffer.readInt();
                 int messageSize = frameLength - RESPONSE_HEADER_LENGTH;
@@ -135,10 +145,6 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                 callback.onFailure(t1);
             } catch (Throwable t2) {
                 LOG.error("Failed to notify callback about failure", t2);
-            }
-        } finally {
-            if (!hasReleased) {
-                buffer.release();
             }
         }
     }

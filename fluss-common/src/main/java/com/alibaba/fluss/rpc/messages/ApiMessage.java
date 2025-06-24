@@ -62,6 +62,9 @@ public interface ApiMessage {
      */
     boolean isLazilyParsed();
 
+    /** Get the parsed byte buffer of the message. */
+    ByteBuf getParsedByteBuf();
+
     /**
      * Deserialize the message from the given byte array.
      *
