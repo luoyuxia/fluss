@@ -33,6 +33,7 @@ import com.alibaba.fluss.exception.TooManyBucketsException;
 import com.alibaba.fluss.exception.TooManyPartitionsException;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.DatabaseInfo;
+import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.ResolvedPartitionSpec;
 import com.alibaba.fluss.metadata.SchemaInfo;
 import com.alibaba.fluss.metadata.TableDescriptor;
@@ -59,8 +60,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.alibaba.fluss.server.utils.TableDescriptorValidation.validateTableDescriptor;
+import static com.alibaba.fluss.utils.concurrent.LockUtils.inLock;
 
 /** A manager for metadata. */
 public class MetadataManager {
@@ -71,6 +75,10 @@ public class MetadataManager {
     private @Nullable final Map<String, String> defaultTableLakeOptions;
     private final int maxPartitionNum;
     private final int maxBucketNum;
+
+    /* a lock map to protect create partition*/
+    private static final ConcurrentHashMap<PhysicalTablePath, ReentrantLock>
+            createPartitionLockMap = new ConcurrentHashMap<>();
 
     /**
      * Creates a new metadata manager.
@@ -384,78 +392,97 @@ public class MetadataManager {
             ResolvedPartitionSpec partition,
             boolean ignoreIfExists) {
         String partitionName = partition.getPartitionName();
-        Optional<TablePartition> optionalTablePartition =
-                getOptionalTablePartition(tablePath, partitionName);
-        if (optionalTablePartition.isPresent()) {
-            if (ignoreIfExists) {
-                return;
-            }
-            throw new PartitionAlreadyExistsException(
-                    String.format(
-                            "Partition '%s' already exists for table %s",
-                            partition.getPartitionQualifiedName(), tablePath));
-        }
+        PhysicalTablePath physicalTablePath = PhysicalTablePath.of(tablePath, partitionName);
+        ReentrantLock lock =
+                createPartitionLockMap.computeIfAbsent(physicalTablePath, k -> new ReentrantLock());
 
-        final int partitionNumber;
-        try {
-            partitionNumber = zookeeperClient.getPartitionNumber(tablePath);
-            if (partitionNumber + 1 > maxPartitionNum) {
-                throw new TooManyPartitionsException(
-                        String.format(
-                                "Exceed the maximum number of partitions for table %s, only allow %s partitions.",
-                                tablePath, maxPartitionNum));
-            }
-        } catch (TooManyPartitionsException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new FlussRuntimeException(
-                    String.format(
-                            "Get the number of partition from zookeeper failed for table %s",
-                            tablePath),
-                    e);
-        }
+        // try to lock by partition, in case of concurrent create partition request.
+        inLock(
+                lock,
+                () -> {
+                    Optional<TablePartition> optionalTablePartition =
+                            getOptionalTablePartition(tablePath, partitionName);
+                    if (optionalTablePartition.isPresent()) {
+                        if (ignoreIfExists) {
+                            return;
+                        }
+                        throw new PartitionAlreadyExistsException(
+                                String.format(
+                                        "Partition '%s' already exists for table %s",
+                                        partition.getPartitionQualifiedName(), tablePath));
+                    }
 
-        try {
-            int bucketCount = partitionAssignment.getBucketAssignments().size();
-            // currently, every partition has the same bucket count
-            int totalBuckets = bucketCount * (partitionNumber + 1);
-            if (totalBuckets > maxBucketNum) {
-                throw new TooManyBucketsException(
-                        String.format(
-                                "Adding partition '%s' would result in %d total buckets for table %s, exceeding the maximum of %d buckets.",
-                                partition.getPartitionName(),
-                                totalBuckets,
-                                tablePath,
-                                maxBucketNum));
-            }
-        } catch (TooManyBucketsException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new FlussRuntimeException(
-                    String.format("Failed to check total bucket count for table %s", tablePath), e);
-        }
+                    final int partitionNumber;
+                    try {
+                        partitionNumber = zookeeperClient.getPartitionNumber(tablePath);
+                        if (partitionNumber + 1 > maxPartitionNum) {
+                            throw new TooManyPartitionsException(
+                                    String.format(
+                                            "Exceed the maximum number of partitions for table %s, only allow %s partitions.",
+                                            tablePath, maxPartitionNum));
+                        }
+                    } catch (TooManyPartitionsException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        throw new FlussRuntimeException(
+                                String.format(
+                                        "Get the number of partition from zookeeper failed for table %s",
+                                        tablePath),
+                                e);
+                    }
 
-        try {
-            long partitionId = zookeeperClient.getPartitionIdAndIncrement();
-            // register partition assignments to zk first
-            zookeeperClient.registerPartitionAssignment(partitionId, partitionAssignment);
-            // then register the partition metadata to zk
-            zookeeperClient.registerPartition(tablePath, tableId, partitionName, partitionId);
-            LOG.info(
-                    "Register partition {} to zookeeper for table [{}].", partitionName, tablePath);
-        } catch (KeeperException.NodeExistsException nodeExistsException) {
-            if (!ignoreIfExists) {
-                throw new PartitionAlreadyExistsException(
-                        String.format(
-                                "Partition '%s' already exists for table %s",
-                                partition.getPartitionQualifiedName(), tablePath));
-            }
-        } catch (Exception e) {
-            throw new FlussRuntimeException(
-                    String.format(
-                            "Register partition to zookeeper failed to create partition %s for table [%s]",
-                            partitionName, tablePath),
-                    e);
+                    try {
+                        int bucketCount = partitionAssignment.getBucketAssignments().size();
+                        // currently, every partition has the same bucket count
+                        int totalBuckets = bucketCount * (partitionNumber + 1);
+                        if (totalBuckets > maxBucketNum) {
+                            throw new TooManyBucketsException(
+                                    String.format(
+                                            "Adding partition '%s' would result in %d total buckets for table %s, exceeding the maximum of %d buckets.",
+                                            partition.getPartitionName(),
+                                            totalBuckets,
+                                            tablePath,
+                                            maxBucketNum));
+                        }
+                    } catch (TooManyBucketsException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        throw new FlussRuntimeException(
+                                String.format(
+                                        "Failed to check total bucket count for table %s",
+                                        tablePath),
+                                e);
+                    }
+
+                    try {
+                        long partitionId = zookeeperClient.getPartitionIdAndIncrement();
+                        // register partition assignments to zk first
+                        zookeeperClient.registerPartitionAssignment(
+                                partitionId, partitionAssignment);
+                        // then register the partition metadata to zk
+                        zookeeperClient.registerPartition(
+                                tablePath, tableId, partitionName, partitionId);
+                        LOG.info(
+                                "Register partition {} to zookeeper for table [{}].",
+                                partitionName,
+                                tablePath);
+                    } catch (KeeperException.NodeExistsException nodeExistsException) {
+                        if (!ignoreIfExists) {
+                            throw new PartitionAlreadyExistsException(
+                                    String.format(
+                                            "Partition '%s' already exists for table %s",
+                                            partition.getPartitionQualifiedName(), tablePath));
+                        }
+                    } catch (Exception e) {
+                        throw new FlussRuntimeException(
+                                String.format(
+                                        "Register partition to zookeeper failed to create partition %s for table [%s]",
+                                        partitionName, tablePath),
+                                e);
+                    }
+                });
+        if (!lock.isLocked() && lock.getQueueLength() == 0) {
+            createPartitionLockMap.remove(physicalTablePath, lock);
         }
     }
 
