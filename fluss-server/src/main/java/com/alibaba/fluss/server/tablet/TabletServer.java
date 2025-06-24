@@ -218,7 +218,7 @@ public class TabletServer extends ServerBase {
             // to fetch log.
             this.clientMetricGroup =
                     new ClientMetricGroup(metricRegistry, SERVER_NAME + "-" + serverId);
-            this.rpcClient = RpcClient.create(conf, clientMetricGroup);
+            this.rpcClient = RpcClient.create(conf, clientMetricGroup, true);
 
             this.coordinatorGateway =
                     GatewayClientProxy.createGatewayProxy(
