@@ -47,6 +47,7 @@ import com.alibaba.fluss.server.zk.data.PartitionAssignment;
 import com.alibaba.fluss.server.zk.data.TableAssignment;
 import com.alibaba.fluss.server.zk.data.TableRegistration;
 import com.alibaba.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
+import com.alibaba.fluss.utils.MapUtils;
 import com.alibaba.fluss.utils.function.RunnableWithException;
 import com.alibaba.fluss.utils.function.ThrowingRunnable;
 
@@ -60,7 +61,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Callable;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static com.alibaba.fluss.server.utils.TableDescriptorValidation.validateTableDescriptor;
@@ -77,8 +77,8 @@ public class MetadataManager {
     private final int maxBucketNum;
 
     /* a lock map to protect create partition*/
-    private static final ConcurrentHashMap<PhysicalTablePath, ReentrantLock>
-            createPartitionLockMap = new ConcurrentHashMap<>();
+    private static final Map<PhysicalTablePath, ReentrantLock> createPartitionLockMap =
+            MapUtils.newConcurrentHashMap();
 
     /**
      * Creates a new metadata manager.
