@@ -138,13 +138,11 @@ public class MemoryLogRecords implements LogRecords {
             MemorySegment segment = MemorySegment.wrapOffHeapMemory(buffer);
             return pointToMemory(segment, buffer.position(), buffer.limit() - buffer.position());
         } else if (buffer.hasArray()) {
-            LOG.info("The buffer is array2");
             byte[] bytes = buffer.array();
             int offset = buffer.arrayOffset() + buffer.position();
             int length = buffer.remaining();
             return pointToBytes(bytes, offset, length);
         } else {
-            LOG.info("The buffer is neither direct nor has array, fallback to copy bytes");
             // fallback to copy bytes
             byte[] bytes = new byte[buffer.remaining()];
             buffer.get(bytes);
