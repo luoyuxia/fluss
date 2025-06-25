@@ -82,7 +82,9 @@ public class MetadataUtils {
             throws ExecutionException, InterruptedException, TimeoutException {
         AdminReadOnlyGateway gateway =
                 GatewayClientProxy.createGatewayProxy(
-                        cluster::getCoordinatorServer, client, AdminReadOnlyGateway.class);
+                        () -> getOneAvailableTabletServerNode(cluster),
+                        client,
+                        AdminReadOnlyGateway.class);
         return sendMetadataRequestAndRebuildCluster(
                 gateway, true, cluster, tablePaths, tablePartitionNames, tablePartitionIds);
     }
