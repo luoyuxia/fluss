@@ -17,6 +17,7 @@
 package com.alibaba.fluss.rpc.entity;
 
 import com.alibaba.fluss.annotation.Internal;
+import com.alibaba.fluss.lake.source.LakeLogFetchInfo;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
@@ -32,6 +33,7 @@ import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 @Internal
 public class FetchLogResultForBucket extends ResultForBucket {
     private final @Nullable RemoteLogFetchInfo remoteLogFetchInfo;
+    private final @Nullable LakeLogFetchInfo lakeLogFetchInfo;
     private final @Nullable LogRecords records;
     private final long highWatermark;
 
@@ -50,6 +52,11 @@ public class FetchLogResultForBucket extends ResultForBucket {
     }
 
     public FetchLogResultForBucket(
+            TableBucket tableBucket, LakeLogFetchInfo lakeLogFetchInfo, long highWatermark) {
+        this(tableBucket, checkNotNull(lakeLogFetchInfo), null, null, highWatermark, ApiError.NONE);
+    }
+
+    public FetchLogResultForBucket(
             TableBucket tableBucket, RemoteLogFetchInfo remoteLogFetchInfo, long highWatermark) {
         this(
                 tableBucket,
@@ -65,8 +72,19 @@ public class FetchLogResultForBucket extends ResultForBucket {
             @Nullable LogRecords records,
             long highWatermark,
             ApiError error) {
+        this(tableBucket, null, remoteLogFetchInfo, records, highWatermark, error);
+    }
+
+    private FetchLogResultForBucket(
+            TableBucket tableBucket,
+            @Nullable LakeLogFetchInfo lakeLogFetchInfo,
+            @Nullable RemoteLogFetchInfo remoteLogFetchInfo,
+            @Nullable LogRecords records,
+            long highWatermark,
+            ApiError error) {
         super(tableBucket, error);
         this.remoteLogFetchInfo = remoteLogFetchInfo;
+        this.lakeLogFetchInfo = lakeLogFetchInfo;
         this.records = records;
         this.highWatermark = highWatermark;
     }
@@ -82,8 +100,16 @@ public class FetchLogResultForBucket extends ResultForBucket {
         return remoteLogFetchInfo != null;
     }
 
+    public boolean fetchFromLake() {
+        return lakeLogFetchInfo != null;
+    }
+
     public @Nullable LogRecords records() {
         return records;
+    }
+
+    public @Nullable LakeLogFetchInfo lakeLogFetchInfo() {
+        return lakeLogFetchInfo;
     }
 
     public LogRecords recordsOrEmpty() {

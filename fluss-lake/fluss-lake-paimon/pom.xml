@@ -31,7 +31,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <paimon.version>1.0.1</paimon.version>
+        <paimon.version>1.1.1</paimon.version>
         <flink.major.version>1.20</flink.major.version>
         <flink.version>1.20.1</flink.version>
     </properties>

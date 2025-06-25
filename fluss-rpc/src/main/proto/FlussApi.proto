@@ -196,6 +196,7 @@ message FetchLogRequest {
   repeated PbFetchLogReqForTable tables_req = 3;
   optional int32 max_wait_ms = 4;
   optional int32 min_bytes = 5;
+  optional bool enable_lake = 6;
 }
 
 message FetchLogResponse {
@@ -296,6 +297,7 @@ message ListOffsetsRequest {
   optional int64 partition_id = 4;
   repeated int32 bucket_id = 5 [packed = true]; // it is recommended to use packed for repeated numerics to get more efficient encoding
   optional int64 startTimestamp = 6;
+  optional bool enable_lake = 7;
 }
 message ListOffsetsResponse {
   repeated PbListOffsetsRespForBucket buckets_resp = 1;
@@ -447,6 +449,7 @@ message PbLakeTableOffsetForBucket {
   required int32 bucket_id = 2;
   optional int64 log_start_offset = 3;
   optional int64 log_end_offset = 4;
+  optional int64 log_max_timestamp = 5;
 }
 
 message CommitLakeTableSnapshotResponse {
@@ -471,6 +474,7 @@ message PbNotifyLakeTableOffsetReqForBucket {
   required int64 snapshot_id = 4;
   optional int64 log_start_offset = 5;
   optional int64 log_end_offset = 6;
+  optional int64 log_max_timestamp = 7;
 }
 
 message NotifyLakeTableOffsetResponse {
@@ -632,6 +636,7 @@ message PbFetchLogRespForBucket {
   optional int64 log_start_offset = 6; // TODO now we don't introduce log start offset, but remain it in protobuf
   optional PbRemoteLogFetchInfo remote_log_fetch_info = 7;
   optional bytes records = 8;
+  optional PbLakeLogFetchInfo lake_log_fetch_info = 9;
 }
 
 message PbPutKvReqForBucket {
@@ -727,6 +732,7 @@ message PbListOffsetsRespForBucket {
   optional int32 error_code = 2;
   optional string error_message = 3;
   optional int64 offset = 4;
+  required int64 snapshot_id = 5;
 }
 
 message PbNotifyLeaderAndIsrReqForBucket {
@@ -789,6 +795,11 @@ message PbRemoteLogFetchInfo {
   optional string partition_name = 2;
   repeated PbRemoteLogSegment remote_log_segments = 3;
   optional int32 first_start_pos = 4;
+}
+
+message PbLakeLogFetchInfo {
+  required int64 snapshot_id = 1;
+  required int64 log_end_offset = 2;
 }
 
 message PbRemoteLogSegment {

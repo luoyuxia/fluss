@@ -29,11 +29,20 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.InvalidMetadataException;
 import com.alibaba.fluss.exception.LeaderNotAvailableException;
 import com.alibaba.fluss.fs.FsPath;
+import com.alibaba.fluss.lake.lakestorage.LakeStorage;
+import com.alibaba.fluss.lake.lakestorage.LakeStoragePlugin;
+import com.alibaba.fluss.lake.lakestorage.LakeStoragePluginSetUp;
+import com.alibaba.fluss.lake.source.FetchContext;
+import com.alibaba.fluss.lake.source.FlussLogSource;
+import com.alibaba.fluss.lake.source.LakeLogFetchInfo;
+import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePartition;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.record.LakeLogRecords;
+import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.record.LogRecordReadContext;
 import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
@@ -50,15 +59,14 @@ import com.alibaba.fluss.rpc.messages.PbFetchLogReqForTable;
 import com.alibaba.fluss.rpc.messages.PbFetchLogRespForBucket;
 import com.alibaba.fluss.rpc.messages.PbFetchLogRespForTable;
 import com.alibaba.fluss.rpc.protocol.Errors;
+import com.alibaba.fluss.utils.CloseableIterator;
 import com.alibaba.fluss.utils.IOUtils;
 import com.alibaba.fluss.utils.Projection;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
-
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -71,6 +79,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.getFetchLogResultForBucket;
+import static com.alibaba.fluss.utils.DataLakeUtils.extractLakeCatalogProperties;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
@@ -100,6 +109,9 @@ public class LogFetcher implements Closeable {
     private final LogFetchBuffer logFetchBuffer;
     private final LogFetchCollector logFetchCollector;
     private final RemoteLogDownloader remoteLogDownloader;
+
+    @Nullable private final Map<String, String> lakeProperties;
+    @Nullable private DataLakeFormat dataLakeFormat;
 
     @GuardedBy("this")
     private final Set<Integer> nodesWithPendingFetchRequests;
@@ -147,6 +159,13 @@ public class LogFetcher implements Closeable {
         this.scannerMetricGroup = scannerMetricGroup;
         this.remoteLogDownloader =
                 new RemoteLogDownloader(tablePath, conf, remoteFileDownloader, scannerMetricGroup);
+        if (tableInfo.getTableConfig().isDataLakeEnabled()) {
+            lakeProperties = extractLakeCatalogProperties(tableInfo.getProperties());
+            dataLakeFormat = tableInfo.getTableConfig().getDataLakeFormat().get();
+        } else {
+            lakeProperties = null;
+            dataLakeFormat = null;
+        }
     }
 
     /**
@@ -330,6 +349,59 @@ public class LogFetcher implements Closeable {
                                     fetchResultForBucket.remoteLogFetchInfo(),
                                     fetchOffset,
                                     fetchResultForBucket.getHighWatermark());
+                        } else if (fetchResultForBucket.fetchFromLake()) {
+                            checkNotNull(lakeProperties, "lake properties is null");
+
+                            LakeStoragePlugin lakeStoragePlugin =
+                                    LakeStoragePluginSetUp.fromConfiguration(
+                                            Configuration.fromMap(
+                                                    Collections.singletonMap(
+                                                            ConfigOptions.DATALAKE_FORMAT.key(),
+                                                            dataLakeFormat.toString())),
+                                            null);
+
+                            LakeLogFetchInfo lakeLogFetchInfo =
+                                    fetchResultForBucket.lakeLogFetchInfo();
+
+                            LakeStorage lakeStorage =
+                                    lakeStoragePlugin.createLakeStorage(
+                                            Configuration.fromMap(lakeProperties));
+
+                            FlussLogSource flussLogSource =
+                                    lakeStorage
+                                            .createLakeSourceFactory()
+                                            .createFlussLogSource(tablePath);
+
+                            CloseableIterator<LogRecord> logRecords;
+                            try {
+                                logRecords =
+                                        flussLogSource.fetchLogRecords(
+                                                new FetchContext(
+                                                        null,
+                                                        tb.getBucket(),
+                                                        lakeLogFetchInfo.snapshotId(),
+                                                        fetchOffset,
+                                                        lakeLogFetchInfo.lakeLogEndOffset(),
+                                                        null));
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
+
+                            LakeLogRecords lakeLogRecords =
+                                    new LakeLogRecords(
+                                            fetchOffset,
+                                            lakeLogFetchInfo.lakeLogEndOffset(),
+                                            logRecords);
+                            LakeCompletedFetch lakeCompletedFetch =
+                                    new LakeCompletedFetch(
+                                            tb,
+                                            lakeLogRecords,
+                                            fetchResultForBucket.getHighWatermark(),
+                                            readContext,
+                                            logScannerStatus,
+                                            isCheckCrcs,
+                                            fetchOffset);
+                            logFetchBuffer.add(lakeCompletedFetch);
                         } else {
                             LogRecords logRecords = fetchResultForBucket.recordsOrEmpty();
                             if (!MemoryLogRecords.EMPTY.equals(logRecords)

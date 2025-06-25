@@ -17,6 +17,7 @@
 package com.alibaba.fluss.lake.lakestorage;
 
 import com.alibaba.fluss.annotation.PublicEvolving;
+import com.alibaba.fluss.lake.source.LakeSourceFactory;
 import com.alibaba.fluss.lake.writer.LakeTieringFactory;
 
 /**
@@ -37,4 +38,12 @@ public interface LakeStorage {
 
     /** Create lake catalog. */
     LakeCatalog createLakeCatalog();
+
+    /**
+     * Creates a factory for building data sources that read from the datalake storage for different
+     * access pattern.
+     *
+     * @return lake source factory instance
+     */
+    LakeSourceFactory createLakeSourceFactory();
 }
