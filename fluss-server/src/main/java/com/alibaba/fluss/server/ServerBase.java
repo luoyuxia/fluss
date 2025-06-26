@@ -68,12 +68,12 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
     protected static final long ZOOKEEPER_REGISTER_TOTAL_WAIT_TIME_MS = 60 * 1000L;
     protected static final long ZOOKEEPER_REGISTER_RETRY_INTERVAL_MS = 3 * 1000L;
 
-    protected final Configuration conf;
+    protected final DynamicServerConfig conf;
 
     protected FileSystem remoteFileSystem;
     protected PluginManager pluginManager;
 
-    protected ServerBase(Configuration conf) {
+    protected ServerBase(DynamicServerConfig conf) {
         this.conf = conf;
     }
 

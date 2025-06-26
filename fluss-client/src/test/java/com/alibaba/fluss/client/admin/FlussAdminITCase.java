@@ -27,6 +27,8 @@ import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.AutoPartitionTimeUnit;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.config.dynamic.AlterConfigOp;
+import com.alibaba.fluss.config.dynamic.ConfigEntry;
 import com.alibaba.fluss.exception.DatabaseAlreadyExistException;
 import com.alibaba.fluss.exception.DatabaseNotEmptyException;
 import com.alibaba.fluss.exception.DatabaseNotExistException;
@@ -69,6 +71,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -78,6 +81,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.alibaba.fluss.config.ConfigOptions.DATALAKE_FORMAT;
 import static com.alibaba.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -884,6 +888,73 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
                                         .get())
                 .cause()
                 .isInstanceOf(TooManyPartitionsException.class);
+    }
+
+    @Test
+    void testDynamicConfigs() throws ExecutionException, InterruptedException {
+        assertThat(
+                        FLUSS_CLUSTER_EXTENSION
+                                .getCoordinatorServer()
+                                .getCoordinatorService()
+                                .getDataLakeFormat())
+                .isEqualTo(DataLakeFormat.PAIMON);
+        //        admin.alterConfigs(
+        //                        Collections.singletonList(
+        //                                new AlterConfigOp(
+        //                                        new ConfigEntry(
+        //                                                DATALAKE_FORMAT.key(),
+        //                                                "UNKNOW",
+        //
+        // ConfigEntry.ConfigSource.DYNAMIC_SERVER_CONFIG),
+        //                                        AlterConfigOp.OpType.SET)))
+        //                .get();
+
+        admin.alterConfigs(
+                        Collections.singletonList(
+                                new AlterConfigOp(
+                                        new ConfigEntry(
+                                                DATALAKE_FORMAT.key(),
+                                                null,
+                                                ConfigEntry.ConfigSource.DYNAMIC_SERVER_CONFIG),
+                                        AlterConfigOp.OpType.SET)))
+                .get();
+        assertThat(
+                        FLUSS_CLUSTER_EXTENSION
+                                .getCoordinatorServer()
+                                .getCoordinatorService()
+                                .getDataLakeFormat())
+                .isNull();
+        Collection<ConfigEntry> configToResourceConfigs = admin.describeConfigs().get();
+        assertThat(configToResourceConfigs)
+                .contains(
+                        new ConfigEntry(
+                                DATALAKE_FORMAT.key(),
+                                null,
+                                ConfigEntry.ConfigSource.DYNAMIC_SERVER_CONFIG));
+
+        // Delete dynamic configs to use the initial value(from server.yaml)
+        admin.alterConfigs(
+                        Collections.singletonList(
+                                new AlterConfigOp(
+                                        new ConfigEntry(
+                                                DATALAKE_FORMAT.key(),
+                                                null,
+                                                ConfigEntry.ConfigSource.DYNAMIC_SERVER_CONFIG),
+                                        AlterConfigOp.OpType.DELETE)))
+                .get();
+        assertThat(
+                        FLUSS_CLUSTER_EXTENSION
+                                .getCoordinatorServer()
+                                .getCoordinatorService()
+                                .getDataLakeFormat())
+                .isEqualTo(DataLakeFormat.PAIMON);
+        configToResourceConfigs = admin.describeConfigs().get();
+        assertThat(configToResourceConfigs)
+                .contains(
+                        new ConfigEntry(
+                                DATALAKE_FORMAT.key(),
+                                "paimon",
+                                ConfigEntry.ConfigSource.INITIAL_SERVER_CONFIG));
     }
 
     private void assertNoBucketSnapshot(KvSnapshots snapshots, int expectBucketNum) {
