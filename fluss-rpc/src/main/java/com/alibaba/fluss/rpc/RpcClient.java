@@ -22,6 +22,7 @@ import com.alibaba.fluss.rpc.messages.ApiMessage;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.rpc.netty.client.NettyClient;
 import com.alibaba.fluss.rpc.protocol.ApiKeys;
+import com.alibaba.fluss.utils.clock.SystemClock;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -42,7 +43,7 @@ public interface RpcClient extends AutoCloseable {
      */
     static RpcClient create(
             Configuration conf, ClientMetricGroup clientMetricGroup, boolean isInnerClient) {
-        return new NettyClient(conf, clientMetricGroup, isInnerClient);
+        return new NettyClient(conf, clientMetricGroup, isInnerClient, SystemClock.getInstance());
     }
 
     /**

@@ -68,7 +68,7 @@ final class NettyClientTest {
         conf = new Configuration();
         // 3 worker threads is enough for this test
         conf.setInt(ConfigOptions.NETTY_SERVER_NUM_WORKER_THREADS, 3);
-        nettyClient = new NettyClient(conf, TestingClientMetricGroup.newInstance(), false);
+        nettyClient = new NettyClient(conf, TestingClientMetricGroup.newInstance(), false, null);
         buildNettyServer(1);
     }
 
@@ -217,7 +217,7 @@ final class NettyClientTest {
                     .get();
             assertThat(nettyClient.connections().size()).isEqualTo(1);
             try (NettyClient client =
-                    new NettyClient(conf, TestingClientMetricGroup.newInstance(), false); ) {
+                    new NettyClient(conf, TestingClientMetricGroup.newInstance(), false, null); ) {
                 client.sendRequest(
                                 new ServerNode(
                                         2,

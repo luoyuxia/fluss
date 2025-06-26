@@ -60,6 +60,12 @@ final class IncompleteBatches {
         }
     }
 
+    public Set<WriteBatch> copyAll2() {
+        synchronized (incomplete) {
+            return new HashSet<>(this.incomplete);
+        }
+    }
+
     public Iterable<WriteBatch.RequestFuture> requestResults() {
         synchronized (incomplete) {
             return incomplete.stream()

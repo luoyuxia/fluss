@@ -297,6 +297,19 @@ public final class RecordAccumulator {
         return batches;
     }
 
+    public int getWriteBatchSize() {
+        AtomicInteger batchInQueue = new AtomicInteger();
+        writeBatches
+                .values()
+                .forEach(
+                        bucketAndWriteBatches ->
+                                bucketAndWriteBatches
+                                        .batches
+                                        .values()
+                                        .forEach(deque -> batchInQueue.addAndGet(deque.size())));
+        return batchInQueue.get();
+    }
+
     public void reEnqueue(ReadyWriteBatch readyWriteBatch) {
         WriteBatch batch = readyWriteBatch.writeBatch();
         batch.reEnqueued();
@@ -356,6 +369,10 @@ public final class RecordAccumulator {
     /** Check whether there are any pending batches (whether sent or unsent). */
     public boolean hasIncomplete() {
         return !incomplete.isEmpty();
+    }
+
+    public Set<WriteBatch> getIncompleteBatches() {
+        return incomplete.copyAll2();
     }
 
     /**

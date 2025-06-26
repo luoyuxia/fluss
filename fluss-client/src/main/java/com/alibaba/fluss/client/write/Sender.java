@@ -40,12 +40,12 @@ import com.alibaba.fluss.rpc.messages.PutKvResponse;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.rpc.protocol.Errors;
 import com.alibaba.fluss.utils.ExceptionUtils;
-
+import com.alibaba.fluss.utils.concurrent.FlussScheduler;
+import com.alibaba.fluss.utils.concurrent.Scheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.GuardedBy;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -106,6 +106,8 @@ public class Sender implements Runnable {
 
     private final WriterMetricGroup writerMetricGroup;
 
+    private final Scheduler scheduler;
+
     public Sender(
             RecordAccumulator accumulator,
             int maxRequestTimeoutMs,
@@ -129,7 +131,41 @@ public class Sender implements Runnable {
         this.idempotenceManager = idempotenceManager;
         this.writerMetricGroup = writerMetricGroup;
 
+        this.scheduler = new FlussScheduler(1);
+        scheduler.startup();
+        scheduler.schedule("print-send-batches", this::printBatches, 0, 10000);
+
         // TODO add retry logic while send failed. See FLUSS-56364375
+    }
+
+    private void printBatches() {
+        Map<TableBucket, List<ReadyWriteBatch>> flightBatches = getInFlightBatches();
+        Set<WriteBatch> incompleteBatches = accumulator.getIncompleteBatches();
+        int writeBatchInQueue = accumulator.getWriteBatchSize();
+        LOG.info("-----this round begin-----");
+        LOG.info("write batch in queue: {}", writeBatchInQueue);
+        flightBatches.forEach(
+                (tb, batches) -> {
+                    if (batches.size() > 0) {
+                        LOG.info("inflight batch table: {}, batches size: {}", tb, batches.size());
+                    }
+                });
+        if (incompleteBatches.size() > 0) {
+            LOG.info("incomplete batch size: {}", incompleteBatches.size());
+            incompleteBatches.forEach(
+                    batch ->
+                            LOG.info(
+                                    "incomplete batch: {} : {}",
+                                    batch.physicalTablePath(),
+                                    batch.bucketId()));
+        }
+        LOG.info("-----this round end-----");
+    }
+
+    Map<TableBucket, List<ReadyWriteBatch>> getInFlightBatches() {
+        synchronized (inFlightBatchesLock) {
+            return new HashMap<>(inFlightBatches);
+        }
     }
 
     @VisibleForTesting
@@ -320,10 +356,18 @@ public class Sender implements Runnable {
         synchronized (inFlightBatchesLock) {
             List<ReadyWriteBatch> batches = inFlightBatches.get(batch.tableBucket());
             if (batches != null) {
-                batches.remove(batch);
+                boolean removedValue = batches.remove(batch);
+                if (!removedValue) {
+                    LOG.info("remove from inflight batches failed, illegal state");
+                }
                 if (batches.isEmpty()) {
                     inFlightBatches.remove(batch.tableBucket());
                 }
+            } else {
+                LOG.info(
+                        "Batch "
+                                + batch.writeBatch().physicalTablePath()
+                                + " is not in flight, illegal state");
             }
         }
     }
@@ -358,21 +402,23 @@ public class Sender implements Runnable {
         batches.forEach(
                 batch -> {
                     // keep the batch before ack.
-                    recordsByBucket.put(batch.tableBucket(), batch);
+                    ReadyWriteBatch preValue = recordsByBucket.put(batch.tableBucket(), batch);
+                    if (preValue != null) {
+                        LOG.info("Duplicated batch: " + batch.writeBatch().physicalTablePath());
+                    }
                     writeBatchByTable
                             .computeIfAbsent(
                                     batch.tableBucket().getTableId(), k -> new ArrayList<>())
                             .add(batch);
                 });
 
-        ServerNode destinationNode = metadataUpdater.getTabletServer(destination);
-        if (destinationNode == null) {
+        TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
+        if (gateway == null) {
             handleWriteRequestException(
                     new LeaderNotAvailableException(
                             "Server " + destination + " is not found in metadata cache."),
                     recordsByBucket);
         } else {
-            TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
             writeBatchByTable.forEach(
                     (tableId, writeBatches) -> {
                         TableInfo tableInfo = metadataUpdater.getTableInfoOrElseThrow(tableId);
@@ -384,6 +430,17 @@ public class Sender implements Runnable {
                                     tableId,
                                     recordsByBucket);
                         } else {
+                            StringBuilder sb = new StringBuilder();
+                            sb.append("try to send to leader: " + destination + "for batches: ");
+                            writeBatches.forEach(
+                                    batch -> {
+                                        sb.append(
+                                                batch.writeBatch().physicalTablePath()
+                                                        + ":"
+                                                        + batch.writeBatch().bucketId()
+                                                        + ";");
+                                    });
+                            LOG.info(sb.toString());
                             sendProduceLogRequestAndHandleResponse(
                                     gateway,
                                     makeProduceLogRequest(

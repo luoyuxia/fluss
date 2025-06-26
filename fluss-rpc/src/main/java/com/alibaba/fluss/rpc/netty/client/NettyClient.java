@@ -20,6 +20,7 @@ import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.exception.TimeoutException;
 import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.rpc.messages.ApiMessage;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
@@ -33,6 +34,7 @@ import com.alibaba.fluss.shaded.netty4.io.netty.buffer.PooledByteBufAllocator;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelOption;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.EventLoopGroup;
 import com.alibaba.fluss.utils.MapUtils;
+import com.alibaba.fluss.utils.clock.Clock;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
 import org.slf4j.Logger;
@@ -83,8 +85,14 @@ public final class NettyClient implements RpcClient {
 
     private volatile boolean isClosed = false;
 
+    private final long requestTimeoutMs;
+    private final Clock clock;
+
     public NettyClient(
-            Configuration conf, ClientMetricGroup clientMetricGroup, boolean isInnerClient) {
+            Configuration conf,
+            ClientMetricGroup clientMetricGroup,
+            boolean isInnerClient,
+            Clock clock) {
         this.connections = MapUtils.newConcurrentHashMap();
 
         // build bootstrap
@@ -109,6 +117,37 @@ public final class NettyClient implements RpcClient {
         this.clientMetricGroup = clientMetricGroup;
         this.authenticatorSupplier = AuthenticationFactory.loadClientAuthenticatorSupplier(conf);
         NettyMetrics.registerNettyMetrics(clientMetricGroup, pooledAllocator);
+
+        this.requestTimeoutMs = conf.get(ConfigOptions.CLIENT_REQUEST_TIMEOUT).toMillis();
+        this.clock = clock;
+        eventGroup.submit(this::handleTimeoutRequest);
+    }
+
+    private void handleTimeoutRequest() {
+        if (isClosed || requestTimeoutMs <= 0) {
+            return;
+        }
+        long nextRequestTimeoutMs = requestTimeoutMs;
+        long now = clock.milliseconds();
+        for (Map.Entry<String, ServerConnection> connection : connections.entrySet()) {
+            if (connection.getValue().hasExpiredRequest(now)) {
+                LOG.info("Disconnecting from node {} due to request timeout.", connection.getKey());
+                disconnect(
+                        connection.getKey(),
+                        new TimeoutException(
+                                String.format(
+                                        "Request from client %s timeout.", connection.getKey())));
+            } else {
+                nextRequestTimeoutMs =
+                        Math.min(
+                                nextRequestTimeoutMs,
+                                connection.getValue().nextTimeoutSinceNow(now));
+            }
+        }
+
+        assert nextRequestTimeoutMs > 0;
+        eventGroup.schedule(
+                this::handleTimeoutRequest, nextRequestTimeoutMs, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -133,11 +172,15 @@ public final class NettyClient implements RpcClient {
      */
     @Override
     public CompletableFuture<Void> disconnect(String serverUid) {
+        return disconnect(serverUid, null);
+    }
+
+    private CompletableFuture<Void> disconnect(String serverUid, Throwable throwable) {
         LOG.debug("Disconnecting from server {}.", serverUid);
         checkArgument(!isClosed, "Netty client is closed.");
         ServerConnection connection = connections.remove(serverUid);
         if (connection != null) {
-            return connection.close();
+            return throwable == null ? connection.close() : connection.close(throwable);
         }
         return FutureUtils.completedVoidFuture();
     }
@@ -190,14 +233,16 @@ public final class NettyClient implements RpcClient {
         return connections.computeIfAbsent(
                 serverId,
                 ignored -> {
-                    LOG.debug("Creating connection to server {}.", node);
+                    LOG.info("Creating connection to server {}.", node);
                     ServerConnection connection =
                             new ServerConnection(
                                     bootstrap,
                                     node,
                                     clientMetricGroup,
                                     authenticatorSupplier.get(),
-                                    isInnerClient);
+                                    isInnerClient,
+                                    requestTimeoutMs,
+                                    clock);
                     connection.whenClose(ignore -> connections.remove(serverId, connection));
                     return connection;
                 });
