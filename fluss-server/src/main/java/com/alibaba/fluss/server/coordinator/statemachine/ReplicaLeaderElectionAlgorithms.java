@@ -17,10 +17,8 @@
 
 package com.alibaba.fluss.server.coordinator.statemachine;
 
-import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 
 /** The algorithms to elect the replica leader. */
 public class ReplicaLeaderElectionAlgorithms {
@@ -34,22 +32,6 @@ public class ReplicaLeaderElectionAlgorithms {
             }
         }
 
-        return Optional.empty();
-    }
-
-    public static Optional<Integer> controlledShutdownReplicaLeaderElection(
-            List<Integer> assignments,
-            List<Integer> isr,
-            List<Integer> aliveReplicas,
-            Set<Integer> shutdownTabletServers) {
-        Set<Integer> isrSet = new HashSet<>(isr);
-        for (Integer id : assignments) {
-            if (aliveReplicas.contains(id)
-                    && isrSet.contains(id)
-                    && !shutdownTabletServers.contains(id)) {
-                return Optional.of(id);
-            }
-        }
         return Optional.empty();
     }
 }

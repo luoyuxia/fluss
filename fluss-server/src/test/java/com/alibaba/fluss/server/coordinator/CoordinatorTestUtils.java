@@ -43,7 +43,7 @@ public class CoordinatorTestUtils {
             TestCoordinatorChannelManager testCoordinatorChannelManager) {
         Map<Integer, TabletServerGateway> gateways =
                 makeTabletServerGateways(
-                        coordinatorContext.liveTabletServerIds(), Collections.emptySet());
+                        coordinatorContext.getLiveTabletServers().keySet(), Collections.emptySet());
         testCoordinatorChannelManager.setGateways(gateways);
     }
 
@@ -52,7 +52,8 @@ public class CoordinatorTestUtils {
             TestCoordinatorChannelManager testCoordinatorChannelManager,
             Set<Integer> failServers) {
         Map<Integer, TabletServerGateway> gateways =
-                makeTabletServerGateways(coordinatorContext.liveTabletServerIds(), failServers);
+                makeTabletServerGateways(
+                        coordinatorContext.getLiveTabletServers().keySet(), failServers);
         testCoordinatorChannelManager.setGateways(gateways);
     }
 
