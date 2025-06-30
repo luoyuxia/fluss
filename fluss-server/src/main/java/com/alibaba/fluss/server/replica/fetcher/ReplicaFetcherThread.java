@@ -224,7 +224,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     leader.leaderServerId());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            responseData = leader.fetchLog(fetchLogContext).get(timeoutSeconds, TimeUnit.SECONDS);
+            responseData = leader.fetchLog(fetchLogContext).get();
         } catch (Throwable t) {
             if (isRunning()) {
                 LOG.warn("Error in response for fetch log request {}", fetchLogRequest, t);
