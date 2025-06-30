@@ -133,7 +133,6 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                 errorResponse.parseFrom(buffer, messageSize);
                 ApiError error = ApiError.fromErrorMessage(errorResponse);
                 callback.onRequestFailure(requestId, error.exception());
-
             } else if (respType == ResponseType.SERVER_FAILURE) {
                 int messageSize = frameLength - SERVER_FAILURE_HEADER_LENGTH;
                 if (messageSize < 0) {

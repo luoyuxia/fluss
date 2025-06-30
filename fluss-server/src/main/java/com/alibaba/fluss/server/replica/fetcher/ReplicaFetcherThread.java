@@ -60,6 +60,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
@@ -217,6 +218,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         Set<TableBucket> bucketsWithError = new HashSet<>();
         FetchData responseData = null;
         FetchLogRequest fetchLogRequest = fetchLogContext.getFetchLogRequest();
+        CompletableFuture<FetchData> fetchLogFuture = null;
         try {
             LOG.trace(
                     "Sending fetch log request {} to leader {}",
@@ -224,8 +226,12 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     leader.leaderServerId());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            responseData = leader.fetchLog(fetchLogContext).get();
+            fetchLogFuture = leader.fetchLog(fetchLogContext);
+            responseData = leader.fetchLog(fetchLogContext).get(timeoutSeconds, TimeUnit.SECONDS);
         } catch (Throwable t) {
+            if (fetchLogFuture != null) {
+                fetchLogFuture.cancel(true);
+            }
             if (isRunning()) {
                 LOG.warn("Error in response for fetch log request {}", fetchLogRequest, t);
                 inLock(

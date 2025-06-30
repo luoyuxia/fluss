@@ -27,6 +27,7 @@ import com.alibaba.fluss.rpc.messages.ApiVersionsRequest;
 import com.alibaba.fluss.rpc.messages.ApiVersionsResponse;
 import com.alibaba.fluss.rpc.messages.AuthenticateRequest;
 import com.alibaba.fluss.rpc.messages.AuthenticateResponse;
+import com.alibaba.fluss.rpc.messages.FetchLogResponse;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.rpc.metrics.ConnectionMetricGroup;
 import com.alibaba.fluss.rpc.protocol.ApiKeys;
@@ -221,6 +222,12 @@ final class ServerConnection {
      */
     private final class ResponseCallback implements ClientHandlerCallback {
 
+        private final boolean isInnerClient;
+
+        private ResponseCallback(boolean isInnerClient) {
+            this.isInnerClient = isInnerClient;
+        }
+
         @Override
         public ApiMethod getRequestApiMethod(int requestId) {
             InflightRequest inflightRequest = inflightRequests.get(requestId);
@@ -234,12 +241,18 @@ final class ServerConnection {
         @Override
         public void onRequestResult(int requestId, ApiMessage response) {
             InflightRequest request = inflightRequests.remove(requestId);
-            if (request != null && !request.responseFuture.isDone()) {
-                connectionMetricGroup.updateMetricsAfterGetResponse(
-                        ApiKeys.forId(request.apiKey),
-                        request.requestStartTime,
-                        response.totalSize());
-                request.responseFuture.complete(response);
+            if (request != null) {
+                if (!request.responseFuture.isDone()) {
+                    connectionMetricGroup.updateMetricsAfterGetResponse(
+                            ApiKeys.forId(request.apiKey),
+                            request.requestStartTime,
+                            response.totalSize());
+                    request.responseFuture.complete(response);
+                } else {
+                    if (isInnerClient && response instanceof FetchLogResponse) {
+                        response.getParsedByteBuf().release();
+                    }
+                }
             }
         }
 
@@ -269,7 +282,8 @@ final class ServerConnection {
                 channel.pipeline()
                         .addLast(
                                 "handler",
-                                new NettyClientHandler(new ResponseCallback(), isInnerClient));
+                                new NettyClientHandler(
+                                        new ResponseCallback(isInnerClient), isInnerClient));
                 // start checking api versions
                 switchState(ConnectionState.CHECKING_API_VERSIONS);
                 // TODO: set correct client software name and version, used for metrics in server
