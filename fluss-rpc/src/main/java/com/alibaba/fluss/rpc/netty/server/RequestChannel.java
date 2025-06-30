@@ -32,8 +32,10 @@ public class RequestChannel {
     private static final Logger LOG = LoggerFactory.getLogger(RequestChannel.class);
 
     protected final BlockingQueue<RpcRequest> requestQueue;
+    private final int queueCapacity;
 
     public RequestChannel(int queueCapacity) {
+        this.queueCapacity = queueCapacity;
         this.requestQueue = new ArrayBlockingQueue<>(queueCapacity);
     }
 
@@ -43,6 +45,10 @@ public class RequestChannel {
      */
     public void putRequest(RpcRequest request) throws Exception {
         requestQueue.put(request);
+    }
+
+    public boolean isFull() {
+        return requestsCount() == queueCapacity;
     }
 
     /**

@@ -34,6 +34,7 @@ import com.alibaba.fluss.rpc.protocol.MessageCodec;
 import com.alibaba.fluss.security.auth.ServerAuthenticator;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
+import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelConfig;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelInboundHandlerAdapter;
@@ -133,7 +134,19 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                             ((InetSocketAddress) ctx.channel().remoteAddress()).getAddress(),
                             future);
 
-            future.whenCompleteAsync((r, t) -> sendResponse(ctx, request), ctx.executor());
+            future.whenCompleteAsync(
+                    (r, t) -> {
+                        sendResponse(ctx, request);
+                        if (!requestChannel.isFull()) {
+                            LOG.info("request channel is full, try to set to readable to true");
+                            ChannelConfig config = ctx.channel().config();
+                            if (config != null) {
+                                LOG.info("config is not null, set to readable to true");
+                                ctx.channel().config().setAutoRead(true);
+                            }
+                        }
+                    },
+                    ctx.executor());
             if (apiKey == ApiKeys.AUTHENTICATE.id
                     || (state.isAuthenticating() && apiKey != ApiKeys.API_VERSIONS.id)) {
                 // handle to authentication for 3 cases:
@@ -143,6 +156,15 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                 handleAuthenticateRequest(apiKey, requestMessage, future);
             } else {
                 requestChannel.putRequest(request);
+            }
+
+            if (requestChannel.isFull()) {
+                LOG.info("request channel is full, try to set to readable to false");
+                ChannelConfig config = ctx.channel().config();
+                if (config != null) {
+                    LOG.info("config is not null, set to readable to false");
+                    ctx.channel().config().setAutoRead(false);
+                }
             }
 
             if (!state.isActive()) {
