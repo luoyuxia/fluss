@@ -417,7 +417,7 @@ public class FlussAuthorizationITCase {
                         Collections.singleton(DATA1_TABLE_PATH_PK), null, null);
 
         try (RpcClient rpcClient =
-                RpcClient.create(guestConf, TestingClientMetricGroup.newInstance(), false)) {
+                RpcClient.create(guestConf, TestingClientMetricGroup.newInstance())) {
             AdminGateway guestGateway =
                     GatewayClientProxy.createGatewayProxy(
                             () -> FLUSS_CLUSTER_EXTENSION.getCoordinatorServerNode("CLIENT"),

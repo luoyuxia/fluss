@@ -26,8 +26,7 @@ import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
 import com.alibaba.fluss.rpc.messages.FetchLogRequest;
-import com.alibaba.fluss.rpc.messages.FetchLogResponse;
-import com.alibaba.fluss.server.entity.FetchReqInfo;
+import com.alibaba.fluss.server.entity.FetchData;
 import com.alibaba.fluss.server.log.FetchParams;
 import com.alibaba.fluss.server.replica.Replica;
 import com.alibaba.fluss.server.replica.ReplicaManager;
@@ -84,17 +83,17 @@ public class TestingLeaderEndpoint implements LeaderEndpoint {
     }
 
     @Override
-    public CompletableFuture<FetchData> fetchLog(FetchLogContext fetchLogContext) {
-        CompletableFuture<FetchData> response = new CompletableFuture<>();
+    public CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> fetchLog(
+            FetchLogContext fetchLogContext) {
+        CompletableFuture<Map<TableBucket, FetchLogResultForBucket>> response =
+                new CompletableFuture<>();
         FetchLogRequest fetchLogRequest = fetchLogContext.getFetchLogRequest();
-        Map<TableBucket, FetchReqInfo> fetchLogData = getFetchLogData(fetchLogRequest);
+        Map<TableBucket, FetchData> fetchLogData = getFetchLogData(fetchLogRequest);
         replicaManager.fetchLogRecords(
                 new FetchParams(
                         fetchLogRequest.getFollowerServerId(), fetchLogRequest.getMaxBytes()),
                 fetchLogData,
-                result ->
-                        response.complete(
-                                new FetchData(new FetchLogResponse(), processResult(result))));
+                result -> response.complete(processResult(result)));
         return response;
     }
 

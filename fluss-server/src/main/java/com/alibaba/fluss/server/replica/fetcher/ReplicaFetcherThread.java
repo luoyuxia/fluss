@@ -38,8 +38,6 @@ import com.alibaba.fluss.server.log.remote.RemoteLogStorage.IndexType;
 import com.alibaba.fluss.server.metrics.group.TabletServerMetricGroup;
 import com.alibaba.fluss.server.replica.Replica;
 import com.alibaba.fluss.server.replica.ReplicaManager;
-import com.alibaba.fluss.server.replica.fetcher.LeaderEndpoint.FetchData;
-import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
@@ -56,6 +54,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
@@ -215,7 +214,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     // TODO add fetch session to reduce the fetch request byte size.
     private void processFetchLogRequest(FetchLogContext fetchLogContext) {
         Set<TableBucket> bucketsWithError = new HashSet<>();
-        FetchData responseData = null;
+        Map<TableBucket, FetchLogResultForBucket> responseData = new HashMap<>();
         FetchLogRequest fetchLogRequest = fetchLogContext.getFetchLogRequest();
         try {
             LOG.trace(
@@ -234,16 +233,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             }
         }
 
-        if (responseData != null) {
+        if (!responseData.isEmpty()) {
             bucketStatusMapLock.lock();
             try {
-                handleFetchLogResponse(responseData.getFetchLogResultMap(), bucketsWithError);
+                handleFetchLogResponse(responseData, bucketsWithError);
             } finally {
-                // release buffer handle by fetchLogResponse.
-                ByteBuf parsedByteBuf = responseData.getFetchLogResponse().getParsedByteBuf();
-                if (parsedByteBuf != null) {
-                    parsedByteBuf.release();
-                }
                 bucketStatusMapLock.unlock();
             }
         }

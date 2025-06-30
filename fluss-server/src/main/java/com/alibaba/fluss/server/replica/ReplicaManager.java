@@ -54,7 +54,7 @@ import com.alibaba.fluss.rpc.messages.NotifyRemoteLogOffsetsResponse;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.rpc.protocol.Errors;
 import com.alibaba.fluss.server.coordinator.CoordinatorContext;
-import com.alibaba.fluss.server.entity.FetchReqInfo;
+import com.alibaba.fluss.server.entity.FetchData;
 import com.alibaba.fluss.server.entity.LakeBucketOffset;
 import com.alibaba.fluss.server.entity.NotifyKvSnapshotOffsetData;
 import com.alibaba.fluss.server.entity.NotifyLakeTableOffsetData;
@@ -414,7 +414,7 @@ public class ReplicaManager {
      */
     public void fetchLogRecords(
             FetchParams params,
-            Map<TableBucket, FetchReqInfo> bucketFetchInfo,
+            Map<TableBucket, FetchData> bucketFetchInfo,
             Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
         long startTime = System.currentTimeMillis();
         Map<TableBucket, LogReadResult> logReadResults = readFromLog(params, bucketFetchInfo);
@@ -982,17 +982,17 @@ public class ReplicaManager {
     }
 
     public Map<TableBucket, LogReadResult> readFromLog(
-            FetchParams fetchParams, Map<TableBucket, FetchReqInfo> bucketFetchInfo) {
+            FetchParams fetchParams, Map<TableBucket, FetchData> bucketFetchInfo) {
         Map<TableBucket, LogReadResult> logReadResult = new HashMap<>();
         boolean isFromFollower = fetchParams.isFromFollower();
         int limitBytes = fetchParams.maxFetchBytes();
-        for (Map.Entry<TableBucket, FetchReqInfo> entry : bucketFetchInfo.entrySet()) {
+        for (Map.Entry<TableBucket, FetchData> entry : bucketFetchInfo.entrySet()) {
             TableBucket tb = entry.getKey();
             PhysicalTableMetricGroup tableMetrics = null;
             Replica replica = null;
-            FetchReqInfo fetchReqInfo = entry.getValue();
-            long fetchOffset = fetchReqInfo.getFetchOffset();
-            int adjustedMaxBytes = Math.min(limitBytes, fetchReqInfo.getMaxBytes());
+            FetchData fetchData = entry.getValue();
+            long fetchOffset = fetchData.getFetchOffset();
+            int adjustedMaxBytes = Math.min(limitBytes, fetchData.getMaxBytes());
             try {
                 replica = getReplicaOrException(tb);
                 tableMetrics = replica.tableMetrics();
@@ -1000,15 +1000,15 @@ public class ReplicaManager {
                 LOG.trace(
                         "Fetching log record for replica {}, offset {}",
                         tb,
-                        fetchReqInfo.getFetchOffset());
-                replica.checkProjection(fetchReqInfo.getProjectFields());
+                        fetchData.getFetchOffset());
+                replica.checkProjection(fetchData.getProjectFields());
                 fetchParams.setCurrentFetch(
                         tb.getTableId(),
                         fetchOffset,
                         adjustedMaxBytes,
                         replica.getRowType(),
                         replica.getArrowCompressionInfo(),
-                        fetchReqInfo.getProjectFields());
+                        fetchData.getProjectFields());
                 LogReadInfo readInfo = replica.fetchRecords(fetchParams);
 
                 // Once we read from a non-empty bucket, we stop ignoring request and bucket
@@ -1219,7 +1219,7 @@ public class ReplicaManager {
 
     private void maybeAddDelayedFetchLog(
             FetchParams params,
-            Map<TableBucket, FetchReqInfo> bucketFetchInfo,
+            Map<TableBucket, FetchData> bucketFetchInfo,
             Map<TableBucket, LogReadResult> logReadResults,
             Consumer<Map<TableBucket, FetchLogResultForBucket>> responseCallback) {
         long bytesReadable = 0;
@@ -1526,11 +1526,6 @@ public class ReplicaManager {
     @VisibleForTesting
     public AdjustIsrManager getAdjustIsrManager() {
         return adjustIsrManager;
-    }
-
-    @VisibleForTesting
-    public ReplicaFetcherManager getReplicaFetcherManager() {
-        return replicaFetcherManager;
     }
 
     public TabletServerMetricGroup getServerMetricGroup() {
