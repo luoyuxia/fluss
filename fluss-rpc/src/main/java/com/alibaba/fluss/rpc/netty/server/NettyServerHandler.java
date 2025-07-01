@@ -34,6 +34,7 @@ import com.alibaba.fluss.rpc.protocol.MessageCodec;
 import com.alibaba.fluss.security.auth.ServerAuthenticator;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.PooledByteBufAllocator;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelConfig;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
@@ -42,9 +43,11 @@ import com.alibaba.fluss.shaded.netty4.io.netty.handler.timeout.IdleState;
 import com.alibaba.fluss.shaded.netty4.io.netty.handler.timeout.IdleStateEvent;
 import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.IOUtils;
+import com.alibaba.fluss.utils.concurrent.FlussScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.misc.VM;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -71,6 +74,7 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
     private SocketAddress remoteAddress;
 
     private final ServerAuthenticator authenticator;
+    private final long maxDirectMemory;
 
     private volatile ConnectionState state;
     private volatile boolean initialized = false;
@@ -89,6 +93,26 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
         this.requestsMetrics = requestsMetrics;
         this.authenticator = authenticator;
         this.state = ConnectionState.START;
+        this.maxDirectMemory = VM.maxDirectMemory();
+
+        FlussScheduler scheduler = new FlussScheduler(1);
+        scheduler.startup();
+
+        scheduler.schedule(
+                "check-request-channel-full",
+                () -> {
+                    long directUsed = PooledByteBufAllocator.DEFAULT.metric().usedDirectMemory();
+                    ChannelConfig config = ctx.channel().config();
+                    if (config != null) {
+                        if (directUsed < maxDirectMemory * 0.7 && !config.isAutoRead()) {
+                            LOG.info(
+                                    "request channel is not full, try to set to readable by scheduler");
+                            config.setAutoRead(true);
+                        }
+                    }
+                },
+                0,
+                3000);
     }
 
     @Override
@@ -137,12 +161,13 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
             future.whenCompleteAsync(
                     (r, t) -> {
                         sendResponse(ctx, request);
-                        if (ctx.channel().isWritable()) {
-                            LOG.info(
-                                    "request channel is not writeable, try to set to readable to true");
-                            ChannelConfig config = ctx.channel().config();
-                            if (config != null) {
-                                LOG.info("config is not null, set to readable to true");
+                        long directUsed =
+                                PooledByteBufAllocator.DEFAULT.metric().usedDirectMemory();
+                        ChannelConfig config = ctx.channel().config();
+                        if (config != null) {
+                            if (directUsed < maxDirectMemory * 0.7 && !config.isAutoRead()) {
+                                LOG.info(
+                                        "request channel is readable, try to set to readable to true by request finish");
                                 config.setAutoRead(true);
                             }
                         }
@@ -159,12 +184,16 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                 requestChannel.putRequest(request);
             }
 
-            if (!ctx.channel().isWritable()) {
-                LOG.info("request channel is full, try to set to readable to false");
-                ChannelConfig config = ctx.channel().config();
-                if (config != null) {
-                    LOG.info("config is not null, set to readable to false");
+            long directUsed = PooledByteBufAllocator.DEFAULT.metric().usedDirectMemory();
+            ChannelConfig config = ctx.channel().config();
+            if (config != null) {
+                if (directUsed >= maxDirectMemory * 0.7) {
+                    LOG.info("request channel is full, try to set to readable to false");
                     config.setAutoRead(false);
+                } else if (directUsed < maxDirectMemory * 0.7 && !config.isAutoRead()) {
+                    LOG.info(
+                            "request channel is readable, try to set to readable to true by new request");
+                    config.setAutoRead(true);
                 }
             }
 
