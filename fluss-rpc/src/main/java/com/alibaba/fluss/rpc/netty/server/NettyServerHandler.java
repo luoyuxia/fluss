@@ -94,25 +94,6 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
         this.authenticator = authenticator;
         this.state = ConnectionState.START;
         this.maxDirectMemory = PlatformDependent.maxDirectMemory();
-
-        FlussScheduler scheduler = new FlussScheduler(1);
-        scheduler.startup();
-
-        scheduler.schedule(
-                "check-request-channel-full",
-                () -> {
-                    long directUsed = PooledByteBufAllocator.DEFAULT.metric().usedDirectMemory();
-                    ChannelConfig config = ctx.channel().config();
-                    if (config != null) {
-                        if (directUsed < maxDirectMemory * 0.7 && !config.isAutoRead()) {
-                            LOG.info(
-                                    "request channel is not full, try to set to readable by scheduler");
-                            config.setAutoRead(true);
-                        }
-                    }
-                },
-                0,
-                3000);
     }
 
     @Override
@@ -222,6 +203,24 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                 authenticator.isCompleted()
                         ? ConnectionState.READY
                         : ConnectionState.AUTHENTICATING);
+
+        FlussScheduler scheduler = new FlussScheduler(1);
+        scheduler.startup();
+        scheduler.schedule(
+                "check-request-channel-full",
+                () -> {
+                    long directUsed = PooledByteBufAllocator.DEFAULT.metric().usedDirectMemory();
+                    ChannelConfig config = ctx.channel().config();
+                    if (config != null) {
+                        if (directUsed < maxDirectMemory * 0.7 && !config.isAutoRead()) {
+                            LOG.info(
+                                    "request channel is not full, try to set to readable by scheduler");
+                            config.setAutoRead(true);
+                        }
+                    }
+                },
+                0,
+                3000);
 
         // TODO: connection metrics (count, client tags, receive request avg idle time, etc.)
     }
