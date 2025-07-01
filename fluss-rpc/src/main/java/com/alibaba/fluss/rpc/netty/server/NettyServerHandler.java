@@ -137,12 +137,13 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
             future.whenCompleteAsync(
                     (r, t) -> {
                         sendResponse(ctx, request);
-                        if (!requestChannel.isFull()) {
-                            LOG.info("request channel is full, try to set to readable to true");
+                        if (requestChannel.lowerThanHalfCount()) {
+                            LOG.info(
+                                    "request channel is lower than half size, try to set to readable to true");
                             ChannelConfig config = ctx.channel().config();
                             if (config != null) {
                                 LOG.info("config is not null, set to readable to true");
-                                ctx.channel().config().setAutoRead(true);
+                                config.setAutoRead(true);
                             }
                         }
                     },
@@ -163,7 +164,7 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                 ChannelConfig config = ctx.channel().config();
                 if (config != null) {
                     LOG.info("config is not null, set to readable to false");
-                    ctx.channel().config().setAutoRead(false);
+                    config.setAutoRead(false);
                 }
             }
 

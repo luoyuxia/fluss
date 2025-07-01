@@ -78,4 +78,8 @@ public class RequestChannel {
     int requestsCount() {
         return requestQueue.size();
     }
+
+    boolean lowerThanHalfCount() {
+        return requestQueue.size() < queueCapacity / 2;
+    }
 }
