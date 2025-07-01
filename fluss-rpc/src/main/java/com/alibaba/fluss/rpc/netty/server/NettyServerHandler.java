@@ -41,13 +41,13 @@ import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelInboundHandlerAdapter;
 import com.alibaba.fluss.shaded.netty4.io.netty.handler.timeout.IdleState;
 import com.alibaba.fluss.shaded.netty4.io.netty.handler.timeout.IdleStateEvent;
+import com.alibaba.fluss.shaded.netty4.io.netty.util.internal.PlatformDependent;
 import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.IOUtils;
 import com.alibaba.fluss.utils.concurrent.FlussScheduler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import sun.misc.VM;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -93,7 +93,7 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
         this.requestsMetrics = requestsMetrics;
         this.authenticator = authenticator;
         this.state = ConnectionState.START;
-        this.maxDirectMemory = VM.maxDirectMemory();
+        this.maxDirectMemory = PlatformDependent.maxDirectMemory();
 
         FlussScheduler scheduler = new FlussScheduler(1);
         scheduler.startup();
