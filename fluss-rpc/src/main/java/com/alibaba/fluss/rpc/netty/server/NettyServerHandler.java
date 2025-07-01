@@ -34,7 +34,6 @@ import com.alibaba.fluss.rpc.protocol.MessageCodec;
 import com.alibaba.fluss.security.auth.ServerAuthenticator;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
-import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelConfig;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelInboundHandlerAdapter;
@@ -134,20 +133,8 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                             ((InetSocketAddress) ctx.channel().remoteAddress()).getAddress(),
                             future);
 
-            future.whenCompleteAsync(
-                    (r, t) -> {
-                        sendResponse(ctx, request);
-                        if (ctx.channel().isWritable()) {
-                            LOG.info(
-                                    "request channel is not writeable, try to set to readable to true");
-                            ChannelConfig config = ctx.channel().config();
-                            if (config != null) {
-                                LOG.info("config is not null, set to readable to true");
-                                config.setAutoRead(true);
-                            }
-                        }
-                    },
-                    ctx.executor());
+            future.whenCompleteAsync((r, t) -> sendResponse(ctx, request), ctx.executor());
+
             if (apiKey == ApiKeys.AUTHENTICATE.id
                     || (state.isAuthenticating() && apiKey != ApiKeys.API_VERSIONS.id)) {
                 // handle to authentication for 3 cases:
@@ -157,15 +144,6 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                 handleAuthenticateRequest(apiKey, requestMessage, future);
             } else {
                 requestChannel.putRequest(request);
-            }
-
-            if (!ctx.channel().isWritable()) {
-                LOG.info("request channel is full, try to set to readable to false");
-                ChannelConfig config = ctx.channel().config();
-                if (config != null) {
-                    LOG.info("config is not null, set to readable to false");
-                    config.setAutoRead(false);
-                }
             }
 
             if (!state.isActive()) {
@@ -228,6 +206,18 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
         ByteBuf byteBuf = encodeServerFailure(ctx.alloc(), ApiError.fromThrowable(cause));
         ctx.writeAndFlush(byteBuf).addListener(ChannelFutureListener.CLOSE);
         close();
+    }
+
+    @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) {
+        boolean isWritable = ctx.channel().isWritable();
+
+        ctx.channel().config().setAutoRead(isWritable);
+        LOG.info(
+                "request channel writability changed to {}",
+                isWritable ? "Writable" : "Not Writable");
+
+        ctx.fireChannelWritabilityChanged();
     }
 
     private void close() {

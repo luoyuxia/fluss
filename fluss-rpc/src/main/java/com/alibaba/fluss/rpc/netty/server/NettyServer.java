@@ -162,7 +162,7 @@ public final class NettyServer implements RpcServer {
                 new AdaptiveRecvByteBufAllocator(1024, 16 * 1024, 1024 * 1024));
         bootstrap.childOption(
                 ChannelOption.WRITE_BUFFER_WATER_MARK,
-                new WriteBufferWaterMark(32 * 1024, 64 * 1024));
+                new WriteBufferWaterMark(16 * 1024, 32 * 1024));
 
         bootstrap.channel(NettyUtils.getServerSocketChannelClass(selectorGroup));
 
