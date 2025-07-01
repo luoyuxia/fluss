@@ -35,6 +35,7 @@ import com.alibaba.fluss.shaded.netty4.io.netty.channel.Channel;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandler;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelOption;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.EventLoopGroup;
+import com.alibaba.fluss.shaded.netty4.io.netty.channel.WriteBufferWaterMark;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
 import org.slf4j.Logger;
@@ -159,6 +160,10 @@ public final class NettyServer implements RpcServer {
         bootstrap.childOption(
                 ChannelOption.RCVBUF_ALLOCATOR,
                 new AdaptiveRecvByteBufAllocator(1024, 16 * 1024, 1024 * 1024));
+        bootstrap.childOption(
+                ChannelOption.WRITE_BUFFER_WATER_MARK,
+                new WriteBufferWaterMark(32 * 1024, 64 * 1024));
+
         bootstrap.channel(NettyUtils.getServerSocketChannelClass(selectorGroup));
 
         // child channel pipeline for accepted connections
