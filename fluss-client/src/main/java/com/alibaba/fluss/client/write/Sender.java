@@ -554,6 +554,17 @@ public class Sender implements Runnable {
             // sequence has advanced beyond the sequence of the current batch.
             // The only thing we can do is to return success to the user.
             completeBatch(readyWriteBatch);
+        } else if (error.error() == Errors.OUT_OF_ORDER_SEQUENCE_EXCEPTION) {
+            LOG.warn(
+                    "Received out of order sequence error in write request on bucket {}. Error: {}",
+                    readyWriteBatch.tableBucket(),
+                    error.formatErrMsg());
+            // re-enqueue the table, to have it send again
+            reEnqueueBatch(readyWriteBatch);
+            // if out of order sequence, we reset the writer id and the sequence
+            // of the inflight write batch, then the sender will assign a new writer
+            // id and sequence id for the batches
+            idempotenceManager.resetWriteIdAndSequence(readyWriteBatch);
         } else {
             LOG.warn(
                     "Get error write response on table bucket {}, fail. Error: {}",
