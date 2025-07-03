@@ -36,6 +36,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.ThreadSafe;
 
+import java.util.Collections;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -127,6 +128,20 @@ public class IdempotenceManager {
     synchronized void resetWriterId() {
         setWriterId(NO_WRITER_ID);
         this.idempotenceBucketMap.reset();
+    }
+
+    synchronized void resetWriterIdAndUpdateBatchSequence(ReadyWriteBatch readyWriteBatch)
+            throws Throwable {
+        // set no writer id
+        setWriterId(NO_WRITER_ID);
+        // reset idempotence
+        this.idempotenceBucketMap.reset();
+        // init a new writer id
+        this.maybeWaitForWriterId(
+                Collections.singleton(readyWriteBatch.writeBatch().physicalTablePath()));
+
+        // then, let's update write_id + sequence_id the write batches in flight request
+        this.idempotenceBucketMap.resetSequencesNumber(readyWriteBatch);
     }
 
     synchronized boolean hasStaleWriterId(TableBucket tableBucket) {

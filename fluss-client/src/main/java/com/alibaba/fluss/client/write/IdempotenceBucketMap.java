@@ -99,6 +99,16 @@ public class IdempotenceBucketMap {
         get(tableBucket).adjustSequencesDueToFailedBatch(batch);
     }
 
+    void resetSequencesNumber(ReadyWriteBatch readyBatch) {
+        TableBucket tableBucket = readyBatch.tableBucket();
+        if (!contains(tableBucket)) {
+            // Batch sequence are not being tracked for this bucket. This could happen if the
+            // writer id was just reset due to a previous OutOfOrderSequenceException.
+            return;
+        }
+        get(tableBucket).resetSequenceNumbers();
+    }
+
     int maybeUpdateLastAckedSequence(TableBucket tableBucket, int sequence) {
         IdempotenceBucketEntry entry = tableBuckets.get(tableBucket);
         if (entry != null) {

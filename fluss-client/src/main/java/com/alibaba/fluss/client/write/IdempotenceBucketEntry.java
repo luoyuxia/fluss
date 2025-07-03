@@ -166,6 +166,14 @@ public class IdempotenceBucketEntry {
                 });
     }
 
+    void resetSequenceNumbers() {
+        resetSequenceNumbers(
+                inFlightBatch -> {
+                    inFlightBatch.resetWriterState(writerId, nextSequence());
+                    incrementSequence();
+                });
+    }
+
     private void resetSequenceNumbers(Consumer<WriteBatch> resetSequence) {
         TreeSet<WriteBatch> newInflights = new TreeSet<>(WRITE_BATCH_COMPARATOR);
         for (WriteBatch inflightBatch : inflightBatchesBySequence) {
