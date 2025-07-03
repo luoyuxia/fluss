@@ -227,7 +227,7 @@ public class Sender implements Runnable {
                     readyCheckResult.unknownLeaderTables);
         }
 
-        Set<ServerNode> readyNodes = readyCheckResult.readyNodes;
+        Set<Integer> readyNodes = readyCheckResult.readyNodes;
         if (readyNodes.isEmpty()) {
             // TODO The method sendWriteData is in a busy loop. If there is no data continuously, it
             // will cause the CPU to be occupied.
