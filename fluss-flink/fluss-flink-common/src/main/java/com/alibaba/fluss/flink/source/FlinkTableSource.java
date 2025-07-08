@@ -19,6 +19,7 @@ package com.alibaba.fluss.flink.source;
 
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.FlinkConnectorOptions;
+import com.alibaba.fluss.flink.lake.LakeFlussHybridSourceBuilder;
 import com.alibaba.fluss.flink.source.deserializer.RowDataDeserializationSchema;
 import com.alibaba.fluss.flink.source.enumerator.initializer.OffsetsInitializer;
 import com.alibaba.fluss.flink.source.lookup.FlinkAsyncLookupFunction;
@@ -123,6 +124,8 @@ public class FlinkTableSource
     // whether the scan is for row-level modification
     @Nullable private RowLevelModificationType modificationScanType;
 
+    @Nullable private LakeFlussHybridSourceBuilder hybridSourceBuilder;
+
     // count(*) push down
     protected boolean selectRowCount = false;
 
@@ -162,6 +165,11 @@ public class FlinkTableSource
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.isDataLakeEnabled = isDataLakeEnabled;
         this.mergeEngineType = mergeEngineType;
+
+        this.hybridSourceBuilder =
+                isDataLakeEnabled && streaming
+                        ? LakeFlussHybridSourceBuilder.builder(tablePath, flussConfig)
+                        : null;
     }
 
     @Override
@@ -258,20 +266,38 @@ public class FlinkTableSource
                         "Unsupported startup mode: " + startupOptions.startupMode);
         }
 
-        FlinkSource<RowData> source =
-                new FlinkSource<>(
-                        flussConfig,
-                        tablePath,
-                        hasPrimaryKey(),
-                        isPartitioned(),
-                        flussRowType,
-                        projectedFields,
-                        offsetsInitializer,
-                        scanPartitionDiscoveryIntervalMs,
-                        new RowDataDeserializationSchema(),
-                        streaming,
-                        partitionFilters);
-
+        Source<RowData, ?, ?> source;
+        if (hybridSourceBuilder != null) {
+            source =
+                    hybridSourceBuilder
+                            .setFlussFlinkSourceBuilder(
+                                    FlinkSource.Builder.newBuilder(
+                                            flussConfig,
+                                            tablePath,
+                                            hasPrimaryKey(),
+                                            isPartitioned(),
+                                            flussRowType,
+                                            projectedFields,
+                                            scanPartitionDiscoveryIntervalMs,
+                                            new RowDataDeserializationSchema(),
+                                            streaming,
+                                            partitionFilters))
+                            .build();
+        } else {
+            source =
+                    new FlinkSource<>(
+                            flussConfig,
+                            tablePath,
+                            hasPrimaryKey(),
+                            isPartitioned(),
+                            flussRowType,
+                            projectedFields,
+                            offsetsInitializer,
+                            scanPartitionDiscoveryIntervalMs,
+                            new RowDataDeserializationSchema(),
+                            streaming,
+                            partitionFilters);
+        }
         if (!streaming) {
             // return a bounded source provide to make planner happy,
             // but this should throw exception when used to create source
@@ -380,12 +406,20 @@ public class FlinkTableSource
 
     @Override
     public void applyProjection(int[][] projectedFields, DataType producedDataType) {
+        if (hybridSourceBuilder != null) {
+            hybridSourceBuilder.setProjectionFields(projectedFields);
+        }
+
         this.projectedFields = Arrays.stream(projectedFields).mapToInt(value -> value[0]).toArray();
         this.producedDataType = producedDataType.getLogicalType();
     }
 
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
+        if (hybridSourceBuilder != null) {
+            hybridSourceBuilder.setFilters(filters);
+        }
+
         List<ResolvedExpression> acceptedFilters = new ArrayList<>();
         List<ResolvedExpression> remainingFilters = new ArrayList<>();
 

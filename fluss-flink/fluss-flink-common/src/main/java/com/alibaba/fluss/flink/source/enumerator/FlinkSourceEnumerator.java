@@ -42,7 +42,6 @@ import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.DataField;
 import com.alibaba.fluss.utils.ExceptionUtils;
-
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SplitEnumerator;
@@ -53,7 +52,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -68,6 +66,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.flink.source.enumerator.TableBucketAssigner.assignTableBucket;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 import static com.alibaba.fluss.utils.Preconditions.checkState;
 
@@ -635,12 +634,6 @@ public class FlinkSourceEnumerator
     @VisibleForTesting
     protected int getSplitOwner(SourceSplitBase split) {
         TableBucket tableBucket = split.getTableBucket();
-        int startIndex =
-                tableBucket.getPartitionId() == null
-                        ? 0
-                        : ((tableBucket.getPartitionId().hashCode() * 31) & 0x7FFFFFFF)
-                                % context.currentParallelism();
-
         // super hack logic, if the bucket is -1, it means the split is
         // for bucket unaware, like paimon unaware bucket log table,
         // we use hash split id to get the split owner
@@ -648,8 +641,7 @@ public class FlinkSourceEnumerator
         if (split.isLakeSplit() && tableBucket.getBucket() == -1) {
             return (split.splitId().hashCode() & 0x7FFFFFFF) % context.currentParallelism();
         }
-
-        return (startIndex + tableBucket.getBucket()) % context.currentParallelism();
+        return assignTableBucket(tableBucket, context.currentParallelism());
     }
 
     private void checkReaderRegistered(int readerId) {

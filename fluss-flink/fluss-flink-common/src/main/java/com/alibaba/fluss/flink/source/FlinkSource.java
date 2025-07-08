@@ -33,7 +33,6 @@ import com.alibaba.fluss.flink.source.state.SourceEnumeratorState;
 import com.alibaba.fluss.flink.utils.PushdownUtils.FieldEqual;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
-
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
@@ -47,7 +46,7 @@ import org.apache.flink.connector.base.source.reader.synchronization.FutureCompl
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 
 import javax.annotation.Nullable;
-
+import java.io.Serializable;
 import java.util.List;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
@@ -172,5 +171,90 @@ public class FlinkSource<OUT>
     @Override
     public TypeInformation<OUT> getProducedType() {
         return deserializationSchema.getProducedType(sourceOutputType);
+    }
+
+    /** . */
+    public static class Builder<OUT> implements Serializable {
+        private static final long serialVersionUID = 1L;
+
+        private final Configuration flussConf;
+        private final TablePath tablePath;
+        private final boolean hasPrimaryKey;
+        private final boolean isPartitioned;
+        private final RowType sourceOutputType;
+        @Nullable private final int[] projectedFields;
+        protected OffsetsInitializer offsetsInitializer;
+        protected final long scanPartitionDiscoveryIntervalMs;
+        private final boolean streaming;
+        private final FlussDeserializationSchema<OUT> deserializationSchema;
+
+        private final List<FieldEqual> partitionFilters;
+
+        private Builder(
+                Configuration flussConf,
+                TablePath tablePath,
+                boolean hasPrimaryKey,
+                boolean isPartitioned,
+                RowType sourceOutputType,
+                @Nullable int[] projectedFields,
+                long scanPartitionDiscoveryIntervalMs,
+                FlussDeserializationSchema<OUT> deserializationSchema,
+                boolean streaming,
+                List<FieldEqual> partitionFilters) {
+            this.flussConf = flussConf;
+            this.tablePath = tablePath;
+            this.hasPrimaryKey = hasPrimaryKey;
+            this.isPartitioned = isPartitioned;
+            this.sourceOutputType = sourceOutputType;
+            this.projectedFields = projectedFields;
+            this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
+            this.deserializationSchema = deserializationSchema;
+            this.streaming = streaming;
+            this.partitionFilters = partitionFilters;
+        }
+
+        public static <OUT> Builder<OUT> newBuilder(
+                Configuration flussConf,
+                TablePath tablePath,
+                boolean hasPrimaryKey,
+                boolean isPartitioned,
+                RowType sourceOutputType,
+                @Nullable int[] projectedFields,
+                long scanPartitionDiscoveryIntervalMs,
+                FlussDeserializationSchema<OUT> deserializationSchema,
+                boolean streaming,
+                List<FieldEqual> partitionFilters) {
+            return new Builder<>(
+                    flussConf,
+                    tablePath,
+                    hasPrimaryKey,
+                    isPartitioned,
+                    sourceOutputType,
+                    projectedFields,
+                    scanPartitionDiscoveryIntervalMs,
+                    deserializationSchema,
+                    streaming,
+                    partitionFilters);
+        }
+
+        public Builder<OUT> setOffsetsInitializer(OffsetsInitializer offsetsInitializer) {
+            this.offsetsInitializer = offsetsInitializer;
+            return this;
+        }
+
+        public FlinkSource<OUT> build() {
+            return new FlinkSource<>(
+                    flussConf,
+                    tablePath,
+                    hasPrimaryKey,
+                    isPartitioned,
+                    sourceOutputType,
+                    projectedFields,
+                    offsetsInitializer,
+                    scanPartitionDiscoveryIntervalMs,
+                    deserializationSchema,
+                    streaming,
+                    partitionFilters);
+        }
     }
 }
