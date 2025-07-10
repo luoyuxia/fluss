@@ -134,7 +134,7 @@ public final class CoordinatorEventManager implements EventManager {
 
             long eventStartTimeMs = System.currentTimeMillis();
 
-            log.debug(
+            LOG.debug(
                     "Start processing event {} of event type {}.",
                     coordinatorEvent,
                     coordinatorEvent.getClass());
@@ -148,7 +148,7 @@ public final class CoordinatorEventManager implements EventManager {
             } finally {
                 long costTimeMs = System.currentTimeMillis() - eventStartTimeMs;
                 eventProcessTime.update(costTimeMs);
-                log.debug(
+                LOG.debug(
                         "Finished processing event {} of event type {} in {}ms.",
                         coordinatorEvent,
                         coordinatorEvent.getClass(),
