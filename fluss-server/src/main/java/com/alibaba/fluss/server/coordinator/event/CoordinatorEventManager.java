@@ -129,6 +129,10 @@ public final class CoordinatorEventManager implements EventManager {
 
             long eventStartTimeMs = System.currentTimeMillis();
 
+            LOG.debug(
+                    "Start processing event {} of event type {}.",
+                    coordinatorEvent,
+                    coordinatorEvent.getClass());
             try {
                 if (!(coordinatorEvent instanceof ShutdownEventThreadEvent)) {
                     eventQueueTime.update(System.currentTimeMillis() - queuedEvent.enqueueTimeMs);
@@ -137,8 +141,13 @@ public final class CoordinatorEventManager implements EventManager {
             } catch (Throwable e) {
                 log.error("Uncaught error processing event {}.", coordinatorEvent, e);
             } finally {
-                long eventFinishTimeMs = System.currentTimeMillis();
-                eventProcessTime.update(eventFinishTimeMs - eventStartTimeMs);
+                long costTimeMs = System.currentTimeMillis() - eventStartTimeMs;
+                eventProcessTime.update(costTimeMs);
+                LOG.debug(
+                        "Finished processing event {} of event type {} in {}ms.",
+                        coordinatorEvent,
+                        coordinatorEvent.getClass(),
+                        costTimeMs);
             }
         }
     }
