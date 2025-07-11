@@ -247,6 +247,12 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         // apply system defaults if the config is not set
         tableDescriptor = applySystemDefaults(tableDescriptor);
 
+        if (tableDescriptor.hasPrimaryKey()) {
+            throw new InvalidTableException(
+                    "Currently, Primary-key table is not support in this cluster. if you want "
+                            + "use Primary-key table, please contact 温粥(263086) for help.");
+        }
+
         // the distribution and bucket count must be set now
         //noinspection OptionalGetWithoutIsPresent
         int bucketCount = tableDescriptor.getTableDistribution().get().getBucketCount().get();
