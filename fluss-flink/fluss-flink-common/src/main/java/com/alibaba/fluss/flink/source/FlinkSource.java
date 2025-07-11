@@ -30,6 +30,8 @@ import com.alibaba.fluss.flink.source.split.SourceSplitSerializer;
 import com.alibaba.fluss.flink.source.state.FlussSourceEnumeratorStateSerializer;
 import com.alibaba.fluss.flink.source.state.SourceEnumeratorState;
 import com.alibaba.fluss.flink.utils.PushdownUtils.FieldEqual;
+import com.alibaba.fluss.lake.source1.LakeSource;
+import com.alibaba.fluss.lake.source1.LakeSplit;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
 
@@ -44,6 +46,7 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.synchronization.FutureCompletingBlockingQueue;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.util.function.SerializableSupplier;
 
 import javax.annotation.Nullable;
 
@@ -69,6 +72,8 @@ public class FlinkSource<OUT>
 
     private final List<FieldEqual> partitionFilters;
 
+    final @Nullable private SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier;
+
     public FlinkSource(
             Configuration flussConf,
             TablePath tablePath,
@@ -81,6 +86,34 @@ public class FlinkSource<OUT>
             FlussDeserializationSchema<OUT> deserializationSchema,
             boolean streaming,
             List<FieldEqual> partitionFilters) {
+        this(
+                flussConf,
+                tablePath,
+                hasPrimaryKey,
+                isPartitioned,
+                sourceOutputType,
+                projectedFields,
+                offsetsInitializer,
+                scanPartitionDiscoveryIntervalMs,
+                deserializationSchema,
+                streaming,
+                partitionFilters,
+                null);
+    }
+
+    public FlinkSource(
+            Configuration flussConf,
+            TablePath tablePath,
+            boolean hasPrimaryKey,
+            boolean isPartitioned,
+            RowType sourceOutputType,
+            @Nullable int[] projectedFields,
+            OffsetsInitializer offsetsInitializer,
+            long scanPartitionDiscoveryIntervalMs,
+            FlussDeserializationSchema<OUT> deserializationSchema,
+            boolean streaming,
+            List<FieldEqual> partitionFilters,
+            SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier) {
         this.flussConf = flussConf;
         this.tablePath = tablePath;
         this.hasPrimaryKey = hasPrimaryKey;
@@ -92,6 +125,7 @@ public class FlinkSource<OUT>
         this.deserializationSchema = deserializationSchema;
         this.streaming = streaming;
         this.partitionFilters = checkNotNull(partitionFilters);
+        this.lakeSourceSupplier = lakeSourceSupplier;
     }
 
     @Override
@@ -134,7 +168,7 @@ public class FlinkSource<OUT>
 
     @Override
     public SimpleVersionedSerializer<SourceSplitBase> getSplitSerializer() {
-        return SourceSplitSerializer.INSTANCE;
+        return new SourceSplitSerializer(lakeSourceSupplier);
     }
 
     @Override

@@ -18,11 +18,14 @@ package com.alibaba.fluss.flink.catalog;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
+import com.alibaba.fluss.config.TableConfig;
 import com.alibaba.fluss.flink.FlinkConnectorOptions;
 import com.alibaba.fluss.flink.lakehouse.LakeTableFactory;
 import com.alibaba.fluss.flink.sink.FlinkTableSink;
 import com.alibaba.fluss.flink.source.FlinkTableSource;
 import com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils;
+import com.alibaba.fluss.lake.source1.LakeSource;
+import com.alibaba.fluss.lake.source1.LakeSplit;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.metadata.TablePath;
 
@@ -44,6 +47,7 @@ import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.util.function.SerializableSupplier;
 
 import java.io.File;
 import java.time.ZoneId;
@@ -63,6 +67,7 @@ import static com.alibaba.fluss.flink.utils.DataLakeUtils.getDatalakeFormat;
 import static com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils.getBucketKeyIndexes;
 import static com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils.getBucketKeys;
 import static com.alibaba.fluss.flink.utils.FlinkConversions.toFlinkOption;
+import static com.alibaba.fluss.flink.utils.LakeSourceUtils.createLakeSource;
 
 /** Factory to create table source and table sink for Fluss. */
 public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTableSinkFactory {
@@ -142,7 +147,30 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 cache,
                 partitionDiscoveryIntervalMs,
                 tableOptions.get(toFlinkOption(ConfigOptions.TABLE_DATALAKE_ENABLED)),
-                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)));
+                tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)),
+                new LakeSourceProvider(
+                        toFlussTablePath(context.getObjectIdentifier()),
+                        context.getCatalogTable().getOptions()));
+    }
+
+    private static class LakeSourceProvider implements SerializableSupplier<LakeSource<LakeSplit>> {
+        private static final long serialVersionUID = 1L;
+
+        private final TablePath tablePath;
+        private final Map<String, String> options;
+
+        public LakeSourceProvider(TablePath tablePath, Map<String, String> options) {
+            this.tablePath = tablePath;
+            this.options = options;
+        }
+
+        @Override
+        public LakeSource<LakeSplit> get() {
+            return createLakeSource(
+                    tablePath,
+                    new TableConfig(Configuration.fromMap(options)).getDataLakeFormat(),
+                    options);
+        }
     }
 
     @Override

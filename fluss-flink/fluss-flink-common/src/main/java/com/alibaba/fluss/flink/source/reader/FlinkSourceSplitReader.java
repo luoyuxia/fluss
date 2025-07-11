@@ -32,6 +32,8 @@ import com.alibaba.fluss.flink.source.split.HybridSnapshotLogSplit;
 import com.alibaba.fluss.flink.source.split.LogSplit;
 import com.alibaba.fluss.flink.source.split.SnapshotSplit;
 import com.alibaba.fluss.flink.source.split.SourceSplitBase;
+import com.alibaba.fluss.lake.source1.LakeSource;
+import com.alibaba.fluss.lake.source1.LakeSplit;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
@@ -64,6 +66,7 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 
+import static com.alibaba.fluss.flink.utils.LakeSourceUtils.createLakeSource;
 import static com.alibaba.fluss.utils.Preconditions.checkArgument;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
@@ -97,6 +100,8 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
     private final Connection connection;
     private final Table table;
     private final FlinkMetricRegistry flinkMetricRegistry;
+
+    @Nullable private LakeSource<LakeSplit> lakeSource;
 
     // table id, will be null when haven't received any split
     private Long tableId;
@@ -213,7 +218,11 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
     private LakeSplitReaderGenerator getLakeSplitReader() {
         if (lakeSplitReaderGenerator == null) {
             lakeSplitReaderGenerator =
-                    new LakeSplitReaderGenerator(table, connection, tablePath, projectedFields);
+                    new LakeSplitReaderGenerator(
+                            table,
+                            tablePath,
+                            projectedFields,
+                            createLakeSource(table.getTableInfo()));
         }
         return lakeSplitReaderGenerator;
     }

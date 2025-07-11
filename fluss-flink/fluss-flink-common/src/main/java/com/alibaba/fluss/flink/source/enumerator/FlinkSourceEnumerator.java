@@ -22,7 +22,7 @@ import com.alibaba.fluss.client.admin.Admin;
 import com.alibaba.fluss.client.metadata.KvSnapshots;
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-import com.alibaba.fluss.flink.lakehouse.LakeSplitGenerator;
+import com.alibaba.fluss.flink.lake.LakeSplitGenerator;
 import com.alibaba.fluss.flink.source.enumerator.initializer.BucketOffsetsRetrieverImpl;
 import com.alibaba.fluss.flink.source.enumerator.initializer.NoStoppingOffsetsInitializer;
 import com.alibaba.fluss.flink.source.enumerator.initializer.OffsetsInitializer;
@@ -67,6 +67,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static com.alibaba.fluss.flink.utils.LakeSourceUtils.createLakeSource;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 import static com.alibaba.fluss.utils.Preconditions.checkState;
 
@@ -484,10 +485,13 @@ public class FlinkSourceEnumerator
                 new LakeSplitGenerator(
                         tableInfo,
                         flussAdmin,
+                        createLakeSource(tableInfo),
                         bucketOffsetsRetriever,
                         stoppingOffsetsInitializer,
                         tableInfo.getNumBuckets());
-        return lakeSplitGenerator.generateLakeSplits();
+        List<SourceSplitBase> lakeSplits = lakeSplitGenerator.generateLakeSplits();
+        System.out.println(lakeSplits);
+        return lakeSplits;
     }
 
     private boolean ignoreTableBucket(TableBucket tableBucket) {

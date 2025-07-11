@@ -27,6 +27,8 @@ import com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils;
 import com.alibaba.fluss.flink.utils.FlinkConversions;
 import com.alibaba.fluss.flink.utils.PushdownUtils;
 import com.alibaba.fluss.flink.utils.PushdownUtils.FieldEqual;
+import com.alibaba.fluss.lake.source1.LakeSource;
+import com.alibaba.fluss.lake.source1.LakeSplit;
 import com.alibaba.fluss.metadata.MergeEngineType;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
@@ -63,6 +65,7 @@ import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.util.function.SerializableSupplier;
 
 import javax.annotation.Nullable;
 
@@ -129,6 +132,8 @@ public class FlinkTableSource
 
     private List<FieldEqual> partitionFilters = Collections.emptyList();
 
+    private final SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier;
+
     public FlinkTableSource(
             TablePath tablePath,
             Configuration flussConfig,
@@ -143,7 +148,8 @@ public class FlinkTableSource
             @Nullable LookupCache cache,
             long scanPartitionDiscoveryIntervalMs,
             boolean isDataLakeEnabled,
-            @Nullable MergeEngineType mergeEngineType) {
+            @Nullable MergeEngineType mergeEngineType,
+            @Nullable SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableOutputType = tableOutputType;
@@ -161,6 +167,7 @@ public class FlinkTableSource
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.isDataLakeEnabled = isDataLakeEnabled;
         this.mergeEngineType = mergeEngineType;
+        this.lakeSourceSupplier = lakeSourceSupplier;
     }
 
     @Override
@@ -269,7 +276,8 @@ public class FlinkTableSource
                         scanPartitionDiscoveryIntervalMs,
                         new RowDataDeserializationSchema(),
                         streaming,
-                        partitionFilters);
+                        partitionFilters,
+                        lakeSourceSupplier);
 
         if (!streaming) {
             // return a bounded source provide to make planner happy,
@@ -358,7 +366,8 @@ public class FlinkTableSource
                         cache,
                         scanPartitionDiscoveryIntervalMs,
                         isDataLakeEnabled,
-                        mergeEngineType);
+                        mergeEngineType,
+                        lakeSourceSupplier);
         source.producedDataType = producedDataType;
         source.projectedFields = projectedFields;
         source.singleRowFilter = singleRowFilter;
