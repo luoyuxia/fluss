@@ -26,11 +26,13 @@ import com.alibaba.fluss.utils.IOUtils;
 
 import org.rocksdb.BlockBasedTableConfig;
 import org.rocksdb.BloomFilter;
+import org.rocksdb.Cache;
 import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.CompactionStyle;
 import org.rocksdb.CompressionType;
 import org.rocksdb.DBOptions;
 import org.rocksdb.InfoLogLevel;
+import org.rocksdb.LRUCache;
 import org.rocksdb.PlainTableConfig;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.Statistics;
@@ -74,6 +76,8 @@ public class RocksDBResourceContainer implements AutoCloseable {
     /** The handles to be closed when the container is closed. */
     private final ArrayList<AutoCloseable> handlesToClose;
 
+    private volatile Cache sharedBlockCache;
+
     @VisibleForTesting
     RocksDBResourceContainer() {
         this(new Configuration(), null, false);
@@ -96,6 +100,22 @@ public class RocksDBResourceContainer implements AutoCloseable {
         this.enableStatistics = enableStatistics;
 
         this.handlesToClose = new ArrayList<>();
+
+        initSharedBlockCache();
+    }
+
+    /**
+     * Initializes the shared block cache based on configuration. This will be called once during
+     * initialization.
+     */
+    private void initSharedBlockCache() {
+        if (internalGetOption(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED)) {
+            long size = internalGetOption(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE).getBytes();
+            sharedBlockCache = new LRUCache(size, 8, true, 0.5);
+            handlesToClose.add(sharedBlockCache);
+        } else {
+            sharedBlockCache = null;
+        }
     }
 
     /** Gets the RocksDB {@link DBOptions} to be used for RocksDB instances. */
@@ -151,6 +171,12 @@ public class RocksDBResourceContainer implements AutoCloseable {
         handlesToClose.add(opt);
 
         return opt;
+    }
+
+    @VisibleForTesting
+    @Nullable
+    Cache getSharedBlockCache() {
+        return sharedBlockCache;
     }
 
     @Override
@@ -253,14 +279,18 @@ public class RocksDBResourceContainer implements AutoCloseable {
             }
         }
 
-        blockBasedTableConfig.setBlockSize(
-                internalGetOption(ConfigOptions.KV_BLOCK_SIZE).getBytes());
+        if (sharedBlockCache != null) {
+            blockBasedTableConfig.setBlockCache(sharedBlockCache);
+        } else {
+            // 原有 per-CF 的 block cache 设置
+            blockBasedTableConfig.setBlockCacheSize(
+                    internalGetOption(ConfigOptions.KV_BLOCK_CACHE_SIZE).getBytes());
+        }
 
         blockBasedTableConfig.setMetadataBlockSize(
                 internalGetOption(ConfigOptions.KV_METADATA_BLOCK_SIZE).getBytes());
 
-        blockBasedTableConfig.setBlockCacheSize(
-                internalGetOption(ConfigOptions.KV_BLOCK_CACHE_SIZE).getBytes());
+        blockBasedTableConfig.setPinL0FilterAndIndexBlocksInCache(true);
 
         if (internalGetOption(ConfigOptions.KV_USE_BLOOM_FILTER)) {
             final double bitsPerKey = internalGetOption(ConfigOptions.KV_BLOOM_FILTER_BITS_PER_KEY);
