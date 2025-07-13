@@ -37,6 +37,8 @@ import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.SingleThreadMultiplexSourceReaderBase;
 import org.apache.flink.connector.base.source.reader.synchronization.FutureCompletingBlockingQueue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -48,6 +50,8 @@ import java.util.function.Consumer;
 public class FlinkSourceReader<OUT>
         extends SingleThreadMultiplexSourceReaderBase<
                 RecordAndPos, OUT, SourceSplitBase, SourceSplitState> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(FlinkSourceReader.class);
 
     public FlinkSourceReader(
             FutureCompletingBlockingQueue<RecordsWithSplitIds<RecordAndPos>> elementsQueue,
@@ -77,7 +81,9 @@ public class FlinkSourceReader<OUT>
 
     @Override
     protected void onSplitFinished(Map<String, SourceSplitState> map) {
-        // do nothing
+        if (map != null) {
+            map.forEach((k, v) -> LOG.info("split {} finished.", k));
+        }
     }
 
     @Override

@@ -68,6 +68,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
@@ -109,6 +110,8 @@ public class FlinkSourceEnumerator
 
     /** buckets that have been assigned to readers. */
     private final Set<TableBucket> assignedTableBuckets;
+
+    private final Set<Long> processingPartitions;
 
     private final long scanPartitionDiscoveryIntervalMs;
 
@@ -207,6 +210,7 @@ public class FlinkSourceEnumerator
         this.stoppingOffsetsInitializer =
                 streaming ? new NoStoppingOffsetsInitializer() : OffsetsInitializer.latest();
         this.predicate = predicate;
+        this.processingPartitions = new ConcurrentSkipListSet<>();
     }
 
     @Override
@@ -314,7 +318,7 @@ public class FlinkSourceEnumerator
                                                     convertPartitionInfoToInternalRow(
                                                             partitionInfo)))
                             .collect(Collectors.toList());
-            LOG.info(
+            LOG.debug(
                     "Filtered partitions {} for table {} with predicate: {}",
                     filteredPartitionInfos,
                     tablePath,
@@ -394,6 +398,10 @@ public class FlinkSourceEnumerator
         if (!removedPartitions.isEmpty()) {
             LOG.info("Discovered removed partitions: {}", removedPartitions);
         }
+
+        // Ignore partitions that are being processing
+        newPartitions.removeIf(p -> processingPartitions.contains(p.getPartitionId()));
+
         if (!newPartitions.isEmpty()) {
             LOG.info("Discovered new partitions: {}", newPartitions);
         }
@@ -411,15 +419,22 @@ public class FlinkSourceEnumerator
 
     private List<SourceSplitBase> initLogTablePartitionSplits(Collection<Partition> newPartitions) {
         List<SourceSplitBase> splits = new ArrayList<>();
+        long startTime = System.currentTimeMillis();
         for (Partition partition : newPartitions) {
             splits.addAll(getLogSplit(partition.getPartitionId(), partition.getPartitionName()));
         }
+        LOG.info(
+                "initLogTablePartitionSplits generated {} splits for table {} with cost {}ms.",
+                splits.size(),
+                tablePath,
+                System.currentTimeMillis() - startTime);
         return splits;
     }
 
     private List<SourceSplitBase> initPrimaryKeyTablePartitionSplits(
             Collection<Partition> newPartitions) {
         List<SourceSplitBase> splits = new ArrayList<>();
+        long startTime = System.currentTimeMillis();
         for (Partition partition : newPartitions) {
             String partitionName = partition.getPartitionName();
             // get the table snapshot info
@@ -435,6 +450,11 @@ public class FlinkSourceEnumerator
             }
             splits.addAll(getSnapshotAndLogSplits(kvSnapshots, partitionName));
         }
+        LOG.info(
+                "initPrimaryKeyTablePartitionSplits generated {} splits for table {} with cost {}ms.",
+                splits.size(),
+                tablePath,
+                System.currentTimeMillis() - startTime);
         return splits;
     }
 
@@ -486,6 +506,7 @@ public class FlinkSourceEnumerator
         // always assume the bucket is from 0 to bucket num
         List<SourceSplitBase> splits = new ArrayList<>();
         List<Integer> bucketsNeedInitOffset = new ArrayList<>();
+
         for (int bucketId = 0; bucketId < tableInfo.getNumBuckets(); bucketId++) {
             TableBucket tableBucket =
                     new TableBucket(tableInfo.getTableId(), partitionId, bucketId);
@@ -496,6 +517,7 @@ public class FlinkSourceEnumerator
         }
 
         if (!bucketsNeedInitOffset.isEmpty()) {
+            long startTime = System.currentTimeMillis();
             startingOffsetsInitializer
                     .getBucketOffsets(partitionName, bucketsNeedInitOffset, bucketOffsetsRetriever)
                     .forEach(
@@ -508,6 +530,11 @@ public class FlinkSourceEnumerator
                                                             bucketId),
                                                     partitionName,
                                                     startingOffset)));
+            LOG.info(
+                    "getLogSplit generated {} splits for table {} with cost {}ms.",
+                    splits.size(),
+                    tablePath,
+                    System.currentTimeMillis() - startTime);
         }
         return splits;
     }
@@ -584,6 +611,7 @@ public class FlinkSourceEnumerator
 
     private void doHandleSplitsAdd(List<SourceSplitBase> splits) {
         addSplitToPendingAssignments(splits);
+        LOG.info("doHandleSplitsAdd {}", splits);
         assignPendingSplits(context.registeredReaders().keySet());
     }
 
@@ -735,7 +763,7 @@ public class FlinkSourceEnumerator
 
     @Override
     public void addSplitsBack(List<SourceSplitBase> splits, int subtaskId) {
-        LOG.debug("Flink Source Enumerator adds splits back: {}", splits);
+        LOG.info("Flink Source Enumerator adds splits back: {}", splits);
         addSplitToPendingAssignments(splits);
 
         // If the failed subtask has already restarted, we need to assign pending splits to it
@@ -746,7 +774,7 @@ public class FlinkSourceEnumerator
 
     @Override
     public void addReader(int subtaskId) {
-        LOG.debug("Adding reader: {} to Flink Source enumerator.", subtaskId);
+        LOG.info("Adding reader: {} to Flink Source enumerator.", subtaskId);
         assignPendingSplits(Collections.singleton(subtaskId));
     }
 
