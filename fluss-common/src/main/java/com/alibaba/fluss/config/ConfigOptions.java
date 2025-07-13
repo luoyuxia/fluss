@@ -1538,14 +1538,14 @@ public class ConfigOptions {
     public static final ConfigOption<Boolean> KV_SHARED_BLOCK_CACHE_ENABLED =
             key("kv.rocksdb.shared-block-cache.enabled")
                     .booleanType()
-                    .defaultValue(false)
+                    .defaultValue(true)
                     .withDescription(
                             "Whether to enable the shared block cache across all column families.");
 
     public static final ConfigOption<MemorySize> KV_SHARED_BLOCK_CACHE_SIZE =
             key("kv.rocksdb.shared-block-cache.size")
                     .memoryType()
-                    .defaultValue(MemorySize.parse("4gb"))
+                    .defaultValue(MemorySize.parse("64gb"))
                     .withDescription("The size of the shared block cache if enabled.");
 
     public static final ConfigOption<Boolean> KV_USE_BLOOM_FILTER =
