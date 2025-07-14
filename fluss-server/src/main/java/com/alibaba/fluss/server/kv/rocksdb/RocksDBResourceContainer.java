@@ -35,6 +35,7 @@ import org.rocksdb.InfoLogLevel;
 import org.rocksdb.LRUCache;
 import org.rocksdb.PlainTableConfig;
 import org.rocksdb.ReadOptions;
+import org.rocksdb.RocksDB;
 import org.rocksdb.Statistics;
 import org.rocksdb.TableFormatConfig;
 import org.rocksdb.WriteOptions;
@@ -111,6 +112,8 @@ public class RocksDBResourceContainer implements AutoCloseable {
     private void initSharedBlockCache() {
         if (internalGetOption(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED)) {
             long size = internalGetOption(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE).getBytes();
+            // load rocksdb native library if needed, it is idempotent
+            RocksDB.loadLibrary();
             sharedBlockCache = new LRUCache(size, 8, true, 0.5);
             handlesToClose.add(sharedBlockCache);
         } else {
