@@ -23,40 +23,34 @@ import com.alibaba.fluss.lake.lakestorage.LakeStoragePlugin;
 import com.alibaba.fluss.lake.lakestorage.LakeStoragePluginSetUp;
 import com.alibaba.fluss.lake.source1.LakeSource;
 import com.alibaba.fluss.lake.source1.LakeSplit;
-import com.alibaba.fluss.metadata.DataLakeFormat;
-import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 
 import java.util.Collections;
 import java.util.Map;
-import java.util.Optional;
+
+import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /** */
 public class LakeSourceUtils {
 
-    public static LakeSource<LakeSplit> createLakeSource(TableInfo tableInfo) {
-        return createLakeSource(
-                tableInfo.getTablePath(),
-                tableInfo.getTableConfig().getDataLakeFormat(),
-                tableInfo.getProperties().toMap());
-    }
-
+    @SuppressWarnings("unchecked")
     public static LakeSource<LakeSplit> createLakeSource(
-            TablePath tablePath,
-            Optional<DataLakeFormat> optionalDataLakeFormat,
-            Map<String, String> properties) {
+            TablePath tablePath, Map<String, String> properties) {
         Map<String, String> catalogProperties =
                 DataLakeUtils.extractLakeCatalogProperties(Configuration.fromMap(properties));
         Configuration lakeConfig = Configuration.fromMap(catalogProperties);
+
+        String dataLake =
+                Configuration.fromMap(properties)
+                        .get(ConfigOptions.TABLE_DATALAKE_FORMAT)
+                        .toString();
         LakeStoragePlugin lakeStoragePlugin =
                 LakeStoragePluginSetUp.fromConfiguration(
                         Configuration.fromMap(
                                 Collections.singletonMap(
-                                        ConfigOptions.DATALAKE_FORMAT.key(),
-                                        optionalDataLakeFormat.get().toString())),
+                                        ConfigOptions.DATALAKE_FORMAT.key(), dataLake)),
                         null);
-
-        LakeStorage lakeStorage = lakeStoragePlugin.createLakeStorage(lakeConfig);
+        LakeStorage lakeStorage = checkNotNull(lakeStoragePlugin).createLakeStorage(lakeConfig);
         return (LakeSource<LakeSplit>) lakeStorage.createLakeSource(tablePath);
     }
 }

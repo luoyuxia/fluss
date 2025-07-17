@@ -19,20 +19,18 @@ package com.alibaba.fluss.lake.source1;
 import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.utils.CloseableIterator;
 
-/**
- * Represents a collection of records read from a data lake storage system. Provides iterator-based
- * access to the underlying records with automatic resource management.
- *
- * <p>Implementations must ensure the returned iterator is thread-safe if accessed concurrently.
- */
-public interface LakeRecords {
+import java.io.IOException;
 
-    /**
-     * Retrieves a closeable iterator for traversing the lake records.
-     *
-     * @return a non-null {@link CloseableIterator} that must be closed after use to release
-     *     underlying resources. The iterator may be empty but never null.
-     * @see CloseableIterator#close()
-     */
-    CloseableIterator<LogRecord> getLakeRecords();
+/**
+ * An interface for reading records from {@link LakeSplit}.
+ *
+ * <p>Implementations of this interface provide an iterator-style access to records, allowing
+ * efficient sequential reading of potentially large datasets without loading all data into memory
+ * at once. The reading should consider the pushed-down optimizations (project, filters, limits,
+ * etc) from {@link LakeSource}.
+ */
+public interface RecordReader {
+
+    /** Read a {@link LakeSplit} into a closeable iterator. */
+    CloseableIterator<LogRecord> read() throws IOException;
 }

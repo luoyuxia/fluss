@@ -20,14 +20,11 @@ import com.alibaba.fluss.flink.lake.LakeSplitSerializer;
 import com.alibaba.fluss.lake.source1.LakeSource;
 import com.alibaba.fluss.lake.source1.LakeSplit;
 import com.alibaba.fluss.metadata.TableBucket;
-
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
-import org.apache.flink.util.function.SerializableSupplier;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
@@ -47,10 +44,10 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
 
     private static final int CURRENT_VERSION = VERSION_0;
 
-    @Nullable private final SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier;
+    @Nullable private final LakeSource<LakeSplit> lakeSource;
 
-    public SourceSplitSerializer(SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier) {
-        this.lakeSourceSupplier = lakeSourceSupplier;
+    public SourceSplitSerializer(LakeSource<LakeSplit> lakeSource) {
+        this.lakeSource = lakeSource;
     }
 
     @Override
@@ -86,8 +83,7 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
             }
         } else {
             LakeSplitSerializer lakeSplitSerializer =
-                    new LakeSplitSerializer(
-                            checkNotNull(lakeSourceSupplier.get()).getSplitSerializer());
+                    new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());
             lakeSplitSerializer.serialize(out, split);
         }
 
@@ -149,8 +145,7 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
             return new LogSplit(tableBucket, partitionName, startingOffset, stoppingOffset);
         } else {
             LakeSplitSerializer lakeSplitSerializer =
-                    new LakeSplitSerializer(
-                            checkNotNull(lakeSourceSupplier.get()).getSplitSerializer());
+                    new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());
             return lakeSplitSerializer.deserialize(splitKind, tableBucket, partitionName, in);
         }
     }

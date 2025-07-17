@@ -32,7 +32,6 @@ import com.alibaba.fluss.lake.source1.LakeSplit;
 import com.alibaba.fluss.metadata.MergeEngineType;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
-
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
@@ -65,10 +64,8 @@ import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.util.function.SerializableSupplier;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -78,6 +75,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
+import static com.alibaba.fluss.flink.utils.LakeSourceUtils.createLakeSource;
 import static com.alibaba.fluss.flink.utils.PushdownUtils.ValueConversion.FLINK_INTERNAL_VALUE;
 import static com.alibaba.fluss.flink.utils.PushdownUtils.extractFieldEquals;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
@@ -132,7 +130,9 @@ public class FlinkTableSource
 
     private List<FieldEqual> partitionFilters = Collections.emptyList();
 
-    private final SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier;
+    private final Map<String, String> tableOptions;
+
+    @Nullable private LakeSource<LakeSplit> lakeSource;
 
     public FlinkTableSource(
             TablePath tablePath,
@@ -149,7 +149,7 @@ public class FlinkTableSource
             long scanPartitionDiscoveryIntervalMs,
             boolean isDataLakeEnabled,
             @Nullable MergeEngineType mergeEngineType,
-            @Nullable SerializableSupplier<LakeSource<LakeSplit>> lakeSourceSupplier) {
+            Map<String, String> tableOptions) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
         this.tableOutputType = tableOutputType;
@@ -167,7 +167,10 @@ public class FlinkTableSource
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.isDataLakeEnabled = isDataLakeEnabled;
         this.mergeEngineType = mergeEngineType;
-        this.lakeSourceSupplier = lakeSourceSupplier;
+        this.tableOptions = tableOptions;
+        if (isDataLakeEnabled) {
+            lakeSource = createLakeSource(tablePath, tableOptions);
+        }
     }
 
     @Override
@@ -277,7 +280,7 @@ public class FlinkTableSource
                         new RowDataDeserializationSchema(),
                         streaming,
                         partitionFilters,
-                        lakeSourceSupplier);
+                        lakeSource);
 
         if (!streaming) {
             // return a bounded source provide to make planner happy,
@@ -367,12 +370,13 @@ public class FlinkTableSource
                         scanPartitionDiscoveryIntervalMs,
                         isDataLakeEnabled,
                         mergeEngineType,
-                        lakeSourceSupplier);
+                        tableOptions);
         source.producedDataType = producedDataType;
         source.projectedFields = projectedFields;
         source.singleRowFilter = singleRowFilter;
         source.modificationScanType = modificationScanType;
         source.partitionFilters = partitionFilters;
+        source.lakeSource = lakeSource;
         return source;
     }
 
@@ -390,10 +394,18 @@ public class FlinkTableSource
     public void applyProjection(int[][] projectedFields, DataType producedDataType) {
         this.projectedFields = Arrays.stream(projectedFields).mapToInt(value -> value[0]).toArray();
         this.producedDataType = producedDataType.getLogicalType();
+        if (lakeSource != null) {
+            lakeSource.withProject(projectedFields);
+        }
     }
 
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
+        if (lakeSource != null) {
+            // todo: use real filters
+            lakeSource.withFilters(Collections.emptyList());
+        }
+
         List<ResolvedExpression> acceptedFilters = new ArrayList<>();
         List<ResolvedExpression> remainingFilters = new ArrayList<>();
 

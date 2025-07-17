@@ -16,13 +16,9 @@
 
 package com.alibaba.fluss.lake.source1;
 
-import javax.annotation.Nullable;
 import java.util.List;
 
-/**
- * Represents a logical partition or segment of data in data-lake. Implementations should be
- * serializable to support distributed processing.
- */
+/** Represents a logical partition or segment of data in data-lake. */
 public interface LakeSplit {
 
     /**
@@ -36,12 +32,12 @@ public interface LakeSplit {
     int bucket();
 
     /**
-     * Returns the hierarchical partition values for this split, or null if the split doesn't belong
-     * to a specific partition in non-partitioned table.
+     * Returns the hierarchical partition values for this split, or an empty list if the split
+     * doesn't belong to a specific partition in non-partitioned table.
      *
      * <p>The returned list represents the complete partition path, with each element corresponding
      * to one level of the partitioning hierarchy in order. For example, in a table partitioned by
-     * {@code dt=20230101/hr=12}, this method would return {@code ["20230101", "12"]}.
+     * {@code dt=20250101/hr=12}, this method would return {@code ["20250101", "12"]}.
      *
      * <p>The list size should match the table's partition column count, and each element's position
      * corresponds to the declared partition column order. Values should be in their
@@ -50,6 +46,5 @@ public interface LakeSplit {
      * @return the resolved partition values specification, or {@code null} if this split doesn't
      *     belong to a specific partition in non-partitioned table.
      */
-    @Nullable
     List<String> partition();
 }

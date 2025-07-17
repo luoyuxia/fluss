@@ -24,17 +24,13 @@ import com.alibaba.fluss.flink.source.split.LogSplit;
 import com.alibaba.fluss.flink.source.split.SourceSplitBase;
 import com.alibaba.fluss.lake.source1.LakeSource;
 import com.alibaba.fluss.lake.source1.LakeSplit;
-import com.alibaba.fluss.lake.source1.LakeSplitPlanContext;
 import com.alibaba.fluss.metadata.PartitionInfo;
-import com.alibaba.fluss.metadata.ResolvedPartitionSpec;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 
 import javax.annotation.Nullable;
-
-import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -69,7 +65,7 @@ public class LakeSplitGenerator {
         this.bucketCount = bucketCount;
     }
 
-    public List<SourceSplitBase> generateLakeSplits() throws Exception {
+    public List<SourceSplitBase> generateHybridLakeSplits() throws Exception {
         // get the file store
         LakeSnapshot lakeSnapshotInfo =
                 flussAdmin.getLatestLakeSnapshot(tableInfo.getTablePath()).get();
@@ -77,6 +73,12 @@ public class LakeSplitGenerator {
         boolean isLogTable = !tableInfo.hasPrimaryKey();
         boolean isPartitioned = tableInfo.isPartitioned();
 
+        Map<String, Map<Integer, List<LakeSplit>>> lakeSplits =
+                groupLakeSplits(
+                        lakeSource
+                                .createPlanner(
+                                        (LakeSource.PlannerContext) lakeSnapshotInfo::getSnapshotId)
+                                .plan());
         if (isPartitioned) {
             List<PartitionInfo> partitionInfos =
                     flussAdmin.listPartitionInfos(tableInfo.getTablePath()).get();
@@ -87,21 +89,35 @@ public class LakeSplitGenerator {
                                             PartitionInfo::getPartitionId,
                                             PartitionInfo::getPartitionName));
             return generatePartitionTableSplit(
-                    lakeSnapshotInfo.getSnapshotId(),
+                    lakeSplits,
                     isLogTable,
                     lakeSnapshotInfo.getTableBucketsOffset(),
                     partitionNameById);
         } else {
+            Map<Integer, List<LakeSplit>> nonPartitionLakeSplits =
+                    lakeSplits.values().iterator().next();
             // non-partitioned table
             return generateNoPartitionedTableSplit(
-                    lakeSnapshotInfo.getSnapshotId(),
-                    isLogTable,
-                    lakeSnapshotInfo.getTableBucketsOffset());
+                    nonPartitionLakeSplits, isLogTable, lakeSnapshotInfo.getTableBucketsOffset());
         }
     }
 
+    private Map<String, Map<Integer, List<LakeSplit>>> groupLakeSplits(List<LakeSplit> lakeSplits) {
+        Map<String, Map<Integer, List<LakeSplit>>> result = new HashMap<>();
+        for (LakeSplit split : lakeSplits) {
+            String partition = String.join("$", split.partition());
+            int bucket = split.bucket();
+            // Get or create the partition group
+            Map<Integer, List<LakeSplit>> bucketMap =
+                    result.computeIfAbsent(partition, k -> new HashMap<>());
+            List<LakeSplit> splitList = bucketMap.computeIfAbsent(bucket, k -> new ArrayList<>());
+            splitList.add(split);
+        }
+        return result;
+    }
+
     private List<SourceSplitBase> generatePartitionTableSplit(
-            long snapshotId,
+            Map<String, Map<Integer, List<LakeSplit>>> lakeSplits,
             boolean isLogTable,
             Map<TableBucket, Long> tableBucketSnapshotLogOffset,
             Map<Long, String> partitionNameById)
@@ -117,7 +133,7 @@ public class LakeSplitGenerator {
                             bucketOffsetsRetriever);
             splits.addAll(
                     generateSplit(
-                            snapshotId,
+                            lakeSplits.get(partitionName),
                             partitionId,
                             partitionName,
                             isLogTable,
@@ -128,19 +144,18 @@ public class LakeSplitGenerator {
     }
 
     private List<SourceSplitBase> generateSplit(
-            long snapshotId,
+            @Nullable Map<Integer, List<LakeSplit>> lakeSplits,
             @Nullable Long partitionId,
             @Nullable String partitionName,
             boolean isLogTable,
             Map<TableBucket, Long> tableBucketSnapshotLogOffset,
-            Map<Integer, Long> bucketEndOffset)
-            throws Exception {
+            Map<Integer, Long> bucketEndOffset) {
         List<SourceSplitBase> splits = new ArrayList<>();
         if (isLogTable) {
             // it's log table, we don't care about bucket, and we can't get bucket in paimon's
             // dynamic bucket; so first generate split for the whole paimon snapshot,
             // then generate log split for each bucket paimon snapshot + fluss log
-            splits.addAll(generateSplitForLogSnapshot(snapshotId, partitionId, partitionName));
+            splits.addAll(toLakeSnapshotSplits(lakeSplits, partitionName, partitionId));
             for (int bucket = 0; bucket < bucketCount; bucket++) {
                 TableBucket tableBucket =
                         new TableBucket(tableInfo.getTableId(), partitionId, bucket);
@@ -172,7 +187,7 @@ public class LakeSplitGenerator {
                 long stoppingOffset = bucketEndOffset.get(bucket);
                 splits.add(
                         generateSplitForPrimaryKeyTableBucket(
-                                snapshotId,
+                                lakeSplits.get(bucket),
                                 tableBucket,
                                 partitionName,
                                 snapshotLogOffset,
@@ -183,46 +198,25 @@ public class LakeSplitGenerator {
         return splits;
     }
 
-    private List<SourceSplitBase> generateSplitForLogSnapshot(
-            long snapshotId, @Nullable Long partitionId, @Nullable String partitionName)
-            throws Exception {
+    private List<SourceSplitBase> toLakeSnapshotSplits(
+            Map<Integer, List<LakeSplit>> lakeSplits,
+            @Nullable String partitionName,
+            @Nullable Long partitionId) {
         List<SourceSplitBase> splits = new ArrayList<>();
-
-        ResolvedPartitionSpec resolvedPartitionSpec = null;
-
-        if (partitionName != null) {
-            resolvedPartitionSpec =
-                    ResolvedPartitionSpec.fromPartitionName(
-                            tableInfo.getPartitionKeys(), partitionName);
-        }
-
-        LakeSplitPlanContext lakeSplitPlanContext =
-                new LakeSplitPlanContext(
-                        snapshotId,
-                        null,
-                        null,
-                        resolvedPartitionSpec != null
-                                ? Collections.singletonList(resolvedPartitionSpec)
-                                : null);
-
-        // for snapshot splits, we always use bucket = -1 ad the bucket since we can't get bucket in
-        // paimon's log table since we won't create about bucket
-        // snapshot splits + one log split
-        List<LakeSplit> lakeSplits = lakeSource.plan(lakeSplitPlanContext);
         TableBucket tableBucket = new TableBucket(tableInfo.getTableId(), partitionId, -1);
-        for (LakeSplit lakeSplit : lakeSplits) {
+        for (LakeSplit lakeSplit :
+                lakeSplits.values().stream().flatMap(List::stream).collect(Collectors.toList())) {
             splits.add(new LakeSnapshotSplit(tableBucket, partitionName, lakeSplit));
         }
         return splits;
     }
 
     private SourceSplitBase generateSplitForPrimaryKeyTableBucket(
-            long snapshotId,
+            List<LakeSplit> lakeSplits,
             TableBucket tableBucket,
             @Nullable String partitionName,
             @Nullable Long snapshotLogOffset,
-            long stoppingOffset)
-            throws IOException {
+            long stoppingOffset) {
         // no snapshot data for this bucket or no a corresponding log offset in this bucket,
         // can only scan from change log
         if (snapshotLogOffset == null || snapshotLogOffset < 0) {
@@ -230,35 +224,15 @@ public class LakeSplitGenerator {
                     tableBucket, partitionName, null, EARLIEST_OFFSET, stoppingOffset);
         }
 
-        ResolvedPartitionSpec resolvedPartitionSpec = null;
-
-        if (partitionName != null) {
-            resolvedPartitionSpec =
-                    ResolvedPartitionSpec.fromPartitionName(
-                            tableInfo.getPartitionKeys(), partitionName);
-        }
-
-        LakeSplitPlanContext lakeSplitPlanContext =
-                new LakeSplitPlanContext(
-                        snapshotId,
-                        null,
-                        tableBucket.getBucket(),
-                        resolvedPartitionSpec != null
-                                ? Collections.singletonList(resolvedPartitionSpec)
-                                : null);
-
-        List<LakeSplit> lakeSplits = lakeSource.plan(lakeSplitPlanContext);
-
         checkState(lakeSplits.size() == 1, "Splits for primary key table must be 1.");
         return new LakeSnapshotAndFlussLogSplit(
                 tableBucket, partitionName, lakeSplits, snapshotLogOffset, stoppingOffset);
     }
 
     private List<SourceSplitBase> generateNoPartitionedTableSplit(
-            long snapshotId,
+            Map<Integer, List<LakeSplit>> lakeSplits,
             boolean isLogTable,
-            Map<TableBucket, Long> tableBucketSnapshotLogOffset)
-            throws Exception {
+            Map<TableBucket, Long> tableBucketSnapshotLogOffset) {
         // iterate all bucket
         // assume bucket is from 0 to bucket count
         Map<Integer, Long> bucketEndOffset =
@@ -267,6 +241,6 @@ public class LakeSplitGenerator {
                         IntStream.range(0, bucketCount).boxed().collect(Collectors.toList()),
                         bucketOffsetsRetriever);
         return generateSplit(
-                snapshotId, null, null, isLogTable, tableBucketSnapshotLogOffset, bucketEndOffset);
+                lakeSplits, null, null, isLogTable, tableBucketSnapshotLogOffset, bucketEndOffset);
     }
 }

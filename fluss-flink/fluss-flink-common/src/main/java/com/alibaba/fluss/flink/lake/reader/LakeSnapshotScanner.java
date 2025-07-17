@@ -20,7 +20,6 @@ import com.alibaba.fluss.client.table.scanner.batch.BatchScanner;
 import com.alibaba.fluss.flink.lake.LakeSnapshotSplit;
 import com.alibaba.fluss.lake.source1.LakeSource;
 import com.alibaba.fluss.lake.source1.LakeSplit;
-import com.alibaba.fluss.lake.source1.LakeSplitReadContext;
 import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.utils.CloseableIterator;
@@ -47,11 +46,13 @@ public class LakeSnapshotScanner implements BatchScanner {
     @Override
     public CloseableIterator<InternalRow> pollBatch(Duration timeout) throws IOException {
         if (rowsIterator == null) {
-            LakeSplitReadContext<LakeSplit> lakeSplitReadContext =
-                    new LakeSplitReadContext<>(lakeSnapshotSplit.getLakeSplit(), null, null);
             rowsIterator =
                     InternalRowIterator.wrap(
-                            lakeSource.read(lakeSplitReadContext).getLakeRecords());
+                            lakeSource
+                                    .createRecordReader(
+                                            (LakeSource.ReaderContext<LakeSplit>)
+                                                    lakeSnapshotSplit::getLakeSplit)
+                                    .read());
         }
         return rowsIterator.hasNext() ? rowsIterator : null;
     }

@@ -22,13 +22,13 @@ import com.alibaba.fluss.client.table.scanner.batch.BatchScanner;
 import com.alibaba.fluss.client.table.scanner.log.LogScanner;
 import com.alibaba.fluss.client.table.scanner.log.ScanRecords;
 import com.alibaba.fluss.flink.lake.LakeSnapshotAndFlussLogSplit;
-import com.alibaba.fluss.lake.source1.LakeRecords;
 import com.alibaba.fluss.lake.source1.LakeSource;
 import com.alibaba.fluss.lake.source1.LakeSplit;
-import com.alibaba.fluss.lake.source1.LakeSplitReadContext;
-import com.alibaba.fluss.lake.source1.SortedView;
+import com.alibaba.fluss.lake.source1.RecordReader;
+import com.alibaba.fluss.lake.source1.SortedRecordReader;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.ChangeType;
+import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.utils.CloseableIterator;
 
@@ -46,7 +46,7 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
     private final Table table;
     private final LakeSnapshotAndFlussLogSplit lakeSnapshotSplitAndFlussLogSplit;
     private Comparator<InternalRow> rowComparator;
-    private LakeRecords lakeRecords;
+    private CloseableIterator<LogRecord> lakeRecords;
     private final LakeSource<LakeSplit> lakeSource;
 
     private final int[] pkIndexes;
@@ -99,18 +99,21 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
     public CloseableIterator<InternalRow> pollBatch(Duration timeout) throws IOException {
         if (logScanFinished) {
             if (lakeRecords == null) {
-                lakeRecords =
-                        lakeSource.read(
-                                new LakeSplitReadContext<>(
-                                        lakeSnapshotSplitAndFlussLogSplit.getLakeSplits().get(0),
-                                        null,
-                                        null));
+                RecordReader recordReader =
+                        lakeSource.createRecordReader(
+                                (LakeSource.ReaderContext<LakeSplit>)
+                                        () ->
+                                                lakeSnapshotSplitAndFlussLogSplit
+                                                        .getLakeSplits()
+                                                        .get(0));
+
+                lakeRecords = recordReader.read();
             }
             if (currentSortMergeReader == null) {
                 currentSortMergeReader =
                         new SortMergeReader(
                                 pkIndexes,
-                                lakeRecords.getLakeRecords(),
+                                lakeRecords,
                                 rowComparator,
                                 CloseableIterator.wrap(
                                         logRows == null
@@ -120,15 +123,16 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
             return currentSortMergeReader.readBatch();
         } else {
             if (lakeRecords == null) {
-                lakeRecords =
-                        lakeSource.read(
-                                new LakeSplitReadContext<>(
-                                        lakeSnapshotSplitAndFlussLogSplit.getLakeSplits().get(0),
-                                        null,
-                                        null));
-
-                if (lakeRecords instanceof SortedView) {
-                    rowComparator = ((SortedView) lakeRecords).order();
+                RecordReader recordReader =
+                        lakeSource.createRecordReader(
+                                (LakeSource.ReaderContext<LakeSplit>)
+                                        () ->
+                                                lakeSnapshotSplitAndFlussLogSplit
+                                                        .getLakeSplits()
+                                                        .get(0));
+                if (recordReader instanceof SortedRecordReader) {
+                    rowComparator = ((SortedRecordReader) recordReader).order();
+                    lakeRecords = recordReader.read();
                 } else {
                     throw new UnsupportedOperationException(
                             "lake records must instance of sorted view.");

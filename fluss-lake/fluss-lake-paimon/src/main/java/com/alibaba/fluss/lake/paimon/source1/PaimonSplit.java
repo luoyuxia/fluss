@@ -17,19 +17,15 @@
 package com.alibaba.fluss.lake.paimon.source1;
 
 import com.alibaba.fluss.lake.source1.LakeSplit;
-
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.table.source.DataSplit;
 
-import javax.annotation.Nullable;
-
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /** . */
 public class PaimonSplit implements LakeSplit {
-
-    private static final long serialVersionUID = 1L;
 
     private final DataSplit dataSplit;
 
@@ -42,12 +38,11 @@ public class PaimonSplit implements LakeSplit {
         return dataSplit.bucket();
     }
 
-    @Nullable
     @Override
     public List<String> partition() {
         BinaryRow partition = dataSplit.partition();
         if (partition.getFieldCount() == 0) {
-            return null;
+            return Collections.emptyList();
         }
 
         List<String> partitions = new ArrayList<>();

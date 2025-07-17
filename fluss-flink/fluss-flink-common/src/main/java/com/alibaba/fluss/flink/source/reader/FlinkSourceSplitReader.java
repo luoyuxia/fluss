@@ -39,7 +39,6 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.CloseableIterator;
 import com.alibaba.fluss.utils.ExceptionUtils;
-
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
@@ -50,7 +49,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -66,7 +64,6 @@ import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
 
-import static com.alibaba.fluss.flink.utils.LakeSourceUtils.createLakeSource;
 import static com.alibaba.fluss.utils.Preconditions.checkArgument;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
@@ -118,7 +115,8 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
             TablePath tablePath,
             RowType sourceOutputType,
             @Nullable int[] projectedFields,
-            FlinkSourceReaderMetrics flinkSourceReaderMetrics) {
+            FlinkSourceReaderMetrics flinkSourceReaderMetrics,
+            @Nullable LakeSource<LakeSplit> lakeSource) {
         this.flinkMetricRegistry =
                 new FlinkMetricRegistry(flinkSourceReaderMetrics.getSourceReaderMetricGroup());
         this.connection = ConnectionFactory.createConnection(flussConf, flinkMetricRegistry);
@@ -133,6 +131,7 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
         this.logScanner = table.newScan().project(projectedFields).createLogScanner();
         this.stoppingOffsets = new HashMap<>();
         this.emptyLogSplits = new HashSet<>();
+        this.lakeSource = lakeSource;
     }
 
     @Override
@@ -219,10 +218,7 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
         if (lakeSplitReaderGenerator == null) {
             lakeSplitReaderGenerator =
                     new LakeSplitReaderGenerator(
-                            table,
-                            tablePath,
-                            projectedFields,
-                            createLakeSource(table.getTableInfo()));
+                            table, tablePath, projectedFields, checkNotNull(lakeSource));
         }
         return lakeSplitReaderGenerator;
     }

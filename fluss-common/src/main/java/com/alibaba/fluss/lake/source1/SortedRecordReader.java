@@ -21,29 +21,24 @@ import com.alibaba.fluss.row.InternalRow;
 import java.util.Comparator;
 
 /**
- * Represents a <strong>verified</strong> sorted view of records with a defined ordering.
- * Implementations must guarantee all records comply with the returned comparator's order.
+ * A specialized {@link RecordReader} that produces records in a defined sorted order.
  *
- * <p>This is a marker interface that implies strict ordering consistency. Any implementation
- * claiming to be a {@code SortedView} must maintain invariants:
+ * <p>Extends the basic record reading capability with sorting semantics, ensuring that records are
+ * returned according to a specified ordering.
  *
- * <ul>
- *   <li>For any two records a and b, a precedes b iff {@code order().compare(a, b) < 0}
- *   <li>The ordering must be consistent across all record accesses
- * </ul>
+ * <p>Implementations must guarantee that the {@link #read()} method returns records in the order
+ * defined by the comparator from {@link #order()}.
  *
  * <p>Note: This is mainly used for union read primary key table since we will do sort merge records
  * in lake and fluss. The records in primary key table for lake may should implement this method for
  * union read with a better performance.
  */
-public interface SortedView {
+public interface SortedRecordReader extends RecordReader {
 
     /**
-     * Returns the definitive comparator that governs record ordering.
+     * Returns the comparator that defines the sort order of the records.
      *
-     * @return a non-null, consistent comparator that defines the total order of records. The
-     *     comparator must satisfy the general contract of {@link Comparator#compare(Object,
-     *     Object)}.
+     * @return a non-null comparator defining the sort order of the records
      */
     Comparator<InternalRow> order();
 }

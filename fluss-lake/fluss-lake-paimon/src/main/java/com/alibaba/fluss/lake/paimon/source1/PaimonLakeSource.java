@@ -19,50 +19,38 @@ package com.alibaba.fluss.lake.paimon.source1;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.lake.paimon.utils.PaimonRowAsFlussRow;
 import com.alibaba.fluss.lake.serializer.SimpleVersionedSerializer;
-import com.alibaba.fluss.lake.source1.LakeRecords;
 import com.alibaba.fluss.lake.source1.LakeSource;
-import com.alibaba.fluss.lake.source1.LakeSplitPlanContext;
-import com.alibaba.fluss.lake.source1.LakeSplitReadContext;
-import com.alibaba.fluss.lake.source1.SortedView;
-import com.alibaba.fluss.metadata.ResolvedPartitionSpec;
+import com.alibaba.fluss.lake.source1.Planner;
+import com.alibaba.fluss.lake.source1.SortedRecordReader;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.ChangeType;
 import com.alibaba.fluss.record.GenericRecord;
 import com.alibaba.fluss.record.LogRecord;
 import com.alibaba.fluss.row.ProjectedRow;
 import com.alibaba.fluss.utils.CloseableIterator;
-import org.apache.paimon.CoreOptions;
 import org.apache.paimon.KeyValueFileStore;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
-import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.InternalRow;
-import org.apache.paimon.options.MemorySize;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.reader.RecordReader;
 import org.apache.paimon.table.FileStoreTable;
-import org.apache.paimon.table.source.DataSplit;
-import org.apache.paimon.table.source.InnerTableScan;
 import org.apache.paimon.table.source.ReadBuilder;
-import org.apache.paimon.table.source.Split;
 import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.types.RowType;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Objects;
 import java.util.stream.IntStream;
 
 import static com.alibaba.fluss.lake.paimon.utils.PaimonConversions.toChangeType;
 import static com.alibaba.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
-import static com.alibaba.fluss.lake.paimon.utils.PaimonConversions.toPaimonPartitionBinaryRow;
 import static com.alibaba.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
 import static com.alibaba.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
-import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 
 /** */
 public class PaimonLakeSource implements LakeSource<PaimonSplit> {
@@ -70,117 +58,80 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
     private final Configuration paimonConfig;
     private final TablePath tablePath;
 
+    private @Nullable int[][] project;
+    private @Nullable org.apache.paimon.predicate.Predicate predicate;
+
     public PaimonLakeSource(Configuration paimonConfig, TablePath tablePath) {
         this.paimonConfig = paimonConfig;
         this.tablePath = tablePath;
     }
 
     @Override
-    public List<PaimonSplit> plan(LakeSplitPlanContext context) throws IOException {
-        List<PaimonSplit> splits = new ArrayList<>();
-        try {
-            try (Catalog catalog = getCatalog()) {
-                FileStoreTable fileStoreTable = getTable(catalog, tablePath, context.snapshotId());
-                // if primary key table, only generate only splits
-                // to do batch sort merge
-                if (!fileStoreTable.primaryKeys().isEmpty()) {
-                    // todo: may need make it passed in context
-                    fileStoreTable.copy(
-                            Collections.singletonMap(
-                                    CoreOptions.SOURCE_SPLIT_TARGET_SIZE.key(),
-                                    // we set a max size to make sure only one splits
-                                    MemorySize.MAX_VALUE.toString()));
-                }
-
-                InnerTableScan tableScan = fileStoreTable.newScan();
-                if (context.bucket() != null) {
-                    tableScan =
-                            tableScan.withBucketFilter((b) -> Objects.equals(b, context.bucket()));
-                }
-
-                if (context.partitionSpecs() != null) {
-                    tableScan =
-                            tableScan.withPartitionFilter(
-                                    toPartitionRows(checkNotNull(context.partitionSpecs())));
-                }
-
-                for (Split split : tableScan.plan().splits()) {
-                    DataSplit dataSplit = (DataSplit) split;
-                    splits.add(new PaimonSplit(dataSplit));
-                }
-            }
-        } catch (Exception e) {
-            throw new IOException("Fail to plan paimon splits.");
-        }
-
-        return splits;
+    public void withProject(int[][] project) {
+        this.project = project;
     }
 
     @Override
-    public LakeRecords read(LakeSplitReadContext<PaimonSplit> context) throws IOException {
+    public void witLimit(int limit) {
+        throw new UnsupportedOperationException("PaimonLakeSource does not support limit");
+    }
+
+    @Override
+    public FilterPushDownResult withFilters(List<Predicate> predicates) {
+        return null;
+    }
+
+    @Override
+    public Planner<PaimonSplit> createPlanner(PlannerContext plannerContext) {
+        return new PaimonSplitPanner(
+                paimonConfig, tablePath, predicate, plannerContext.snapshotId());
+    }
+
+    @Override
+    public com.alibaba.fluss.lake.source1.RecordReader createRecordReader(
+            ReaderContext<PaimonSplit> context) throws IOException {
         try {
             try (Catalog catalog = getCatalog()) {
                 FileStoreTable fileStoreTable = getTable(catalog, tablePath);
-
-                Comparator<com.alibaba.fluss.row.InternalRow> rowComparator = null;
-
-                if (!fileStoreTable.primaryKeys().isEmpty()) {
-                    KeyValueFileStore keyValueFileStore =
-                            (KeyValueFileStore) fileStoreTable.store();
-                    rowComparator =
-                            toFlussRowComparator(
-                                    fileStoreTable.rowType(), keyValueFileStore.newKeyComparator());
+                ReadBuilder readBuilder = fileStoreTable.newReadBuilder();
+                if (project != null) {
+                    readBuilder = project(readBuilder, project);
                 }
 
-                ReadBuilder readBuilder = fileStoreTable.newReadBuilder();
-                if (context.getProjectColumns() != null) {
-                    readBuilder =
-                            project(
-                                    readBuilder,
-                                    fileStoreTable.rowType(),
-                                    context.getProjectColumns());
+                if (predicate != null) {
+                    readBuilder.withFilter(predicate);
                 }
 
                 TableRead tableRead = readBuilder.newRead();
+                RowType rowType = readBuilder.readType();
 
                 RecordReader<InternalRow> recordReader =
-                        tableRead.createReader(context.getLakeSplit().dataSplit());
-
-                CloseableIterator<LogRecord> records =
-                        new PaimonRowAsFlussRecordIterator(
-                                recordReader.toCloseableIterator(), readBuilder.readType());
-
-                if (rowComparator == null) {
-                    return () -> records;
+                        tableRead.createReader(context.lakeSplit().dataSplit());
+                if (fileStoreTable.primaryKeys().isEmpty()) {
+                    return () ->
+                            new PaimonRowAsFlussRecordIterator(
+                                    recordReader.toCloseableIterator(), rowType);
                 } else {
-                    return new LakeRecordsWithOrder(records, rowComparator);
+                    KeyValueFileStore keyValueFileStore =
+                            (KeyValueFileStore) fileStoreTable.store();
+                    return new SortedRecordReader() {
+
+                        @Override
+                        public CloseableIterator<LogRecord> read() {
+                            return new PaimonRowAsFlussRecordIterator(
+                                    recordReader.toCloseableIterator(), rowType);
+                        }
+
+                        @Override
+                        public Comparator<com.alibaba.fluss.row.InternalRow> order() {
+                            return toFlussRowComparator(
+                                    fileStoreTable.rowType(), keyValueFileStore.newKeyComparator());
+                        }
+                    };
                 }
             }
         } catch (Exception e) {
-            throw new IOException("Fail to read paimon splits.", e);
-        }
-    }
-
-    private static class LakeRecordsWithOrder implements LakeRecords, SortedView {
-
-        private final CloseableIterator<LogRecord> records;
-        private final Comparator<com.alibaba.fluss.row.InternalRow> rowComparator;
-
-        public LakeRecordsWithOrder(
-                CloseableIterator<LogRecord> records,
-                Comparator<com.alibaba.fluss.row.InternalRow> rowComparator) {
-            this.records = records;
-            this.rowComparator = rowComparator;
-        }
-
-        @Override
-        public Comparator<com.alibaba.fluss.row.InternalRow> order() {
-            return rowComparator;
-        }
-
-        @Override
-        public CloseableIterator<LogRecord> getLakeRecords() {
-            return records;
+            throw new IOException("Fail to create record reader.", e);
         }
     }
 
@@ -194,36 +145,16 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
                 CatalogContext.create(Options.fromMap(paimonConfig.toMap())));
     }
 
-    private FileStoreTable getTable(Catalog catalog, TablePath tablePath, long snapshotId)
-            throws Exception {
-        return (FileStoreTable)
-                catalog.getTable(toPaimon(tablePath))
-                        .copy(
-                                Collections.singletonMap(
-                                        CoreOptions.SCAN_SNAPSHOT_ID.key(),
-                                        String.valueOf(snapshotId)));
-    }
-
     private FileStoreTable getTable(Catalog catalog, TablePath tablePath) throws Exception {
         return (FileStoreTable) catalog.getTable(toPaimon(tablePath));
     }
 
-    private List<BinaryRow> toPartitionRows(List<ResolvedPartitionSpec> partitionSpecs) {
-        List<BinaryRow> rows = new ArrayList<>(partitionSpecs.size());
-        for (ResolvedPartitionSpec partitionSpec : partitionSpecs) {
-            rows.add(
-                    toPaimonPartitionBinaryRow(
-                            partitionSpec.getPartitionKeys(), partitionSpec.getPartitionName()));
+    private ReadBuilder project(ReadBuilder readBuilder, int[][] projects) {
+        int[] paimonProject = new int[projects.length];
+        for (int i = 0; i < projects.length; i++) {
+            paimonProject[i] = projects[i][0];
         }
-        return rows;
-    }
-
-    private ReadBuilder project(ReadBuilder readBuilder, RowType rowType, String[] projectCols) {
-        int[] project = new int[projectCols.length];
-        for (int i = 0; i < project.length; i++) {
-            project[i] = rowType.getFieldIndex(projectCols[i]);
-        }
-        return readBuilder.withProjection(project);
+        return readBuilder.withProjection(paimonProject);
     }
 
     private Comparator<com.alibaba.fluss.row.InternalRow> toFlussRowComparator(
@@ -275,14 +206,11 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
             long offset = paimonRow.getLong(logOffsetColIndex);
             long timestamp = paimonRow.getTimestamp(timestampColIndex, 6).getMillisecond();
 
-            LogRecord logRecord =
-                    new GenericRecord(
-                            offset,
-                            timestamp,
-                            changeType,
-                            flussRow.replaceRow(new PaimonRowAsFlussRow(paimonRow)));
-            System.out.println("logRecord: " + logRecord);
-            return logRecord;
+            return new GenericRecord(
+                    offset,
+                    timestamp,
+                    changeType,
+                    flussRow.replaceRow(new PaimonRowAsFlussRow(paimonRow)));
         }
     }
 }
