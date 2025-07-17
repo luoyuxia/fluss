@@ -32,6 +32,7 @@ import org.rocksdb.CompactionStyle;
 import org.rocksdb.CompressionType;
 import org.rocksdb.DBOptions;
 import org.rocksdb.InfoLogLevel;
+import org.rocksdb.LRUCache;
 import org.rocksdb.PlainTableConfig;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.Statistics;
@@ -78,32 +79,29 @@ public class RocksDBResourceContainer implements AutoCloseable {
     /** Global shared RocksDB resource. */
     private final RocksDBSharedResource sharedResource;
 
+    @Nullable private Statistics statistics;
+    @Nullable private Cache blockCache;
+
     @VisibleForTesting
     RocksDBResourceContainer() {
-        this(new Configuration(), null, false);
+        this(new Configuration(), null);
     }
 
     public RocksDBResourceContainer(ReadableConfig configuration, @Nullable File instanceBasePath) {
-        this(configuration, instanceBasePath, false);
-    }
-
-    public RocksDBResourceContainer(
-            ReadableConfig configuration,
-            @Nullable File instanceBasePath,
-            boolean enableStatistics) {
         this.configuration = configuration;
 
         this.instanceRocksDBPath =
                 instanceBasePath != null
                         ? RocksDBKvBuilder.getInstanceRocksDBPath(instanceBasePath)
                         : null;
-        this.enableStatistics = enableStatistics;
-
+        this.enableStatistics = configuration.get(ConfigOptions.KV_STATISTICS_ENABLED);
         this.handlesToClose = new ArrayList<>();
 
         // Get global shared resource and increase reference count
         this.sharedResource = RocksDBSharedResource.getInstance(configuration);
         this.sharedResource.acquire();
+        initializeStatisticsIfEnable();
+        initializeBlockCacheIfEnable();
     }
 
     /** Gets the RocksDB {@link DBOptions} to be used for RocksDB instances. */
@@ -124,9 +122,7 @@ public class RocksDBResourceContainer implements AutoCloseable {
         opt = opt.setCreateIfMissing(true);
 
         if (enableStatistics) {
-            Statistics statistics = new Statistics();
             opt.setStatistics(statistics);
-            handlesToClose.add(statistics);
         }
 
         return opt;
@@ -165,6 +161,18 @@ public class RocksDBResourceContainer implements AutoCloseable {
     @Nullable
     Cache getSharedBlockCache() {
         return sharedResource.getSharedBlockCache();
+    }
+
+    /** Gets the Statistics instance if enabled, null otherwise. */
+    @Nullable
+    public Statistics getStatistics() {
+        return statistics;
+    }
+
+    /** Gets the Cache instance if created, null otherwise. */
+    @Nullable
+    public Cache getBlockCache() {
+        return blockCache;
     }
 
     @Override
@@ -276,9 +284,13 @@ public class RocksDBResourceContainer implements AutoCloseable {
         if (sharedCache != null) {
             blockBasedTableConfig.setBlockCache(sharedCache);
         } else {
-            // Original per-CF block cache settings
-            blockBasedTableConfig.setBlockCacheSize(
-                    internalGetOption(ConfigOptions.KV_BLOCK_CACHE_SIZE).getBytes());
+            // Create explicit cache instance instead of using setBlockCacheSize
+            long blockCacheSize = internalGetOption(ConfigOptions.KV_BLOCK_CACHE_SIZE).getBytes();
+            if (blockCacheSize > 0) {
+                blockBasedTableConfig.setBlockCache(blockCache);
+            } else {
+                blockBasedTableConfig.setNoBlockCache(true);
+            }
         }
 
         blockBasedTableConfig.setBlockSize(
@@ -286,8 +298,6 @@ public class RocksDBResourceContainer implements AutoCloseable {
 
         blockBasedTableConfig.setMetadataBlockSize(
                 internalGetOption(ConfigOptions.KV_METADATA_BLOCK_SIZE).getBytes());
-
-        blockBasedTableConfig.setPinL0FilterAndIndexBlocksInCache(true);
 
         if (internalGetOption(ConfigOptions.KV_USE_BLOOM_FILTER)) {
             final double bitsPerKey = internalGetOption(ConfigOptions.KV_BLOOM_FILTER_BITS_PER_KEY);
@@ -391,5 +401,20 @@ public class RocksDBResourceContainer implements AutoCloseable {
     private File resolveFileLocation(String logFilePath) {
         File logFile = new File(logFilePath);
         return (logFile.exists() && logFile.canRead()) ? logFile : null;
+    }
+
+    private void initializeStatisticsIfEnable() {
+        if (enableStatistics) {
+            statistics = new Statistics();
+            handlesToClose.add(statistics);
+        }
+    }
+
+    private void initializeBlockCacheIfEnable() {
+        long blockCacheSize = internalGetOption(ConfigOptions.KV_BLOCK_CACHE_SIZE).getBytes();
+        if (blockCacheSize > 0) {
+            blockCache = new LRUCache(blockCacheSize);
+            handlesToClose.add(blockCache);
+        }
     }
 }
