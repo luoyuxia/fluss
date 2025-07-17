@@ -499,6 +499,11 @@ public class CoordinatorServer extends ServerBase {
         return metadataCache;
     }
 
+    @VisibleForTesting
+    public @Nullable Authorizer getAuthorizer() {
+        return authorizer;
+    }
+
     private static void validateConfigs(Configuration conf) {
         if (conf.get(ConfigOptions.DEFAULT_REPLICATION_FACTOR) < 1) {
             throw new IllegalConfigurationException(
