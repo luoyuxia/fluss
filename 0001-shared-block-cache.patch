@@ -1,0 +1,802 @@
+From 86eb15d17a4856e7e55894cf9b6484ebdb6148f4 Mon Sep 17 00:00:00 2001
+From: "ocean.wy" <ocean.wy@alibaba-inc.com>
+Date: Sun, 13 Jul 2025 16:18:17 +0800
+Subject: [PATCH 1/2] shared block cache
+
+---
+ .../alibaba/fluss/config/ConfigOptions.java   |  13 +
+ .../alibaba/fluss/server/kv/KvManager.java    |  17 +
+ .../kv/rocksdb/RocksDBResourceContainer.java  |  31 +-
+ .../kv/rocksdb/RocksDBSharedResource.java     | 277 +++++++++++++++++
+ .../rocksdb/RocksDBResourceContainerTest.java |  34 ++
+ .../kv/rocksdb/RocksDBSharedResourceTest.java | 291 ++++++++++++++++++
+ 6 files changed, 661 insertions(+), 2 deletions(-)
+ create mode 100644 fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResource.java
+ create mode 100644 fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResourceTest.java
+
+diff --git a/fluss-common/src/main/java/com/alibaba/fluss/config/ConfigOptions.java b/fluss-common/src/main/java/com/alibaba/fluss/config/ConfigOptions.java
+index 73c3fd05..b4f19a20 100644
+--- a/fluss-common/src/main/java/com/alibaba/fluss/config/ConfigOptions.java
++++ b/fluss-common/src/main/java/com/alibaba/fluss/config/ConfigOptions.java
+@@ -1535,6 +1535,19 @@ public class ConfigOptions {
+                             "The amount of the cache for data blocks in RocksDB. "
+                                     + "The default block-cache size is `8MB`.");
+ 
++    public static final ConfigOption<Boolean> KV_SHARED_BLOCK_CACHE_ENABLED =
++            key("kv.rocksdb.shared-block-cache.enabled")
++                    .booleanType()
++                    .defaultValue(false)
++                    .withDescription(
++                            "Whether to enable the shared block cache across all column families.");
++
++    public static final ConfigOption<MemorySize> KV_SHARED_BLOCK_CACHE_SIZE =
++            key("kv.rocksdb.shared-block-cache.size")
++                    .memoryType()
++                    .defaultValue(MemorySize.parse("4gb"))
++                    .withDescription("The size of the shared block cache if enabled.");
++
+     public static final ConfigOption<Boolean> KV_USE_BLOOM_FILTER =
+             key("kv.rocksdb.use-bloom-filter")
+                     .booleanType()
+diff --git a/fluss-server/src/main/java/com/alibaba/fluss/server/kv/KvManager.java b/fluss-server/src/main/java/com/alibaba/fluss/server/kv/KvManager.java
+index 5cc2c725..326831c0 100644
+--- a/fluss-server/src/main/java/com/alibaba/fluss/server/kv/KvManager.java
++++ b/fluss-server/src/main/java/com/alibaba/fluss/server/kv/KvManager.java
+@@ -33,6 +33,7 @@ import com.alibaba.fluss.metadata.TableBucket;
+ import com.alibaba.fluss.metadata.TableInfo;
+ import com.alibaba.fluss.metadata.TablePath;
+ import com.alibaba.fluss.server.TabletManagerBase;
++import com.alibaba.fluss.server.kv.rocksdb.RocksDBSharedResource;
+ import com.alibaba.fluss.server.kv.rowmerger.RowMerger;
+ import com.alibaba.fluss.server.log.LogManager;
+ import com.alibaba.fluss.server.log.LogTablet;
+@@ -86,6 +87,9 @@ public final class KvManager extends TabletManagerBase {
+ 
+     private final FileSystem remoteFileSystem;
+ 
++    /** Global shared RocksDB resource. */
++    private final RocksDBSharedResource sharedResource;
++
+     private KvManager(
+             File dataDir,
+             Configuration conf,
+@@ -100,6 +104,9 @@ public final class KvManager extends TabletManagerBase {
+         this.zkClient = zkClient;
+         this.remoteKvDir = FlussPaths.remoteKvDir(conf);
+         this.remoteFileSystem = remoteKvDir.getFileSystem();
++
++        // Initialize global shared resource
++        this.sharedResource = RocksDBSharedResource.getInstance(conf);
+     }
+ 
+     public static KvManager create(
+@@ -129,6 +136,16 @@ public final class KvManager extends TabletManagerBase {
+                 LOG.warn("Exception while closing kv tablet {}.", kvTablet.getTableBucket(), e);
+             }
+         }
++
++        // Clean up shared resources
++        if (sharedResource != null) {
++            try {
++                sharedResource.close();
++            } catch (Exception e) {
++                LOG.warn("Exception while closing shared RocksDB resource.", e);
++            }
++        }
++
+         arrowBufferAllocator.close();
+         memorySegmentPool.close();
+         LOG.info("Shut down KvManager complete.");
+diff --git a/fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainer.java b/fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainer.java
+index 3c3d8841..53aa22ab 100644
+--- a/fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainer.java
++++ b/fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainer.java
+@@ -26,6 +26,7 @@ import com.alibaba.fluss.utils.IOUtils;
+ 
+ import org.rocksdb.BlockBasedTableConfig;
+ import org.rocksdb.BloomFilter;
++import org.rocksdb.Cache;
+ import org.rocksdb.ColumnFamilyOptions;
+ import org.rocksdb.CompactionStyle;
+ import org.rocksdb.CompressionType;
+@@ -74,6 +75,9 @@ public class RocksDBResourceContainer implements AutoCloseable {
+     /** The handles to be closed when the container is closed. */
+     private final ArrayList<AutoCloseable> handlesToClose;
+ 
++    /** Global shared RocksDB resource. */
++    private final RocksDBSharedResource sharedResource;
++
+     @VisibleForTesting
+     RocksDBResourceContainer() {
+         this(new Configuration(), null, false);
+@@ -96,6 +100,10 @@ public class RocksDBResourceContainer implements AutoCloseable {
+         this.enableStatistics = enableStatistics;
+ 
+         this.handlesToClose = new ArrayList<>();
++
++        // Get global shared resource and increase reference count
++        this.sharedResource = RocksDBSharedResource.getInstance(configuration);
++        this.sharedResource.acquire();
+     }
+ 
+     /** Gets the RocksDB {@link DBOptions} to be used for RocksDB instances. */
+@@ -153,10 +161,21 @@ public class RocksDBResourceContainer implements AutoCloseable {
+         return opt;
+     }
+ 
++    @VisibleForTesting
++    @Nullable
++    Cache getSharedBlockCache() {
++        return sharedResource.getSharedBlockCache();
++    }
++
+     @Override
+     public void close() throws Exception {
+         handlesToClose.forEach(IOUtils::closeQuietly);
+         handlesToClose.clear();
++
++        // Release reference to shared resource
++        if (sharedResource != null) {
++            sharedResource.release();
++        }
+     }
+ 
+     /** Create a {@link DBOptions} for RocksDB, including some common settings. */
+@@ -253,14 +272,22 @@ public class RocksDBResourceContainer implements AutoCloseable {
+             }
+         }
+ 
++        Cache sharedCache = getSharedBlockCache();
++        if (sharedCache != null) {
++            blockBasedTableConfig.setBlockCache(sharedCache);
++        } else {
++            // Original per-CF block cache settings
++            blockBasedTableConfig.setBlockCacheSize(
++                    internalGetOption(ConfigOptions.KV_BLOCK_CACHE_SIZE).getBytes());
++        }
++
+         blockBasedTableConfig.setBlockSize(
+                 internalGetOption(ConfigOptions.KV_BLOCK_SIZE).getBytes());
+ 
+         blockBasedTableConfig.setMetadataBlockSize(
+                 internalGetOption(ConfigOptions.KV_METADATA_BLOCK_SIZE).getBytes());
+ 
+-        blockBasedTableConfig.setBlockCacheSize(
+-                internalGetOption(ConfigOptions.KV_BLOCK_CACHE_SIZE).getBytes());
++        blockBasedTableConfig.setPinL0FilterAndIndexBlocksInCache(true);
+ 
+         if (internalGetOption(ConfigOptions.KV_USE_BLOOM_FILTER)) {
+             final double bitsPerKey = internalGetOption(ConfigOptions.KV_BLOOM_FILTER_BITS_PER_KEY);
+diff --git a/fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResource.java b/fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResource.java
+new file mode 100644
+index 00000000..cd864310
+--- /dev/null
++++ b/fluss-server/src/main/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResource.java
+@@ -0,0 +1,277 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *    http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.alibaba.fluss.server.kv.rocksdb;
++
++import com.alibaba.fluss.annotation.VisibleForTesting;
++import com.alibaba.fluss.config.ConfigOptions;
++import com.alibaba.fluss.config.ReadableConfig;
++import com.alibaba.fluss.utils.IOUtils;
++
++import org.rocksdb.Cache;
++import org.rocksdb.LRUCache;
++import org.rocksdb.RocksDB;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++import javax.annotation.Nullable;
++import javax.annotation.concurrent.GuardedBy;
++import javax.annotation.concurrent.ThreadSafe;
++
++import java.util.concurrent.atomic.AtomicInteger;
++
++/**
++ * A class that manages global shared RocksDB resources, mainly responsible for managing shared
++ * block cache across multiple RocksDB instances.
++ *
++ * <p>This class uses reference counting to manage resource lifecycle, following these principles:
++ *
++ * <ul>
++ *   <li>When reference count is 0, resources enter closeable state but are not auto-released
++ *   <li>Only when the manager actively calls close() method, resources are actually released
++ *   <li>If reference count is not 0 when close() is called, it blocks until all references are
++ *       released
++ * </ul>
++ *
++ * <p>Closeable state determination: When reference count is 0, it's in closeable state, no
++ * additional state variables needed.
++ *
++ * <p>Note: This class is thread-safe and can be used concurrently across multiple threads.
++ */
++@ThreadSafe
++public class RocksDBSharedResource {
++
++    private static final Logger LOG = LoggerFactory.getLogger(RocksDBSharedResource.class);
++
++    /** Global singleton instance. */
++    private static volatile RocksDBSharedResource instance;
++
++    private final ReadableConfig configuration;
++    private final Object lock = new Object();
++
++    /** Reference count for resource lifecycle management. */
++    @GuardedBy("lock")
++    private final AtomicInteger referenceCount = new AtomicInteger(0);
++
++    /** Shared block cache. */
++    @GuardedBy("lock")
++    private Cache sharedBlockCache;
++
++    /** Whether the resource has been closed. */
++    @GuardedBy("lock")
++    private boolean closed = false;
++
++    private RocksDBSharedResource(ReadableConfig configuration) {
++        this.configuration = configuration;
++    }
++
++    /**
++     * Get the global RocksDBSharedResource instance.
++     *
++     * @param configuration configuration parameters
++     * @return RocksDBSharedResource instance
++     */
++    public static RocksDBSharedResource getInstance(ReadableConfig configuration) {
++        if (instance == null) {
++            synchronized (RocksDBSharedResource.class) {
++                if (instance == null) {
++                    instance = new RocksDBSharedResource(configuration);
++                }
++            }
++        }
++        return instance;
++    }
++
++    /**
++     * Get the shared block cache instance.
++     *
++     * @return Shared Cache instance, returns null if shared block cache is not enabled or already
++     *     closed
++     */
++    @Nullable
++    public Cache getSharedBlockCache() {
++        synchronized (lock) {
++            if (closed) {
++                return null;
++            }
++
++            if (sharedBlockCache == null && shouldCreateSharedBlockCache()) {
++                createSharedBlockCache();
++            }
++
++            return sharedBlockCache;
++        }
++    }
++
++    /**
++     * Increase reference count.
++     *
++     * @return Current reference count
++     */
++    public int acquire() {
++        synchronized (lock) {
++            if (closed) {
++                throw new IllegalStateException("RocksDBSharedResource has been closed");
++            }
++
++            int newCount = referenceCount.incrementAndGet();
++            LOG.debug("Acquired RocksDBSharedResource, reference count: {}", newCount);
++            return newCount;
++        }
++    }
++
++    /**
++     * Decrease reference count, enters closeable state when reference count becomes 0.
++     *
++     * @return Current reference count
++     */
++    public int release() {
++        synchronized (lock) {
++            int newCount = referenceCount.decrementAndGet();
++            LOG.debug("Released RocksDBSharedResource, reference count: {}", newCount);
++
++            if (newCount == 0) {
++                // When reference count is 0, don't release resources, just enter closeable state
++                LOG.debug("RocksDBSharedResource transitioned to closeable state");
++                // Wake up any waiting close() method
++                lock.notifyAll();
++            } else if (newCount < 0) {
++                LOG.warn("Reference count became negative: {}", newCount);
++                referenceCount.set(0);
++                lock.notifyAll();
++            }
++
++            return Math.max(newCount, 0);
++        }
++    }
++
++    /**
++     * Close shared resources. If current reference count is not 0, it will block and wait until all
++     * references are released.
++     */
++    public void close() {
++        synchronized (lock) {
++            if (closed) {
++                return;
++            }
++
++            // Wait for all references to be released
++            while (referenceCount.get() > 0) {
++                LOG.info(
++                        "Waiting for {} references to be released before closing RocksDBSharedResource",
++                        referenceCount.get());
++                try {
++                    lock.wait();
++                } catch (InterruptedException e) {
++                    Thread.currentThread().interrupt();
++                    LOG.warn("Interrupted while waiting for references to be released", e);
++                    break;
++                }
++            }
++
++            closed = true;
++            closeSharedResources();
++
++            LOG.info("RocksDBSharedResource closed");
++        }
++    }
++
++    /**
++     * Get current reference count (mainly for testing).
++     *
++     * @return Current reference count
++     */
++    @VisibleForTesting
++    public int getReferenceCount() {
++        synchronized (lock) {
++            return referenceCount.get();
++        }
++    }
++
++    /**
++     * Check if in closeable state (reference count is 0) (mainly for testing).
++     *
++     * @return true if in closeable state
++     */
++    @VisibleForTesting
++    public boolean isCloseable() {
++        synchronized (lock) {
++            return referenceCount.get() == 0;
++        }
++    }
++
++    /**
++     * Check if already closed (mainly for testing).
++     *
++     * @return true if already closed
++     */
++    @VisibleForTesting
++    public boolean isClosed() {
++        synchronized (lock) {
++            return closed;
++        }
++    }
++
++    /**
++     * Check if shared block cache should be created.
++     *
++     * @return true if shared block cache should be created
++     */
++    private boolean shouldCreateSharedBlockCache() {
++        return configuration.get(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED);
++    }
++
++    /** Create shared block cache. */
++    private void createSharedBlockCache() {
++        if (sharedBlockCache != null) {
++            return;
++        }
++
++        long cacheSize = configuration.get(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE).getBytes();
++
++        // Load RocksDB native library if needed, this operation is idempotent
++        RocksDB.loadLibrary();
++
++        // Create LRU cache
++        // Parameters:
++        // - capacity: cache size
++        // - numShardBits: number of bits for shard count (8 means 256 shards)
++        // - strictCapacityLimit: whether to strictly limit capacity
++        // - highPriPoolRatio: ratio of high priority pool
++        sharedBlockCache = new LRUCache(cacheSize, 8, true, 0.5);
++
++        LOG.info("Created shared block cache with size: {} bytes", cacheSize);
++    }
++
++    /** Close shared resources. */
++    private void closeSharedResources() {
++        if (sharedBlockCache != null) {
++            IOUtils.closeQuietly(sharedBlockCache);
++            sharedBlockCache = null;
++            LOG.info("Closed shared block cache");
++        }
++    }
++
++    /** Reset singleton instance (mainly for testing). */
++    @VisibleForTesting
++    public static void resetInstance() {
++        if (instance != null) {
++            instance.close();
++            instance = null;
++        }
++    }
++}
+diff --git a/fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainerTest.java b/fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainerTest.java
+index 83d342e0..400fe7a8 100644
+--- a/fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainerTest.java
++++ b/fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBResourceContainerTest.java
+@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
+ import org.rocksdb.BlockBasedTableConfig;
+ import org.rocksdb.BloomFilter;
++import org.rocksdb.Cache;
+ import org.rocksdb.ColumnFamilyOptions;
+ import org.rocksdb.CompactionStyle;
+ import org.rocksdb.CompressionType;
+@@ -191,4 +192,37 @@ class RocksDBResourceContainerTest {
+             assertThat(tableConfig.filterPolicy() instanceof BloomFilter).isTrue();
+         }
+     }
++
++    @Test
++    public void testSharedBlockCacheEnabled() throws Exception {
++        Configuration configuration = new Configuration();
++        configuration.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED.key(), "true");
++        configuration.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE.key(), "100MB");
++
++        try (RocksDBResourceContainer container =
++                new RocksDBResourceContainer(configuration, null, true)) {
++
++            ColumnFamilyOptions options = container.getColumnOptions();
++            BlockBasedTableConfig tableConfig = (BlockBasedTableConfig) options.tableFormatConfig();
++
++            assertThat(container.getSharedBlockCache()).isNotNull();
++        }
++    }
++
++    @Test
++    public void testSharedBlockCacheClosedAfterContainerClose() throws Exception {
++        Configuration config = new Configuration();
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED.key(), "true");
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE.key(), "100MB");
++
++        RocksDBResourceContainer container = new RocksDBResourceContainer(config, null);
++
++        Cache sharedCache = container.getSharedBlockCache();
++        assertThat(sharedCache).isNotNull();
++        assertThat(sharedCache.isOwningHandle()).isTrue();
++
++        container.close();
++
++        assertThat(sharedCache.isOwningHandle()).isFalse();
++    }
+ }
+diff --git a/fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResourceTest.java b/fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResourceTest.java
+new file mode 100644
+index 00000000..aadd8fde
+--- /dev/null
++++ b/fluss-server/src/test/java/com/alibaba/fluss/server/kv/rocksdb/RocksDBSharedResourceTest.java
+@@ -0,0 +1,291 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *    http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.alibaba.fluss.server.kv.rocksdb;
++
++import com.alibaba.fluss.config.ConfigOptions;
++import com.alibaba.fluss.config.Configuration;
++
++import org.junit.jupiter.api.AfterEach;
++import org.junit.jupiter.api.Test;
++import org.rocksdb.Cache;
++
++import static org.assertj.core.api.Assertions.assertThat;
++import static org.assertj.core.api.Assertions.assertThatThrownBy;
++
++/** Test for {@link RocksDBSharedResource}. */
++public class RocksDBSharedResourceTest {
++
++    @AfterEach
++    public void tearDown() {
++        // Reset instance after each test
++        RocksDBSharedResource.resetInstance();
++    }
++
++    @Test
++    public void testSingletonInstance() {
++        Configuration config = new Configuration();
++
++        RocksDBSharedResource instance1 = RocksDBSharedResource.getInstance(config);
++        RocksDBSharedResource instance2 = RocksDBSharedResource.getInstance(config);
++
++        assertThat(instance1).isSameAs(instance2);
++    }
++
++    @Test
++    public void testReferenceCountingBasics() {
++        Configuration config = new Configuration();
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(0);
++
++        int count1 = sharedResource.acquire();
++        assertThat(count1).isEqualTo(1);
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(1);
++
++        int count2 = sharedResource.acquire();
++        assertThat(count2).isEqualTo(2);
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(2);
++
++        int count3 = sharedResource.release();
++        assertThat(count3).isEqualTo(1);
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(1);
++
++        int count4 = sharedResource.release();
++        assertThat(count4).isEqualTo(0);
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(0);
++    }
++
++    @Test
++    public void testSharedBlockCacheNotEnabledByDefault() {
++        Configuration config = new Configuration();
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        Cache cache = sharedResource.getSharedBlockCache();
++        assertThat(cache).isNull();
++    }
++
++    @Test
++    public void testSharedBlockCacheEnabled() {
++        Configuration config = new Configuration();
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED.key(), "true");
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE.key(), "100MB");
++
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        Cache cache = sharedResource.getSharedBlockCache();
++        assertThat(cache).isNotNull();
++        assertThat(cache.isOwningHandle()).isTrue();
++    }
++
++    @Test
++    public void testSharedBlockCacheLifecycle() {
++        Configuration config = new Configuration();
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED.key(), "true");
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE.key(), "100MB");
++
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        // Get cache instance
++        Cache cache = sharedResource.getSharedBlockCache();
++        assertThat(cache).isNotNull();
++        assertThat(cache.isOwningHandle()).isTrue();
++
++        // Acquire reference
++        sharedResource.acquire();
++        assertThat(cache.isOwningHandle()).isTrue();
++        assertThat(sharedResource.isCloseable()).isFalse();
++
++        // Release reference, cache should still exist but become closeable
++        sharedResource.release();
++        assertThat(cache.isOwningHandle()).isTrue(); // Modified: won't auto-release now
++        assertThat(sharedResource.isCloseable()).isTrue(); // Modified: check closeable state
++
++        // Get cache again should still return valid cache
++        Cache cache2 = sharedResource.getSharedBlockCache();
++        assertThat(cache2).isNotNull();
++        assertThat(cache2).isSameAs(cache);
++
++        // Resources are released only after actively closing
++        sharedResource.close();
++        assertThat(sharedResource.isClosed()).isTrue();
++        assertThat(cache.isOwningHandle()).isFalse();
++
++        // Getting cache after closing should return null
++        Cache cache3 = sharedResource.getSharedBlockCache();
++        assertThat(cache3).isNull();
++    }
++
++    @Test
++    public void testMultipleContainersSharedCache() {
++        Configuration config = new Configuration();
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED.key(), "true");
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE.key(), "100MB");
++
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        // Simulate multiple RocksDBResourceContainer using same shared resource
++        sharedResource.acquire(); // First container
++        sharedResource.acquire(); // Second container
++
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(2);
++        assertThat(sharedResource.isCloseable()).isFalse();
++
++        Cache cache = sharedResource.getSharedBlockCache();
++        assertThat(cache).isNotNull();
++        assertThat(cache.isOwningHandle()).isTrue();
++
++        // Release reference from first container
++        sharedResource.release();
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(1);
++        assertThat(sharedResource.isCloseable()).isFalse();
++        // cache should still exist
++        assertThat(cache.isOwningHandle()).isTrue();
++
++        // Release reference from second container
++        sharedResource.release();
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(0);
++        assertThat(sharedResource.isCloseable()).isTrue();
++        // cache should still exist until actively closed
++        assertThat(cache.isOwningHandle()).isTrue();
++
++        // Resources are actually released only after actively closing
++        sharedResource.close();
++        assertThat(sharedResource.isClosed()).isTrue();
++        assertThat(cache.isOwningHandle()).isFalse();
++    }
++
++    @Test
++    public void testAcquireAfterClose() {
++        Configuration config = new Configuration();
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        sharedResource.close();
++
++        assertThatThrownBy(() -> sharedResource.acquire())
++                .isInstanceOf(IllegalStateException.class)
++                .hasMessageContaining("RocksDBSharedResource has been closed");
++    }
++
++    @Test
++    public void testGetSharedBlockCacheAfterClose() {
++        Configuration config = new Configuration();
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED.key(), "true");
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE.key(), "100MB");
++
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        // Get cache first
++        Cache cache = sharedResource.getSharedBlockCache();
++        assertThat(cache).isNotNull();
++
++        // Close resource
++        sharedResource.close();
++
++        // Getting cache after closing should return null
++        Cache cache2 = sharedResource.getSharedBlockCache();
++        assertThat(cache2).isNull();
++
++        // Original cache should be closed
++        assertThat(cache.isOwningHandle()).isFalse();
++    }
++
++    @Test
++    public void testCloseIsIdempotent() {
++        Configuration config = new Configuration();
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        // Multiple closes should not cause problems
++        sharedResource.close();
++        sharedResource.close();
++        sharedResource.close();
++
++        // Verify state is still closed
++        assertThatThrownBy(() -> sharedResource.acquire())
++                .isInstanceOf(IllegalStateException.class);
++    }
++
++    @Test
++    public void testCloseWaitsForReferenceCountToBeZero() throws Exception {
++        Configuration config = new Configuration();
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_ENABLED.key(), "true");
++        config.setString(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE.key(), "100MB");
++
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        // Acquire reference
++        sharedResource.acquire();
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(1);
++
++        Cache cache = sharedResource.getSharedBlockCache();
++        assertThat(cache).isNotNull();
++
++        // Release reference with delay in another thread
++        Thread releaseThread =
++                new Thread(
++                        () -> {
++                            try {
++                                Thread.sleep(100); // Delay 100ms
++                                sharedResource.release();
++                            } catch (InterruptedException e) {
++                                Thread.currentThread().interrupt();
++                            }
++                        });
++        releaseThread.start();
++
++        // Record start time
++        long startTime = System.currentTimeMillis();
++
++        // Calling close should block until reference is released
++        sharedResource.close();
++
++        // Record end time
++        long endTime = System.currentTimeMillis();
++
++        // Verify that it actually waited for some time
++        assertThat(endTime - startTime).isGreaterThan(50); // At least waited 50ms
++
++        // Verify resource has been closed
++        assertThat(sharedResource.isClosed()).isTrue();
++        assertThat(cache.isOwningHandle()).isFalse();
++
++        releaseThread.join();
++    }
++
++    @Test
++    public void testAcquireAfterCloseableStateResetsState() {
++        Configuration config = new Configuration();
++        RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(config);
++
++        // Acquire and release reference, enter closeable state
++        sharedResource.acquire();
++        assertThat(sharedResource.isCloseable()).isFalse();
++
++        sharedResource.release();
++        assertThat(sharedResource.isCloseable()).isTrue();
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(0);
++
++        // Acquiring reference again should reset closeable state
++        sharedResource.acquire();
++        assertThat(sharedResource.isCloseable()).isFalse();
++        assertThat(sharedResource.getReferenceCount()).isEqualTo(1);
++
++        // Clean up
++        sharedResource.release();
++        sharedResource.close();
++    }
++}
+-- 
+2.33.0
+
