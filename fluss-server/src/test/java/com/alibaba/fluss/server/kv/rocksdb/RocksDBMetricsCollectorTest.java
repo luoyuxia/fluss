@@ -41,6 +41,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -153,7 +154,8 @@ class RocksDBMetricsCollectorTest {
 
         collector.updateMetrics();
 
-        verify(mockStatistics).getHistogramData(any());
+        // Verify that histogram data is called for all histogram types (6 total)
+        verify(mockStatistics, times(6)).getHistogramData(any());
     }
 
     @Test
@@ -163,7 +165,8 @@ class RocksDBMetricsCollectorTest {
 
         collector.updateMetrics();
 
-        verify(mockStatistics).getHistogramData(any());
+        // Verify that histogram data is called for all histogram types (6 total)
+        verify(mockStatistics, times(6)).getHistogramData(any());
     }
 
     @Test
@@ -184,7 +187,6 @@ class RocksDBMetricsCollectorTest {
             MetricNames.ROCKSDB_COMPACTION_CPU_TIME_MICROS,
             MetricNames.ROCKSDB_FLUSH_COUNT,
             MetricNames.ROCKSDB_FLUSH_BYTES_WRITTEN,
-            MetricNames.ROCKSDB_STALL_TIME_MICROS,
             MetricNames.ROCKSDB_BYTES_READ,
             MetricNames.ROCKSDB_BYTES_WRITTEN,
             MetricNames.ROCKSDB_NUMBER_DB_NEXT,
@@ -196,10 +198,6 @@ class RocksDBMetricsCollectorTest {
             MetricNames.ROCKSDB_NUMBER_KEYS_UPDATED,
             MetricNames.ROCKSDB_NUM_LIVE_VERSIONS,
             MetricNames.ROCKSDB_NUM_IMMUTABLE_MEMTABLES,
-            MetricNames.ROCKSDB_NUM_DELETES_ACTIVE_MEMTABLE,
-            MetricNames.ROCKSDB_NUM_DELETES_IMMUTABLE_MEMTABLE,
-            MetricNames.ROCKSDB_NUM_ENTRIES_ACTIVE_MEMTABLE,
-            MetricNames.ROCKSDB_NUM_ENTRIES_IMMUTABLE_MEMTABLE,
             MetricNames.ROCKSDB_ACTIVE_MEMTABLE_SIZE,
             MetricNames.ROCKSDB_UNFLUSHED_MEMTABLE_SIZE,
             MetricNames.ROCKSDB_TOTAL_SST_FILES_SIZE,
@@ -209,11 +207,46 @@ class RocksDBMetricsCollectorTest {
             MetricNames.ROCKSDB_MEMTABLE_MEMORY_USAGE,
             MetricNames.ROCKSDB_BLOCK_CACHE_MEMORY_USAGE,
             MetricNames.ROCKSDB_TABLE_READERS_MEMORY_USAGE,
-            MetricNames.ROCKSDB_TOTAL_MEMORY_USAGE
+            MetricNames.ROCKSDB_TOTAL_MEMORY_USAGE,
+            MetricNames.ROCKSDB_BLOCK_CACHE_USAGE,
+            MetricNames.ROCKSDB_BLOCK_CACHE_PINNED_USAGE,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_0,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_1,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_2,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_3,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_4,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_5,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_6,
+            // New performance metrics
+            MetricNames.ROCKSDB_WRITE_STALL_MICROS,
+            MetricNames.ROCKSDB_COMPACTION_PENDING,
+            MetricNames.ROCKSDB_FLUSH_PENDING,
+            MetricNames.ROCKSDB_NUM_RUNNING_COMPACTIONS,
+            MetricNames.ROCKSDB_NUM_RUNNING_FLUSHES,
+            MetricNames.ROCKSDB_WRITE_AMPLIFICATION,
+            MetricNames.ROCKSDB_READ_AMPLIFICATION,
+            MetricNames.ROCKSDB_BACKGROUND_ERRORS,
+            MetricNames.ROCKSDB_DB_GET_LATENCY_MICROS,
+            MetricNames.ROCKSDB_DB_WRITE_LATENCY_MICROS,
+            MetricNames.ROCKSDB_COMPACTION_TIME_MICROS,
+            MetricNames.ROCKSDB_COMPRESSION_TIME_NANOS,
+            MetricNames.ROCKSDB_DECOMPRESSION_TIME_NANOS,
         };
 
         for (String metricName : expectedMetrics) {
             verify(bucketMetricGroup).gauge(eq(metricName), any());
         }
+    }
+
+    @Test
+    void testLevelSstFilesMetrics() {
+        // Verify that level SST files metrics are registered
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_0), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_1), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_2), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_3), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_4), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_5), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_6), any());
     }
 }

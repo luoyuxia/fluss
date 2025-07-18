@@ -77,7 +77,6 @@ public class RocksDBMetricsCollector implements Closeable {
     private volatile long compactionCpuTimeMicros = 0;
     private volatile long flushCount = 0;
     private volatile long flushBytesWritten = 0;
-    private volatile long stallTimeMicros = 0;
     private volatile long bytesRead = 0;
     private volatile long bytesWritten = 0;
     private volatile long numberDbNext = 0;
@@ -89,10 +88,6 @@ public class RocksDBMetricsCollector implements Closeable {
     private volatile long numberKeysUpdated = 0;
     private volatile long numLiveVersions = 0;
     private volatile long numImmutableMemtables = 0;
-    private volatile long numDeletesActiveMemtable = 0;
-    private volatile long numDeletesImmutableMemtable = 0;
-    private volatile long numEntriesActiveMemtable = 0;
-    private volatile long numEntriesImmutableMemtable = 0;
     private volatile long activeMemtableSize = 0;
     private volatile long unflushedMemtableSize = 0;
     private volatile long totalSstFilesSize = 0;
@@ -103,6 +98,37 @@ public class RocksDBMetricsCollector implements Closeable {
     private volatile long blockCacheMemoryUsage = 0;
     private volatile long tableReadersMemoryUsage = 0;
     private volatile long totalMemoryUsage = 0;
+    private volatile long blockCacheUsage = 0;
+    private volatile long blockCachePinnedUsage = 0;
+    private volatile long stallTimeMicros = 0;
+
+    // Level SST files metrics
+    private volatile long numFilesAtLevel0 = 0;
+    private volatile long numFilesAtLevel1 = 0;
+    private volatile long numFilesAtLevel2 = 0;
+    private volatile long numFilesAtLevel3 = 0;
+    private volatile long numFilesAtLevel4 = 0;
+    private volatile long numFilesAtLevel5 = 0;
+    private volatile long numFilesAtLevel6 = 0;
+
+    // Compression and compaction pressure metrics
+    private volatile long compactionPending = 0;
+    private volatile long flushPending = 0;
+    private volatile long numRunningCompactions = 0;
+    private volatile long numRunningFlushes = 0;
+
+    // Write amplification metrics
+    private volatile long writeAmplification = 0;
+    private volatile long readAmplification = 0;
+
+    private volatile long backgroundErrors = 0;
+
+    // Histogram metrics
+    private volatile long dbGetLatencyMicros = 0;
+    private volatile long dbWriteLatencyMicros = 0;
+    private volatile long compactionTimeMicros = 0;
+    private volatile long compressionTimeNanos = 0;
+    private volatile long decompressionTimeNanos = 0;
 
     public RocksDBMetricsCollector(
             RocksDB rocksDB,
@@ -175,8 +201,6 @@ public class RocksDBMetricsCollector implements Closeable {
         bucketMetricGroup.gauge(MetricNames.ROCKSDB_FLUSH_COUNT, (Gauge<Long>) () -> flushCount);
         bucketMetricGroup.gauge(
                 MetricNames.ROCKSDB_FLUSH_BYTES_WRITTEN, (Gauge<Long>) () -> flushBytesWritten);
-        bucketMetricGroup.gauge(
-                MetricNames.ROCKSDB_STALL_TIME_MICROS, (Gauge<Long>) () -> stallTimeMicros);
 
         // Memory metrics - 统一使用缓存变量
         bucketMetricGroup.gauge(
@@ -194,6 +218,13 @@ public class RocksDBMetricsCollector implements Closeable {
         bucketMetricGroup.gauge(
                 MetricNames.ROCKSDB_UNFLUSHED_MEMTABLE_SIZE,
                 (Gauge<Long>) () -> unflushedMemtableSize);
+
+        // BlockCache usage指标 - 统一使用缓存变量
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_BLOCK_CACHE_USAGE, (Gauge<Long>) () -> blockCacheUsage);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_BLOCK_CACHE_PINNED_USAGE,
+                (Gauge<Long>) () -> blockCachePinnedUsage);
 
         // I/O metrics
         bucketMetricGroup.gauge(MetricNames.ROCKSDB_BYTES_READ, (Gauge<Long>) () -> bytesRead);
@@ -220,18 +251,7 @@ public class RocksDBMetricsCollector implements Closeable {
         bucketMetricGroup.gauge(
                 MetricNames.ROCKSDB_NUM_IMMUTABLE_MEMTABLES,
                 (Gauge<Long>) () -> numImmutableMemtables);
-        bucketMetricGroup.gauge(
-                MetricNames.ROCKSDB_NUM_DELETES_ACTIVE_MEMTABLE,
-                (Gauge<Long>) () -> numDeletesActiveMemtable);
-        bucketMetricGroup.gauge(
-                MetricNames.ROCKSDB_NUM_DELETES_IMMUTABLE_MEMTABLE,
-                (Gauge<Long>) () -> numDeletesImmutableMemtable);
-        bucketMetricGroup.gauge(
-                MetricNames.ROCKSDB_NUM_ENTRIES_ACTIVE_MEMTABLE,
-                (Gauge<Long>) () -> numEntriesActiveMemtable);
-        bucketMetricGroup.gauge(
-                MetricNames.ROCKSDB_NUM_ENTRIES_IMMUTABLE_MEMTABLE,
-                (Gauge<Long>) () -> numEntriesImmutableMemtable);
+
         bucketMetricGroup.gauge(
                 MetricNames.ROCKSDB_TOTAL_SST_FILES_SIZE, (Gauge<Long>) () -> totalSstFilesSize);
         bucketMetricGroup.gauge(
@@ -240,6 +260,63 @@ public class RocksDBMetricsCollector implements Closeable {
                 MetricNames.ROCKSDB_SIZE_ALL_MEMTABLES, (Gauge<Long>) () -> sizeAllMemtables);
         bucketMetricGroup.gauge(
                 MetricNames.ROCKSDB_BLOCK_CACHE_ADD_COUNT, (Gauge<Long>) () -> blockCacheAddCount);
+
+        // Level SST files metrics
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_0, (Gauge<Long>) () -> numFilesAtLevel0);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_1, (Gauge<Long>) () -> numFilesAtLevel1);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_2, (Gauge<Long>) () -> numFilesAtLevel2);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_3, (Gauge<Long>) () -> numFilesAtLevel3);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_4, (Gauge<Long>) () -> numFilesAtLevel4);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_5, (Gauge<Long>) () -> numFilesAtLevel5);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_6, (Gauge<Long>) () -> numFilesAtLevel6);
+
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_WRITE_STALL_MICROS, (Gauge<Long>) () -> stallTimeMicros);
+
+        // Compression and compaction pressure metrics
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_COMPACTION_PENDING, (Gauge<Long>) () -> compactionPending);
+
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_FLUSH_PENDING, (Gauge<Long>) () -> flushPending);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_RUNNING_COMPACTIONS,
+                (Gauge<Long>) () -> numRunningCompactions);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_NUM_RUNNING_FLUSHES, (Gauge<Long>) () -> numRunningFlushes);
+
+        // Write amplification metrics
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_WRITE_AMPLIFICATION, (Gauge<Long>) () -> writeAmplification);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_READ_AMPLIFICATION, (Gauge<Long>) () -> readAmplification);
+
+        // Background job metrics
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_BACKGROUND_ERRORS, (Gauge<Long>) () -> backgroundErrors);
+
+        // Histogram metrics
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_DB_GET_LATENCY_MICROS, (Gauge<Long>) () -> dbGetLatencyMicros);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_DB_WRITE_LATENCY_MICROS,
+                (Gauge<Long>) () -> dbWriteLatencyMicros);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_COMPACTION_TIME_MICROS,
+                (Gauge<Long>) () -> compactionTimeMicros);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_COMPRESSION_TIME_NANOS,
+                (Gauge<Long>) () -> compressionTimeNanos);
+        bucketMetricGroup.gauge(
+                MetricNames.ROCKSDB_DECOMPRESSION_TIME_NANOS,
+                (Gauge<Long>) () -> decompressionTimeNanos);
     }
 
     public void updateMetrics() {
@@ -264,7 +341,6 @@ public class RocksDBMetricsCollector implements Closeable {
             compactionCpuTimeMicros = getHistogramValue(HistogramType.COMPACTION_TIME);
             flushCount = getTickerValue(TickerType.FLUSH_WRITE_BYTES) > 0 ? 1 : 0;
             flushBytesWritten = getTickerValue(TickerType.FLUSH_WRITE_BYTES);
-            stallTimeMicros = getTickerValue(TickerType.STALL_MICROS);
 
             // Update I/O metrics
             bytesRead = getTickerValue(TickerType.BYTES_READ);
@@ -276,18 +352,11 @@ public class RocksDBMetricsCollector implements Closeable {
             numberKeysRead = getTickerValue(TickerType.NUMBER_KEYS_READ);
             numberKeysWritten = getTickerValue(TickerType.NUMBER_KEYS_WRITTEN);
             numberKeysUpdated = getTickerValue(TickerType.NUMBER_KEYS_UPDATED);
+            stallTimeMicros = getTickerValue(TickerType.STALL_MICROS);
 
             // Update SST files metrics - using property-based approach for more accurate values
             numLiveVersions = getPropertyValueAsLong("rocksdb.num-live-versions");
             numImmutableMemtables = getPropertyValueAsLong("rocksdb.num-immutable-mem-table");
-            numDeletesActiveMemtable =
-                    getPropertyValueAsLong("rocksdb.num-deletes-active-mem-table");
-            numDeletesImmutableMemtable =
-                    getPropertyValueAsLong("rocksdb.num-deletes-immutable-mem-table");
-            numEntriesActiveMemtable =
-                    getPropertyValueAsLong("rocksdb.num-entries-active-mem-table");
-            numEntriesImmutableMemtable =
-                    getPropertyValueAsLong("rocksdb.num-entries-immutable-mem-table");
 
             // Update property-based metrics
             activeMemtableSize = getPropertyValueAsLong("rocksdb.cur-size-active-mem-table");
@@ -302,6 +371,39 @@ public class RocksDBMetricsCollector implements Closeable {
             blockCacheMemoryUsage = getMemoryUsage(MemoryUsageType.kCacheTotal);
             tableReadersMemoryUsage = getMemoryUsage(MemoryUsageType.kTableReadersTotal);
             totalMemoryUsage = getTotalMemoryUsage();
+
+            // Update block cache usage metrics
+            blockCacheUsage = getBlockCacheUsage();
+            blockCachePinnedUsage = getBlockCachePinnedUsage();
+
+            // Update level SST files metrics
+            numFilesAtLevel0 = getPropertyValueAsLong("rocksdb.num-files-at-level0");
+            numFilesAtLevel1 = getPropertyValueAsLong("rocksdb.num-files-at-level1");
+            numFilesAtLevel2 = getPropertyValueAsLong("rocksdb.num-files-at-level2");
+            numFilesAtLevel3 = getPropertyValueAsLong("rocksdb.num-files-at-level3");
+            numFilesAtLevel4 = getPropertyValueAsLong("rocksdb.num-files-at-level4");
+            numFilesAtLevel5 = getPropertyValueAsLong("rocksdb.num-files-at-level5");
+            numFilesAtLevel6 = getPropertyValueAsLong("rocksdb.num-files-at-level6");
+
+            // Update compression and compaction pressure metrics
+            compactionPending = getPropertyValueAsLong("rocksdb.compaction-pending");
+            flushPending = getPropertyValueAsLong("rocksdb.flush-pending");
+            numRunningCompactions = getPropertyValueAsLong("rocksdb.num-running-compactions");
+            numRunningFlushes = getPropertyValueAsLong("rocksdb.num-running-flushes");
+
+            // Update write amplification metrics
+            writeAmplification = getPropertyValueAsLong("rocksdb.write-amplification");
+            readAmplification = getPropertyValueAsLong("rocksdb.read-amplification");
+
+            // Update Background job metrics
+            backgroundErrors = getPropertyValueAsLong("rocksdb.background-errors");
+
+            // Update histogram metrics
+            dbGetLatencyMicros = getHistogramValue(HistogramType.DB_GET);
+            dbWriteLatencyMicros = getHistogramValue(HistogramType.DB_WRITE);
+            compactionTimeMicros = getHistogramValue(HistogramType.COMPACTION_TIME);
+            compressionTimeNanos = getHistogramValue(HistogramType.COMPRESSION_TIMES_NANOS);
+            decompressionTimeNanos = getHistogramValue(HistogramType.DECOMPRESSION_TIMES_NANOS);
 
         } catch (Exception e) {
             LOG.warn(
@@ -379,6 +481,26 @@ public class RocksDBMetricsCollector implements Closeable {
             return memoryUsage.values().stream().mapToLong(Long::longValue).sum();
         } catch (Exception e) {
             LOG.debug("Error getting total memory usage: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    private long getBlockCacheUsage() {
+        try {
+            Cache cache = resourceContainer.getBlockCache();
+            return cache != null ? ((org.rocksdb.LRUCache) cache).getUsage() : 0L;
+        } catch (Exception e) {
+            LOG.debug("Error getting block cache usage: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    private long getBlockCachePinnedUsage() {
+        try {
+            Cache cache = resourceContainer.getBlockCache();
+            return cache != null ? ((org.rocksdb.LRUCache) cache).getPinnedUsage() : 0L;
+        } catch (Exception e) {
+            LOG.debug("Error getting block cache pinned usage: {}", e.getMessage());
             return 0;
         }
     }
