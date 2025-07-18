@@ -36,6 +36,8 @@ import com.alibaba.fluss.server.authorizer.Authorizer;
 import com.alibaba.fluss.server.authorizer.AuthorizerLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.kv.KvManager;
+import com.alibaba.fluss.server.kv.rocksdb.RocksDBSharedResource;
+import com.alibaba.fluss.server.kv.rocksdb.SharedBlockCacheMetricsCollector;
 import com.alibaba.fluss.server.kv.snapshot.DefaultCompletedKvSnapshotCommitter;
 import com.alibaba.fluss.server.log.LogManager;
 import com.alibaba.fluss.server.log.remote.RemoteLogManager;
@@ -132,6 +134,9 @@ public class TabletServer extends ServerBase {
     private KvManager kvManager;
 
     @GuardedBy("lock")
+    private SharedBlockCacheMetricsCollector sharedBlockCacheMetricsCollector;
+
+    @GuardedBy("lock")
     private ReplicaManager replicaManager;
 
     @GuardedBy("lock")
@@ -196,6 +201,11 @@ public class TabletServer extends ServerBase {
 
             this.kvManager = KvManager.create(conf, zkClient, logManager);
             kvManager.startup();
+
+            // Create shared block cache metrics collector
+            RocksDBSharedResource sharedResource = RocksDBSharedResource.getInstance(conf);
+            this.sharedBlockCacheMetricsCollector =
+                    new SharedBlockCacheMetricsCollector(tabletServerMetricGroup, sharedResource);
 
             this.authorizer = AuthorizerLoader.createAuthorizer(conf, zkClient, pluginManager);
             if (authorizer != null) {
@@ -322,6 +332,14 @@ public class TabletServer extends ServerBase {
     CompletableFuture<Void> stopServices() {
         synchronized (lock) {
             Throwable exception = null;
+
+            try {
+                if (sharedBlockCacheMetricsCollector != null) {
+                    sharedBlockCacheMetricsCollector.close();
+                }
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
 
             try {
                 if (tabletServerMetricGroup != null) {

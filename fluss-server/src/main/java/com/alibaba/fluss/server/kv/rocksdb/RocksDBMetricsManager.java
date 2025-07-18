@@ -58,6 +58,9 @@ public class RocksDBMetricsManager {
     private final ConcurrentMap<String, RocksDBMetricsCollector> collectors =
             MapUtils.newConcurrentHashMap();
 
+    /** Shared block cache metrics collector. */
+    private volatile SharedBlockCacheMetricsCollector sharedBlockCacheCollector;
+
     /** Flag to track if collector is running. */
     private final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -127,6 +130,37 @@ public class RocksDBMetricsManager {
                 collectors.size());
     }
 
+    /**
+     * Register a shared block cache metrics collector.
+     *
+     * @param collector the shared block cache collector to register
+     */
+    public void registerSharedBlockCacheCollector(SharedBlockCacheMetricsCollector collector) {
+        if (shutdown.get()) {
+            LOG.warn("Cannot register shared block cache collector after collector is shutdown");
+            return;
+        }
+
+        this.sharedBlockCacheCollector = collector;
+
+        // Start the collection if not already running
+        if (!running.get()) {
+            startCollection();
+        }
+
+        LOG.debug("Registered shared block cache metrics collector");
+    }
+
+    /**
+     * Unregister the shared block cache metrics collector.
+     *
+     * @param collector the shared block cache collector to unregister
+     */
+    public void unregisterSharedBlockCacheCollector(SharedBlockCacheMetricsCollector collector) {
+        this.sharedBlockCacheCollector = null;
+        LOG.debug("Unregistered shared block cache metrics collector");
+    }
+
     /** Start the metrics collection if not already running. */
     private void startCollection() {
         if (running.compareAndSet(false, true)) {
@@ -144,6 +178,15 @@ public class RocksDBMetricsManager {
 
     /** Collect metrics from all registered collectors in batches. */
     private void gatherMetrics() {
+        // Update shared block cache metrics if collector exists
+        if (sharedBlockCacheCollector != null) {
+            try {
+                sharedBlockCacheCollector.updateMetrics();
+            } catch (Exception e) {
+                LOG.warn("Error updating shared block cache metrics", e);
+            }
+        }
+
         if (collectors.isEmpty()) {
             return;
         }
