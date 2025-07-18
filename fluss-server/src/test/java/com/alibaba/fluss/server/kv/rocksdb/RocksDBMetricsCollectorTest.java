@@ -209,11 +209,57 @@ class RocksDBMetricsCollectorTest {
             MetricNames.ROCKSDB_MEMTABLE_MEMORY_USAGE,
             MetricNames.ROCKSDB_BLOCK_CACHE_MEMORY_USAGE,
             MetricNames.ROCKSDB_TABLE_READERS_MEMORY_USAGE,
-            MetricNames.ROCKSDB_TOTAL_MEMORY_USAGE
+            MetricNames.ROCKSDB_TOTAL_MEMORY_USAGE,
+            MetricNames.ROCKSDB_BLOCK_CACHE_USAGE,
+            MetricNames.ROCKSDB_BLOCK_CACHE_PINNED_USAGE,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_0,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_1,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_2,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_3,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_4,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_5,
+            MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_6,
+            // New performance metrics
+            MetricNames.ROCKSDB_GET_MICROS,
+            MetricNames.ROCKSDB_WRITE_STALL_MICROS,
+            MetricNames.ROCKSDB_WRITE_DONE_BY_SELF,
+            MetricNames.ROCKSDB_WRITE_DONE_BY_OTHER,
+            MetricNames.ROCKSDB_WRITE_WITH_WAL,
+            MetricNames.ROCKSDB_WRITE_WITH_PREPARE,
+            MetricNames.ROCKSDB_COMPACTION_PENDING,
+            MetricNames.ROCKSDB_COMPACTION_QUEUE_SIZE,
+            MetricNames.ROCKSDB_FLUSH_PENDING,
+            MetricNames.ROCKSDB_FLUSH_QUEUE_SIZE,
+            MetricNames.ROCKSDB_NUM_RUNNING_COMPACTIONS,
+            MetricNames.ROCKSDB_NUM_RUNNING_FLUSHES,
+            MetricNames.ROCKSDB_WRITE_AMPLIFICATION,
+            MetricNames.ROCKSDB_READ_AMPLIFICATION,
+            MetricNames.ROCKSDB_COMPACT_READ_BYTES,
+            MetricNames.ROCKSDB_COMPACT_WRITE_BYTES,
+            MetricNames.ROCKSDB_BLOOM_FILTER_USEFUL,
+            MetricNames.ROCKSDB_BLOOM_FILTER_FULL_POSITIVE,
+            MetricNames.ROCKSDB_BLOOM_FILTER_FULL_TRUE_POSITIVE,
+            MetricNames.ROCKSDB_BACKGROUND_ERRORS,
+            MetricNames.ROCKSDB_NUM_SST_FILES,
+            MetricNames.ROCKSDB_NUM_DELETES_OBTAINED,
+            MetricNames.ROCKSDB_NUM_KEYS_EXIST,
+            MetricNames.ROCKSDB_NUM_KEYS_NOT_FOUND
         };
 
         for (String metricName : expectedMetrics) {
             verify(bucketMetricGroup).gauge(eq(metricName), any());
         }
+    }
+
+    @Test
+    void testLevelSstFilesMetrics() {
+        // Verify that level SST files metrics are registered
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_0), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_1), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_2), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_3), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_4), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_5), any());
+        verify(bucketMetricGroup).gauge(eq(MetricNames.ROCKSDB_NUM_FILES_AT_LEVEL_6), any());
     }
 }

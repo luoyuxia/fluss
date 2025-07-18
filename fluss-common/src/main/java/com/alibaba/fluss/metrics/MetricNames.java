@@ -126,58 +126,116 @@ public class MetricNames {
 
     // for rocksdb metrics
     // cache metrics
-    public static final String ROCKSDB_BLOCK_CACHE_MISS_COUNT = "blockCacheMissCount";
-    public static final String ROCKSDB_BLOCK_CACHE_HIT_COUNT = "blockCacheHitCount";
-    public static final String ROCKSDB_BLOCK_CACHE_ADD_COUNT = "blockCacheAddCount";
-    public static final String ROCKSDB_BLOCK_CACHE_USAGE = "blockCacheUsage";
-    public static final String ROCKSDB_BLOCK_CACHE_PINNED_USAGE = "blockCachePinnedUsage";
-    public static final String ROCKSDB_INDEX_BLOCK_CACHE_MISS_COUNT = "indexBlockCacheMissCount";
-    public static final String ROCKSDB_INDEX_BLOCK_CACHE_HIT_COUNT = "indexBlockCacheHitCount";
-    public static final String ROCKSDB_FILTER_BLOCK_CACHE_MISS_COUNT = "filterBlockCacheMissCount";
-    public static final String ROCKSDB_FILTER_BLOCK_CACHE_HIT_COUNT = "filterBlockCacheHitCount";
-    public static final String ROCKSDB_DATA_BLOCK_CACHE_MISS_COUNT = "dataBlockCacheMissCount";
-    public static final String ROCKSDB_DATA_BLOCK_CACHE_HIT_COUNT = "dataBlockCacheHitCount";
+    public static final String ROCKSDB_BLOCK_CACHE_MISS_COUNT = "rocksdbBlockCacheMissCount";
+    public static final String ROCKSDB_BLOCK_CACHE_HIT_COUNT = "rocksdbBlockCacheHitCount";
+    public static final String ROCKSDB_BLOCK_CACHE_ADD_COUNT = "rocksdbBlockCacheAddCount";
+    public static final String ROCKSDB_BLOCK_CACHE_USAGE = "rocksdbBlockCacheUsage";
+    public static final String ROCKSDB_BLOCK_CACHE_PINNED_USAGE = "rocksdbBlockCachePinnedUsage";
+    // shared block cache metrics
+    public static final String ROCKSDB_SHARED_BLOCK_CACHE_USAGE = "rocksdbSharedBlockCacheUsage";
+    public static final String ROCKSDB_SHARED_BLOCK_CACHE_PINNED_USAGE =
+            "rocksdbSharedBlockCachePinnedUsage";
+    public static final String ROCKSDB_INDEX_BLOCK_CACHE_MISS_COUNT =
+            "rocksdbIndexBlockCacheMissCount";
+    public static final String ROCKSDB_INDEX_BLOCK_CACHE_HIT_COUNT =
+            "rocksdbIndexBlockCacheHitCount";
+    public static final String ROCKSDB_FILTER_BLOCK_CACHE_MISS_COUNT =
+            "rocksdbFilterBlockCacheMissCount";
+    public static final String ROCKSDB_FILTER_BLOCK_CACHE_HIT_COUNT =
+            "rocksdbFilterBlockCacheHitCount";
+    public static final String ROCKSDB_DATA_BLOCK_CACHE_MISS_COUNT =
+            "rocksdbDataBlockCacheMissCount";
+    public static final String ROCKSDB_DATA_BLOCK_CACHE_HIT_COUNT = "rocksdbDataBlockCacheHitCount";
 
     // compaction metrics
-    public static final String ROCKSDB_COMPACTION_COUNT = "compactionCount";
-    public static final String ROCKSDB_COMPACTION_BYTES_READ = "compactionBytesRead";
-    public static final String ROCKSDB_COMPACTION_BYTES_WRITTEN = "compactionBytesWritten";
-    public static final String ROCKSDB_COMPACTION_CPU_TIME_MICROS = "compactionCpuTimeMicros";
-    public static final String ROCKSDB_FLUSH_COUNT = "flushCount";
-    public static final String ROCKSDB_FLUSH_BYTES_WRITTEN = "flushBytesWritten";
-    public static final String ROCKSDB_STALL_TIME_MICROS = "stallTimeMicros";
+    public static final String ROCKSDB_COMPACTION_COUNT = "rocksdbCompactionCount";
+    public static final String ROCKSDB_COMPACTION_BYTES_READ = "rocksdbCompactionBytesRead";
+    public static final String ROCKSDB_COMPACTION_BYTES_WRITTEN = "rocksdbCompactionBytesWritten";
+    public static final String ROCKSDB_COMPACTION_CPU_TIME_MICROS =
+            "rocksdbCompactionCpuTimeMicros";
+    public static final String ROCKSDB_FLUSH_COUNT = "rocksdbFlushCount";
+    public static final String ROCKSDB_FLUSH_BYTES_WRITTEN = "rocksdbFlushBytesWritten";
+    public static final String ROCKSDB_STALL_TIME_MICROS = "rocksdbStallTimeMicros";
 
     // memory metrics
-    public static final String ROCKSDB_MEMTABLE_MEMORY_USAGE = "memtableMemoryUsage";
-    public static final String ROCKSDB_BLOCK_CACHE_MEMORY_USAGE = "blockCacheMemoryUsage";
-    public static final String ROCKSDB_TABLE_READERS_MEMORY_USAGE = "tableReadersMemoryUsage";
-    public static final String ROCKSDB_TOTAL_MEMORY_USAGE = "totalMemoryUsage";
-    public static final String ROCKSDB_ACTIVE_MEMTABLE_SIZE = "activeMemtableSize";
-    public static final String ROCKSDB_UNFLUSHED_MEMTABLE_SIZE = "unflushedMemtableSize";
+    public static final String ROCKSDB_MEMTABLE_MEMORY_USAGE = "rocksdbMemtableMemoryUsage";
+    public static final String ROCKSDB_BLOCK_CACHE_MEMORY_USAGE = "rocksdbBlockCacheMemoryUsage";
+    public static final String ROCKSDB_TABLE_READERS_MEMORY_USAGE =
+            "rocksdbTableReadersMemoryUsage";
+    public static final String ROCKSDB_TOTAL_MEMORY_USAGE = "rocksdbTotalMemoryUsage";
+    public static final String ROCKSDB_ACTIVE_MEMTABLE_SIZE = "rocksdbActiveMemtableSize";
+    public static final String ROCKSDB_UNFLUSHED_MEMTABLE_SIZE = "rocksdbUnflushedMemtableSize";
 
     // I/O metrics
-    public static final String ROCKSDB_BYTES_READ = "bytesRead";
-    public static final String ROCKSDB_BYTES_WRITTEN = "bytesWritten";
-    public static final String ROCKSDB_NUMBER_DB_NEXT = "numberDbNext";
-    public static final String ROCKSDB_NUMBER_DB_PREV = "numberDbPrev";
-    public static final String ROCKSDB_NUMBER_DB_SEEK = "numberDbSeek";
-    public static final String ROCKSDB_NUMBER_DB_SEEK_FOUND = "numberDbSeekFound";
-    public static final String ROCKSDB_NUMBER_KEYS_READ = "numberKeysRead";
-    public static final String ROCKSDB_NUMBER_KEYS_WRITTEN = "numberKeysWritten";
-    public static final String ROCKSDB_NUMBER_KEYS_UPDATED = "numberKeysUpdated";
+    public static final String ROCKSDB_BYTES_READ = "rocksdbBytesRead";
+    public static final String ROCKSDB_BYTES_WRITTEN = "rocksdbBytesWritten";
+    public static final String ROCKSDB_NUMBER_DB_NEXT = "rocksdbNumberDbNext";
+    public static final String ROCKSDB_NUMBER_DB_PREV = "rocksdbNumberDbPrev";
+    public static final String ROCKSDB_NUMBER_DB_SEEK = "rocksdbNumberDbSeek";
+    public static final String ROCKSDB_NUMBER_DB_SEEK_FOUND = "rocksdbNumberDbSeekFound";
+    public static final String ROCKSDB_NUMBER_KEYS_READ = "rocksdbNumberKeysRead";
+    public static final String ROCKSDB_NUMBER_KEYS_WRITTEN = "rocksdbNumberKeysWritten";
+    public static final String ROCKSDB_NUMBER_KEYS_UPDATED = "rocksdbNumberKeysUpdated";
 
     // SST files metrics
-    public static final String ROCKSDB_NUM_LIVE_VERSIONS = "numLiveVersions";
-    public static final String ROCKSDB_NUM_IMMUTABLE_MEMTABLES = "numImmutableMemtables";
-    public static final String ROCKSDB_NUM_DELETES_ACTIVE_MEMTABLE = "numDeletesActiveMemtable";
+    public static final String ROCKSDB_NUM_LIVE_VERSIONS = "rocksdbNumLiveVersions";
+    public static final String ROCKSDB_NUM_IMMUTABLE_MEMTABLES = "rocksdbNumImmutableMemtables";
+    public static final String ROCKSDB_NUM_DELETES_ACTIVE_MEMTABLE =
+            "rocksdbNumDeletesActiveMemtable";
     public static final String ROCKSDB_NUM_DELETES_IMMUTABLE_MEMTABLE =
-            "numDeletesImmutableMemtable";
-    public static final String ROCKSDB_NUM_ENTRIES_ACTIVE_MEMTABLE = "numEntriesActiveMemtable";
+            "rocksdbNumDeletesImmutableMemtable";
+    public static final String ROCKSDB_NUM_ENTRIES_ACTIVE_MEMTABLE =
+            "rocksdbNumEntriesActiveMemtable";
     public static final String ROCKSDB_NUM_ENTRIES_IMMUTABLE_MEMTABLE =
-            "numEntriesImmutableMemtable";
-    public static final String ROCKSDB_TOTAL_SST_FILES_SIZE = "totalSstFilesSize";
-    public static final String ROCKSDB_LIVE_SST_FILES_SIZE = "liveSstFilesSize";
-    public static final String ROCKSDB_SIZE_ALL_MEMTABLES = "sizeAllMemtables";
+            "rocksdbNumEntriesImmutableMemtable";
+    public static final String ROCKSDB_TOTAL_SST_FILES_SIZE = "rocksdbTotalSstFilesSize";
+    public static final String ROCKSDB_LIVE_SST_FILES_SIZE = "rocksdbLiveSstFilesSize";
+    public static final String ROCKSDB_SIZE_ALL_MEMTABLES = "rocksdbSizeAllMemtables";
+
+    // Level SST files metrics
+    public static final String ROCKSDB_NUM_FILES_AT_LEVEL_0 = "rocksdbNumFilesAtLevel0";
+    public static final String ROCKSDB_NUM_FILES_AT_LEVEL_1 = "rocksdbNumFilesAtLevel1";
+    public static final String ROCKSDB_NUM_FILES_AT_LEVEL_2 = "rocksdbNumFilesAtLevel2";
+    public static final String ROCKSDB_NUM_FILES_AT_LEVEL_3 = "rocksdbNumFilesAtLevel3";
+    public static final String ROCKSDB_NUM_FILES_AT_LEVEL_4 = "rocksdbNumFilesAtLevel4";
+    public static final String ROCKSDB_NUM_FILES_AT_LEVEL_5 = "rocksdbNumFilesAtLevel5";
+    public static final String ROCKSDB_NUM_FILES_AT_LEVEL_6 = "rocksdbNumFilesAtLevel6";
+
+    // Latency metrics
+    public static final String ROCKSDB_GET_MICROS = "rocksdbGetMicros";
+    public static final String ROCKSDB_WRITE_STALL_MICROS = "rocksdbWriteStallMicros";
+    public static final String ROCKSDB_WRITE_DONE_BY_SELF = "rocksdbWriteDoneBySelf";
+    public static final String ROCKSDB_WRITE_DONE_BY_OTHER = "rocksdbWriteDoneByOther";
+    public static final String ROCKSDB_WRITE_WITH_WAL = "rocksdbWriteWithWal";
+    public static final String ROCKSDB_WRITE_WITH_PREPARE = "rocksdbWriteWithPrepare";
+
+    // Compression and compaction pressure metrics
+    public static final String ROCKSDB_COMPACTION_PENDING = "rocksdbCompactionPending";
+    public static final String ROCKSDB_COMPACTION_QUEUE_SIZE = "rocksdbCompactionQueueSize";
+    public static final String ROCKSDB_FLUSH_PENDING = "rocksdbFlushPending";
+    public static final String ROCKSDB_FLUSH_QUEUE_SIZE = "rocksdbFlushQueueSize";
+    public static final String ROCKSDB_NUM_RUNNING_COMPACTIONS = "rocksdbNumRunningCompactions";
+    public static final String ROCKSDB_NUM_RUNNING_FLUSHES = "rocksdbNumRunningFlushes";
+    public static final String ROCKSDB_BACKGROUND_ERRORS = "rocksdbBackgroundErrors";
+
+    // Compaction and amplification
+    public static final String ROCKSDB_WRITE_AMPLIFICATION = "rocksdbWriteAmplification";
+    public static final String ROCKSDB_READ_AMPLIFICATION = "rocksdbReadAmplification";
+    public static final String ROCKSDB_COMPACT_READ_BYTES = "rocksdbCompactReadBytes";
+    public static final String ROCKSDB_COMPACT_WRITE_BYTES = "rocksdbCompactWriteBytes";
+
+    // Bloom filter
+    public static final String ROCKSDB_BLOOM_FILTER_USEFUL = "rocksdbBloomFilterUseful";
+    public static final String ROCKSDB_BLOOM_FILTER_FULL_POSITIVE =
+            "rocksdbBloomFilterFullPositive";
+    public static final String ROCKSDB_BLOOM_FILTER_FULL_TRUE_POSITIVE =
+            "rocksdbBloomFilterFullTruePositive";
+
+    // Sst files metric
+    public static final String ROCKSDB_NUM_SST_FILES = "rocksdbNumSstFiles";
+    public static final String ROCKSDB_NUM_DELETES_OBTAINED = "rocksdbNumDeletesObtained";
+    public static final String ROCKSDB_NUM_KEYS_EXIST = "rocksdbNumKeysExist";
+    public static final String ROCKSDB_NUM_KEYS_NOT_FOUND = "rocksdbNumKeysNotFound";
 
     // --------------------------------------------------------------------------------------------
     // metrics for rpc client
