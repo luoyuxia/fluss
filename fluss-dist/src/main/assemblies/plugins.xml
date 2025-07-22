@@ -30,6 +30,15 @@
     <dependencySets>
         <dependencySet>
             <outputDirectory>plugins/paimon</outputDirectory>
+            <includes>
+                <include>com.alibaba.fluss:fluss-lake-paimon</include>
+                <include>com.aliyun.datalake:dlf-sdk</include>
+                <include>com.alibaba.alake:ali-dlf-sdk-assembly</include>
+                <include>org.apache.paimon:paimon-bundle</include>
+            </includes>
+        </dependencySet>
+        <dependencySet>
+            <outputDirectory>plugins/paimon</outputDirectory>
             <unpack>false</unpack>
             <useProjectArtifact>false</useProjectArtifact>
             <useProjectAttachments>false</useProjectAttachments>
