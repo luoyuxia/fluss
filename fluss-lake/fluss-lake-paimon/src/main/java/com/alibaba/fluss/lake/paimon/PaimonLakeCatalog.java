@@ -26,10 +26,11 @@ import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.utils.IOUtils;
 
+import com.alibaba.alake.common.options.AlakeOptionsBuilder;
+import com.alibaba.alake.core.builder.check.trace.model.EngineType;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
-import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
@@ -68,9 +69,27 @@ public class PaimonLakeCatalog implements LakeCatalog {
     private static final String PAIMON_CONF_PREFIX = "paimon.";
 
     public PaimonLakeCatalog(Configuration configuration) {
-        this.paimonCatalog =
-                CatalogFactory.createCatalog(
-                        CatalogContext.create(Options.fromMap(configuration.toMap())));
+        Options catalogOptions = Options.fromMap(configuration.toMap());
+        catalogOptions.set("metastore", "paimon-alake-rest");
+        // catalogOptions.set("dlf.catalog.id", "alake");
+        // 访问的DLF的region地址，目前弹内的DLF暂时只部署到了张家口，所以先写死，后续有多region的时候再升级
+        catalogOptions.set("dlf.catalog.region", "cn-zhangjiakou");
+
+        catalogOptions.set("warehouse", "alake");
+        catalogOptions.set("dlf.deploy.env", "prod");
+        // 引擎类型，不同引擎使用不同的值
+        // 具体枚举参考com.alibaba.alake.core.buidler.check.trace.model.EngineType
+        catalogOptions.set("dlf.request.engine", EngineType.ALAKE.name());
+
+        catalogOptions.set("dlf.catalog.endpoint", "metastore-inner.aliyuncs.com");
+
+        System.out.println(catalogOptions.toMap());
+
+        CatalogContext catalogContext =
+                CatalogContext.create(
+                        AlakeOptionsBuilder.create(catalogOptions)
+                                .build("cn-zhangjiakou@AY@306527"));
+        this.paimonCatalog = new com.alibaba.alake.rest.catalog.AlakeRestCatalog(catalogContext);
     }
 
     @Override
