@@ -312,12 +312,7 @@ public class WriterStateManager {
                 SnapshotFile snapshot = latestSnapshotFileOptional.get();
                 try {
                     LOG.info("Loading writer state from snapshot file '{}'", snapshot);
-                    Stream<WriterStateEntry> loadedWriters =
-                            readSnapshot(snapshot.file()).stream()
-                                    .filter(
-                                            writerStateEntry ->
-                                                    !isWriterExpired(
-                                                            currentTime, writerStateEntry));
+                    Stream<WriterStateEntry> loadedWriters = readSnapshot(snapshot.file()).stream();
                     loadedWriters.forEach(this::loadWriterEntry);
                     lastSnapOffset = snapshot.offset;
                     lastMapOffset = lastSnapOffset;
