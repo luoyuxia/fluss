@@ -26,10 +26,10 @@ import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.utils.IOUtils;
 
+import com.alibaba.alake.common.options.AlakeOptionsBuilder;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
-import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
@@ -68,9 +68,12 @@ public class PaimonLakeCatalog implements LakeCatalog {
     private static final String PAIMON_CONF_PREFIX = "paimon.";
 
     public PaimonLakeCatalog(Configuration configuration) {
-        this.paimonCatalog =
-                CatalogFactory.createCatalog(
-                        CatalogContext.create(Options.fromMap(configuration.toMap())));
+        Options options = Options.fromMap(configuration.toMap());
+
+        CatalogContext catalogContext =
+                CatalogContext.create(
+                        AlakeOptionsBuilder.create(options).build("cn-zhangjiakou@AY@306527"));
+        this.paimonCatalog = new com.alibaba.alake.rest.catalog.AlakeRestCatalog(catalogContext);
     }
 
     @Override
