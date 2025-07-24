@@ -85,6 +85,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
         catalogOptions.set("dlf.request.engine", EngineType.ALAKE.name());
 
         catalogOptions.set("dlf.catalog.endpoint", "metastore-inner.aliyuncs.com");
+        catalogOptions.set("uri", "dlf-jindo-bennett.alibaba-inc.com");
 
         LOG.info("catalog options: {}", catalogOptions);
 
@@ -92,6 +93,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
                 CatalogContext.create(
                         AlakeOptionsBuilder.create(catalogOptions)
                                 .build("cn-zhangjiakou@AY@306527"));
+        LOG.info("create catalog context: via AlakeOptionsBuilder...");
         this.paimonCatalog =
                 com.alibaba.alake.rest.catalog.AlakeRestCatalog.createAlakeRestCatalog(
                         catalogContext);
