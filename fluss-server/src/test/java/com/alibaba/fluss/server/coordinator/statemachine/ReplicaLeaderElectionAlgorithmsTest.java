@@ -28,6 +28,12 @@ import java.util.Set;
 
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.controlledShutdownReplicaLeaderElection;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection;
+import java.util.List;
+import java.util.Optional;
+
+import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection;
+import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.preferredReplicaLeaderElection;
+import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.reassignBucketLeaderElection;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link ReplicaLeaderElectionAlgorithms}. */
@@ -77,5 +83,64 @@ public class ReplicaLeaderElectionAlgorithmsTest {
                 controlledShutdownReplicaLeaderElection(
                         assignments, liveReplicas, isr, shutdownTabletServers);
         assertThat(leaderOpt).isEmpty();
+        List<Integer> assignments = Arrays.asList(1, 2, 3);
+        List<Integer> aliveReplicas = Arrays.asList(1, 2, 3);
+        List<Integer> isr = Arrays.asList(1, 2, 3);
+        Optional<Integer> leaderOpt = defaultReplicaLeaderElection(assignments, aliveReplicas, isr);
+        assertThat(leaderOpt).isPresent();
+        assertThat(leaderOpt.get()).isEqualTo(1);
+
+        assignments = Arrays.asList(1, 2, 3);
+        aliveReplicas = Arrays.asList(2, 3);
+        isr = Arrays.asList(2, 3);
+        leaderOpt = defaultReplicaLeaderElection(assignments, aliveReplicas, isr);
+        assertThat(leaderOpt).isPresent();
+        assertThat(leaderOpt.get()).isEqualTo(2);
+
+        assignments = Arrays.asList(1, 2, 3);
+        aliveReplicas = Arrays.asList(1, 2);
+        isr = Collections.emptyList();
+        leaderOpt = defaultReplicaLeaderElection(assignments, aliveReplicas, isr);
+        assertThat(leaderOpt).isNotPresent();
+    }
+
+    @Test
+    void testReassignBucketLeaderElection() {
+        List<Integer> targetReplicas = Arrays.asList(1, 2, 3);
+        List<Integer> liveReplicas = Arrays.asList(1, 2, 3);
+        List<Integer> isr = Arrays.asList(1, 2, 3);
+        Optional<Integer> leaderOpt =
+                reassignBucketLeaderElection(targetReplicas, liveReplicas, isr);
+        assertThat(leaderOpt).isPresent();
+        assertThat(leaderOpt.get()).isEqualTo(1);
+
+        targetReplicas = Arrays.asList(1, 2, 3);
+        liveReplicas = Arrays.asList(2, 3);
+        isr = Arrays.asList(2, 3);
+        leaderOpt = reassignBucketLeaderElection(targetReplicas, liveReplicas, isr);
+        assertThat(leaderOpt).isPresent();
+        assertThat(leaderOpt.get()).isEqualTo(2);
+
+        targetReplicas = Arrays.asList(1, 2, 3);
+        liveReplicas = Arrays.asList(1, 2);
+        isr = Collections.emptyList();
+        leaderOpt = reassignBucketLeaderElection(targetReplicas, liveReplicas, isr);
+        assertThat(leaderOpt).isNotPresent();
+    }
+
+    @Test
+    void testPreferredReplicaLeaderElection() {
+        List<Integer> assignment = Arrays.asList(1, 2, 3);
+        List<Integer> liveReplicas = Arrays.asList(1, 2, 3);
+        List<Integer> isr = Arrays.asList(1, 2, 3);
+        Optional<Integer> leaderOpt = preferredReplicaLeaderElection(assignment, liveReplicas, isr);
+        assertThat(leaderOpt).isPresent();
+        assertThat(leaderOpt.get()).isEqualTo(1);
+
+        assignment = Arrays.asList(1, 2, 3);
+        liveReplicas = Arrays.asList(2, 3);
+        isr = Arrays.asList(2, 3);
+        leaderOpt = preferredReplicaLeaderElection(assignment, liveReplicas, isr);
+        assertThat(leaderOpt).isNotPresent();
     }
 }
