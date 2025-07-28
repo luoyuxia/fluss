@@ -20,5 +20,7 @@ package com.alibaba.fluss.server.coordinator.statemachine;
 /** The strategies to elect the replica leader. */
 public enum ReplicaLeaderElectionStrategy {
     DEFAULT_ELECTION,
-    CONTROLLED_SHUTDOWN_ELECTION
+    CONTROLLED_SHUTDOWN_ELECTION,
+    PREFERRED_ELECTION,
+    REASSIGN_BUCKET_LEADER_ELECTION
 }
