@@ -786,6 +786,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
         LOG.info("New coordinator server callback for coordinator server {}", coordinatorServerId);
 
         coordinatorContext.addLiveCoordinatorServer(coordinatorServerId);
+
+        LOG.info(
+                "After new coordinator server join, current coordinator server list {}",
+                coordinatorContext.getLiveCoordinatorServers());
     }
 
     private void processDeadCoordinatorServer(
@@ -797,6 +801,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
         // process dead coordinator server
         LOG.info("Coordinator server failure callback for {}.", coordinatorServerId);
         coordinatorContext.removeLiveCoordinatorServer(coordinatorServerId);
+
+        LOG.info(
+                "After new coordinator server dead, current coordinator server list {}",
+                coordinatorContext.getLiveCoordinatorServers());
     }
 
     private void processNewTabletServer(NewTabletServerEvent newTabletServerEvent) {
