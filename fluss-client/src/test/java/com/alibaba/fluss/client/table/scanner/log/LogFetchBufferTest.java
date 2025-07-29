@@ -31,8 +31,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -98,6 +98,9 @@ public class LogFetchBufferTest {
 
             logFetchBuffer.add(makeCompletedFetch(tableBucket1));
             assertThat(logFetchBuffer.isEmpty()).isFalse();
+
+            assertThat(logFetchBuffer.isEmpty()).isFalse();
+            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket1);
 
             logFetchBuffer.setNextInLineFetch(makeCompletedFetch(tableBucket1));
             assertThat(logFetchBuffer.nextInLineFetch()).isNotNull();
@@ -193,12 +196,9 @@ public class LogFetchBufferTest {
     @Test
     void testPendFetches() throws Exception {
         ExecutorService service = Executors.newSingleThreadExecutor();
+        List<TableBucket> tableBuckets = Arrays.asList(tableBucket1, tableBucket2, tableBucket3);
 
         try (LogFetchBuffer logFetchBuffer = new LogFetchBuffer()) {
-            Callable<Boolean> await =
-                    () ->
-                            logFetchBuffer.awaitNotEmpty(
-                                    System.nanoTime() + Duration.ofMinutes(1).toNanos());
 
             assertThat(logFetchBuffer.isEmpty()).isTrue();
             AtomicBoolean completed1 = new AtomicBoolean(false);
@@ -206,40 +206,91 @@ public class LogFetchBufferTest {
             // pending fetches are not counted as completed fetches.
             assertThat(logFetchBuffer.isEmpty()).isTrue();
 
+            logFetchBuffer.pend(makePendingFetch(tableBucket3));
             logFetchBuffer.add(makeCompletedFetch(tableBucket3));
-            // competed fetches will be pended if there is any pending fetches
+            // competed fetches will be pended if there is any pending fetches of a table bucket.
             assertThat(logFetchBuffer.isEmpty()).isTrue();
 
             AtomicBoolean completed2 = new AtomicBoolean(false);
             logFetchBuffer.pend(makePendingFetch(tableBucket2, completed2));
             logFetchBuffer.pend(makePendingFetch(tableBucket3));
-            logFetchBuffer.pend(makePendingFetch(tableBucket3));
 
             Future<Boolean> signal =
                     service.submit(() -> await(logFetchBuffer, Duration.ofSeconds(1)));
-            logFetchBuffer.tryComplete();
-            // nothing happen
+            tableBuckets.forEach(logFetchBuffer::tryComplete);
+            // all pending fetch of table bucket 3  are completed
+            assertThat(logFetchBuffer.isEmpty()).isFalse();
+            assertThat(signal.get()).isTrue();
+            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket3);
+            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket3);
+            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket3);
             assertThat(logFetchBuffer.isEmpty()).isTrue();
-            // no condition signal
-            assertThat(signal.get()).isFalse();
 
             signal = service.submit(() -> await(logFetchBuffer, Duration.ofMinutes(1)));
             completed1.set(true);
-            logFetchBuffer.tryComplete();
+            tableBuckets.forEach(logFetchBuffer::tryComplete);
             assertThat(signal.get()).isTrue();
             assertThat(logFetchBuffer.isEmpty()).isFalse();
             assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket1);
-            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket3);
             assertThat(logFetchBuffer.isEmpty()).isTrue();
 
             signal = service.submit(() -> await(logFetchBuffer, Duration.ofMinutes(1)));
             completed2.set(true);
-            logFetchBuffer.tryComplete();
+            tableBuckets.forEach(logFetchBuffer::tryComplete);
             assertThat(signal.get()).isTrue();
             assertThat(logFetchBuffer.isEmpty()).isFalse();
             assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket2);
+            assertThat(logFetchBuffer.isEmpty()).isTrue();
+        }
+    }
+
+    @Test
+    void testPollInTurns() throws Exception {
+        ExecutorService service = Executors.newSingleThreadExecutor();
+        List<TableBucket> tableBuckets = Arrays.asList(tableBucket1, tableBucket2, tableBucket3);
+
+        try (LogFetchBuffer logFetchBuffer = new LogFetchBuffer()) {
+
+            assertThat(logFetchBuffer.isEmpty()).isTrue();
+            AtomicBoolean completed1 = new AtomicBoolean(false);
+            logFetchBuffer.pend(makePendingFetch(tableBucket1, completed1));
+            // pending fetches are not counted as completed fetches.
+            assertThat(logFetchBuffer.isEmpty()).isTrue();
+
+            logFetchBuffer.pend(makePendingFetch(tableBucket3));
+            logFetchBuffer.add(makeCompletedFetch(tableBucket3));
+            // competed fetches will be pended if there is any pending fetches of a table bucket.
+            assertThat(logFetchBuffer.isEmpty()).isTrue();
+
+            AtomicBoolean completed2 = new AtomicBoolean(false);
+            logFetchBuffer.pend(makePendingFetch(tableBucket2, completed2));
+            logFetchBuffer.pend(makePendingFetch(tableBucket3));
+
+            Future<Boolean> signal =
+                    service.submit(() -> await(logFetchBuffer, Duration.ofSeconds(1)));
+            tableBuckets.forEach(logFetchBuffer::tryComplete);
+            // all pending fetch of table bucket 3  are completed
+            assertThat(logFetchBuffer.isEmpty()).isFalse();
+            assertThat(signal.get()).isTrue();
             assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket3);
             assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket3);
+            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket3);
+            assertThat(logFetchBuffer.isEmpty()).isTrue();
+
+            signal = service.submit(() -> await(logFetchBuffer, Duration.ofMinutes(1)));
+            completed1.set(true);
+            tableBuckets.forEach(logFetchBuffer::tryComplete);
+            assertThat(signal.get()).isTrue();
+            assertThat(logFetchBuffer.isEmpty()).isFalse();
+            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket1);
+            assertThat(logFetchBuffer.isEmpty()).isTrue();
+
+            signal = service.submit(() -> await(logFetchBuffer, Duration.ofMinutes(1)));
+            completed2.set(true);
+            tableBuckets.forEach(logFetchBuffer::tryComplete);
+            assertThat(signal.get()).isTrue();
+            assertThat(logFetchBuffer.isEmpty()).isFalse();
+            assertThat(logFetchBuffer.poll().tableBucket).isEqualTo(tableBucket2);
             assertThat(logFetchBuffer.isEmpty()).isTrue();
         }
     }
