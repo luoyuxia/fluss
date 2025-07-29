@@ -30,10 +30,8 @@ import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -65,21 +63,16 @@ public class LogFetchBuffer implements AutoCloseable {
     private final AtomicBoolean wokenup = new AtomicBoolean(false);
 
     @GuardedBy("lock")
-    private final Map<TableBucket, LinkedList<CompletedFetch>> completedFetches;
+    private final LinkedList<CompletedFetch> completedFetches;
 
     @GuardedBy("lock")
-    private final LinkedList<TableBucket> completeTableBuckets;
-
-    @GuardedBy("lock")
-    private final Map<TableBucket, LinkedList<PendingFetch>> pendingFetches;
+    private final LinkedList<PendingFetch> pendingFetches = new LinkedList<>();
 
     @GuardedBy("lock")
     private @Nullable CompletedFetch nextInLineFetch;
 
     public LogFetchBuffer() {
-        this.completedFetches = new HashMap<>();
-        this.completeTableBuckets = new LinkedList<>();
-        this.pendingFetches = new HashMap<>();
+        this.completedFetches = new LinkedList<>();
     }
 
     /**
@@ -92,30 +85,28 @@ public class LogFetchBuffer implements AutoCloseable {
     }
 
     void pend(PendingFetch pendingFetch) {
-        inLock(lock, () -> addPendingBucket(pendingFetch));
+        inLock(
+                lock,
+                () -> {
+                    pendingFetches.add(pendingFetch);
+                });
     }
 
     /**
      * Tries to complete the pending fetches in order, convert them into completed fetches in the
      * buffer.
      */
-    void tryComplete(TableBucket tableBucket) {
+    void tryComplete() {
         inLock(
                 lock,
                 () -> {
                     boolean hasCompleted = false;
-                    LinkedList<PendingFetch> tableBucketPendingFetches =
-                            pendingFetches.get(tableBucket);
-                    while (tableBucketPendingFetches != null
-                            && !tableBucketPendingFetches.isEmpty()) {
-                        PendingFetch pendingFetch = tableBucketPendingFetches.peek();
+                    while (!pendingFetches.isEmpty()) {
+                        PendingFetch pendingFetch = pendingFetches.peek();
                         if (pendingFetch.isCompleted()) {
                             CompletedFetch completedFetch = pendingFetch.toCompletedFetch();
-                            addCompleteBucket(completedFetch);
-                            tableBucketPendingFetches.poll();
-                            if (tableBucketPendingFetches.isEmpty()) {
-                                pendingFetches.remove(tableBucket);
-                            }
+                            completedFetches.add(completedFetch);
+                            pendingFetches.poll();
                             hasCompleted = true;
                         } else {
                             break;
@@ -131,13 +122,11 @@ public class LogFetchBuffer implements AutoCloseable {
         inLock(
                 lock,
                 () -> {
-                    LinkedList<PendingFetch> bucketPendingFetches =
-                            pendingFetches.get(completedFetch.tableBucket);
-                    if (bucketPendingFetches == null || bucketPendingFetches.isEmpty()) {
-                        addCompleteBucket(completedFetch);
+                    if (pendingFetches.isEmpty()) {
+                        completedFetches.add(completedFetch);
                         notEmptyCondition.signalAll();
                     } else {
-                        addPendingBucket(new CompletedPendingFetch(completedFetch));
+                        pendingFetches.add(new CompletedPendingFetch(completedFetch));
                     }
                 });
     }
@@ -150,11 +139,11 @@ public class LogFetchBuffer implements AutoCloseable {
                 lock,
                 () -> {
                     if (pendingFetches.isEmpty()) {
-                        completedFetches.forEach(this::addCompleteBucket);
+                        this.completedFetches.addAll(completedFetches);
                         notEmptyCondition.signalAll();
                     } else {
                         completedFetches.forEach(
-                                cf -> addPendingBucket(new CompletedPendingFetch(cf)));
+                                cf -> pendingFetches.add(new CompletedPendingFetch(cf)));
                     }
                 });
     }
@@ -168,35 +157,11 @@ public class LogFetchBuffer implements AutoCloseable {
     }
 
     CompletedFetch peek() {
-        return inLock(
-                lock,
-                () -> {
-                    if (completeTableBuckets.isEmpty()) {
-                        return null;
-                    }
-                    return completedFetches.get(completeTableBuckets.peek()).peek();
-                });
+        return inLock(lock, completedFetches::peek);
     }
 
     CompletedFetch poll() {
-        return inLock(
-                lock,
-                () -> {
-                    if (completeTableBuckets.isEmpty()) {
-                        return null;
-                    }
-                    TableBucket tb = completeTableBuckets.poll();
-                    LinkedList<CompletedFetch> tableBucketCompleteFetched =
-                            completedFetches.get(tb);
-                    CompletedFetch completeFetch = tableBucketCompleteFetched.poll();
-                    if (tableBucketCompleteFetched.isEmpty()) {
-                        removeCompleteBucket(tb);
-                    } else {
-                        // put back to the queue as last.
-                        completeTableBuckets.addLast(tb);
-                    }
-                    return completeFetch;
-                });
+        return inLock(lock, completedFetches::poll);
     }
 
     /**
@@ -254,37 +219,14 @@ public class LogFetchBuffer implements AutoCloseable {
         inLock(
                 lock,
                 () -> {
-                    maybeDrain(buckets);
+                    completedFetches.removeIf(cf -> maybeDrain(buckets, cf));
+
                     if (maybeDrain(buckets, nextInLineFetch)) {
                         nextInLineFetch = null;
                     }
 
-                    Set<TableBucket> pendingBuckets = new HashSet<>(pendingFetches.keySet());
-                    pendingBuckets.forEach(
-                            k -> {
-                                if (!buckets.contains(k)) {
-                                    pendingFetches.remove(k);
-                                }
-                            });
+                    pendingFetches.removeIf(pf -> !buckets.contains(pf.tableBucket()));
                 });
-    }
-
-    /**
-     * Drains (i.e. <em>removes</em>) the contents of the given {@link CompletedFetch} as its data
-     * should not be returned to the user.
-     */
-    private boolean maybeDrain(Set<TableBucket> buckets) {
-        boolean hasDrain = false;
-        for (TableBucket bucket : buckets) {
-            if (completedFetches.containsKey(bucket)) {
-                completedFetches
-                        .get(bucket)
-                        .forEach((completedFetch) -> maybeDrain(buckets, completedFetch));
-                removeCompleteBucket(bucket);
-                hasDrain = true;
-            }
-        }
-        return hasDrain;
     }
 
     /**
@@ -326,46 +268,24 @@ public class LogFetchBuffer implements AutoCloseable {
                         return null;
                     }
 
-                    final Set<TableBucket> buckets = new HashSet<>(completedFetches.keySet());
+                    final Set<TableBucket> buckets = new HashSet<>();
                     if (nextInLineFetch != null && !nextInLineFetch.isConsumed()) {
                         buckets.add(nextInLineFetch.tableBucket);
                     }
+                    completedFetches.forEach(cf -> buckets.add(cf.tableBucket));
                     return buckets;
                 });
     }
 
     /** Return the set of {@link TableBucket buckets} for which we have pending fetches. */
     Set<TableBucket> pendedBuckets() {
-        return inLock(lock, pendingFetches::keySet);
-    }
-
-    void addCompleteBucket(CompletedFetch completedFetch) {
-        LinkedList<CompletedFetch> tableBucketCompletedFetches;
-        if (!completedFetches.containsKey(completedFetch.tableBucket)) {
-            tableBucketCompletedFetches = new LinkedList<>();
-            completeTableBuckets.addLast(completedFetch.tableBucket);
-        } else {
-            tableBucketCompletedFetches = completedFetches.get(completedFetch.tableBucket);
-        }
-        tableBucketCompletedFetches.add(completedFetch);
-        completedFetches.put(completedFetch.tableBucket, tableBucketCompletedFetches);
-    }
-
-    void addPendingBucket(PendingFetch pendingFetch) {
-        LinkedList<PendingFetch> tableBucketPendingFetches;
-        if (!pendingFetches.containsKey(pendingFetch.tableBucket())) {
-            tableBucketPendingFetches = new LinkedList<>();
-        } else {
-            tableBucketPendingFetches = pendingFetches.get(pendingFetch.tableBucket());
-        }
-
-        tableBucketPendingFetches.add(pendingFetch);
-        pendingFetches.put(pendingFetch.tableBucket(), tableBucketPendingFetches);
-    }
-
-    void removeCompleteBucket(TableBucket tableBucket) {
-        completedFetches.remove(tableBucket);
-        completeTableBuckets.remove(tableBucket);
+        return inLock(
+                lock,
+                () -> {
+                    final Set<TableBucket> buckets = new HashSet<>();
+                    pendingFetches.forEach(pf -> buckets.add(pf.tableBucket()));
+                    return buckets;
+                });
     }
 
     @Override
