@@ -90,6 +90,7 @@ public class LogFetcher implements Closeable {
     @Nullable private final Projection projection;
     private final int maxFetchBytes;
     private final int maxBucketFetchBytes;
+    private final long maxBucketRemoteFetchBytes;
     private final int minFetchBytes;
     private final int maxFetchWaitMs;
     private final int maxAllowedTimeLag;
@@ -128,6 +129,10 @@ public class LogFetcher implements Closeable {
         this.maxBucketFetchBytes =
                 (int)
                         conf.get(ConfigOptions.CLIENT_SCANNER_LOG_FETCH_MAX_BYTES_FOR_BUCKET)
+                                .getBytes();
+        this.maxBucketRemoteFetchBytes =
+                (int)
+                        conf.get(ConfigOptions.CLIENT_SCANNER_REMOTE_LOG_FETCH_MAX_BYTES_FOR_BUCKET)
                                 .getBytes();
         this.minFetchBytes =
                 (int) conf.get(ConfigOptions.CLIENT_SCANNER_LOG_FETCH_MIN_BYTES).getBytes();
@@ -424,7 +429,8 @@ public class LogFetcher implements Closeable {
                         new PbFetchLogReqForBucket()
                                 .setBucketId(tb.getBucket())
                                 .setFetchOffset(offset)
-                                .setMaxFetchBytes(maxBucketFetchBytes);
+                                .setMaxFetchBytes(maxBucketFetchBytes)
+                                .setMaxRemoteBytes(maxBucketRemoteFetchBytes);
                 if (tb.getPartitionId() != null) {
                     fetchLogReqForBucket.setPartitionId(tb.getPartitionId());
                 }
