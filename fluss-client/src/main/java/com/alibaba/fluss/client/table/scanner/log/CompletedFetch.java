@@ -69,6 +69,7 @@ abstract class CompletedFetch {
     private long nextFetchOffset;
     private boolean isConsumed = false;
     private boolean initialized = false;
+    private boolean firstOfBatch = true;
 
     public CompletedFetch(
             TableBucket tableBucket,
@@ -216,10 +217,16 @@ abstract class CompletedFetch {
                 currentBatch = batches.next();
                 // TODO get last epoch.
                 maybeEnsureValid(currentBatch);
-
                 records = currentBatch.records(readContext);
             } else {
                 LogRecord record = records.next();
+                if (firstOfBatch) {
+                    LOG.info(
+                            "The timestamp if the first record of segment in bucket {} is {}",
+                            tableBucket,
+                            record.timestamp());
+                    firstOfBatch = false;
+                }
                 // skip any records out of range.
                 if (record.logOffset() >= nextFetchOffset) {
                     return record;
