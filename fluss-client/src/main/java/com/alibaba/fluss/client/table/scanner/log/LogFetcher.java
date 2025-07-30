@@ -92,6 +92,7 @@ public class LogFetcher implements Closeable {
     private final int maxBucketFetchBytes;
     private final int minFetchBytes;
     private final int maxFetchWaitMs;
+    private final int maxAllowedTimeLag;
     private final boolean isCheckCrcs;
     private final LogScannerStatus logScannerStatus;
     private final LogFetchBuffer logFetchBuffer;
@@ -132,6 +133,10 @@ public class LogFetcher implements Closeable {
                 (int) conf.get(ConfigOptions.CLIENT_SCANNER_LOG_FETCH_MIN_BYTES).getBytes();
         this.maxFetchWaitMs =
                 (int) conf.get(ConfigOptions.CLIENT_SCANNER_LOG_FETCH_WAIT_MAX_TIME).toMillis();
+        this.maxAllowedTimeLag =
+                (int)
+                        conf.get(ConfigOptions.CLIENT_SCANNER_LOG_FETCH_MAX_ALLOWED_TIME_GAP)
+                                .toMillis();
 
         this.isCheckCrcs = conf.getBoolean(ConfigOptions.CLIENT_SCANNER_LOG_CHECK_CRC);
         this.logFetchBuffer = new LogFetchBuffer();
@@ -469,7 +474,13 @@ public class LogFetcher implements Closeable {
             return Collections.emptyList();
         }
 
-        return logScannerStatus.fetchableBuckets(tableBucket -> !exclude.contains(tableBucket));
+        long minTimestamp = logScannerStatus.getMinTimestamp();
+
+        return logScannerStatus.fetchableBuckets(
+                (tableBucket, bucketScanStatus) ->
+                        !exclude.contains(tableBucket)
+                                && bucketScanStatus.getTimestamp() - maxAllowedTimeLag
+                                        <= minTimestamp);
     }
 
     private Integer getTableBucketLeader(TableBucket tableBucket) {
