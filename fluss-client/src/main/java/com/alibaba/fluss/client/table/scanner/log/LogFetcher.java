@@ -470,7 +470,12 @@ public class LogFetcher implements Closeable {
             return Collections.emptyList();
         }
 
-        return logScannerStatus.fetchableBuckets(tableBucket -> !exclude.contains(tableBucket));
+        long minTimestamp = logScannerStatus.getMinTimestamp();
+
+        return logScannerStatus.fetchableBuckets(
+                (tableBucket, bucketScanStatus) ->
+                        !exclude.contains(tableBucket)
+                                && bucketScanStatus.getTimestamp() - 5 * 60 * 1000 <= minTimestamp);
     }
 
     private Integer getTableBucketLeader(TableBucket tableBucket) {
