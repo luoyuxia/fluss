@@ -21,6 +21,8 @@ import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.LogRecordBatch;
 
+import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
+
 /**
  * This class is used to validate the records appended by a given writer before they are written to
  * log. It's initialized with writer's state after the last successful append.
@@ -42,35 +44,38 @@ public class WriterAppendInfo {
         return writerId;
     }
 
-    public void append(LogRecordBatch batch) {
+    public void append(LogRecordBatch batch, boolean isBatchExpired) {
         LogOffsetMetadata firstOffsetMetadata = new LogOffsetMetadata(batch.baseLogOffset());
         appendDataBatch(
                 batch.batchSequence(),
                 firstOffsetMetadata,
                 batch.lastLogOffset(),
-                System.currentTimeMillis()); // TODO, add timestamp to record batch.
+                isBatchExpired,
+                batch.commitTimestamp());
     }
 
     public void appendDataBatch(
             int batchSequence,
             LogOffsetMetadata firstOffsetMetadata,
             long lastOffset,
-            long lastTimestamp) {
-        maybeValidateDataBatch(batchSequence, lastOffset);
+            boolean isBatchExpired,
+            long batchTimestamp) {
+        maybeValidateDataBatch(batchSequence, isBatchExpired, lastOffset);
         updatedEntry.addBath(
                 batchSequence,
                 lastOffset,
                 (int) (lastOffset - firstOffsetMetadata.getMessageOffset()),
-                lastTimestamp);
+                batchTimestamp);
     }
 
-    private void maybeValidateDataBatch(int appendFirstSeq, long lastOffset) {
+    private void maybeValidateDataBatch(
+            int appendFirstSeq, boolean isBatchExpired, long lastOffset) {
         int currentLastSeq =
                 !updatedEntry.isEmpty()
                         ? updatedEntry.lastBatchSequence()
                         : currentEntry.lastBatchSequence();
         // must be in sequence, even for the first batch should start from 0
-        if (!inSequence(currentLastSeq, appendFirstSeq)) {
+        if (!inSequence(currentLastSeq, appendFirstSeq, isBatchExpired)) {
             throw new OutOfOrderSequenceException(
                     String.format(
                             "Out of order batch sequence for writer %s at offset %s in "
@@ -83,8 +88,9 @@ public class WriterAppendInfo {
         return updatedEntry;
     }
 
-    private boolean inSequence(int lastBatchSeq, int nextBatchSeq) {
-        return nextBatchSeq == lastBatchSeq + 1L
+    private boolean inSequence(int lastBatchSeq, int nextBatchSeq, boolean isBatchExpired) {
+        return (lastBatchSeq == NO_BATCH_SEQUENCE && isBatchExpired)
+                || nextBatchSeq == lastBatchSeq + 1L
                 || (nextBatchSeq == 0 && lastBatchSeq == Integer.MAX_VALUE);
     }
 }

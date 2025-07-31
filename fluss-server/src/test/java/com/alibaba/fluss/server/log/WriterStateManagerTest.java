@@ -21,6 +21,7 @@ import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.utils.clock.ManualClock;
 import com.alibaba.fluss.utils.types.Tuple2;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -41,6 +42,7 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -124,14 +126,15 @@ public class WriterStateManagerTest {
     @Test
     void testPrepareUpdateDoesNotMutate() {
         WriterAppendInfo appendInfo = stateManager.prepareUpdate(writerId);
-        appendInfo.appendDataBatch(0, new LogOffsetMetadata(15L), 20L, System.currentTimeMillis());
+        appendInfo.appendDataBatch(
+                0, new LogOffsetMetadata(15L), 20L, false, System.currentTimeMillis());
         assertThat(stateManager.lastEntry(writerId)).isNotPresent();
         stateManager.update(appendInfo);
         assertThat(stateManager.lastEntry(writerId)).isPresent();
 
         WriterAppendInfo nextAppendInfo = stateManager.prepareUpdate(writerId);
         nextAppendInfo.appendDataBatch(
-                1, new LogOffsetMetadata(26L), 30L, System.currentTimeMillis());
+                1, new LogOffsetMetadata(26L), 30L, false, System.currentTimeMillis());
         assertThat(stateManager.lastEntry(writerId)).isPresent();
 
         WriterStateEntry lastEntry = stateManager.lastEntry(writerId).get();
@@ -151,7 +154,7 @@ public class WriterStateManagerTest {
             stateManager.takeSnapshot();
         }
 
-        stateManager.truncateAndReload(1L, 3L, System.currentTimeMillis());
+        stateManager.truncateAndReload(1L, 3L);
         assertThat(stateManager.oldestSnapshotOffset()).isPresent();
         assertThat(stateManager.oldestSnapshotOffset().get()).isEqualTo(2L);
         assertThat(stateManager.latestSnapshotOffset()).isPresent();
@@ -179,8 +182,8 @@ public class WriterStateManagerTest {
 
     @Test
     void testRemoveExpiredWritersOnReload() throws IOException {
-        append(stateManager, writerId, 0, 0L, 0);
-        append(stateManager, writerId, 1, 1L, 1);
+        append(stateManager, writerId, 0, 0L, false, 0);
+        append(stateManager, writerId, 1, 1L, false, 1);
 
         stateManager.takeSnapshot();
         WriterStateManager recoveredMapping =
@@ -188,25 +191,83 @@ public class WriterStateManagerTest {
                         tableBucket,
                         logDir,
                         (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
-        recoveredMapping.truncateAndReload(0L, 1L, 70000);
+        recoveredMapping.truncateAndReload(0L, 1L);
 
         // Entry added after recovery. The writer id should be expired now, and would not exist in
         // the writer mapping. If writing with the same writerId and non-zero batch sequence, the
         // OutOfOrderSequenceException will throw. If you want to continue to write, you need to get
         // a new writer id.
-        assertThatThrownBy(() -> append(recoveredMapping, writerId, 2, 2L, 70001))
+        assertThatThrownBy(() -> append(recoveredMapping, writerId, 2, 2L, false, 70001))
                 .isInstanceOf(OutOfOrderSequenceException.class)
                 .hasMessageContaining(
                         "Out of order batch sequence for writer 1 at offset 2 in "
                                 + "table-bucket TableBucket{tableId=1001, bucket=0}"
                                 + " : 2 (incoming batch seq.), -1 (current batch seq.)");
 
-        append(recoveredMapping, 2L, 0, 2L, 70002);
+        append(recoveredMapping, 2L, 0, 2L, false, 70002);
 
         assertThat(recoveredMapping.activeWriters().size()).isEqualTo(1);
         assertThat(recoveredMapping.activeWriters().values().iterator().next().lastBatchSequence())
                 .isEqualTo(0);
         assertThat(recoveredMapping.mapEndOffset()).isEqualTo(3L);
+    }
+
+    @Test
+    void testLoadFromSnapshotRetainExpiredWriters() throws Exception {
+        ManualClock clock = new ManualClock(1000L);
+
+        // 2 seconds to expire the writer.
+        conf.set(ConfigOptions.WRITER_ID_EXPIRATION_TIME, Duration.ofSeconds(2));
+        WriterStateManager stateManager1 =
+                new WriterStateManager(
+                        tableBucket,
+                        logDir,
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+
+        long writerId1 = 1L;
+        long writerId2 = 2L;
+
+        append(stateManager1, writerId1, 0, 0L, false, clock.milliseconds());
+        append(stateManager1, writerId2, 0, 1L, false, clock.milliseconds());
+        stateManager1.takeSnapshot();
+        assertThat(stateManager1.activeWriters().size()).isEqualTo(2);
+
+        // trigger clock move to 5000L which means the batches expired.
+        clock.advanceTime(5000L, TimeUnit.MILLISECONDS);
+        // new one new WriterStateManager to mock tabletServer restart and reload from snapshot.
+        WriterStateManager stateManager2 =
+                new WriterStateManager(
+                        tableBucket,
+                        logDir,
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+        stateManager2.truncateAndReload(0L, 2L);
+        // all writers are retained.
+        assertThat(stateManager2.activeWriters().size()).isEqualTo(2);
+    }
+
+    @Test
+    void testAppendAnExpiredBatchWithEmptyWriterStatus() throws Exception {
+        ManualClock clock = new ManualClock(5000L);
+
+        // 2 seconds to expire the writer.
+        conf.set(ConfigOptions.WRITER_ID_EXPIRATION_TIME, Duration.ofSeconds(2));
+        WriterStateManager stateManager1 =
+                new WriterStateManager(
+                        tableBucket,
+                        logDir,
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+
+        // If we try to append an expired batch with none zero batch sequence, the
+        // OutOfOrderSequenceException will not been throw.
+        append(stateManager1, 1L, 10, 10L, true, clock.milliseconds());
+
+        // If we try to append a none-expired batch with none zero batch sequence, the
+        // OutOfOrderSequenceException will throw.
+        assertThatThrownBy(() -> append(stateManager1, 2L, 10, 10L, false, clock.milliseconds()))
+                .isInstanceOf(OutOfOrderSequenceException.class)
+                .hasMessageContaining(
+                        "Out of order batch sequence for writer 2 at offset 10 in table-bucket "
+                                + "TableBucket{tableId=1001, bucket=0} : 10 (incoming batch seq.), -1 (current batch seq.)");
     }
 
     @Test
@@ -280,7 +341,7 @@ public class WriterStateManagerTest {
         assertThat(currentSnapshotOffsets()).isEqualTo(new HashSet<>(Arrays.asList(3L, 5L)));
 
         // Truncate to the range (3, 5), this will delete the earlier snapshot until offset 3.
-        stateManager.truncateAndReload(3L, 5L, System.currentTimeMillis());
+        stateManager.truncateAndReload(3L, 5L);
         assertThat(Objects.requireNonNull(logDir.listFiles()).length).isEqualTo(1);
         assertThat(currentSnapshotOffsets()).isEqualTo(Collections.singleton(5L));
 
@@ -306,7 +367,7 @@ public class WriterStateManagerTest {
         stateManager.takeSnapshot();
         assertThat(stateManager.activeWriters().size()).isEqualTo(2);
 
-        stateManager.truncateAndReload(1L, 2L, System.currentTimeMillis());
+        stateManager.truncateAndReload(1L, 2L);
         assertThat(stateManager.activeWriters().size()).isEqualTo(2);
 
         Optional<WriterStateEntry> entry1 = stateManager.lastEntry(writerId1);
@@ -322,7 +383,7 @@ public class WriterStateManagerTest {
 
     @Test
     void testSkipSnapshotIfOffsetUnchanged() throws IOException {
-        append(stateManager, writerId, 0, 0L, 0L);
+        append(stateManager, writerId, 0, 0L, true, 0L);
 
         stateManager.takeSnapshot();
         assertThat(Objects.requireNonNull(logDir.listFiles()).length).isEqualTo(1);
@@ -465,7 +526,7 @@ public class WriterStateManagerTest {
                         tableBucket,
                         logDir,
                         (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
-        reloadedStateManager.truncateAndReload(0L, 20L, System.currentTimeMillis());
+        reloadedStateManager.truncateAndReload(0L, 20L);
         assertThat(snapshotToTruncate.exists()).isFalse();
 
         WriterStateEntry loadedWriterState = reloadedStateManager.activeWriters().get(writerId);
@@ -475,7 +536,7 @@ public class WriterStateManagerTest {
 
     private void append(
             WriterStateManager stateManager, long writerId, int batchSequence, long offset) {
-        append(stateManager, writerId, batchSequence, offset, System.currentTimeMillis());
+        append(stateManager, writerId, batchSequence, offset, false, System.currentTimeMillis());
     }
 
     private void append(
@@ -483,9 +544,15 @@ public class WriterStateManagerTest {
             long writerId,
             int batchSequence,
             long offset,
-            long timestamp) {
+            boolean isBatchExpired,
+            long lastTimestamp) {
         WriterAppendInfo appendInfo = stateManager.prepareUpdate(writerId);
-        appendInfo.appendDataBatch(batchSequence, new LogOffsetMetadata(offset), offset, timestamp);
+        appendInfo.appendDataBatch(
+                batchSequence,
+                new LogOffsetMetadata(offset),
+                offset,
+                isBatchExpired,
+                lastTimestamp);
         stateManager.update(appendInfo);
         stateManager.updateMapEndOffset(offset + 1);
     }
