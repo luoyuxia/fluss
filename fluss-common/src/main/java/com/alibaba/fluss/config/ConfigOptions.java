@@ -1047,6 +1047,33 @@ public class ConfigOptions {
                             "The maximum time to wait for the lookup batch to full, if this timeout is reached, "
                                     + "the lookup batch will be closed to send.");
 
+    public static final ConfigOption<Integer> CLIENT_METADATA_MAX_RETRIES =
+            key("client.metadata.max-retries")
+                    .intType()
+                    .defaultValue(5)
+                    .withDescription(
+                            "The maximum number of retries for metadata requests. When a metadata request fails "
+                                    + "due to timeout or other retriable exceptions, the client will retry up to "
+                                    + "this many times before giving up.");
+
+    public static final ConfigOption<Duration> CLIENT_METADATA_TIMEOUT =
+            key("client.metadata.timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000))
+                    .withDescription(
+                            "The timeout for metadata requests. If a metadata request takes longer than this "
+                                    + "time, it will be considered failed and may be retried according to "
+                                    + CLIENT_METADATA_MAX_RETRIES.key()
+                                    + ".");
+
+    public static final ConfigOption<Duration> CLIENT_METADATA_RETRY_BACKOFF =
+            key("client.metadata.retry-backoff")
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(100))
+                    .withDescription(
+                            "The backoff duration between metadata request retries. The actual backoff time "
+                                    + "will be this value multiplied by the retry attempt number (1, 2, 3, etc.).");
+
     public static final ConfigOption<Integer> CLIENT_SCANNER_REMOTE_LOG_PREFETCH_NUM =
             key("client.scanner.remote-log.prefetch-num")
                     .intType()

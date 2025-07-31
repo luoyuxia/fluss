@@ -31,6 +31,7 @@ import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 
@@ -64,13 +65,14 @@ class MetadataUpdaterTest {
         // any N levels UnmodifiableCollection
         for (int i = 0; i < 20000; i++) {
             cluster =
-                    MetadataUtils.sendMetadataRequestAndRebuildCluster(
+                    MetadataUtils.sendMetadataRequestAndRebuildClusterWithTimeout(
                             FLUSS_CLUSTER_EXTENSION.newCoordinatorClient(),
                             true,
                             cluster,
                             null,
                             null,
-                            null);
+                            null,
+                            Duration.ofSeconds(30));
         }
     }
 

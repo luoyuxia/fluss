@@ -22,8 +22,11 @@ import com.alibaba.fluss.client.metadata.KvSnapshots;
 import com.alibaba.fluss.client.metadata.LakeSnapshot;
 import com.alibaba.fluss.client.metadata.MetadataUpdater;
 import com.alibaba.fluss.client.utils.ClientRpcMessageUtils;
+import com.alibaba.fluss.client.utils.MetadataUtils;
 import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
+import com.alibaba.fluss.config.ConfigOptions;
+import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.LeaderNotAvailableException;
 import com.alibaba.fluss.metadata.DatabaseDescriptor;
 import com.alibaba.fluss.metadata.DatabaseInfo;
@@ -74,6 +77,7 @@ import com.alibaba.fluss.utils.MapUtils;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -86,7 +90,6 @@ import static com.alibaba.fluss.client.utils.ClientRpcMessageUtils.makeCreatePar
 import static com.alibaba.fluss.client.utils.ClientRpcMessageUtils.makeDropPartitionRequest;
 import static com.alibaba.fluss.client.utils.ClientRpcMessageUtils.makeListOffsetsRequest;
 import static com.alibaba.fluss.client.utils.ClientRpcMessageUtils.makePbPartitionSpec;
-import static com.alibaba.fluss.client.utils.MetadataUtils.sendMetadataRequestAndRebuildCluster;
 import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toAclBindings;
 import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toPbAclBindingFilters;
 import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.toPbAclFilter;
@@ -103,8 +106,9 @@ public class FlussAdmin implements Admin {
     private final AdminGateway gateway;
     private final AdminReadOnlyGateway readOnlyGateway;
     private final MetadataUpdater metadataUpdater;
+    private final Configuration conf;
 
-    public FlussAdmin(RpcClient client, MetadataUpdater metadataUpdater) {
+    public FlussAdmin(RpcClient client, MetadataUpdater metadataUpdater, Configuration conf) {
         this.gateway =
                 GatewayClientProxy.createGatewayProxy(
                         metadataUpdater::getCoordinatorServer, client, AdminGateway.class);
@@ -112,23 +116,29 @@ public class FlussAdmin implements Admin {
                 GatewayClientProxy.createGatewayProxy(
                         metadataUpdater::getRandomTabletServer, client, AdminGateway.class);
         this.metadataUpdater = metadataUpdater;
+        this.conf = conf;
     }
 
     @Override
     public CompletableFuture<List<ServerNode>> getServerNodes() {
         CompletableFuture<List<ServerNode>> future = new CompletableFuture<>();
+        Duration timeout =
+                conf != null
+                        ? conf.get(ConfigOptions.CLIENT_METADATA_TIMEOUT)
+                        : Duration.ofSeconds(30);
         CompletableFuture.runAsync(
                 () -> {
                     try {
                         List<ServerNode> serverNodeList = new ArrayList<>();
                         Cluster cluster =
-                                sendMetadataRequestAndRebuildCluster(
+                                MetadataUtils.sendMetadataRequestAndRebuildClusterWithTimeout(
                                         readOnlyGateway,
                                         false,
                                         metadataUpdater.getCluster(),
                                         null,
                                         null,
-                                        null);
+                                        null,
+                                        timeout);
                         serverNodeList.add(cluster.getCoordinatorServer());
                         serverNodeList.addAll(cluster.getAliveTabletServerList());
                         future.complete(serverNodeList);

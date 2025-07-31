@@ -19,6 +19,7 @@ package com.alibaba.fluss.client.metadata;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.client.utils.ClientUtils;
+import com.alibaba.fluss.client.utils.MetadataUtils;
 import com.alibaba.fluss.cluster.BucketLocation;
 import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
@@ -45,6 +46,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -54,7 +56,7 @@ import java.util.Set;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
-import static com.alibaba.fluss.client.utils.MetadataUtils.sendMetadataRequestAndRebuildCluster;
+import static com.alibaba.fluss.client.utils.MetadataUtils.sendMetadataRequestAndRebuildClusterWithRetry;
 
 /** The updater to initialize and update client metadata. */
 public class MetadataUpdater {
@@ -63,15 +65,19 @@ public class MetadataUpdater {
     private static final int MAX_RETRY_TIMES = 5;
 
     private final RpcClient rpcClient;
+    private final Configuration configuration;
     protected volatile Cluster cluster;
 
     public MetadataUpdater(Configuration configuration, RpcClient rpcClient) {
-        this(rpcClient, initializeCluster(configuration, rpcClient));
+        this.configuration = configuration;
+        this.rpcClient = rpcClient;
+        this.cluster = initializeCluster(configuration, rpcClient);
     }
 
     @VisibleForTesting
     public MetadataUpdater(RpcClient rpcClient, Cluster cluster) {
         this.rpcClient = rpcClient;
+        this.configuration = null; // For testing, we don't have configuration
         this.cluster = cluster;
     }
 
@@ -259,12 +265,13 @@ public class MetadataUpdater {
         try {
             synchronized (this) {
                 cluster =
-                        sendMetadataRequestAndRebuildCluster(
+                        sendMetadataRequestAndRebuildClusterWithRetry(
                                 cluster,
                                 rpcClient,
                                 tablePaths,
                                 tablePartitionNames,
-                                tablePartitionIds);
+                                tablePartitionIds,
+                                configuration);
             }
         } catch (Exception e) {
             Throwable t = ExceptionUtils.stripExecutionException(e);
@@ -318,7 +325,8 @@ public class MetadataUpdater {
         AdminReadOnlyGateway adminReadOnlyGateway =
                 GatewayClientProxy.createGatewayProxy(
                         () -> serverNode, rpcClient, AdminReadOnlyGateway.class);
-        return sendMetadataRequestAndRebuildCluster(adminReadOnlyGateway, Collections.emptySet());
+        return MetadataUtils.sendMetadataRequestAndRebuildClusterWithTimeout(
+                adminReadOnlyGateway, Collections.emptySet(), Duration.ofSeconds(60));
     }
 
     /** Invalid the bucket metadata for the given physical table paths. */

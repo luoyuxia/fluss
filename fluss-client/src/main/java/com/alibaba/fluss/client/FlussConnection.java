@@ -93,7 +93,7 @@ public final class FlussConnection implements Connection {
 
     @Override
     public Admin getAdmin() {
-        return new FlussAdmin(rpcClient, metadataUpdater);
+        return new FlussAdmin(rpcClient, metadataUpdater, conf);
     }
 
     @Override

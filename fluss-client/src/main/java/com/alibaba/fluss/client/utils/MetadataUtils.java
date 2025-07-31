@@ -21,7 +21,11 @@ import com.alibaba.fluss.cluster.BucketLocation;
 import com.alibaba.fluss.cluster.Cluster;
 import com.alibaba.fluss.cluster.ServerNode;
 import com.alibaba.fluss.cluster.ServerType;
+import com.alibaba.fluss.config.ConfigOptions;
+import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.FlussRuntimeException;
+import com.alibaba.fluss.exception.RetriableException;
+import com.alibaba.fluss.exception.RetryCountExceededException;
 import com.alibaba.fluss.exception.StaleMetadataException;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
@@ -38,9 +42,14 @@ import com.alibaba.fluss.rpc.messages.PbPartitionMetadata;
 import com.alibaba.fluss.rpc.messages.PbServerNode;
 import com.alibaba.fluss.rpc.messages.PbTableMetadata;
 import com.alibaba.fluss.rpc.messages.PbTablePath;
+import com.alibaba.fluss.utils.ExceptionUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -56,16 +65,18 @@ import java.util.concurrent.TimeoutException;
 public class MetadataUtils {
 
     private static final Random randOffset = new Random();
+    private static final Logger LOG = LoggerFactory.getLogger(MetadataUtils.class);
 
     /**
      * full update cluster, means we will rebuild the cluster by clearing all cached table in
      * cluster, and then send metadata request to request the input tables in tablePaths, after that
      * add those table into cluster.
      */
-    public static Cluster sendMetadataRequestAndRebuildCluster(
-            AdminReadOnlyGateway gateway, Set<TablePath> tablePaths)
+    public static Cluster sendMetadataRequestAndRebuildClusterWithTimeout(
+            AdminReadOnlyGateway gateway, Set<TablePath> tablePaths, Duration timeout)
             throws ExecutionException, InterruptedException, TimeoutException {
-        return sendMetadataRequestAndRebuildCluster(gateway, false, null, tablePaths, null, null);
+        return sendMetadataRequestAndRebuildClusterWithTimeout(
+                gateway, false, null, tablePaths, null, null, timeout);
     }
 
     /**
@@ -74,30 +85,38 @@ public class MetadataUtils {
      * tables/partitions into cluster. The origin tables/partitions in cluster will not be cleared,
      * but will be updated.
      */
-    public static Cluster sendMetadataRequestAndRebuildCluster(
+    public static Cluster sendMetadataRequestAndRebuildClusterWithTimeout(
             Cluster cluster,
             RpcClient client,
             @Nullable Set<TablePath> tablePaths,
             @Nullable Collection<PhysicalTablePath> tablePartitionNames,
-            @Nullable Collection<Long> tablePartitionIds)
+            @Nullable Collection<Long> tablePartitionIds,
+            Duration timeout)
             throws ExecutionException, InterruptedException, TimeoutException {
         AdminReadOnlyGateway gateway =
                 GatewayClientProxy.createGatewayProxy(
                         () -> getOneAvailableTabletServerNode(cluster),
                         client,
                         AdminReadOnlyGateway.class);
-        return sendMetadataRequestAndRebuildCluster(
-                gateway, true, cluster, tablePaths, tablePartitionNames, tablePartitionIds);
+        return sendMetadataRequestAndRebuildClusterWithTimeout(
+                gateway,
+                true,
+                cluster,
+                tablePaths,
+                tablePartitionNames,
+                tablePartitionIds,
+                timeout);
     }
 
     /** maybe partial update cluster. */
-    public static Cluster sendMetadataRequestAndRebuildCluster(
+    public static Cluster sendMetadataRequestAndRebuildClusterWithTimeout(
             AdminReadOnlyGateway gateway,
             boolean partialUpdate,
             Cluster originCluster,
             @Nullable Set<TablePath> tablePaths,
             @Nullable Collection<PhysicalTablePath> tablePartitions,
-            @Nullable Collection<Long> tablePartitionIds)
+            @Nullable Collection<Long> tablePartitionIds,
+            Duration timeout)
             throws ExecutionException, InterruptedException, TimeoutException {
         MetadataRequest metadataRequest =
                 ClientRpcMessageUtils.makeMetadataRequest(
@@ -173,9 +192,86 @@ public class MetadataUtils {
                                     newPartitionIdByPath,
                                     newTablePathToTableInfo);
                         })
-                .get(30, TimeUnit.SECONDS); // TODO currently, we don't have timeout logic in
+                .get(
+                        timeout.getSeconds(),
+                        TimeUnit.SECONDS); // TODO currently, we don't have timeout logic in
         // RpcClient, it will let the get() block forever. So we
         // time out here
+    }
+
+    /**
+     * Send metadata request with retry logic. This method will retry the metadata request up to the
+     * configured number of times when encountering retriable exceptions or timeouts.
+     */
+    public static Cluster sendMetadataRequestAndRebuildClusterWithRetry(
+            Cluster cluster,
+            RpcClient client,
+            @Nullable Set<TablePath> tablePaths,
+            @Nullable Collection<PhysicalTablePath> tablePartitions,
+            @Nullable Collection<Long> tablePartitionIds,
+            @Nullable Configuration configuration)
+            throws ExecutionException, InterruptedException, TimeoutException {
+
+        // Get retry configuration from the provided configuration or use defaults
+        int maxRetries =
+                configuration != null
+                        ? configuration.getInt(ConfigOptions.CLIENT_METADATA_MAX_RETRIES)
+                        : 5;
+        Duration timeout =
+                configuration != null
+                        ? configuration.get(ConfigOptions.CLIENT_METADATA_TIMEOUT)
+                        : Duration.ofSeconds(30);
+        Duration retryBackoff =
+                configuration != null
+                        ? configuration.get(ConfigOptions.CLIENT_METADATA_RETRY_BACKOFF)
+                        : Duration.ofMillis(100);
+
+        Exception lastException = null;
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                return sendMetadataRequestAndRebuildClusterWithTimeout(
+                        cluster, client, tablePaths, tablePartitions, tablePartitionIds, timeout);
+            } catch (Exception e) {
+                lastException = e;
+
+                Throwable t = ExceptionUtils.stripExecutionException(e);
+
+                if (t instanceof InterruptedException) {
+                    throw (InterruptedException) t;
+                }
+
+                // Check if this is a retriable exception
+                boolean isRetriable =
+                        t instanceof RetriableException
+                                || t instanceof TimeoutException
+                                || t instanceof StaleMetadataException;
+
+                if (!isRetriable) {
+                    throw (RuntimeException) t;
+                }
+                if (attempt < maxRetries) {
+                    long backoffTime = retryBackoff.toMillis() * (attempt + 1);
+                    LOG.warn(
+                            "Metadata request failed (attempt {}/{}), will retry in {} ms. Error: {}",
+                            attempt + 1,
+                            maxRetries + 1,
+                            backoffTime,
+                            t.getMessage());
+
+                    try {
+                        Thread.sleep(backoffTime);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new InterruptedException("Interrupted while waiting for retry");
+                    }
+                }
+            }
+        }
+        LOG.error(
+                "Metadata request failed after {} attempts. Last error: {}",
+                maxRetries + 1,
+                lastException);
+        throw new RetryCountExceededException("Metadata request failed after all retries");
     }
 
     private static NewTableMetadata getTableMetadataToUpdate(
