@@ -19,13 +19,10 @@ package com.alibaba.fluss.lake.paimon.tiering;
 
 import com.alibaba.fluss.lake.committer.CommittedLakeSnapshot;
 import com.alibaba.fluss.lake.committer.LakeCommitter;
-import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonFactory;
-import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
-
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
@@ -38,9 +35,7 @@ import org.apache.paimon.table.sink.CommitCallback;
 import org.apache.paimon.utils.SnapshotManager;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
-import java.io.StringWriter;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -87,33 +82,10 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     }
 
     @Override
-    public long commit(
-            PaimonCommittable committable,
-            List<Map.Entry<TableBucket, Long>> missingTableBucketsOffset)
+    public long commit(PaimonCommittable committable, Map<String, String> properties)
             throws IOException {
         ManifestCommittable manifestCommittable = committable.manifestCommittable();
-
-        StringWriter sw = new StringWriter();
-        try (JsonGenerator gen = JACKSON_FACTORY.createGenerator(sw)) {
-            gen.writeStartArray();
-            for (PaimonBucketOffset bucketOffset : bucketOffsets) {
-                PaimonBucketOffsetJsonSerde.INSTANCE.serialize(bucketOffset, gen);
-            }
-            if (missingTableBucketsOffset != null) {
-                for (Map.Entry<TableBucket, Long> entry : missingTableBucketsOffset) {
-                    PaimonBucketOffsetJsonSerde.INSTANCE.serialize(
-                            new PaimonBucketOffset(
-                                    entry.getValue(),
-                                    entry.getKey().getBucket(),
-                                    entry.getKey().getPartitionId(),
-                                    null),
-                            gen);
-                }
-            }
-            gen.writeEndArray();
-            gen.flush();
-            manifestCommittable.addProperty(FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, sw.toString());
-        }
+        properties.forEach(manifestCommittable::addProperty);
 
         try {
             fileStoreCommit =
