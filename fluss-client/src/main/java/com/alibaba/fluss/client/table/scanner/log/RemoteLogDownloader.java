@@ -31,8 +31,8 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.remote.RemoteLogSegment;
 import com.alibaba.fluss.utils.CloseableRegistry;
+import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.MapUtils;
-import com.alibaba.fluss.utils.concurrent.ExecutorThreadFactory;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
 
 import org.slf4j.Logger;
@@ -52,8 +52,6 @@ import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -89,8 +87,6 @@ public class RemoteLogDownloader implements Closeable {
 
     private final ScannerMetricGroup scannerMetricGroup;
 
-    private final ExecutorService ioExecutor;
-
     private final MetadataUpdater metadataUpdater;
 
     private final long pollTimeout;
@@ -125,10 +121,6 @@ public class RemoteLogDownloader implements Closeable {
         this.remoteFileDownloader = remoteFileDownloader;
         this.scannerMetricGroup = scannerMetricGroup;
         this.metadataUpdater = metadataUpdater;
-        this.ioExecutor =
-                Executors.newFixedThreadPool(
-                        conf.getInt(ConfigOptions.REMOTE_FILE_DOWNLOAD_THREAD_NUM),
-                        new ExecutorThreadFactory("executor to trigger and wait download"));
         this.pollTimeout = pollTimeout;
         this.prefetchSemaphore =
                 new Semaphore(conf.getInt(ConfigOptions.CLIENT_SCANNER_REMOTE_LOG_PREFETCH_NUM));
@@ -169,97 +161,89 @@ public class RemoteLogDownloader implements Closeable {
             return;
         }
         // blocks until there is capacity (the fetched file is consumed)
-        ioExecutor.submit(
-                () -> {
-                    try {
-                        prefetchSemaphore.acquire();
-                        // 1. cleanup the finished logs first to free up disk space
-                        cleanupRemoteLogs();
+        prefetchSemaphore.acquire();
+        try {
+            // 1. cleanup the finished logs first to free up disk space
+            cleanupRemoteLogs();
 
-                        // 2. do the actual download work
-                        FsPathAndFileName fsPathAndFileName = request.getFsPathAndFileName();
-                        Path segmentPath =
-                                localLogDir.resolve(
-                                        request.segment.remoteLogSegmentId().toString());
-                        scannerMetricGroup.remoteFetchRequestCount().inc();
-                        // download the remote file to local
-                        LOG.info(
-                                "Start to download remote log segment file {} to local.",
-                                fsPathAndFileName.getFileName());
-                        long startTime = System.currentTimeMillis();
-                        remoteFileDownloader.transferAllToDirectory(
-                                Collections.singletonList(fsPathAndFileName),
-                                segmentPath,
-                                new CloseableRegistry());
-                        LOG.info(
-                                "Download remote log segment file {} to local cost {} ms.",
-                                fsPathAndFileName.getFileName(),
-                                System.currentTimeMillis() - startTime);
-                        File localFile =
-                                new File(segmentPath.toFile(), fsPathAndFileName.getFileName());
-                        scannerMetricGroup.remoteFetchBytes().inc(localFile.length());
-                        String segmentId = request.segment.remoteLogSegmentId().toString();
-                        fetchedFiles.put(segmentId, segmentPath);
-                        request.future.complete(localFile);
-                    } catch (Throwable t) {
-                        prefetchSemaphore.release();
-                        scannerMetricGroup.remoteFetchErrorCount().inc();
+            // 2. do the actual download work
+            FsPathAndFileName fsPathAndFileName = request.getFsPathAndFileName();
+            Path segmentPath = localLogDir.resolve(request.segment.remoteLogSegmentId().toString());
+            scannerMetricGroup.remoteFetchRequestCount().inc();
+            // download the remote file to local
+            LOG.info(
+                    "Start to download remote log segment file {} to local.",
+                    fsPathAndFileName.getFileName());
+            long startTime = System.currentTimeMillis();
+            remoteFileDownloader.transferAllToDirectory(
+                    Collections.singletonList(fsPathAndFileName),
+                    segmentPath,
+                    new CloseableRegistry());
+            LOG.info(
+                    "Download remote log segment file {} to local cost {} ms.",
+                    fsPathAndFileName.getFileName(),
+                    System.currentTimeMillis() - startTime);
+            File localFile = new File(segmentPath.toFile(), fsPathAndFileName.getFileName());
+            scannerMetricGroup.remoteFetchBytes().inc(localFile.length());
+            String segmentId = request.segment.remoteLogSegmentId().toString();
+            fetchedFiles.put(segmentId, segmentPath);
+            request.future.complete(localFile);
+        } catch (Throwable t) {
+            prefetchSemaphore.release();
+            scannerMetricGroup.remoteFetchErrorCount().inc();
 
-                        // check if the partition is already deleted
-                        // TODO: Standardize FileSystem exceptions to handle "No such file or
-                        // directory"
-                        // generically and distinguish partition deletion from other causes.
-                        TableBucket requestTableBucket = request.segment.tableBucket();
-                        if (request.segment.tableBucket().getPartitionId() != null) {
-                            Optional<Long> partitionIdOpt =
-                                    metadataUpdater.getPartitionId(
-                                            request.segment.physicalTablePath());
-                            if (!partitionIdOpt.isPresent()) {
-                                LOG.warn(
-                                        "The partition {} of table {} does not exist when downloading remote log segment, it maybe already deleted, "
-                                                + "skip the download request.",
-                                        requestTableBucket.getPartitionId(),
-                                        requestTableBucket.getTableId());
-                                request.future.completeExceptionally(
-                                        new PartitionNotExistException(
-                                                "The partition "
-                                                        + requestTableBucket.getPartitionId()
-                                                        + " of table "
-                                                        + requestTableBucket.getTableId()
-                                                        + " does not exist when downloading remote log segment, it maybe already deleted."));
-                                return;
-                            } else {
-                                if (!partitionIdOpt
-                                        .get()
-                                        .equals(request.segment.tableBucket().getPartitionId())) {
-                                    LOG.warn(
-                                            "The partition {} of table {} does not match the actual partition id {} in the request, the origin partition maybe already deleted, "
-                                                    + "skip the download request.",
-                                            requestTableBucket.getPartitionId(),
-                                            requestTableBucket.getTableId(),
-                                            partitionIdOpt.get());
-                                    request.future.completeExceptionally(
-                                            new PartitionNotExistException(
-                                                    "The request partition "
-                                                            + requestTableBucket.getPartitionId()
-                                                            + " of table "
-                                                            + requestTableBucket.getTableId()
-                                                            + " in the request does not match the actual partition id "
-                                                            + partitionIdOpt.get()
-                                                            + " with same physical table path "
-                                                            + request.segment.physicalTablePath()
-                                                            + ", the origin partition maybe already deleted."));
-                                    return;
-                                }
-                            }
-                        }
-
-                        // add back the request to the queue
-                        segmentsToFetch.add(request);
-                        // log the error and continue instead of shutdown the download thread
-                        LOG.error("Failed to download remote log segment.", t);
+            // check if the partition is already deleted
+            // TODO: Standardize FileSystem exceptions to handle "No such file or directory"
+            // generically and distinguish partition deletion from other causes.
+            TableBucket requestTableBucket = request.segment.tableBucket();
+            if (request.segment.tableBucket().getPartitionId() != null) {
+                Optional<Long> partitionIdOpt =
+                        metadataUpdater.getPartitionId(request.segment.physicalTablePath());
+                if (!partitionIdOpt.isPresent()) {
+                    LOG.warn(
+                            "The partition {} of table {} does not exist when downloading remote log segment, it maybe already deleted, "
+                                    + "skip the download request.",
+                            requestTableBucket.getPartitionId(),
+                            requestTableBucket.getTableId());
+                    request.future.completeExceptionally(
+                            new PartitionNotExistException(
+                                    "The partition "
+                                            + requestTableBucket.getPartitionId()
+                                            + " of table "
+                                            + requestTableBucket.getTableId()
+                                            + " does not exist when downloading remote log segment, it maybe already deleted."));
+                    return;
+                } else {
+                    if (!partitionIdOpt
+                            .get()
+                            .equals(request.segment.tableBucket().getPartitionId())) {
+                        LOG.warn(
+                                "The partition {} of table {} does not match the actual partition id {} in the request, the origin partition maybe already deleted, "
+                                        + "skip the download request.",
+                                requestTableBucket.getPartitionId(),
+                                requestTableBucket.getTableId(),
+                                partitionIdOpt.get());
+                        request.future.completeExceptionally(
+                                new PartitionNotExistException(
+                                        "The request partition "
+                                                + requestTableBucket.getPartitionId()
+                                                + " of table "
+                                                + requestTableBucket.getTableId()
+                                                + " in the request does not match the actual partition id "
+                                                + partitionIdOpt.get()
+                                                + " with same physical table path "
+                                                + request.segment.physicalTablePath()
+                                                + ", the origin partition maybe already deleted."));
+                        return;
                     }
-                });
+                }
+            }
+
+            // add back the request to the queue
+            segmentsToFetch.add(request);
+            // log the error and continue instead of shutdown the download thread
+            LOG.error("Failed to download remote log segment.", t);
+        }
     }
 
     private void cleanupRemoteLogs() {
@@ -323,7 +307,8 @@ public class RemoteLogDownloader implements Closeable {
                         segment.remoteLogStartOffset());
         return new FsPathAndFileName(
                 remotePath,
-                filenamePrefixFromOffset(segment.remoteLogStartOffset()) + LOG_FILE_SUFFIX);
+                FlussPaths.filenamePrefixFromOffset(segment.remoteLogStartOffset())
+                        + LOG_FILE_SUFFIX);
     }
 
     /**
