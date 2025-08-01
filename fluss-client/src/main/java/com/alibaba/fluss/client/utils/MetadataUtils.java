@@ -101,7 +101,7 @@ public class MetadataUtils {
             throws ExecutionException, InterruptedException, TimeoutException {
         MetadataRequest metadataRequest =
                 ClientRpcMessageUtils.makeMetadataRequest(
-                        tablePaths, tablePartitions, tablePartitionIds);
+                        tablePaths, tablePartitions, tablePartitionIds, true);
         return gateway.metadata(metadataRequest)
                 .thenApply(
                         response -> {
