@@ -143,6 +143,7 @@ public class LogFetcher implements Closeable {
         this.remoteLogDownloader =
                 new RemoteLogDownloader(
                         tablePath, conf, remoteFileDownloader, scannerMetricGroup, metadataUpdater);
+        remoteLogDownloader.start();
     }
 
     /**
