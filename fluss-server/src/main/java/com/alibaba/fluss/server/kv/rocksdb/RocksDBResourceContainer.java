@@ -35,6 +35,7 @@ import org.rocksdb.InfoLogLevel;
 import org.rocksdb.LRUCache;
 import org.rocksdb.PlainTableConfig;
 import org.rocksdb.ReadOptions;
+import org.rocksdb.RocksDB;
 import org.rocksdb.Statistics;
 import org.rocksdb.TableFormatConfig;
 import org.rocksdb.WriteOptions;
@@ -88,6 +89,8 @@ public class RocksDBResourceContainer implements AutoCloseable {
     }
 
     public RocksDBResourceContainer(ReadableConfig configuration, @Nullable File instanceBasePath) {
+        RocksDB.loadLibrary();
+
         this.configuration = configuration;
 
         this.instanceRocksDBPath =
