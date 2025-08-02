@@ -20,13 +20,18 @@ package com.alibaba.fluss.server.coordinator.event;
 import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.metrics.DescriptiveStatisticsHistogram;
 import com.alibaba.fluss.metrics.Histogram;
+import com.alibaba.fluss.metrics.Meter;
+import com.alibaba.fluss.metrics.MeterView;
 import com.alibaba.fluss.metrics.MetricNames;
+import com.alibaba.fluss.metrics.groups.MetricGroup;
 import com.alibaba.fluss.server.metrics.group.CoordinatorMetricGroup;
+import com.alibaba.fluss.utils.MapUtils;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -53,7 +58,10 @@ public final class CoordinatorEventManager implements EventManager {
     private final Lock putLock = new ReentrantLock();
 
     // metrics
-    private Histogram eventProcessTime;
+    private final Map<Class<? extends CoordinatorEvent>, Histogram> eventProcessTimeByType =
+            MapUtils.newConcurrentHashMap();
+    private final Map<Class<? extends CoordinatorEvent>, Meter> eventEnqueueRateByType =
+            MapUtils.newConcurrentHashMap();
     private Histogram eventQueueTime;
 
     private static final int WINDOW_SIZE = 100;
@@ -68,15 +76,37 @@ public final class CoordinatorEventManager implements EventManager {
     private void registerMetrics() {
         coordinatorMetricGroup.gauge(MetricNames.EVENT_QUEUE_SIZE, queue::size);
 
-        eventProcessTime =
-                coordinatorMetricGroup.histogram(
-                        MetricNames.EVENT_PROCESS_TIME_MS,
-                        new DescriptiveStatisticsHistogram(WINDOW_SIZE));
-
         eventQueueTime =
                 coordinatorMetricGroup.histogram(
                         MetricNames.EVENT_QUEUE_TIME_MS,
                         new DescriptiveStatisticsHistogram(WINDOW_SIZE));
+    }
+
+    private Histogram getOrCreateEventProcessTimeHistogram(
+            Class<? extends CoordinatorEvent> eventType) {
+        return eventProcessTimeByType.computeIfAbsent(
+                eventType,
+                type -> {
+                    String eventTypeName = type.getSimpleName();
+                    MetricGroup eventTypeGroup =
+                            coordinatorMetricGroup.addGroup("event_type", eventTypeName);
+                    return eventTypeGroup.histogram(
+                            MetricNames.EVENT_PROCESS_TIME_MS,
+                            new DescriptiveStatisticsHistogram(WINDOW_SIZE));
+                });
+    }
+
+    private Meter getOrCreateEventEnqueueRateMeter(Class<? extends CoordinatorEvent> eventType) {
+        return eventEnqueueRateByType.computeIfAbsent(
+                eventType,
+                type -> {
+                    String eventTypeName = type.getSimpleName();
+                    MetricGroup eventTypeGroup =
+                            coordinatorMetricGroup.addGroup("event_type", eventTypeName);
+                    return eventTypeGroup.meter(
+                            MetricNames.EVENT_ENQUEUE_RATE,
+                            new MeterView(60)); // 60 seconds time span for rate calculation
+                });
     }
 
     public void start() {
@@ -101,6 +131,9 @@ public final class CoordinatorEventManager implements EventManager {
                         QueuedEvent queuedEvent =
                                 new QueuedEvent(event, System.currentTimeMillis());
                         queue.put(queuedEvent);
+                        // Record enqueue rate by event type
+                        Meter enqueueRateMeter = getOrCreateEventEnqueueRateMeter(event.getClass());
+                        enqueueRateMeter.markEvent();
                     } catch (InterruptedException e) {
                         LOG.error("Fail to put coordinator event {}.", event, e);
                     }
@@ -142,7 +175,10 @@ public final class CoordinatorEventManager implements EventManager {
                 log.error("Uncaught error processing event {}.", coordinatorEvent, e);
             } finally {
                 long costTimeMs = System.currentTimeMillis() - eventStartTimeMs;
-                eventProcessTime.update(costTimeMs);
+                // Use event type specific histogram
+                Histogram eventTypeHistogram =
+                        getOrCreateEventProcessTimeHistogram(coordinatorEvent.getClass());
+                eventTypeHistogram.update(costTimeMs);
                 LOG.debug(
                         "Finished processing event {} of event type {} in {}ms.",
                         coordinatorEvent,

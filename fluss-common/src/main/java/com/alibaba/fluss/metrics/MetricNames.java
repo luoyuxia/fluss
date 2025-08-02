@@ -46,6 +46,7 @@ public class MetricNames {
     public static final String EVENT_QUEUE_SIZE = "eventQueueSize";
     public static final String EVENT_PROCESS_TIME_MS = "eventProcessTimeMs";
     public static final String EVENT_QUEUE_TIME_MS = "eventQueueTimeMs";
+    public static final String EVENT_ENQUEUE_RATE = "eventEnqueuePerSecond";
 
     // --------------------------------------------------------------------------------------------
     // metrics for tablet server
