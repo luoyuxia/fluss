@@ -647,6 +647,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     private void processDeleteReplicaResponseReceived(
             DeleteReplicaResponseReceivedEvent deleteReplicaResponseReceivedEvent) {
+        long startTime = System.currentTimeMillis();
+        LOG.info("Starting to process delete replica response received event");
+
         List<DeleteReplicaResultForBucket> deleteReplicaResultForBuckets =
                 deleteReplicaResponseReceivedEvent.getDeleteReplicaResults();
 
@@ -662,26 +665,53 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 failDeletedReplicas.add(tableBucketReplica);
             }
         }
+
         // clear the fail deleted number for the success deleted replicas
+        long clearStartTime = System.currentTimeMillis();
         coordinatorContext.clearFailDeleteNumbers(successDeletedReplicas);
+        LOG.info(
+                "Clear fail delete numbers for {} replicas took {}ms",
+                successDeletedReplicas.size(),
+                System.currentTimeMillis() - clearStartTime);
 
         // pick up the replicas to retry delete and replicas that considered as success delete
+        long retryStartTime = System.currentTimeMillis();
         Tuple2<Set<TableBucketReplica>, Set<TableBucketReplica>>
                 retryDeleteAndSuccessDeleteReplicas =
                         coordinatorContext.retryDeleteAndSuccessDeleteReplicas(failDeletedReplicas);
+        LOG.info(
+                "Retry delete and success delete replicas calculation took {}ms",
+                System.currentTimeMillis() - retryStartTime);
 
         // transmit to deletion started for retry delete replicas
+        long stateChangeStartTime = System.currentTimeMillis();
         replicaStateMachine.handleStateChanges(
                 retryDeleteAndSuccessDeleteReplicas.f0, ReplicaDeletionStarted);
+        LOG.info(
+                "Handle state changes to ReplicaDeletionStarted for {} replicas took {}ms",
+                retryDeleteAndSuccessDeleteReplicas.f0.size(),
+                System.currentTimeMillis() - stateChangeStartTime);
 
         // add all the replicas that considered as success delete to success deleted replicas
         successDeletedReplicas.addAll(retryDeleteAndSuccessDeleteReplicas.f1);
         // transmit to deletion successful for success deleted replicas
+        long successStateChangeStartTime = System.currentTimeMillis();
         replicaStateMachine.handleStateChanges(successDeletedReplicas, ReplicaDeletionSuccessful);
+        LOG.info(
+                "Handle state changes to ReplicaDeletionSuccessful for {} replicas took {}ms",
+                successDeletedReplicas.size(),
+                System.currentTimeMillis() - successStateChangeStartTime);
+
         // if any success deletion, we can resume
         if (!successDeletedReplicas.isEmpty()) {
+            long resumeStartTime = System.currentTimeMillis();
             tableManager.resumeDeletions();
+            LOG.info("Resume deletions took {}ms", System.currentTimeMillis() - resumeStartTime);
         }
+
+        LOG.info(
+                "Total process delete replica response received event took {}ms",
+                System.currentTimeMillis() - startTime);
     }
 
     private void processNotifyLeaderAndIsrResponseReceivedEvent(
