@@ -120,13 +120,32 @@ public class CompletedSnapshotStoreManager {
         LOG.info("Trying to fetch {} snapshots from storage.", numberOfInitialSnapshots);
 
         for (CompletedSnapshotHandle snapshotStateHandle : initialSnapshots) {
-            retrievedSnapshots.add(checkNotNull(snapshotStateHandle.retrieveCompleteSnapshot()));
+            try {
+                retrievedSnapshots.add(
+                        checkNotNull(snapshotStateHandle.retrieveCompleteSnapshot()));
+            } catch (Throwable e) {
+                LOG.error(
+                        "retrieveCompleteSnapshot error for table bucket [{}], snapshotStateHandle [{}]:",
+                        tableBucket,
+                        snapshotStateHandle,
+                        e);
+                throw e;
+            }
         }
 
         // register all the files to shared kv file registry
         SharedKvFileRegistry sharedKvFileRegistry = new SharedKvFileRegistry(ioExecutor);
         for (CompletedSnapshot completedSnapshot : retrievedSnapshots) {
-            sharedKvFileRegistry.registerAllAfterRestored(completedSnapshot);
+            try {
+                sharedKvFileRegistry.registerAllAfterRestored(completedSnapshot);
+            } catch (Throwable e) {
+                LOG.error(
+                        "registerAllAfterRestored error for table bucket [{}], completedSnapshot [{}]:",
+                        tableBucket,
+                        completedSnapshot,
+                        e);
+                throw e;
+            }
         }
 
         return new CompletedSnapshotStore(

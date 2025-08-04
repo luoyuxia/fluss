@@ -130,10 +130,16 @@ public class KvSnapshotHandle {
         sharedKvFileRegistry = checkNotNull(registry);
 
         for (KvFileHandleAndLocalPath handleAndLocalPath : sharedFileHandles) {
-            registry.registerReference(
-                    SharedKvFileRegistryKey.fromKvFileHandle(handleAndLocalPath.getKvFileHandle()),
-                    handleAndLocalPath.getKvFileHandle(),
-                    snapshotID);
+            try {
+                registry.registerReference(
+                        SharedKvFileRegistryKey.fromKvFileHandle(
+                                handleAndLocalPath.getKvFileHandle()),
+                        handleAndLocalPath.getKvFileHandle(),
+                        snapshotID);
+            } catch (Exception e) {
+                LOG.error("registerReference error for handleAndLocalPath {}", handleAndLocalPath);
+                throw e;
+            }
         }
     }
 
