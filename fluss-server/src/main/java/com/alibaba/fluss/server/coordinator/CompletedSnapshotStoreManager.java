@@ -50,11 +50,12 @@ import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 public class CompletedSnapshotStoreManager {
 
     private static final Logger LOG = LoggerFactory.getLogger(CompletedSnapshotStoreManager.class);
-
     private final int maxNumberOfSnapshotsToRetain;
     private final ZooKeeperClient zooKeeperClient;
     private final Map<TableBucket, CompletedSnapshotStore> bucketCompletedSnapshotStores;
     private final Executor ioExecutor;
+    private static final String SNAPSHOT_META_DATA_NOT_EXISTS_ERROR_MESSAGE =
+            "No such file or directory";
 
     public CompletedSnapshotStoreManager(
             int maxNumberOfSnapshotsToRetain,
@@ -120,13 +121,46 @@ public class CompletedSnapshotStoreManager {
         LOG.info("Trying to fetch {} snapshots from storage.", numberOfInitialSnapshots);
 
         for (CompletedSnapshotHandle snapshotStateHandle : initialSnapshots) {
-            retrievedSnapshots.add(checkNotNull(snapshotStateHandle.retrieveCompleteSnapshot()));
+            try {
+                retrievedSnapshots.add(
+                        checkNotNull(snapshotStateHandle.retrieveCompleteSnapshot()));
+            } catch (Exception e) {
+                if (e.getMessage().contains(SNAPSHOT_META_DATA_NOT_EXISTS_ERROR_MESSAGE)) {
+                    LOG.error(
+                            "metadata not found for snapshot {} of table bucket {}, maybe snapshot already removed or broken, detail errorMsg: {}",
+                            snapshotStateHandle.getSnapshotId(),
+                            tableBucket,
+                            e.getMessage());
+                    try {
+                        completedSnapshotHandleStore.remove(
+                                tableBucket, snapshotStateHandle.getSnapshotId());
+                    } catch (Exception t) {
+                        LOG.error(
+                                "failed to remove snapshotStateHandle {}.", snapshotStateHandle, t);
+                        throw t;
+                    }
+                } else {
+                    LOG.error(
+                            "failed to retrieveCompleteSnapshot for snapshotStateHandle {}.",
+                            snapshotStateHandle,
+                            e);
+                    throw e;
+                }
+            }
         }
 
         // register all the files to shared kv file registry
         SharedKvFileRegistry sharedKvFileRegistry = new SharedKvFileRegistry(ioExecutor);
         for (CompletedSnapshot completedSnapshot : retrievedSnapshots) {
-            sharedKvFileRegistry.registerAllAfterRestored(completedSnapshot);
+            try {
+                sharedKvFileRegistry.registerAllAfterRestored(completedSnapshot);
+            } catch (Exception e) {
+                LOG.error(
+                        "failed to registerAllAfterRestored for completedSnapshot {}.",
+                        completedSnapshot,
+                        e);
+                throw e;
+            }
         }
 
         return new CompletedSnapshotStore(
