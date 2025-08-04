@@ -252,7 +252,7 @@ public class RocksDBSharedResource {
         // - numShardBits: number of bits for shard count (8 means 256 shards)
         // - strictCapacityLimit: whether to strictly limit capacity
         // - highPriPoolRatio: ratio of high priority pool
-        sharedBlockCache = new LRUCache(cacheSize, 8, true, 0.5);
+        sharedBlockCache = new LRUCache(cacheSize, 11, true);
 
         LOG.info("Created shared block cache with size: {} bytes", cacheSize);
     }

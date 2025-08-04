@@ -1699,6 +1699,13 @@ public class ConfigOptions {
                     .withDescription(
                             "The database for fluss kafka. The default database is `kafka`.");
 
+    public static final ConfigOption<Duration> NETTY_CONNECTION_MAX_IDLE_TIME =
+            key("netty.connection.max-idle-time")
+                    .durationType()
+                    .defaultValue(Duration.ofMinutes(10))
+                    .withDescription(
+                            "Close idle connections after the given time specified by this config.");
+
     public static final ConfigOption<Duration> KAFKA_CONNECTION_MAX_IDLE_TIME =
             key("kafka.connection.max-idle-time")
                     .durationType()
