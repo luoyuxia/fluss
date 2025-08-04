@@ -198,14 +198,24 @@ public class TableManager {
     }
 
     public void resumeDeletions() {
+        long resumeTableDeletionsStart = System.currentTimeMillis();
         resumeTableDeletions();
+        LOG.info(
+                "Resume table deletions took {}ms",
+                System.currentTimeMillis() - resumeTableDeletionsStart);
+
+        long resumePartitionDeletionStart = System.currentTimeMillis();
         resumePartitionDeletions();
+        LOG.info(
+                "Resume partition deletions took {}ms",
+                System.currentTimeMillis() - resumePartitionDeletionStart);
     }
 
     private void resumeTableDeletions() {
         Set<Long> tablesToBeDeleted = new HashSet<>(coordinatorContext.getTablesToBeDeleted());
         Set<Long> eligibleTableDeletion = new HashSet<>();
 
+        long resumeTableDeletionsStart = System.currentTimeMillis();
         for (long tableId : tablesToBeDeleted) {
             // if all replicas are marked as deleted successfully, then table deletion is done
             if (coordinatorContext.areAllReplicasInState(
@@ -217,11 +227,21 @@ public class TableManager {
                 eligibleTableDeletion.add(tableId);
             }
         }
+        LOG.info(
+                "Complete delete table {} deletions took {}ms",
+                tablesToBeDeleted,
+                System.currentTimeMillis() - resumeTableDeletionsStart);
+
+        long eligibleTableDeletionStart = System.currentTimeMillis();
         if (!eligibleTableDeletion.isEmpty()) {
             for (long tableId : eligibleTableDeletion) {
                 onDeleteTable(tableId);
             }
         }
+        LOG.info(
+                "Eligible table deletion {} took {}ms",
+                eligibleTableDeletion,
+                System.currentTimeMillis() - eligibleTableDeletionStart);
     }
 
     private void resumePartitionDeletions() {
@@ -229,6 +249,7 @@ public class TableManager {
                 new HashSet<>(coordinatorContext.getPartitionsToBeDeleted());
         Set<TablePartition> eligiblePartitionDeletion = new HashSet<>();
 
+        long resumeTableDeletionsStart = System.currentTimeMillis();
         for (TablePartition partition : partitionsToDelete) {
             // if all replicas are marked as deleted successfully, then partition deletion is done
             if (coordinatorContext.areAllReplicasInState(
@@ -240,19 +261,46 @@ public class TableManager {
                 eligiblePartitionDeletion.add(partition);
             }
         }
+        LOG.info(
+                "Complete delete Partition {} deletions took {}ms",
+                partitionsToDelete,
+                System.currentTimeMillis() - resumeTableDeletionsStart);
+
+        long eligiblePartitionDeletionStart = System.currentTimeMillis();
         if (!eligiblePartitionDeletion.isEmpty()) {
             for (TablePartition partition : eligiblePartitionDeletion) {
                 onDeletePartition(partition.getTableId(), partition.getPartitionId());
             }
         }
+        LOG.info(
+                "Eligible Partition deletion {} took {}ms",
+                eligiblePartitionDeletion,
+                System.currentTimeMillis() - eligiblePartitionDeletionStart);
     }
 
     private void completeDeleteTable(long tableId) {
         Set<TableBucketReplica> replicas = coordinatorContext.getAllReplicasForTable(tableId);
+
+        long handleStartChangesStart = System.currentTimeMillis();
         replicaStateMachine.handleStateChanges(replicas, ReplicaState.NonExistentReplica);
+        LOG.info(
+                "Handle state changes {} took {}ms",
+                replicas,
+                System.currentTimeMillis() - handleStartChangesStart);
+
+        long deleteRemoteDirectoryStart = System.currentTimeMillis();
         deleteRemoteDirectory(tableId);
+        LOG.info(
+                "Delete remote directory {} took {}ms",
+                tableId,
+                System.currentTimeMillis() - deleteRemoteDirectoryStart);
         try {
+            long completeDeleteTableStart = System.currentTimeMillis();
             metadataManager.completeDeleteTable(tableId);
+            LOG.info(
+                    "Complete delete table {} took {}ms",
+                    tableId,
+                    System.currentTimeMillis() - completeDeleteTableStart);
         } catch (Exception e) {
             LOG.error("Fail to complete table deletion for table {}.", tableId, e);
         }
@@ -263,10 +311,28 @@ public class TableManager {
         Set<TableBucketReplica> replicas =
                 coordinatorContext.getAllReplicasForPartition(
                         tablePartition.getTableId(), tablePartition.getPartitionId());
+
+        long handleStartChangesStart = System.currentTimeMillis();
         replicaStateMachine.handleStateChanges(replicas, ReplicaState.NonExistentReplica);
+        LOG.info(
+                "Handle state changes {} took {}ms",
+                replicas,
+                System.currentTimeMillis() - handleStartChangesStart);
+
+        long deleteRemoteDirectoryStart = System.currentTimeMillis();
         deleteRemoteDirectory(tablePartition);
+        LOG.info(
+                "Delete remote directory {} took {}ms",
+                tablePartition,
+                System.currentTimeMillis() - deleteRemoteDirectoryStart);
+
         try {
+            long completeDeletePartitionStart = System.currentTimeMillis();
             metadataManager.completeDeletePartition(tablePartition.getPartitionId());
+            LOG.info(
+                    "Complete delete partition {} took {}ms",
+                    tablePartition,
+                    System.currentTimeMillis() - completeDeletePartitionStart);
         } catch (Exception e) {
             LOG.error("Fail to complete partition {} deletion.", tablePartition, e);
         }
