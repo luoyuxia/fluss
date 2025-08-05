@@ -327,16 +327,17 @@ public class TableManager {
                 System.currentTimeMillis() - deleteRemoteDirectoryStart);
 
         try {
-            long completeDeletePartitionStart = System.currentTimeMillis();
-            metadataManager.completeDeletePartition(tablePartition.getPartitionId());
-            LOG.info(
-                    "Complete delete partition {} took {}ms",
-                    tablePartition,
-                    System.currentTimeMillis() - completeDeletePartitionStart);
+            metadataManager.completeDeletePartition(
+                    tablePartition.getPartitionId(),
+                    () -> coordinatorContext.removePartition(tablePartition),
+                    () -> {
+                        LOG.error(
+                                "Fail to complete partition {} deletion.",
+                                tablePartition.getPartitionId());
+                    });
         } catch (Exception e) {
             LOG.error("Fail to complete partition {} deletion.", tablePartition, e);
         }
-        coordinatorContext.removePartition(tablePartition);
     }
 
     private void deleteRemoteDirectory(long tableId) {
