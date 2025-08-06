@@ -669,6 +669,13 @@ public final class Replica {
         try {
             kvSnapshotDataDownloader.transferAllDataToDirectory(downloadSpec, closeableRegistry);
         } catch (Exception e) {
+            if (e.getMessage().contains(CompletedSnapshot.SNAPSHOT_DATA_NOT_EXISTS_ERROR_MESSAGE)) {
+                try {
+                    snapshotContext.handleSnapshotBroken(completedSnapshot);
+                } catch (Exception t) {
+                    LOG.error("Handle broken snapshot {} failed.", completedSnapshot, t);
+                }
+            }
             throw new IOException("Fail to download kv snapshot.", e);
         }
         long end = clock.milliseconds();

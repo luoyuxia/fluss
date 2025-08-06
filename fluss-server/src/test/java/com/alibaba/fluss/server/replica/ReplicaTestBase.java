@@ -633,6 +633,9 @@ public class ReplicaTestBase {
         }
 
         @Override
+        public void handleSnapshotBroken(CompletedSnapshot snapshot) throws Exception {}
+
+        @Override
         public int maxFetchLogSizeInRecoverKv() {
             return 1024;
         }
