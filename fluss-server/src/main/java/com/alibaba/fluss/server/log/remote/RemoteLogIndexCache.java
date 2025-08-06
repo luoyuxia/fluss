@@ -38,6 +38,7 @@ import com.github.benmanes.caffeine.cache.RemovalCause;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.Closeable;
@@ -183,7 +184,15 @@ public class RemoteLogIndexCache implements Closeable {
     /** Get the position of the given offset in the remote log segment. */
     public int lookupPosition(RemoteLogSegment remoteLogSegment, long offset) {
         return inReadLock(
-                lock, () -> getIndexEntry(remoteLogSegment).lookupOffset(offset).getPosition());
+                lock,
+                () -> {
+                    Entry indexEntry = getIndexEntry(remoteLogSegment);
+                    if (indexEntry != null) {
+                        return indexEntry.lookupOffset(offset).getPosition();
+                    } else {
+                        return 0;
+                    }
+                });
     }
 
     /**
@@ -193,9 +202,18 @@ public class RemoteLogIndexCache implements Closeable {
      */
     public long lookupOffsetForTimestamp(RemoteLogSegment remoteLogSegment, long timestamp) {
         return inReadLock(
-                lock, () -> getIndexEntry(remoteLogSegment).lookupTimestamp(timestamp).getOffset());
+                lock,
+                () -> {
+                    Entry indexEntry = getIndexEntry(remoteLogSegment);
+                    if (indexEntry != null) {
+                        return indexEntry.lookupTimestamp(timestamp).getOffset();
+                    } else {
+                        return -1L;
+                    }
+                });
     }
 
+    @Nullable
     Entry getIndexEntry(RemoteLogSegment remoteLogSegment) {
         if (isRemoteIndexCacheClosed.get()) {
             throw new IllegalStateException(
@@ -222,57 +240,83 @@ public class RemoteLogIndexCache implements Closeable {
                 });
     }
 
-    private Entry createCacheEntry(RemoteLogSegment remoteLogSegment) {
+    private @Nullable Entry createCacheEntry(RemoteLogSegment remoteLogSegment) {
         long startOffset = remoteLogSegment.remoteLogStartOffset();
         try {
             File offsetIndexFile = remoteOffsetIndexCacheFile(cacheDir, remoteLogSegment);
-            OffsetIndex offsetIndex =
-                    loadIndexFile(
-                            offsetIndexFile,
-                            remoteLogSegment,
-                            metadata -> {
-                                try {
-                                    return remoteLogStorage.fetchIndex(
-                                            remoteLogSegment, RemoteLogStorage.IndexType.OFFSET);
-                                } catch (RemoteStorageException e) {
-                                    throw new FlussRuntimeException(e);
-                                }
-                            },
-                            file -> {
-                                try {
-                                    OffsetIndex index =
-                                            new OffsetIndex(
-                                                    file, startOffset, Integer.MAX_VALUE, false);
-                                    index.sanityCheck();
-                                    return index;
-                                } catch (IOException e) {
-                                    throw new FlussRuntimeException(e);
-                                }
-                            });
+            OffsetIndex offsetIndex;
+            try {
+                offsetIndex =
+                        loadIndexFile(
+                                offsetIndexFile,
+                                remoteLogSegment,
+                                metadata -> {
+                                    try {
+                                        return remoteLogStorage.fetchIndex(
+                                                remoteLogSegment,
+                                                RemoteLogStorage.IndexType.OFFSET);
+                                    } catch (RemoteStorageException e) {
+                                        throw new FlussRuntimeException(e);
+                                    }
+                                },
+                                file -> {
+                                    try {
+                                        OffsetIndex index =
+                                                new OffsetIndex(
+                                                        file,
+                                                        startOffset,
+                                                        Integer.MAX_VALUE,
+                                                        false);
+                                        index.sanityCheck();
+                                        return index;
+                                    } catch (IOException e) {
+                                        throw new FlussRuntimeException(e);
+                                    }
+                                });
+            } catch (CorruptIndexException e) {
+                LOG.debug("Remote log index is corrupt, delete corrupt index.", e);
+                // let's delete offset index & time index
+                Files.deleteIfExists(offsetIndexFile.toPath());
+                return null;
+            }
+
             File timeIndexFile = remoteTimeIndexCacheFile(cacheDir, remoteLogSegment);
-            TimeIndex timeIndex =
-                    loadIndexFile(
-                            timeIndexFile,
-                            remoteLogSegment,
-                            metadata -> {
-                                try {
-                                    return remoteLogStorage.fetchIndex(
-                                            remoteLogSegment, RemoteLogStorage.IndexType.TIMESTAMP);
-                                } catch (RemoteStorageException e) {
-                                    throw new FlussRuntimeException(e);
-                                }
-                            },
-                            file -> {
-                                try {
-                                    TimeIndex index =
-                                            new TimeIndex(
-                                                    file, startOffset, Integer.MAX_VALUE, false);
-                                    index.sanityCheck();
-                                    return index;
-                                } catch (IOException e) {
-                                    throw new FlussRuntimeException(e);
-                                }
-                            });
+            TimeIndex timeIndex;
+            try {
+                timeIndex =
+                        loadIndexFile(
+                                timeIndexFile,
+                                remoteLogSegment,
+                                metadata -> {
+                                    try {
+                                        return remoteLogStorage.fetchIndex(
+                                                remoteLogSegment,
+                                                RemoteLogStorage.IndexType.TIMESTAMP);
+                                    } catch (RemoteStorageException e) {
+                                        throw new FlussRuntimeException(e);
+                                    }
+                                },
+                                file -> {
+                                    try {
+                                        TimeIndex index =
+                                                new TimeIndex(
+                                                        file,
+                                                        startOffset,
+                                                        Integer.MAX_VALUE,
+                                                        false);
+                                        // TOdo
+                                        index.sanityCheck();
+                                        return index;
+                                    } catch (IOException e) {
+                                        throw new FlussRuntimeException(e);
+                                    }
+                                });
+            } catch (CorruptIndexException e) {
+                LOG.debug("Remote time log index is corrupt, delete corrupt index.", e);
+                // let's delete offset index & time index
+                Files.deleteIfExists(timeIndexFile.toPath());
+                return null;
+            }
             return new Entry(offsetIndex, timeIndex);
         } catch (IOException e) {
             throw new FlussRuntimeException(e);

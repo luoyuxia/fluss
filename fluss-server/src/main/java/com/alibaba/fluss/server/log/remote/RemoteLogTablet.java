@@ -25,6 +25,9 @@ import com.alibaba.fluss.metrics.groups.MetricGroup;
 import com.alibaba.fluss.remote.RemoteLogSegment;
 import com.alibaba.fluss.server.metrics.group.BucketMetricGroup;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -49,6 +52,8 @@ import static com.alibaba.fluss.utils.concurrent.LockUtils.inWriteLock;
 /** This class provides an in-memory cache of remote log manifest for each table bucket . */
 @ThreadSafe
 public class RemoteLogTablet {
+    private static final Logger LOG = LoggerFactory.getLogger(RemoteLogTablet.class);
+
     private static final long INIT_REMOTE_LOG_START_OFFSET = Long.MAX_VALUE;
     private static final long INIT_REMOTE_LOG_END_OFFSET = -1L;
 
@@ -317,7 +322,19 @@ public class RemoteLogTablet {
                         // reset to default values if no segments exist after expiration.
                         reset();
                     } else {
-                        remoteLogStartOffset = offsetToRemoteLogSegmentId.firstKey();
+                        if (!offsetToRemoteLogSegmentId.isEmpty()) {
+                            remoteLogStartOffset = offsetToRemoteLogSegmentId.firstKey();
+                        } else {
+                            LOG.warn(
+                                    "The numRemoteLogSegments={}, but offsetToRemoteLogSegmentId is empty. startOffset={}, endOffset={}",
+                                    numRemoteLogSegments,
+                                    remoteLogStartOffset,
+                                    remoteLogEndOffset);
+                            LOG.debug(
+                                    "The segments try to add: {}, try to delete: {}",
+                                    addedSegments,
+                                    deletedSegments);
+                        }
                     }
 
                     currentManifest =
