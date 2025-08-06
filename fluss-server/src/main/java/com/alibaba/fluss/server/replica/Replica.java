@@ -176,7 +176,7 @@ public final class Replica {
     private final ReadWriteLock leaderIsrUpdateLock = new ReentrantReadWriteLock();
     private final Clock clock;
 
-    private static final int INIT_KVTABLET_MAX_RETRY_TIMES = 60 * 1000;
+    private static final int INIT_KV_TABLET_MAX_RETRY_TIMES = 5;
     /**
      * storing the remote follower replicas' state, used to update leader's highWatermark and
      * replica ISR.
@@ -545,7 +545,7 @@ public final class Replica {
 
         // init kv tablet and get the snapshot it uses to init if have any
         Optional<CompletedSnapshot> snapshotUsed = Optional.empty();
-        for (int i = 1; i <= INIT_KVTABLET_MAX_RETRY_TIMES; i++) {
+        for (int i = 1; i <= INIT_KV_TABLET_MAX_RETRY_TIMES; i++) {
             try {
                 snapshotUsed = initKvTablet();
                 break;
