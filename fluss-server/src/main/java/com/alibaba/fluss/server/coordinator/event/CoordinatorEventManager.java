@@ -28,6 +28,7 @@ import com.alibaba.fluss.metrics.MetricNames;
 import com.alibaba.fluss.metrics.groups.MetricGroup;
 import com.alibaba.fluss.server.coordinator.CoordinatorContext;
 import com.alibaba.fluss.server.coordinator.statemachine.ReplicaState;
+import com.alibaba.fluss.server.metadata.ServerInfo;
 import com.alibaba.fluss.server.metrics.group.CoordinatorMetricGroup;
 import com.alibaba.fluss.utils.MapUtils;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
@@ -61,6 +62,7 @@ public final class CoordinatorEventManager implements EventManager {
     private final CoordinatorEventThread thread =
             new CoordinatorEventThread(COORDINATOR_EVENT_THREAD_NAME);
     private final Lock putLock = new ReentrantLock();
+    private final EventQueueStats queueStats = new EventQueueStats();
 
     // metrics
     private final Map<Class<? extends CoordinatorEvent>, Histogram> eventProcessTimeByType =
@@ -75,6 +77,9 @@ public final class CoordinatorEventManager implements EventManager {
     private volatile int tableCount;
     private volatile int bucketCount;
     private volatile int replicasToDeleteCount;
+
+    // Track the historical maximum tablet server ID
+    private volatile int maxTabletServerId = 0;
 
     private static final int WINDOW_SIZE = 100;
     private static final long METRICS_UPDATE_INTERVAL_MS = 5000; // 5 seconds
@@ -138,7 +143,34 @@ public final class CoordinatorEventManager implements EventManager {
         AccessContextEvent<MetricsData> accessContextEvent =
                 new AccessContextEvent<>(
                         context -> {
-                            int tabletServerCount = context.getLiveTabletServers().size();
+                            // Get current live tablet servers
+                            Map<Integer, ServerInfo> liveTabletServers =
+                                    context.getLiveTabletServers();
+                            int tabletServerCount = liveTabletServers.size();
+
+                            // Update maxTabletServerId based on current live servers
+                            for (int serverId : liveTabletServers.keySet()) {
+                                maxTabletServerId = Math.max(maxTabletServerId, serverId);
+                            }
+
+                            // Find offline servers by checking gaps in server IDs
+                            StringBuilder offlineServers =
+                                    new StringBuilder("Offline tablet servers: ");
+                            boolean hasOfflineServers = false;
+                            for (long i = 1; i <= maxTabletServerId; i++) {
+                                if (!liveTabletServers.containsKey(i)) {
+                                    offlineServers.append(i).append(", ");
+                                    hasOfflineServers = true;
+                                }
+                            }
+
+                            // Log offline servers if any found
+                            if (hasOfflineServers) {
+                                // Remove trailing ", "
+                                offlineServers.setLength(offlineServers.length() - 2);
+                                LOG.info(offlineServers.toString());
+                            }
+
                             int tableCount = context.allTables().size();
                             int bucketCount = context.bucketLeaderAndIsr().size();
                             int offlineBucketCount = context.getOfflineBucketCount();
@@ -218,6 +250,7 @@ public final class CoordinatorEventManager implements EventManager {
                         QueuedEvent queuedEvent =
                                 new QueuedEvent(event, System.currentTimeMillis());
                         queue.put(queuedEvent);
+                        queueStats.incrementEventCount(event.getClass());
                         // Record enqueue rate by event type
                         Meter enqueueRateMeter = getOrCreateEventEnqueueRateMeter(event.getClass());
                         enqueueRateMeter.markEvent();
@@ -232,6 +265,7 @@ public final class CoordinatorEventManager implements EventManager {
                 putLock,
                 () -> {
                     queue.clear();
+                    queueStats.clear();
                     put(event);
                 });
     }
@@ -250,11 +284,30 @@ public final class CoordinatorEventManager implements EventManager {
             long currentTime = System.currentTimeMillis();
             if (currentTime - lastMetricsUpdateTime >= METRICS_UPDATE_INTERVAL_MS) {
                 updateMetricsViaAccessContext();
+                // Check queue size and print statistics if needed
+                int queueSize = queue.size();
+                if (queueSize > 500) {
+                    Map<Class<? extends CoordinatorEvent>, Integer> typeCounts =
+                            queueStats.getEventTypeCounts();
+                    StringBuilder stats = new StringBuilder();
+                    stats.append("Event queue size exceeds 500 (current size: ")
+                            .append(queueSize)
+                            .append("). Event type distribution:\n");
+                    typeCounts.forEach(
+                            (type, count) ->
+                                    stats.append("  ")
+                                            .append(type.getSimpleName())
+                                            .append(": ")
+                                            .append(count)
+                                            .append("\n"));
+                    LOG.warn(stats.toString());
+                }
                 lastMetricsUpdateTime = currentTime;
             }
 
             QueuedEvent queuedEvent = queue.take();
             CoordinatorEvent coordinatorEvent = queuedEvent.event;
+            queueStats.decrementEventCount(coordinatorEvent.getClass());
 
             long eventStartTimeMs = System.currentTimeMillis();
 
