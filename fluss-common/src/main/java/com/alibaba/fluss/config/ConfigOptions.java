@@ -1162,6 +1162,24 @@ public class ConfigOptions {
                                     + "This is used when the client connects to the Fluss cluster with SASL authentication enabled. "
                                     + "If not provided, the password will be read from the JAAS configuration string specified by `client.security.sasl.jaas.config`.");
 
+    public static final ConfigOption<Boolean> CLIENT_LOG_STATISTICS_ENABLED =
+            key("client.log.statistics.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to enable statistics collection for Log RecordBatch. "
+                                    + "When enabled, the client will collect statistics information for Log RecordBatch operations. "
+                                    + "This can be useful for monitoring and debugging purposes, but may add some overhead.");
+
+    public static final ConfigOption<Boolean> CLIENT_LOG_RECORD_BATCH_FILTER_ENABLED =
+            key("client.log.record-batch-filter.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether to enable record batch filter pushdown. "
+                                    + "When enabled, the client will push down record batch filters to improve query performance. "
+                                    + "This feature can reduce network transfer and improve overall query efficiency.");
+
     // ------------------------------------------------------------------------
     //  ConfigOptions for Fluss Table
     // ------------------------------------------------------------------------

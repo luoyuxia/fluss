@@ -22,9 +22,10 @@ import com.alibaba.fluss.flink.row.FlinkAsFlussRow;
 import com.alibaba.fluss.flink.utils.FlinkConversions;
 import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.predicate.PredicateBuilder;
-import com.alibaba.fluss.predicate.UnsupportedExpression;
+import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.utils.TypeUtils;
 
+import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.ExpressionVisitor;
@@ -283,6 +284,14 @@ public class PredicateConverter implements ExpressionVisitor<Predicate> {
         throw new UnsupportedExpression();
     }
 
+    public static Object fromFlinkObject(Object o, DataType type) {
+        if (o == null) {
+            return null;
+        }
+        return InternalRow.createFieldGetter(FlinkConversions.toFlussType(type), 0)
+                .getFieldOrNull((new FlinkAsFlussRow()).replace(GenericRowData.of(o)));
+    }
+
     /**
      * Try best to convert a {@link ResolvedExpression} to {@link Predicate}.
      *
@@ -294,6 +303,17 @@ public class PredicateConverter implements ExpressionVisitor<Predicate> {
             return Optional.ofNullable(filter.accept(new PredicateConverter(rowType)));
         } catch (UnsupportedExpression e) {
             return Optional.empty();
+        }
+    }
+
+    /** Encounter an unsupported expression, the caller can choose to ignore this filter branch. */
+    public static class UnsupportedExpression extends RuntimeException {
+        public UnsupportedExpression(String message) {
+            super(message);
+        }
+
+        public UnsupportedExpression() {
+            super();
         }
     }
 }

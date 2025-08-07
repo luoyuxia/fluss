@@ -1173,6 +1173,58 @@ abstract class FlinkTableSourceITCase extends AbstractTestBase {
         assertResultsIgnoreOrder(rowIter, expectedRowValues, true);
     }
 
+    @Test
+    void testStreamingReadNonPKTableWithCombinedFilters() throws Exception {
+        tEnv.executeSql(
+                "create table combined_filters_table"
+                        + " (a int not null, b varchar, c string, d int) partitioned by (c) ");
+        TablePath tablePath = TablePath.of(DEFAULT_DB, "combined_filters_table");
+        tEnv.executeSql("alter table combined_filters_table add partition (c=2025)");
+        tEnv.executeSql("alter table combined_filters_table add partition (c=2026)");
+
+        List<InternalRow> rows = new ArrayList<>();
+        List<String> expectedRowValues = new ArrayList<>();
+
+        for (int i = 0; i < 10; i++) {
+            rows.add(row(i, "v" + i, "2025", i * 100));
+            if (i > 2) {
+                expectedRowValues.add(String.format("+I[%d, 2025, %d]", i, i * 100));
+            }
+        }
+        writeRows(conn, tablePath, rows, true);
+
+        for (int i = 0; i < 10; i++) {
+            rows.add(row(i, "v" + i, "2026", i * 100));
+        }
+
+        writeRows(conn, tablePath, rows, true);
+
+        String plan =
+                tEnv.explainSql(
+                        "select a,c,d from combined_filters_table where c ='2025' and d > 200");
+
+        // assert both partition filter and record batch filter are pushed down to the
+        // TableSourceScan
+        assertThat(plan)
+                .contains(
+                        "TableSourceScan(table=[[testcatalog, defaultdb, combined_filters_table, "
+                                + "filter=[and(=(c, _UTF-16LE'2025':VARCHAR(2147483647) CHARACTER SET \"UTF-16LE\"), >(d, 200))], "
+                                + "project=[a, d]]], fields=[a, d])");
+        // assert predicates which pushed down as record batch filter are still remained in the Calc
+        // operator
+        assertThat(plan)
+                .contains(
+                        "Calc(select=[a, CAST('2025' AS VARCHAR(2147483647)) AS c, d], where=[(d > 200)])");
+
+        // test column filter、partition filter and flink runtime filter
+        org.apache.flink.util.CloseableIterator<Row> rowIter =
+                tEnv.executeSql(
+                                "select a,c,d from combined_filters_table where c ='2025' and d > 200;")
+                        .collect();
+
+        assertResultsIgnoreOrder(rowIter, expectedRowValues, true);
+    }
+
     private List<String> writeRowsToTwoPartition(TablePath tablePath, Collection<String> partitions)
             throws Exception {
         List<InternalRow> rows = new ArrayList<>();

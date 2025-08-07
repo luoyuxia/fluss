@@ -30,6 +30,7 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.BytesViewLogRecords;
 import com.alibaba.fluss.record.DefaultKvRecordBatch;
 import com.alibaba.fluss.record.DefaultValueRecordBatch;
@@ -129,6 +130,7 @@ import com.alibaba.fluss.rpc.messages.StopReplicaResponse;
 import com.alibaba.fluss.rpc.messages.UpdateMetadataRequest;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.rpc.protocol.Errors;
+import com.alibaba.fluss.rpc.util.PredicateMessageUtils;
 import com.alibaba.fluss.security.acl.AclBinding;
 import com.alibaba.fluss.server.authorizer.AclCreateResult;
 import com.alibaba.fluss.server.authorizer.AclDeleteResult;
@@ -159,6 +161,7 @@ import com.alibaba.fluss.server.zk.data.LeaderAndIsr;
 import javax.annotation.Nullable;
 
 import java.nio.ByteBuffer;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -675,6 +678,18 @@ public class ServerRpcMessageUtils {
         }
         produceResponse.addAllBucketsResps(produceLogRespForBucketList);
         return produceResponse;
+    }
+
+    public static Map<Long, Predicate> getTableRecordBatchFilterMap(FetchLogRequest request) {
+        return request.getTablesReqsList().stream()
+                .filter(PbFetchLogReqForTable::hasRecordBatchFilter)
+                .map(
+                        tableReq ->
+                                new AbstractMap.SimpleEntry<>(
+                                        tableReq.getTableId(),
+                                        PredicateMessageUtils.toPredicate(
+                                                tableReq.getRecordBatchFilter())))
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     public static Map<TableBucket, FetchReqInfo> getFetchLogData(FetchLogRequest request) {

@@ -135,6 +135,8 @@ public class FlinkTableSource
 
     @Nullable protected Predicate partitionFilters;
 
+    private Predicate logRecordBatchFilter;
+
     public FlinkTableSource(
             TablePath tablePath,
             Configuration flussConfig,
@@ -275,7 +277,8 @@ public class FlinkTableSource
                         scanPartitionDiscoveryIntervalMs,
                         new RowDataDeserializationSchema(),
                         streaming,
-                        partitionFilters);
+                        partitionFilters,
+                        logRecordBatchFilter);
 
         if (!streaming) {
             // return a bounded source provide to make planner happy,
@@ -370,6 +373,7 @@ public class FlinkTableSource
         source.singleRowFilter = singleRowFilter;
         source.modificationScanType = modificationScanType;
         source.partitionFilters = partitionFilters;
+        source.logRecordBatchFilter = logRecordBatchFilter;
         return source;
     }
 
@@ -426,8 +430,9 @@ public class FlinkTableSource
             }
             singleRowFilter = lookupRow;
             return Result.of(acceptedFilters, remainingFilters);
-        } else if (isPartitioned()
-                && !RowLevelModificationType.UPDATE.equals(modificationScanType)) {
+        }
+
+        if (isPartitioned() && !RowLevelModificationType.UPDATE.equals(modificationScanType)) {
             // apply partition filter pushdown
             List<Predicate> converted = new ArrayList<>();
 
@@ -467,10 +472,86 @@ public class FlinkTableSource
                 }
             }
             partitionFilters = converted.isEmpty() ? null : PredicateBuilder.and(converted);
-            return Result.of(acceptedFilters, remainingFilters);
         }
 
-        return Result.of(Collections.emptyList(), filters);
+        if (acceptedFilters.isEmpty() && remainingFilters.isEmpty()) {
+            remainingFilters.addAll(filters);
+        }
+
+        if (!hasPrimaryKey()) {
+            Result recordBatchResult = pushdownRecordBatchFilter(remainingFilters);
+            acceptedFilters.addAll(recordBatchResult.getAcceptedFilters());
+            remainingFilters = recordBatchResult.getRemainingFilters();
+        }
+
+        return Result.of(acceptedFilters, remainingFilters);
+    }
+
+    private Result pushdownRecordBatchFilter(List<ResolvedExpression> filters) {
+        List<com.alibaba.fluss.predicate.Predicate> pushdownPredicates = new ArrayList<>();
+        com.alibaba.fluss.types.RowType flussRowType =
+                com.alibaba.fluss.flink.utils.FlinkConversions.toFlussRowType(
+                        (org.apache.flink.table.types.logical.RowType) tableOutputType);
+
+        List<ResolvedExpression> acceptedFilters = new ArrayList<>();
+        List<ResolvedExpression> remainingFilters = new ArrayList<>();
+
+        for (ResolvedExpression filter : filters) {
+            java.util.Optional<com.alibaba.fluss.predicate.Predicate> predicateOpt =
+                    com.alibaba.fluss.flink.source.PredicateConverter.convert(
+                            (org.apache.flink.table.types.logical.RowType) tableOutputType, filter);
+            if (predicateOpt.isPresent()) {
+                com.alibaba.fluss.predicate.Predicate predicate = predicateOpt.get();
+                if (!containsBinaryTypeByVisitor(predicate, flussRowType)) {
+                    pushdownPredicates.add(predicate);
+                    acceptedFilters.add(filter);
+                    remainingFilters.add(filter);
+                    continue;
+                }
+            }
+            remainingFilters.add(filter);
+        }
+
+        if (!pushdownPredicates.isEmpty()) {
+            com.alibaba.fluss.predicate.Predicate merged =
+                    pushdownPredicates.size() == 1
+                            ? pushdownPredicates.get(0)
+                            : com.alibaba.fluss.predicate.PredicateBuilder.and(pushdownPredicates);
+            this.logRecordBatchFilter = merged;
+        } else {
+            this.logRecordBatchFilter = null;
+        }
+        return Result.of(acceptedFilters, remainingFilters);
+    }
+
+    private boolean containsBinaryTypeByVisitor(
+            com.alibaba.fluss.predicate.Predicate predicate,
+            com.alibaba.fluss.types.RowType rowType) {
+        class BinaryTypeVisitor implements com.alibaba.fluss.predicate.PredicateVisitor<Boolean> {
+            @Override
+            public Boolean visit(com.alibaba.fluss.predicate.LeafPredicate leaf) {
+                com.alibaba.fluss.types.DataType type = rowType.getTypeAt(leaf.index());
+                switch (type.getTypeRoot()) {
+                    case BINARY:
+                    case BYTES:
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            @Override
+            public Boolean visit(com.alibaba.fluss.predicate.CompoundPredicate compound) {
+                for (com.alibaba.fluss.predicate.Predicate child : compound.children()) {
+                    if (child.visit(this)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        return predicate.visit(new BinaryTypeVisitor());
     }
 
     @Override
@@ -572,5 +653,22 @@ public class FlinkTableSource
     @VisibleForTesting
     public int[] getPartitionKeyIndexes() {
         return partitionKeyIndexes;
+    }
+
+    @VisibleForTesting
+    @Nullable
+    public Predicate getLogRecordBatchFilter() {
+        return logRecordBatchFilter;
+    }
+
+    @VisibleForTesting
+    @Nullable
+    public GenericRowData getSingleRowFilter() {
+        return singleRowFilter;
+    }
+
+    @VisibleForTesting
+    public Predicate getPartitionFilters() {
+        return partitionFilters;
     }
 }

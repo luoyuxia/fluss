@@ -66,6 +66,8 @@ public class FlinkSource<OUT>
 
     private Predicate partitionFilters;
 
+    @Nullable private final Predicate logRecordBatchFilter;
+
     public FlinkSource(
             Configuration flussConf,
             TablePath tablePath,
@@ -77,7 +79,8 @@ public class FlinkSource<OUT>
             long scanPartitionDiscoveryIntervalMs,
             FlussDeserializationSchema<OUT> deserializationSchema,
             boolean streaming,
-            Predicate partitionFilters) {
+            Predicate partitionFilters,
+            @Nullable Predicate logRecordBatchFilter) {
         this.flussConf = flussConf;
         this.tablePath = tablePath;
         this.hasPrimaryKey = hasPrimaryKey;
@@ -89,6 +92,7 @@ public class FlinkSource<OUT>
         this.deserializationSchema = deserializationSchema;
         this.streaming = streaming;
         this.partitionFilters = partitionFilters;
+        this.logRecordBatchFilter = logRecordBatchFilter;
     }
 
     @Override
@@ -161,6 +165,7 @@ public class FlinkSource<OUT>
                 sourceOutputType,
                 context,
                 projectedFields,
+                logRecordBatchFilter,
                 flinkSourceReaderMetrics,
                 recordEmitter);
     }

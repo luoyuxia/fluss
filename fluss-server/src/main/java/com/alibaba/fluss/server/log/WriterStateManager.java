@@ -55,6 +55,7 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.alibaba.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static com.alibaba.fluss.server.log.WriterStateEntry.BATCH_SEQUENCE_AFTER_EXPIRE;
 import static com.alibaba.fluss.utils.FlussPaths.WRITER_SNAPSHOT_FILE_SUFFIX;
 import static com.alibaba.fluss.utils.FlussPaths.writerSnapshotFile;

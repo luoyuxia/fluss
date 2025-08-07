@@ -27,7 +27,6 @@ import com.alibaba.fluss.record.MemoryLogRecordsArrowBuilder;
 import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.arrow.ArrowWriter;
-import com.alibaba.fluss.rpc.messages.ProduceLogRequest;
 
 import javax.annotation.concurrent.NotThreadSafe;
 
@@ -60,6 +59,21 @@ public class ArrowLogWriteBatch extends WriteBatch {
         this.outputView = outputView;
         this.recordsBuilder =
                 MemoryLogRecordsArrowBuilder.builder(schemaId, arrowWriter, outputView, true);
+    }
+
+    public ArrowLogWriteBatch(
+            int bucketId,
+            PhysicalTablePath physicalTablePath,
+            int schemaId,
+            ArrowWriter arrowWriter,
+            AbstractPagedOutputView outputView,
+            long createdMs,
+            boolean statisticsEnabled) {
+        super(bucketId, physicalTablePath, createdMs);
+        this.outputView = outputView;
+        this.recordsBuilder =
+                MemoryLogRecordsArrowBuilder.builder(
+                        schemaId, arrowWriter, outputView, true, statisticsEnabled);
     }
 
     @Override
