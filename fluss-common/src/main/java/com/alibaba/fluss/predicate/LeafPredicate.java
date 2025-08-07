@@ -90,6 +90,23 @@ public class LeafPredicate implements Predicate {
     }
 
     @Override
+    public boolean test(
+            long rowCount, InternalRow minValues, InternalRow maxValues, Long[] nullCounts) {
+        Object min = get(minValues, fieldIndex, type);
+        Object max = get(maxValues, fieldIndex, type);
+        Long nullCount = nullCounts != null ? nullCounts[fieldIndex] : null;
+        if (nullCount == null || rowCount != nullCount) {
+            // not all null
+            // min or max is null
+            // unknown stats
+            if (min == null || max == null) {
+                return true;
+            }
+        }
+        return function.test(type, rowCount, min, max, nullCount, literals);
+    }
+
+    @Override
     public Optional<Predicate> negate() {
         return function.negate()
                 .map(negate -> new LeafPredicate(negate, type, fieldIndex, fieldName, literals));
