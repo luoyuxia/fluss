@@ -34,6 +34,8 @@ import com.alibaba.fluss.server.utils.FatalErrorHandler;
 import com.alibaba.fluss.server.utils.ShutdownHookUtil;
 import com.alibaba.fluss.utils.AutoCloseableAsync;
 import com.alibaba.fluss.utils.ExceptionUtils;
+import com.alibaba.fluss.utils.ProcessExitMonitor;
+import com.alibaba.fluss.utils.SignalHandler;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
 import org.slf4j.Logger;
@@ -90,8 +92,12 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
         String serverName = server.getServerName();
         LOG.info("Starting {}.", server.getServerName());
         try {
+            ProcessExitMonitor.initialize();
+            SignalHandler.initialize();
             server.start();
         } catch (Exception e) {
+            ProcessExitMonitor.cleanup();
+            SignalHandler.cleanup();
             LOG.error("Could not start {}.", serverName, e);
             System.exit(STARTUP_FAILURE_RETURN_CODE);
         }
@@ -104,7 +110,8 @@ public abstract class ServerBase implements AutoCloseableAsync, FatalErrorHandle
             throwable = ExceptionUtils.stripExecutionException(e);
             returnCode = RUNTIME_FAILURE_RETURN_CODE;
         }
-
+        com.alibaba.fluss.utils.ProcessExitMonitor.cleanup();
+        SignalHandler.cleanup();
         LOG.info("Terminating {} process with exit code {}.", serverName, returnCode, throwable);
         System.exit(returnCode);
     }
