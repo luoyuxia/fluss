@@ -23,6 +23,7 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.metrics.CharacterFilter;
 import com.alibaba.fluss.metrics.groups.AbstractMetricGroup;
 import com.alibaba.fluss.metrics.registry.MetricRegistry;
+import com.alibaba.fluss.server.coordinator.event.CoordinatorEvent;
 import com.alibaba.fluss.utils.MapUtils;
 
 import javax.annotation.Nullable;
@@ -42,6 +43,9 @@ public class CoordinatorMetricGroup extends AbstractMetricGroup {
 
     private final Map<TablePath, SimpleTableMetricGroup> metricGroupByTable =
             MapUtils.newConcurrentHashMap();
+
+    private final Map<Class<? extends CoordinatorEvent>, CoordinatorEventMetricGroup>
+            eventMetricGroups = MapUtils.newConcurrentHashMap();
 
     protected final String clusterId;
     protected final String hostname;
@@ -189,5 +193,11 @@ public class CoordinatorMetricGroup extends AbstractMetricGroup {
             BucketMetricGroup metricGroup = buckets.remove(tb);
             metricGroup.close();
         }
+    }
+
+    public CoordinatorEventMetricGroup getOrAddEventTypeMetricGroup(
+            Class<? extends CoordinatorEvent> eventClass) {
+        return eventMetricGroups.computeIfAbsent(
+                eventClass, e -> new CoordinatorEventMetricGroup(registry, eventClass, this));
     }
 }
