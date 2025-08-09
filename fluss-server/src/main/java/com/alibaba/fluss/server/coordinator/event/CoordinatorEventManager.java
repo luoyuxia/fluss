@@ -21,6 +21,7 @@ import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.metrics.DescriptiveStatisticsHistogram;
 import com.alibaba.fluss.metrics.Histogram;
 import com.alibaba.fluss.metrics.MetricNames;
+import com.alibaba.fluss.server.metrics.group.CoordinatorEventMetricGroup;
 import com.alibaba.fluss.server.metrics.group.CoordinatorMetricGroup;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
 
@@ -53,7 +54,6 @@ public final class CoordinatorEventManager implements EventManager {
     private final Lock putLock = new ReentrantLock();
 
     // metrics
-    private Histogram eventProcessTime;
     private Histogram eventQueueTime;
 
     private static final int WINDOW_SIZE = 100;
@@ -67,11 +67,6 @@ public final class CoordinatorEventManager implements EventManager {
 
     private void registerMetrics() {
         coordinatorMetricGroup.gauge(MetricNames.EVENT_QUEUE_SIZE, queue::size);
-
-        eventProcessTime =
-                coordinatorMetricGroup.histogram(
-                        MetricNames.EVENT_PROCESS_TIME_MS,
-                        new DescriptiveStatisticsHistogram(WINDOW_SIZE));
 
         eventQueueTime =
                 coordinatorMetricGroup.histogram(
@@ -101,6 +96,10 @@ public final class CoordinatorEventManager implements EventManager {
                         QueuedEvent queuedEvent =
                                 new QueuedEvent(event, System.currentTimeMillis());
                         queue.put(queuedEvent);
+                        coordinatorMetricGroup
+                                .getOrAddEventTypeMetricGroup(event.getClass())
+                                .queuedEventCount()
+                                .inc();
                     } catch (InterruptedException e) {
                         LOG.error("Fail to put coordinator event {}.", event, e);
                     }
@@ -137,8 +136,13 @@ public final class CoordinatorEventManager implements EventManager {
             } catch (Throwable e) {
                 log.error("Uncaught error processing event {}.", coordinatorEvent, e);
             } finally {
-                long eventFinishTimeMs = System.currentTimeMillis();
-                eventProcessTime.update(eventFinishTimeMs - eventStartTimeMs);
+                long costTimeMs = System.currentTimeMillis() - eventStartTimeMs;
+                // Use event type specific histogram
+                CoordinatorEventMetricGroup eventMetricGroup =
+                        coordinatorMetricGroup.getOrAddEventTypeMetricGroup(
+                                coordinatorEvent.getClass());
+                eventMetricGroup.eventProcessingTime().update(costTimeMs);
+                eventMetricGroup.queuedEventCount().dec();
             }
         }
     }
