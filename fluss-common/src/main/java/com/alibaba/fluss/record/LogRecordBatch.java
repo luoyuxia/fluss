@@ -25,8 +25,9 @@ import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.CloseableIterator;
 
 import java.util.Iterator;
+import java.util.Optional;
 
-import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 
 /**
@@ -37,7 +38,7 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 @PublicEvolving
 public interface LogRecordBatch {
     /** The current "magic" value. */
-    byte CURRENT_LOG_MAGIC_VALUE = LOG_MAGIC_VALUE_V1;
+    byte CURRENT_LOG_MAGIC_VALUE = LOG_MAGIC_VALUE_V2;
 
     /**
      * Check whether the checksum of this batch is correct.
@@ -45,6 +46,24 @@ public interface LogRecordBatch {
      * @return true If so, false otherwise
      */
     boolean isValid();
+
+    /**
+     * Get the statistics of this record batch using the provided read context.
+     *
+     * <p>This method can deserialize statistics when the read context provides the necessary schema
+     * information.
+     *
+     * @param context The read context that provides schema information
+     * @return Optional containing the statistics if available and valid
+     */
+    Optional<LogRecordBatchStatistics> getStatistics(ReadContext context);
+
+    /**
+     * Get the size of the statistics in bytes.
+     *
+     * @return The size of the statistics in bytes
+     */
+    int statisticsSizeInBytes();
 
     /** Raise an exception if the checksum is not valid. */
     void ensureValid();

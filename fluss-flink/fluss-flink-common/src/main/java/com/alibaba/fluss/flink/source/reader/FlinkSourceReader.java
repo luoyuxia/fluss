@@ -30,6 +30,7 @@ import com.alibaba.fluss.flink.source.split.SourceSplitBase;
 import com.alibaba.fluss.flink.source.split.SourceSplitState;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.types.RowType;
 
 import org.apache.flink.api.connector.source.SourceEvent;
@@ -56,6 +57,7 @@ public class FlinkSourceReader<OUT>
             RowType sourceOutputType,
             SourceReaderContext context,
             @Nullable int[] projectedFields,
+            @Nullable Predicate logRecordBatchFilter,
             FlinkSourceReaderMetrics flinkSourceReaderMetrics,
             FlinkRecordEmitter<OUT> recordEmitter) {
         super(
@@ -68,6 +70,7 @@ public class FlinkSourceReader<OUT>
                                         tablePath,
                                         sourceOutputType,
                                         projectedFields,
+                                        logRecordBatchFilter,
                                         flinkSourceReaderMetrics),
                         (ignore) -> {}),
                 recordEmitter,

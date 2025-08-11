@@ -19,6 +19,9 @@ package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.memory.MemorySegment;
+import com.alibaba.fluss.record.bytesview.BytesView;
+import com.alibaba.fluss.record.bytesview.FileRegionBytesView;
+import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.CloseableIterator;
 import com.alibaba.fluss.utils.FileUtils;
 
@@ -27,6 +30,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.util.Objects;
+import java.util.Optional;
 
 import static com.alibaba.fluss.record.LogRecordBatchFormat.BASE_OFFSET_OFFSET;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.HEADER_SIZE_UP_TO_MAGIC;
@@ -95,6 +99,7 @@ public class FileLogInputStream
 
         private LogRecordBatch fullBatch;
         private LogRecordBatch batchHeader;
+        private LogRecordBatchStatistics statistics;
 
         FileChannelLogRecordBatch(
                 long offset, byte magic, FileLogRecords fileRecords, int position, int batchSize) {
@@ -122,6 +127,10 @@ public class FileLogInputStream
 
         public int position() {
             return position;
+        }
+
+        public BytesView getBytesView() {
+            return new FileRegionBytesView(fileRecords.channel(), position, sizeInBytes());
         }
 
         @Override
@@ -272,6 +281,62 @@ public class FileLogInputStream
                     + ", size: "
                     + batchSize
                     + ")";
+        }
+
+        @Override
+        public Optional<LogRecordBatchStatistics> getStatistics(ReadContext context) {
+            if (context == null) {
+                return Optional.empty();
+            }
+
+            if (magic < LogRecordBatchFormat.LOG_MAGIC_VALUE_V2) {
+                // Statistics are only available in V2 and later
+                return Optional.empty();
+            }
+
+            try {
+                return Optional.ofNullable(loadStatistics(context));
+            } catch (Exception e) {
+                // If loading statistics fails, return empty
+                return Optional.empty();
+            }
+        }
+
+        @Override
+        public int statisticsSizeInBytes() {
+            return loadBatchHeader().statisticsSizeInBytes();
+        }
+
+        protected LogRecordBatchStatistics loadStatistics(ReadContext context) {
+            if (statistics != null) {
+                return statistics;
+            }
+
+            RowType rowType = context.getRowType(schemaId());
+            if (rowType == null) {
+                return null;
+            }
+
+            int statisticsLength = loadBatchHeader().statisticsSizeInBytes();
+
+            if (statisticsLength <= 0) {
+                return null;
+            }
+
+            int statisticsDataOffset = sizeInBytes() - statisticsLength;
+
+            ByteBuffer statisticsData =
+                    loadByteBufferWithSize(
+                            statisticsLength, position + statisticsDataOffset, "statistics");
+
+            try {
+                statistics =
+                        LogRecordBatchStatisticsSerializer.deserialize(
+                                statisticsData.array(), rowType);
+                return statistics;
+            } catch (Exception e) {
+                throw new FlussRuntimeException("Failed to deserialize statistics", e);
+            }
         }
     }
 }
