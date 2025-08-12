@@ -237,7 +237,8 @@ class TableBucketStateMachineTest {
         // case4: the leader replica fail, but non replicas is available
         coordinatorContext.putBucketState(tableBucket, OfflineBucket);
         coordinatorContext.setLiveTabletServers(createServers(Collections.emptyList()));
-        tableBucketStateMachine.handleStateChange(Collections.singleton(tableBucket), OnlineBucket);
+        tableBucketStateMachine.handleStateChange(
+                Collections.singleton(tableBucket), OnlineBucket, DEFAULT_ELECTION);
         coordinatorContext.setLiveTabletServers(
                 CoordinatorTestUtils.createServers(Collections.emptyList()));
         tableBucketStateMachine.handleStateChange(
@@ -353,7 +354,8 @@ class TableBucketStateMachineTest {
                 coordinatorContext, testCoordinatorChannelManager);
 
         // check state is online.
-        tableBucketStateMachine.handleStateChange(Collections.singleton(tb), OnlineBucket);
+        tableBucketStateMachine.handleStateChange(
+                Collections.singleton(tb), OnlineBucket, DEFAULT_ELECTION);
         assertThat(coordinatorContext.getBucketState(tb)).isEqualTo(OnlineBucket);
         assertThat(coordinatorContext.liveTabletServerSet())
                 .containsExactlyInAnyOrderElementsOf(aliveServers);
