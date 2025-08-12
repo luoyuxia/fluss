@@ -278,6 +278,16 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         //noinspection OptionalGetWithoutIsPresent
         int bucketCount = tableDescriptor.getTableDistribution().get().getBucketCount().get();
 
+        boolean unBalancedAssignment =
+                tableDescriptor
+                                .getProperties()
+                                .containsKey(
+                                        ConfigOptions.TABLE_UNBALANCED_ASSIGNMENT_ENABLED.key())
+                        && tableDescriptor
+                                .getProperties()
+                                .get(ConfigOptions.TABLE_UNBALANCED_ASSIGNMENT_ENABLED.key())
+                                .equals("true");
+
         // first, generate the assignment
         TableAssignment tableAssignment = null;
         // only when it's no partitioned table do we generate the assignment for it
@@ -285,7 +295,21 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             // the replication factor must be set now
             int replicaFactor = tableDescriptor.getReplicationFactor();
             TabletServerInfo[] servers = metadataCache.getLiveServers();
-            tableAssignment = generateAssignment(bucketCount, replicaFactor, servers);
+
+            int serverSize = Math.min(10, servers.length);
+            TabletServerInfo[] serversForAssignment;
+            if (unBalancedAssignment) {
+                serversForAssignment = new TabletServerInfo[serverSize];
+                for (TabletServerInfo server : servers) {
+                    if (server.getId() < serverSize) {
+                        serversForAssignment[server.getId()] = server;
+                    }
+                }
+            } else {
+                serversForAssignment = servers;
+            }
+
+            tableAssignment = generateAssignment(bucketCount, replicaFactor, serversForAssignment);
         }
 
         // TODO: should tolerate if the lake exist but matches our schema. This ensures eventually
