@@ -22,6 +22,7 @@ import com.alibaba.fluss.cluster.rebalance.RebalancePlanForBucket;
 import com.alibaba.fluss.cluster.rebalance.RebalanceStatus;
 import com.alibaba.fluss.cluster.rebalance.ServerTag;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.rpc.messages.RebalanceResponse;
 import com.alibaba.fluss.server.coordinator.CoordinatorContext;
 import com.alibaba.fluss.server.coordinator.event.AccessContextEvent;
 import com.alibaba.fluss.server.coordinator.event.EventManager;
@@ -49,6 +50,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -140,13 +142,13 @@ public class RebalanceManager implements AutoCloseable {
                 });
     }
 
-    public void executeRebalancePlan(RebalancePlan rebalancePlan) {
+    public CompletableFuture<RebalanceResponse> executeRebalancePlan(RebalancePlan rebalancePlan) {
         checkNotClosed();
-        inLock(
+        return inLock(
                 lock,
                 () -> {
                     rebalanceStatus = RebalanceStatus.TASK_EXECUTING;
-                    actionExecutorService
+                    return actionExecutorService
                             .execute(rebalancePlan.getExecutePlan())
                             .whenComplete(
                                     (unused, throwable) -> {
@@ -154,7 +156,6 @@ public class RebalanceManager implements AutoCloseable {
                                             rebalanceStatus = RebalanceStatus.COMPLETED;
                                         } else {
                                             rebalanceStatus = RebalanceStatus.FAILED;
-                                            rebalanceFailureCause = throwable;
                                         }
                                     });
                 });

@@ -15,21 +15,7 @@
  * limitations under the License.
  */
 
-package com.alibaba.fluss.server.coordinator.rebalance.executor;
+package com.alibaba.fluss.server.coordinator.event;
 
-import com.alibaba.fluss.cluster.rebalance.RebalancePlanForBucket;
-import com.alibaba.fluss.metadata.TableBucket;
-import com.alibaba.fluss.rpc.messages.RebalanceResponse;
-
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-
-/** An interface for action executor service. */
-public interface ActionExecutorService {
-
-    void start();
-
-    void shutdown();
-
-    CompletableFuture<RebalanceResponse> execute(Map<TableBucket, RebalancePlanForBucket> actions);
-}
+/** An event of cancelling rebalance task. */
+public class CancalRebalanceEvent implements CoordinatorEvent {}

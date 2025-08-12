@@ -19,6 +19,7 @@ package com.alibaba.fluss.server.coordinator.event;
 
 import com.alibaba.fluss.cluster.rebalance.RebalancePlanForBucket;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.rpc.messages.RebalanceResponse;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -26,11 +27,11 @@ import java.util.concurrent.CompletableFuture;
 /** An event of executing rebalance task. */
 public class ExecuteRebalanceTaskEvent implements CoordinatorEvent {
     Map<TableBucket, RebalancePlanForBucket> rebalancePlan;
-    private final CompletableFuture<Void> respCallback;
+    private final CompletableFuture<RebalanceResponse> respCallback;
 
     public ExecuteRebalanceTaskEvent(
             Map<TableBucket, RebalancePlanForBucket> rebalancePlan,
-            CompletableFuture<Void> respCallback) {
+            CompletableFuture<RebalanceResponse> respCallback) {
         this.rebalancePlan = rebalancePlan;
         this.respCallback = respCallback;
     }
@@ -39,7 +40,7 @@ public class ExecuteRebalanceTaskEvent implements CoordinatorEvent {
         return rebalancePlan;
     }
 
-    public CompletableFuture<Void> getRespCallback() {
+    public CompletableFuture<RebalanceResponse> getRespCallback() {
         return respCallback;
     }
 }

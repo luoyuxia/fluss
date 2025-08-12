@@ -94,11 +94,13 @@ import com.alibaba.fluss.server.authorizer.Authorizer;
 import com.alibaba.fluss.server.coordinator.event.AccessContextEvent;
 import com.alibaba.fluss.server.coordinator.event.AddServerTagEvent;
 import com.alibaba.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
+import com.alibaba.fluss.server.coordinator.event.CancalRebalanceEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
 import com.alibaba.fluss.server.coordinator.event.ControlledShutdownEvent;
 import com.alibaba.fluss.server.coordinator.event.EventManager;
+import com.alibaba.fluss.server.coordinator.event.ExecuteRebalanceTaskEvent;
 import com.alibaba.fluss.server.coordinator.event.RemoveServerTagEvent;
 import com.alibaba.fluss.server.coordinator.rebalance.RebalanceManager;
 import com.alibaba.fluss.server.coordinator.rebalance.goal.Goal;
@@ -116,6 +118,9 @@ import com.alibaba.fluss.server.zk.data.TableAssignment;
 import com.alibaba.fluss.server.zk.data.TableRegistration;
 import com.alibaba.fluss.utils.IOUtils;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -149,6 +154,8 @@ import static com.alibaba.fluss.utils.Preconditions.checkState;
 
 /** An RPC Gateway service for coordinator server. */
 public final class CoordinatorService extends RpcServiceBase implements CoordinatorGateway {
+
+    private static final Logger LOG = LoggerFactory.getLogger(CoordinatorService.class);
 
     private final int defaultBucketNumber;
     private final int defaultReplicationFactor;
@@ -417,6 +424,13 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     "Only partitioned table support create partition.");
         }
 
+        boolean unBalancedAssignment =
+                table.properties.containsKey(
+                                ConfigOptions.TABLE_UNBALANCED_ASSIGNMENT_ENABLED.key())
+                        && table.properties
+                                .get(ConfigOptions.TABLE_UNBALANCED_ASSIGNMENT_ENABLED.key())
+                                .equals("true");
+
         // first, validate the partition spec, and get resolved partition spec.
         PartitionSpec partitionSpec = getPartitionSpec(request.getPartitionSpec());
         validatePartitionSpec(tablePath, table.partitionKeys, partitionSpec);
@@ -426,8 +440,22 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         // second, generate the PartitionAssignment.
         int replicaFactor = table.getTableConfig().getReplicationFactor();
         TabletServerInfo[] servers = metadataCache.getLiveServers();
+
+        int serverSize = Math.min(10, servers.length);
+        TabletServerInfo[] serversForAssignment;
+        if (unBalancedAssignment) {
+            serversForAssignment = new TabletServerInfo[serverSize];
+            for (TabletServerInfo server : servers) {
+                if (server.getId() < serverSize) {
+                    serversForAssignment[server.getId()] = server;
+                }
+            }
+        } else {
+            serversForAssignment = servers;
+        }
+
         Map<Integer, BucketAssignment> bucketAssignments =
-                generateAssignment(table.bucketCount, replicaFactor, servers)
+                generateAssignment(table.bucketCount, replicaFactor, serversForAssignment)
                         .getBucketAssignments();
         PartitionAssignment partitionAssignment =
                 new PartitionAssignment(table.tableId, bucketAssignments);
@@ -672,12 +700,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
     @Override
     public CompletableFuture<RebalanceResponse> rebalance(RebalanceRequest request) {
-        if (rebalanceManager.hasOngoingRebalance()) {
-            throw new RebalanceFailureException(
-                    "There is an ongoing rebalance task. Currently, we only support one active "
-                            + "rebalance task in the cluster.");
-        }
-
         List<Goal> goalsByPriority = new ArrayList<>();
         Arrays.stream(request.getGoals())
                 .forEach(goal -> goalsByPriority.add(getGoalByType(GoalType.valueOf(goal))));
@@ -692,11 +714,18 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         }
 
         if (!isDryRun) {
+            CompletableFuture<RebalanceResponse> response = new CompletableFuture<>();
             // 2. execute rebalance plan.
-            rebalanceManager.executeRebalancePlan(rebalancePlan);
-        }
+            LOG.info("Trigger Executing rebalance task");
+            ExecuteRebalanceTaskEvent executeRebalanceTaskEvent =
+                    new ExecuteRebalanceTaskEvent(rebalancePlan.getExecutePlan(), response);
+            eventManagerSupplier.get().put(executeRebalanceTaskEvent);
+            return response;
 
-        return CompletableFuture.completedFuture(makeRebalanceRespose(rebalancePlan));
+            // return rebalanceManager.executeRebalancePlan(rebalancePlan);
+        } else {
+            return CompletableFuture.completedFuture(makeRebalanceRespose(rebalancePlan));
+        }
     }
 
     @Override
@@ -708,7 +737,9 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     @Override
     public CompletableFuture<CancelRebalanceResponse> cancelRebalance(
             CancelRebalanceRequest request) {
-        throw new UnsupportedOperationException("Support soon!");
+        CancalRebalanceEvent cancalRebalanceEvent = new CancalRebalanceEvent();
+        eventManagerSupplier.get().put(cancalRebalanceEvent);
+        return CompletableFuture.completedFuture(new CancelRebalanceResponse());
     }
 
     private void validateHeartbeatRequest(

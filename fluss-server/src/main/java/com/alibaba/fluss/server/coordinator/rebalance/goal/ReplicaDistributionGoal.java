@@ -112,10 +112,11 @@ public class ReplicaDistributionGoal extends ReplicaDistributionAbstractGoal {
         int numReplicas = server.replicas().size();
         boolean isExcludeForReplicaMove = isExcludedForReplicaMove(server);
 
-        boolean requireLessReplicas = numReplicas > rebalanceUpperLimit || isExcludeForReplicaMove;
+        boolean requireLessReplicas =
+                numReplicas > rebalanceUpperLimit || isExcludeForReplicaMove || !server.isAlive();
         boolean requireMoreReplicas =
                 !isExcludeForReplicaMove && server.isAlive() && numReplicas < rebalanceLowerLimit;
-        if (server.isAlive() && !requireMoreReplicas && !requireLessReplicas) {
+        if (!requireMoreReplicas && !requireLessReplicas) {
             // return if the server is already within the limit.
             return;
         }
