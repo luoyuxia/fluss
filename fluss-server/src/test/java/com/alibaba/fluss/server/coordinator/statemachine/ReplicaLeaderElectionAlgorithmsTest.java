@@ -28,10 +28,6 @@ import java.util.Set;
 
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.controlledShutdownReplicaLeaderElection;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection;
-import java.util.List;
-import java.util.Optional;
-
-import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.preferredReplicaLeaderElection;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.reassignBucketLeaderElection;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,10 +79,10 @@ public class ReplicaLeaderElectionAlgorithmsTest {
                 controlledShutdownReplicaLeaderElection(
                         assignments, liveReplicas, isr, shutdownTabletServers);
         assertThat(leaderOpt).isEmpty();
-        List<Integer> assignments = Arrays.asList(1, 2, 3);
+        assignments = Arrays.asList(1, 2, 3);
         List<Integer> aliveReplicas = Arrays.asList(1, 2, 3);
-        List<Integer> isr = Arrays.asList(1, 2, 3);
-        Optional<Integer> leaderOpt = defaultReplicaLeaderElection(assignments, aliveReplicas, isr);
+        isr = Arrays.asList(1, 2, 3);
+        leaderOpt = defaultReplicaLeaderElection(assignments, aliveReplicas, isr);
         assertThat(leaderOpt).isPresent();
         assertThat(leaderOpt.get()).isEqualTo(1);
 

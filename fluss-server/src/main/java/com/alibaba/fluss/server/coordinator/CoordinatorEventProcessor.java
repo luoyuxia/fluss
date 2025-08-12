@@ -31,11 +31,11 @@ import com.alibaba.fluss.exception.FencedLeaderEpochException;
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.exception.InvalidCoordinatorException;
 import com.alibaba.fluss.exception.InvalidUpdateVersionException;
-import com.alibaba.fluss.exception.TabletServerNotAvailableException;
 import com.alibaba.fluss.exception.RebalanceFailureException;
 import com.alibaba.fluss.exception.ServerNotExistException;
 import com.alibaba.fluss.exception.ServerTagAlreadyExistException;
 import com.alibaba.fluss.exception.ServerTagNotExistException;
+import com.alibaba.fluss.exception.TabletServerNotAvailableException;
 import com.alibaba.fluss.exception.UnknownServerException;
 import com.alibaba.fluss.exception.UnknownTableOrBucketException;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
@@ -1312,7 +1312,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     Collections.singleton(tableBucket),
                     OnlineBucket,
                     REASSIGN_BUCKET_LEADER_ELECTION);
-        } else if (coordinatorContext.isReplicaAndServerOnline(currentLeader, tableBucket)) {
+        } else if (coordinatorContext.isReplicaOnline(currentLeader, tableBucket)) {
             LOG.info(
                     "Leader {} for tableBucket {} being reassigned, is already in the new list of replicas {} and ia alive",
                     currentLeader,
@@ -1442,7 +1442,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         newLeaderAndIsrList.forEach(coordinatorContext::putBucketLeaderAndIsr);
 
         // First, try to judge whether the bucket is in rebalance task when isr change.
-        tryToFinishRebalanceTasks(tableBucket);
+        newLeaderAndIsrList.keySet().forEach(this::tryToFinishRebalanceTasks);
 
         // TODO update metadata for all alive tablet servers.
 

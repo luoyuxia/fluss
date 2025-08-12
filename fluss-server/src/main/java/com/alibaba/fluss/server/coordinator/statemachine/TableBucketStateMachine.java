@@ -42,12 +42,9 @@ import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.controlledShutdownReplicaLeaderElection;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection;
-import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionStrategy.CONTROLLED_SHUTDOWN_ELECTION;
-import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionStrategy.DEFAULT_ELECTION;
-
-import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.defaultReplicaLeaderElection;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.preferredReplicaLeaderElection;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionAlgorithms.reassignBucketLeaderElection;
+import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionStrategy.CONTROLLED_SHUTDOWN_ELECTION;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionStrategy.DEFAULT_ELECTION;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
@@ -615,7 +612,8 @@ public class TableBucketStateMachine {
                         defaultReplicaLeaderElection(assignment, liveReplicas, leaderAndIsr.isr());
                 break;
             case CONTROLLED_SHUTDOWN_ELECTION:
-                Set<Integer> shuttingDownTabletServers = coordinatorContext.shuttingDownTabletServers();
+                Set<Integer> shuttingDownTabletServers =
+                        coordinatorContext.shuttingDownTabletServers();
                 leaderOpt =
                         controlledShutdownReplicaLeaderElection(
                                 assignment,
