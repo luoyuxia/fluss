@@ -142,8 +142,23 @@
         <dependency>
             <groupId>com.alibaba.alake</groupId>
             <artifactId>ali-dlf-sdk-assembly</artifactId>
-            <version>1.0.0-rest-test-0717-3-SNAPSHOT</version>
-            <scope>provided</scope>
+            <version>1.0.0-rest-test-0811-3-SNAPSHOT</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>ch.qos.reload4j</groupId>
+                    <artifactId>reload4j</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.slf4j</groupId>
+                    <artifactId>slf4j-reload4j</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>com.aliyun.datalake</groupId>
+            <artifactId>dlf-sdk</artifactId>
+            <version>1-ali-13.1</version>
             <exclusions>
                 <exclusion>
                     <groupId>ch.qos.reload4j</groupId>
@@ -238,6 +253,8 @@
                             <artifactSet>
                                 <includes>
                                     <include>org.apache.paimon:paimon-bundle</include>
+                                    <incldue>com.alibaba.alake:ali-dlf-sdk-assembly</incldue>
+                                    <include>com.aliyun.datalake:dlf-sdk</include>
                                 </includes>
                             </artifactSet>
                         </configuration>
