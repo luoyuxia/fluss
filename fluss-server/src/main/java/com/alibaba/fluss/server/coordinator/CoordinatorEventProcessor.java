@@ -48,7 +48,6 @@ import com.alibaba.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
 import com.alibaba.fluss.server.coordinator.event.ControlledShutdownEvent;
-import com.alibaba.fluss.server.coordinator.event.ControlledShutdownEvent;
 import com.alibaba.fluss.server.coordinator.event.CoordinatorEvent;
 import com.alibaba.fluss.server.coordinator.event.CoordinatorEventManager;
 import com.alibaba.fluss.server.coordinator.event.CreatePartitionEvent;
@@ -513,12 +512,12 @@ public class CoordinatorEventProcessor implements EventProcessor {
             completeFromCallable(
                     commitLakeTableSnapshotEvent.getRespCallback(),
                     () -> tryProcessCommitLakeTableSnapshot(commitLakeTableSnapshotEvent));
-        }else if (event instanceof ControlledShutdownEvent) {
+        } else if (event instanceof ControlledShutdownEvent) {
             ControlledShutdownEvent controlledShutdownEvent = (ControlledShutdownEvent) event;
             completeFromCallable(
                     controlledShutdownEvent.getRespCallback(),
                     () -> tryProcessControlledShutdown(controlledShutdownEvent));
-        }  else if (event instanceof AccessContextEvent) {
+        } else if (event instanceof AccessContextEvent) {
             AccessContextEvent<?> accessContextEvent = (AccessContextEvent<?>) event;
             processAccessContext(accessContextEvent);
         } else {
