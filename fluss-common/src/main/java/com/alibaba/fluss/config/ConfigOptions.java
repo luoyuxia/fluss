@@ -1348,6 +1348,13 @@ public class ConfigOptions {
                             "The column name of the version column for the `versioned` merge engine. "
                                     + "If the merge engine is set to `versioned`, the version column must be set.");
 
+    public static final ConfigOption<Boolean> TABLE_UNBALANCED_ASSIGNMENT_ENABLED =
+            key("table.unbalanced-assignment.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether enable unbalanced assignment for the table. Disabled by default. ");
+
     // ------------------------------------------------------------------------
     //  ConfigOptions for Kv
     // ------------------------------------------------------------------------
