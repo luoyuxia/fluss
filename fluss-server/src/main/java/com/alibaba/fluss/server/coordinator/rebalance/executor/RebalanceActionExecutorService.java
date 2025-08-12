@@ -86,6 +86,7 @@ public class RebalanceActionExecutorService implements ActionExecutorService, Ru
     }
 
     private void doReassign(Task task) {
+        LOG.info("Trigger Executing rebalance task");
         ExecuteRebalanceTaskEvent executeRebalanceTaskEvent =
                 new ExecuteRebalanceTaskEvent(task.getActions(), task.getFuture());
         eventManagerSupplier.get().put(executeRebalanceTaskEvent);
