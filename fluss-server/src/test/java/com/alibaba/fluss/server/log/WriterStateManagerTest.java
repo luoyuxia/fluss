@@ -21,7 +21,6 @@ import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.metadata.TableBucket;
-import com.alibaba.fluss.utils.clock.ManualClock;
 import com.alibaba.fluss.utils.types.Tuple2;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +41,6 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
@@ -72,12 +70,7 @@ public class WriterStateManagerTest {
                 new WriterStateManager(
                         tableBucket,
                         logDir,
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_TEMPORARY_EXPIRATION_TIME)
-                                        .toMillis(),
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME)
-                                        .toMillis());
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
     }
 
     @Test
@@ -158,7 +151,7 @@ public class WriterStateManagerTest {
             stateManager.takeSnapshot();
         }
 
-        stateManager.truncateAndReload(1L, 3L);
+        stateManager.truncateAndReload(1L, 3L, System.currentTimeMillis());
         assertThat(stateManager.oldestSnapshotOffset()).isPresent();
         assertThat(stateManager.oldestSnapshotOffset().get()).isEqualTo(2L);
         assertThat(stateManager.latestSnapshotOffset()).isPresent();
@@ -194,13 +187,8 @@ public class WriterStateManagerTest {
                 new WriterStateManager(
                         tableBucket,
                         logDir,
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_TEMPORARY_EXPIRATION_TIME)
-                                        .toMillis(),
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME)
-                                        .toMillis());
-        recoveredMapping.truncateAndReload(0L, 1L);
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+        recoveredMapping.truncateAndReload(0L, 1L, 70000);
 
         // Entry added after recovery. The writer id should be expired now, and would not exist in
         // the writer mapping. If writing with the same writerId and non-zero batch sequence, the
@@ -219,56 +207,6 @@ public class WriterStateManagerTest {
         assertThat(recoveredMapping.activeWriters().values().iterator().next().lastBatchSequence())
                 .isEqualTo(0);
         assertThat(recoveredMapping.mapEndOffset()).isEqualTo(3L);
-    }
-
-    @Test
-    void testLoadFromSnapshotRetainExpiredWriters() throws Exception {
-        ManualClock clock = new ManualClock(1000L);
-
-        // 2 seconds to expire the writer.
-        conf.set(ConfigOptions.WRITER_ID_TEMPORARY_EXPIRATION_TIME, Duration.ofSeconds(2));
-        conf.set(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME, Duration.ofSeconds(100));
-        WriterStateManager stateManager1 =
-                new WriterStateManager(
-                        tableBucket,
-                        logDir,
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_TEMPORARY_EXPIRATION_TIME)
-                                        .toMillis(),
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME)
-                                        .toMillis());
-
-        long writerId1 = 1L;
-        long writerId2 = 2L;
-
-        append(stateManager1, writerId1, 0, 0L, clock.milliseconds());
-        append(stateManager1, writerId2, 0, 1L, clock.milliseconds());
-        stateManager1.takeSnapshot();
-        assertThat(stateManager1.activeWriters().size()).isEqualTo(2);
-
-        // trigger clock move to 5000L which means the writer has been temporary expired but not
-        // permanent expired.
-        clock.advanceTime(5000L, TimeUnit.MILLISECONDS);
-        // new one new WriterStateManager to mock tabletServer restart and reload from snapshot.
-        WriterStateManager stateManager2 =
-                new WriterStateManager(
-                        tableBucket,
-                        logDir,
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_TEMPORARY_EXPIRATION_TIME)
-                                        .toMillis(),
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME)
-                                        .toMillis());
-        stateManager2.truncateAndReload(0L, 2L);
-        // all writers are retained.
-        assertThat(stateManager2.activeWriters().size()).isEqualTo(2);
-
-        // trigger to expire the writer.
-        stateManager2.removeExpiredWriters(clock.milliseconds());
-        assertThat(stateManager2.lastEntry(writerId1).get().firstBatchSequence()).isEqualTo(-2);
-        assertThat(stateManager2.lastEntry(writerId2).get().firstBatchSequence()).isEqualTo(-2);
     }
 
     @Test
@@ -342,7 +280,7 @@ public class WriterStateManagerTest {
         assertThat(currentSnapshotOffsets()).isEqualTo(new HashSet<>(Arrays.asList(3L, 5L)));
 
         // Truncate to the range (3, 5), this will delete the earlier snapshot until offset 3.
-        stateManager.truncateAndReload(3L, 5L);
+        stateManager.truncateAndReload(3L, 5L, System.currentTimeMillis());
         assertThat(Objects.requireNonNull(logDir.listFiles()).length).isEqualTo(1);
         assertThat(currentSnapshotOffsets()).isEqualTo(Collections.singleton(5L));
 
@@ -368,7 +306,7 @@ public class WriterStateManagerTest {
         stateManager.takeSnapshot();
         assertThat(stateManager.activeWriters().size()).isEqualTo(2);
 
-        stateManager.truncateAndReload(1L, 2L);
+        stateManager.truncateAndReload(1L, 2L, System.currentTimeMillis());
         assertThat(stateManager.activeWriters().size()).isEqualTo(2);
 
         Optional<WriterStateEntry> entry1 = stateManager.lastEntry(writerId1);
@@ -398,18 +336,12 @@ public class WriterStateManagerTest {
 
     @Test
     void testWriterExpirationTimeout() throws Exception {
-        conf.set(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME, Duration.ofSeconds(3));
-        conf.set(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME, Duration.ofSeconds(3));
+        conf.set(ConfigOptions.WRITER_ID_EXPIRATION_TIME, Duration.ofSeconds(3));
         WriterStateManager stateManager1 =
                 new WriterStateManager(
                         tableBucket,
                         logDir,
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_TEMPORARY_EXPIRATION_TIME)
-                                        .toMillis(),
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME)
-                                        .toMillis());
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
         append(stateManager1, writerId, 0, 1L);
         stateManager1.removeExpiredWriters(System.currentTimeMillis() + 4000L);
 
@@ -532,13 +464,8 @@ public class WriterStateManagerTest {
                 new WriterStateManager(
                         tableBucket,
                         logDir,
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_TEMPORARY_EXPIRATION_TIME)
-                                        .toMillis(),
-                        (int)
-                                conf.get(ConfigOptions.WRITER_ID_PERMANENT_EXPIRATION_TIME)
-                                        .toMillis());
-        reloadedStateManager.truncateAndReload(0L, 20L);
+                        (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_TIME).toMillis());
+        reloadedStateManager.truncateAndReload(0L, 20L, System.currentTimeMillis());
         assertThat(snapshotToTruncate.exists()).isFalse();
 
         WriterStateEntry loadedWriterState = reloadedStateManager.activeWriters().get(writerId);
