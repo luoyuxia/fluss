@@ -46,6 +46,7 @@ import com.alibaba.fluss.rpc.gateway.AdminGateway;
 import com.alibaba.fluss.rpc.gateway.AdminReadOnlyGateway;
 import com.alibaba.fluss.rpc.gateway.TabletServerGateway;
 import com.alibaba.fluss.rpc.messages.AddServerTagRequest;
+import com.alibaba.fluss.rpc.messages.CancelRebalanceRequest;
 import com.alibaba.fluss.rpc.messages.CreateAclsRequest;
 import com.alibaba.fluss.rpc.messages.CreateDatabaseRequest;
 import com.alibaba.fluss.rpc.messages.CreateTableRequest;
@@ -501,7 +502,8 @@ public class FlussAdmin implements Admin {
 
     @Override
     public CompletableFuture<Void> cancelRebalance() {
-        throw new UnsupportedOperationException("Support soon");
+        CancelRebalanceRequest request = new CancelRebalanceRequest();
+        return gateway.cancelRebalance(request).thenApply(r -> null);
     }
 
     @Override
