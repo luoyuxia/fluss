@@ -37,6 +37,7 @@ import com.alibaba.fluss.rpc.messages.CommitKvSnapshotResponse;
 import com.alibaba.fluss.rpc.messages.CommitRemoteLogManifestResponse;
 import com.alibaba.fluss.rpc.messages.NotifyKvSnapshotOffsetRequest;
 import com.alibaba.fluss.rpc.messages.NotifyRemoteLogOffsetsRequest;
+import com.alibaba.fluss.rpc.messages.RebalanceResponse;
 import com.alibaba.fluss.server.coordinator.event.AccessContextEvent;
 import com.alibaba.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitKvSnapshotEvent;
@@ -875,7 +876,7 @@ class CoordinatorEventProcessorTest {
                         originLeader,
                         leaderAndIsr.isr(),
                         newLeaderAndIsr.isr()));
-        CompletableFuture<Void> future = new CompletableFuture<>();
+        CompletableFuture<RebalanceResponse> future = new CompletableFuture<>();
         ExecuteRebalanceTaskEvent rebalanceTaskEvent =
                 new ExecuteRebalanceTaskEvent(rebalanceTaskMap, future);
         eventProcessor.getCoordinatorEventManager().put(rebalanceTaskEvent);
@@ -947,7 +948,7 @@ class CoordinatorEventProcessorTest {
                 tb2,
                 new RebalancePlanForBucket(
                         tb2, 1, 1, Arrays.asList(1, 2, 3), Arrays.asList(2, 3, 0)));
-        CompletableFuture<Void> future = new CompletableFuture<>();
+        CompletableFuture<RebalanceResponse> future = new CompletableFuture<>();
         ExecuteRebalanceTaskEvent rebalanceTaskEvent =
                 new ExecuteRebalanceTaskEvent(rebalanceTaskMap, future);
         eventProcessor.getCoordinatorEventManager().put(rebalanceTaskEvent);

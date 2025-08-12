@@ -19,6 +19,7 @@ package com.alibaba.fluss.server.coordinator.rebalance.executor;
 
 import com.alibaba.fluss.cluster.rebalance.RebalancePlanForBucket;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.rpc.messages.RebalanceResponse;
 import com.alibaba.fluss.server.coordinator.event.EventManager;
 import com.alibaba.fluss.server.coordinator.event.ExecuteRebalanceTaskEvent;
 
@@ -57,8 +58,9 @@ public class RebalanceActionExecutorService implements ActionExecutorService, Ru
     }
 
     @Override
-    public CompletableFuture<Void> execute(Map<TableBucket, RebalancePlanForBucket> actions) {
-        CompletableFuture<Void> cf = new CompletableFuture<>();
+    public CompletableFuture<RebalanceResponse> execute(
+            Map<TableBucket, RebalancePlanForBucket> actions) {
+        CompletableFuture<RebalanceResponse> cf = new CompletableFuture<>();
         if (!actionQueue.isEmpty()) {
             cf.completeExceptionally(
                     new IllegalStateException(
@@ -94,10 +96,11 @@ public class RebalanceActionExecutorService implements ActionExecutorService, Ru
 
     private static class Task {
         private final Map<TableBucket, RebalancePlanForBucket> actions;
-        private final CompletableFuture<Void> future;
+        private final CompletableFuture<RebalanceResponse> future;
 
         public Task(
-                Map<TableBucket, RebalancePlanForBucket> actions, CompletableFuture<Void> future) {
+                Map<TableBucket, RebalancePlanForBucket> actions,
+                CompletableFuture<RebalanceResponse> future) {
             this.actions = actions;
             this.future = future;
         }
@@ -106,7 +109,7 @@ public class RebalanceActionExecutorService implements ActionExecutorService, Ru
             return actions;
         }
 
-        public CompletableFuture<Void> getFuture() {
+        public CompletableFuture<RebalanceResponse> getFuture() {
             return future;
         }
     }

@@ -51,11 +51,13 @@ import com.alibaba.fluss.rpc.messages.CommitLakeTableSnapshotResponse;
 import com.alibaba.fluss.rpc.messages.CommitRemoteLogManifestResponse;
 import com.alibaba.fluss.rpc.messages.ControlledShutdownResponse;
 import com.alibaba.fluss.rpc.messages.PbCommitLakeTableSnapshotRespForTable;
+import com.alibaba.fluss.rpc.messages.RebalanceResponse;
 import com.alibaba.fluss.rpc.messages.RemoveServerTagResponse;
 import com.alibaba.fluss.rpc.protocol.ApiError;
 import com.alibaba.fluss.server.coordinator.event.AccessContextEvent;
 import com.alibaba.fluss.server.coordinator.event.AddServerTagEvent;
 import com.alibaba.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
+import com.alibaba.fluss.server.coordinator.event.CancalRebalanceEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
@@ -134,6 +136,7 @@ import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.Onl
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.ReplicaDeletionStarted;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.ReplicaDeletionSuccessful;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeAdjustIsrResponse;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeRebalanceRespose;
 import static com.alibaba.fluss.utils.concurrent.FutureUtils.completeFromCallable;
 
 /** An implementation for {@link EventProcessor}. */
@@ -555,6 +558,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     () -> processRemoveServerTag(removeServerTagEvent));
         } else if (event instanceof ExecuteRebalanceTaskEvent) {
             tryToProcessRegisterRebalanceTask((ExecuteRebalanceTaskEvent) event);
+        } else if (event instanceof CancalRebalanceEvent) {
+            processCancelRebalanceEvent();
         } else if (event instanceof AccessContextEvent) {
             AccessContextEvent<?> accessContextEvent = (AccessContextEvent<?>) event;
             processAccessContext(accessContextEvent);
@@ -1071,7 +1076,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
      */
     private void tryToProcessRegisterRebalanceTask(ExecuteRebalanceTaskEvent event) {
         LOG.info("Register rebalance task.");
-        CompletableFuture<Void> respCallback = event.getRespCallback();
+        CompletableFuture<RebalanceResponse> respCallback = event.getRespCallback();
         if (!coordinatorContext.getOngoingRebalanceTasks().isEmpty()
                 || !coordinatorContext.getFinishedRebalanceTasks().isEmpty()) {
             respCallback.completeExceptionally(
@@ -1194,7 +1199,23 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 });
 
         LOG.info("Register rebalance task success.");
-        event.getRespCallback().complete(null);
+        event.getRespCallback()
+                .complete(makeRebalanceRespose(new RebalancePlan(event.getRebalancePlan())));
+    }
+
+    private void processCancelRebalanceEvent() {
+        LOG.info("Cancel rebalance task.");
+
+        coordinatorContext.getFinishedRebalanceTasks().clear();
+        coordinatorContext.getOngoingRebalanceTasks().clear();
+        // zk to remove rebalance task.
+        try {
+            zooKeeperClient.deleteRebalancePlan();
+        } catch (Exception e) {
+            LOG.error("Error when delete rebalance plan from zookeeper.", e);
+        }
+
+        LOG.info("Cancel rebalance task success.");
     }
 
     /**
