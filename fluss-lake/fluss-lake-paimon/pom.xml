@@ -142,7 +142,7 @@
         <dependency>
             <groupId>com.alibaba.alake</groupId>
             <artifactId>ali-dlf-sdk-assembly</artifactId>
-            <version>1.0.0-rest-test-0717-3-SNAPSHOT</version>
+            <version>1.0.0-rest-test-0801-1-SNAPSHOT</version>
             <scope>provided</scope>
             <exclusions>
                 <exclusion>
