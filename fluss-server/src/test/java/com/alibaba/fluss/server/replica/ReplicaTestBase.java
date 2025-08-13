@@ -436,8 +436,10 @@ public class ReplicaTestBase {
         BucketMetricGroup metricGroup =
                 replicaManager
                         .getServerMetricGroup()
-                        .addPhysicalTableBucketMetricGroup(
-                                physicalTablePath, tableBucket.getBucket(), isPkTable);
+                        .addTableBucketMetricGroup(
+                                physicalTablePath.getTablePath(),
+                                tableBucket.getBucket(),
+                                isPkTable);
         return new Replica(
                 physicalTablePath,
                 tableBucket,

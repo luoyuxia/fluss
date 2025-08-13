@@ -76,7 +76,7 @@ import com.alibaba.fluss.server.log.checkpoint.OffsetCheckpointFile;
 import com.alibaba.fluss.server.log.remote.RemoteLogManager;
 import com.alibaba.fluss.server.metadata.ServerMetadataCache;
 import com.alibaba.fluss.server.metrics.group.BucketMetricGroup;
-import com.alibaba.fluss.server.metrics.group.PhysicalTableMetricGroup;
+import com.alibaba.fluss.server.metrics.group.TableMetricGroup;
 import com.alibaba.fluss.server.replica.delay.DelayedFetchLog;
 import com.alibaba.fluss.server.replica.delay.DelayedOperationManager;
 import com.alibaba.fluss.server.replica.delay.DelayedTableBucketKey;
@@ -348,8 +348,8 @@ public final class Replica {
         return bucketMetricGroup;
     }
 
-    public PhysicalTableMetricGroup tableMetrics() {
-        return bucketMetricGroup.getPhysicalTableMetricGroup();
+    public TableMetricGroup tableMetrics() {
+        return bucketMetricGroup.getTableMetricGroup();
     }
 
     public void makeLeader(NotifyLeaderAndIsrData data) throws IOException {

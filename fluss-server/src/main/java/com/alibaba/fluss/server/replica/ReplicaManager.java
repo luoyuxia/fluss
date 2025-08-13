@@ -81,7 +81,7 @@ import com.alibaba.fluss.server.log.remote.RemoteLogManager;
 import com.alibaba.fluss.server.metadata.ClusterMetadata;
 import com.alibaba.fluss.server.metadata.TabletServerMetadataCache;
 import com.alibaba.fluss.server.metrics.group.BucketMetricGroup;
-import com.alibaba.fluss.server.metrics.group.PhysicalTableMetricGroup;
+import com.alibaba.fluss.server.metrics.group.TableMetricGroup;
 import com.alibaba.fluss.server.metrics.group.TabletServerMetricGroup;
 import com.alibaba.fluss.server.replica.delay.DelayedFetchLog;
 import com.alibaba.fluss.server.replica.delay.DelayedFetchLog.FetchBucketStatus;
@@ -478,7 +478,7 @@ public class ReplicaManager {
             Consumer<Map<TableBucket, LookupResultForBucket>> responseCallback) {
         Map<TableBucket, LookupResultForBucket> lookupResultForBucketMap = new HashMap<>();
         long startTime = System.currentTimeMillis();
-        PhysicalTableMetricGroup tableMetrics = null;
+        TableMetricGroup tableMetrics = null;
         for (Map.Entry<TableBucket, List<byte[]>> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
             try {
@@ -509,7 +509,7 @@ public class ReplicaManager {
     public void prefixLookups(
             Map<TableBucket, List<byte[]>> entriesPerBucket,
             Consumer<Map<TableBucket, PrefixLookupResultForBucket>> responseCallback) {
-        PhysicalTableMetricGroup tableMetrics = null;
+        TableMetricGroup tableMetrics = null;
         Map<TableBucket, PrefixLookupResultForBucket> result = new HashMap<>();
         for (Map.Entry<TableBucket, List<byte[]>> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
@@ -862,7 +862,7 @@ public class ReplicaManager {
         Map<TableBucket, ProduceLogResultForBucket> resultForBucketMap = new HashMap<>();
         for (Map.Entry<TableBucket, MemoryLogRecords> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
-            PhysicalTableMetricGroup tableMetrics = null;
+            TableMetricGroup tableMetrics = null;
             try {
                 Replica replica = getReplicaOrException(tb);
                 tableMetrics = replica.tableMetrics();
@@ -881,8 +881,8 @@ public class ReplicaManager {
                 resultForBucketMap.put(
                         tb,
                         new ProduceLogResultForBucket(tb, baseOffset, appendInfo.lastOffset() + 1));
-                tableMetrics.logBytesIn().inc(appendInfo.validBytes());
-                tableMetrics.logMessageIn().inc(appendInfo.numMessages());
+                tableMetrics.incLogBytesIn(appendInfo.validBytes());
+                tableMetrics.incLogMessageIn(appendInfo.numMessages());
             } catch (Exception e) {
                 if (isUnexpectedException(e)) {
                     LOG.error("Error append records to local log on replica {}", tb, e);
@@ -908,7 +908,7 @@ public class ReplicaManager {
         Map<TableBucket, PutKvResultForBucket> putResultForBucketMap = new HashMap<>();
         for (Map.Entry<TableBucket, KvRecordBatch> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
-            PhysicalTableMetricGroup tableMetrics = null;
+            TableMetricGroup tableMetrics = null;
             try {
                 LOG.trace("Put records to local kv tablet for table bucket {}", tb);
                 Replica replica = getReplicaOrException(tb);
@@ -925,11 +925,11 @@ public class ReplicaManager {
                         tb, new PutKvResultForBucket(tb, appendInfo.lastOffset() + 1));
 
                 // metric for kv
-                tableMetrics.kvMessageIn().inc(entry.getValue().getRecordCount());
-                tableMetrics.kvBytesIn().inc(entry.getValue().sizeInBytes());
+                tableMetrics.incKvMessageIn(entry.getValue().getRecordCount());
+                tableMetrics.incKvBytesIn(entry.getValue().sizeInBytes());
                 // metric for cdc log of kv
-                tableMetrics.logBytesIn().inc(appendInfo.validBytes());
-                tableMetrics.logMessageIn().inc(appendInfo.numMessages());
+                tableMetrics.incLogBytesIn(appendInfo.validBytes());
+                tableMetrics.incLogMessageIn(appendInfo.numMessages());
             } catch (Exception e) {
                 if (isUnexpectedException(e)) {
                     LOG.error("Error put records to local kv on replica {}", tb, e);
@@ -953,7 +953,7 @@ public class ReplicaManager {
             int limit,
             Consumer<LimitScanResultForBucket> responseCallback) {
         LimitScanResultForBucket limitScanResultForBucket;
-        PhysicalTableMetricGroup tableMetrics = null;
+        TableMetricGroup tableMetrics = null;
         try {
             Replica replica = getReplicaOrException(tableBucket);
             tableMetrics = replica.tableMetrics();
@@ -988,7 +988,7 @@ public class ReplicaManager {
         int limitBytes = fetchParams.maxFetchBytes();
         for (Map.Entry<TableBucket, FetchReqInfo> entry : bucketFetchInfo.entrySet()) {
             TableBucket tb = entry.getKey();
-            PhysicalTableMetricGroup tableMetrics = null;
+            TableMetricGroup tableMetrics = null;
             Replica replica = null;
             FetchReqInfo fetchReqInfo = entry.getValue();
             long fetchOffset = fetchReqInfo.getFetchOffset();
@@ -1031,7 +1031,7 @@ public class ReplicaManager {
                 if (isFromFollower) {
                     serverMetricGroup.replicationBytesOut().inc(recordBatchSize);
                 } else {
-                    tableMetrics.logBytesOut().inc(recordBatchSize);
+                    tableMetrics.incLogBytesOut(recordBatchSize);
                 }
             } catch (Exception e) {
                 if (isUnexpectedException(e)) {
@@ -1382,7 +1382,7 @@ public class ReplicaManager {
             if (delete) {
                 if (allReplicas.remove(tb) != null) {
                     serverMetricGroup.removeTableBucketMetricGroup(
-                            replicaToDelete.getPhysicalTablePath(), tb.getBucket());
+                            replicaToDelete.getPhysicalTablePath().getTablePath(), tb.getBucket());
                     replicaToDelete.delete();
                     Path tabletParentDir = replicaToDelete.getTabletParentDir();
                     if (tb.getPartitionId() != null) {
@@ -1459,8 +1459,8 @@ public class ReplicaManager {
                 TableInfo tableInfo = getTableInfo(zkClient, tablePath);
                 boolean isKvTable = tableInfo.hasPrimaryKey();
                 BucketMetricGroup bucketMetricGroup =
-                        serverMetricGroup.addPhysicalTableBucketMetricGroup(
-                                physicalTablePath, tb.getBucket(), isKvTable);
+                        serverMetricGroup.addTableBucketMetricGroup(
+                                tablePath, tb.getBucket(), isKvTable);
                 Replica replica =
                         new Replica(
                                 physicalTablePath,
