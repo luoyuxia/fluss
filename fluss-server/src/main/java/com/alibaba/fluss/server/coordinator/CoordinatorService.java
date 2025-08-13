@@ -424,6 +424,13 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     "Only partitioned table support create partition.");
         }
 
+        boolean unBalancedAssignment =
+                table.properties.containsKey(
+                                ConfigOptions.TABLE_UNBALANCED_ASSIGNMENT_ENABLED.key())
+                        && table.properties
+                                .get(ConfigOptions.TABLE_UNBALANCED_ASSIGNMENT_ENABLED.key())
+                                .equals("true");
+
         // first, validate the partition spec, and get resolved partition spec.
         PartitionSpec partitionSpec = getPartitionSpec(request.getPartitionSpec());
         validatePartitionSpec(tablePath, table.partitionKeys, partitionSpec);
@@ -433,8 +440,22 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         // second, generate the PartitionAssignment.
         int replicaFactor = table.getTableConfig().getReplicationFactor();
         TabletServerInfo[] servers = metadataCache.getLiveServers();
+
+        int serverSize = Math.min(10, servers.length);
+        TabletServerInfo[] serversForAssignment;
+        if (unBalancedAssignment) {
+            serversForAssignment = new TabletServerInfo[serverSize];
+            for (TabletServerInfo server : servers) {
+                if (server.getId() < serverSize) {
+                    serversForAssignment[server.getId()] = server;
+                }
+            }
+        } else {
+            serversForAssignment = servers;
+        }
+
         Map<Integer, BucketAssignment> bucketAssignments =
-                generateAssignment(table.bucketCount, replicaFactor, servers)
+                generateAssignment(table.bucketCount, replicaFactor, serversForAssignment)
                         .getBucketAssignments();
         PartitionAssignment partitionAssignment =
                 new PartitionAssignment(table.tableId, bucketAssignments);

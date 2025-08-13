@@ -1097,8 +1097,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
                             "Error when register rebalance task to zookeeper.", e));
         }
 
-        // buckets to do leader election for preferred replicas.
-        //        Set<TableBucket> electableBuckets = new HashSet<>();
+        // buckets only need to change leader like preferred leader election and leader replica
+        // rebalance.
+        Set<TableBucket> electableBuckets = new HashSet<>();
         // buckets to do reassignments.
         Map<TableBucket, ReplicaReassignment> reassignments = new HashMap<>();
         Set<TableBucket> allBuckets = coordinatorContext.getAllBuckets();
@@ -1160,6 +1161,18 @@ public class CoordinatorEventProcessor implements EventProcessor {
             ReplicaReassignment reassignment =
                     ReplicaReassignment.build(
                             coordinatorContext.getAssignment(tableBucket), newReplicas);
+            if (planForBucket.isLeaderAction() && !reassignment.isBeingReassigned()) {
+                LOG.info("trigger leader election for tableBucket {}.", tableBucket);
+                electableBuckets.add(tableBucket);
+                coordinatorContext.putOngoingRebalanceTask(
+                        tableBucket,
+                        new RebalanceResultForBucket(
+                                planForBucket.getOriginalLeader(),
+                                planForBucket.getNewLeader(),
+                                RebalanceStatusForBucket.PENDING));
+                continue;
+            }
+
             reassignments.put(tableBucket, reassignment);
             coordinatorContext.putOngoingRebalanceTask(
                     tableBucket,
@@ -1179,9 +1192,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
             //            }
         }
 
-        // try to trigger preferred leader election together.
-        //        tableBucketStateMachine.handleStateChange(
-        //                electableBuckets, OnlineBucket, PREFERRED_ELECTION);
+        // try to trigger leader election together.
+        tableBucketStateMachine.handleStateChange(
+                electableBuckets, OnlineBucket, REASSIGN_BUCKET_LEADER_ELECTION);
 
         // then try to trigger bucket reassignments.
         reassignments.forEach(
@@ -1867,16 +1880,16 @@ public class CoordinatorEventProcessor implements EventProcessor {
         LeaderAndIsr leaderAndIsr = leaderAndIsrOpt.get();
         // increment the leader epoch even if there are no leader or isr changes to allow the
         // leader to cache the expanded assigned replica list.
-        LeaderAndIsr newLeaderAndIsr = leaderAndIsr.newLeaderAndIsrWithNewLeaderEpoch();
-        zooKeeperClient.updateLeaderAndIsr(tableBucket, newLeaderAndIsr);
+        // LeaderAndIsr newLeaderAndIsr = leaderAndIsr.newLeaderAndIsrWithNewLeaderEpoch();
+        // zooKeeperClient.updateLeaderAndIsr(tableBucket, newLeaderAndIsr);
         // update leader and isr
-        coordinatorContext.putBucketLeaderAndIsr(tableBucket, newLeaderAndIsr);
-        LOG.info(
-                "Updated leader epoch for tableBucket {} from {} to {}",
-                tableBucket,
-                leaderAndIsr,
-                newLeaderAndIsr);
-        return newLeaderAndIsr;
+        // coordinatorContext.putBucketLeaderAndIsr(tableBucket, newLeaderAndIsr);
+        //        LOG.info(
+        //                "Updated leader epoch for tableBucket {} from {} to {}",
+        //                tableBucket,
+        //                leaderAndIsr,
+        //                newLeaderAndIsr);
+        return leaderAndIsr;
     }
 
     @VisibleForTesting
