@@ -679,12 +679,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
     @Override
     public CompletableFuture<RebalanceResponse> rebalance(RebalanceRequest request) {
-        if (rebalanceManager.hasOngoingRebalance()) {
-            throw new RebalanceFailureException(
-                    "There is an ongoing rebalance task. Currently, we only support one active "
-                            + "rebalance task in the cluster.");
-        }
-
         List<Goal> goalsByPriority = new ArrayList<>();
         Arrays.stream(request.getGoals())
                 .forEach(goal -> goalsByPriority.add(getGoalByType(GoalType.valueOf(goal))));
