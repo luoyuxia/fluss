@@ -1009,45 +1009,45 @@ public class CoordinatorEventProcessor implements EventProcessor {
         RebalanceResultForBucket rebalanceResultForBucket =
                 coordinatorContext.getOngoingRebalanceTask(tableBucket);
         if (rebalanceResultForBucket != null) {
-            if (rebalanceResultForBucket.isLeaderAction()) {
-                List<Integer> assignedReplicas = coordinatorContext.getAssignment(tableBucket);
-                int preferredReplica = assignedReplicas.get(0);
-                int currentLeader =
-                        coordinatorContext.getBucketLeaderAndIsr(tableBucket).get().leader();
-                if (currentLeader == preferredReplica) {
-                    coordinatorContext.putFinishedRebalanceTask(
-                            tableBucket,
-                            coordinatorContext
-                                    .removeOngoingRebalanceTask(tableBucket)
-                                    .markCompleted());
+            ReplicaReassignment reassignment =
+                    ReplicaReassignment.build(
+                            coordinatorContext.getAssignment(tableBucket),
+                            rebalanceResultForBucket.targetReplicas());
+            try {
+                boolean isReassignmentComplete = isReassignmentComplete(tableBucket, reassignment);
+                if (isReassignmentComplete) {
+                    LOG.info(
+                            "Target replicas {} have all caught up with the leader for reassigning bucket {}",
+                            reassignment.getTargetReplicas(),
+                            tableBucket);
+                    onBucketReassignment(tableBucket, reassignment);
                 }
-            } else {
-                ReplicaReassignment reassignment =
-                        ReplicaReassignment.build(
-                                coordinatorContext.getAssignment(tableBucket),
-                                rebalanceResultForBucket.targetReplicas());
-                try {
-                    boolean isReassignmentComplete =
-                            isReassignmentComplete(tableBucket, reassignment);
-                    if (isReassignmentComplete) {
-                        LOG.info(
-                                "Target replicas {} have all caught up with the leader for reassigning bucket {}",
-                                reassignment.getTargetReplicas(),
-                                tableBucket);
-                        onBucketReassignment(tableBucket, reassignment);
-                    }
-                } catch (Exception e) {
-                    LOG.error(
-                            "Failed to check reassignment complete for table bucket {}",
-                            tableBucket,
-                            e);
-                    coordinatorContext.putFinishedRebalanceTask(
-                            tableBucket,
-                            coordinatorContext
-                                    .removeOngoingRebalanceTask(tableBucket)
-                                    .markFailed());
-                }
+            } catch (Exception e) {
+                LOG.error(
+                        "Failed to check reassignment complete for table bucket {}",
+                        tableBucket,
+                        e);
+                coordinatorContext.putFinishedRebalanceTask(
+                        tableBucket,
+                        coordinatorContext.removeOngoingRebalanceTask(tableBucket).markFailed());
             }
+
+            //            if (rebalanceResultForBucket.isLeaderAction()) {
+            //                List<Integer> assignedReplicas =
+            // coordinatorContext.getAssignment(tableBucket);
+            //                int preferredReplica = assignedReplicas.get(0);
+            //                int currentLeader =
+            //
+            // coordinatorContext.getBucketLeaderAndIsr(tableBucket).get().leader();
+            //                if (currentLeader == preferredReplica) {
+            //                    coordinatorContext.putFinishedRebalanceTask(
+            //                            tableBucket,
+            //                            coordinatorContext
+            //                                    .removeOngoingRebalanceTask(tableBucket)
+            //                                    .markCompleted());
+            //                }
+            //            } else {
+            //            }
         }
 
         // judge whether the rebalance task is finished
@@ -1338,7 +1338,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
             // B8. Mark the ongoing rebalance task to finish.
             coordinatorContext.putFinishedRebalanceTask(
                     tableBucket,
-                    coordinatorContext.getOngoingRebalanceTask(tableBucket).markCompleted());
+                    coordinatorContext.removeOngoingRebalanceTask(tableBucket).markCompleted());
         }
     }
 

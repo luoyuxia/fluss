@@ -53,7 +53,7 @@ public enum GoalType {
         if (value == REPLICA_DISTRIBUTION_GOAL.value) {
             return REPLICA_DISTRIBUTION_GOAL;
         } else if (value == LEADER_REPLICA_DISTRIBUTION_GOAL.value) {
-            return PREFERRED_LEADER_GOAL;
+            return LEADER_REPLICA_DISTRIBUTION_GOAL;
         } else if (value == PREFERRED_LEADER_GOAL.value) {
             return PREFERRED_LEADER_GOAL;
         } else {
