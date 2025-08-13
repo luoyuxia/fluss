@@ -345,7 +345,7 @@ public class ReplicaManager {
                         LOG.info(
                                 "Try to become leaderAndFollower for {} with isr {}, replicas: {}",
                                 data.getTableBucket(),
-                                data.getIsr(),
+                                data.getLeaderAndIsr(),
                                 data.getReplicas());
                         TableBucket tb = data.getTableBucket();
                         try {
