@@ -1160,21 +1160,23 @@ public class CoordinatorEventProcessor implements EventProcessor {
             ReplicaReassignment reassignment =
                     ReplicaReassignment.build(
                             coordinatorContext.getAssignment(tableBucket), newReplicas);
-            if (reassignment.isBeingReassigned()) {
-                reassignments.put(tableBucket, reassignment);
-                coordinatorContext.putOngoingRebalanceTask(
-                        tableBucket,
-                        new RebalanceResultForBucket(
-                                planForBucket.getOriginReplicas(),
-                                planForBucket.getNewReplicas(),
-                                RebalanceStatusForBucket.PENDING));
-            } else {
-                // already finished.
-                coordinatorContext.putFinishedRebalanceTask(
-                        tableBucket,
-                        RebalanceResultForBucket.of(
-                                planForBucket, RebalanceStatusForBucket.COMPLETED));
-            }
+            reassignments.put(tableBucket, reassignment);
+            coordinatorContext.putOngoingRebalanceTask(
+                    tableBucket,
+                    new RebalanceResultForBucket(
+                            planForBucket.getOriginReplicas(),
+                            planForBucket.getNewReplicas(),
+                            RebalanceStatusForBucket.PENDING));
+
+            //            if (reassignment.isBeingReassigned()) {
+            //
+            //            } else {
+            //                // already finished.
+            //                coordinatorContext.putFinishedRebalanceTask(
+            //                        tableBucket,
+            //                        RebalanceResultForBucket.of(
+            //                                planForBucket, RebalanceStatusForBucket.COMPLETED));
+            //            }
         }
 
         // try to trigger preferred leader election together.
@@ -1344,9 +1346,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     private boolean isReassignmentComplete(
             TableBucket tableBucket, ReplicaReassignment reassignment) throws Exception {
-        if (!reassignment.isBeingReassigned()) {
-            return true;
-        }
+        //        if (!reassignment.isBeingReassigned()) {
+        //            return true;
+        //        }
 
         LeaderAndIsr leaderAndIsr = zooKeeperClient.getLeaderAndIsr(tableBucket).get();
         List<Integer> isr = leaderAndIsr.isr();
