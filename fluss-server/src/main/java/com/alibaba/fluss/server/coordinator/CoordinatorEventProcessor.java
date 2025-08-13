@@ -130,7 +130,6 @@ import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderEle
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionStrategy.DEFAULT_ELECTION;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaLeaderElectionStrategy.REASSIGN_BUCKET_LEADER_ELECTION;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.NewReplica;
-import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.NonExistentReplica;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.OfflineReplica;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.OnlineReplica;
 import static com.alibaba.fluss.server.coordinator.statemachine.ReplicaState.ReplicaDeletionStarted;
@@ -159,7 +158,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private final TabletServerChangeWatcher tabletServerChangeWatcher;
     private final CoordinatorMetadataCache serverMetadataCache;
     private final CoordinatorRequestBatch coordinatorRequestBatch;
-    private final CoordinatorMetricGroup coordinatorMetricGroup;
     private final String internalListenerName;
 
     private final CompletedSnapshotStoreManager completedSnapshotStoreManager;
@@ -217,7 +215,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         zooKeeperClient);
         this.autoPartitionManager = autoPartitionManager;
         this.lakeTableTieringManager = lakeTableTieringManager;
-        this.coordinatorMetricGroup = coordinatorMetricGroup;
         this.internalListenerName = conf.getString(ConfigOptions.INTERNAL_LISTENER_NAME);
     }
 
@@ -1054,6 +1051,12 @@ public class CoordinatorEventProcessor implements EventProcessor {
         }
 
         // judge whether the rebalance task is finished
+        LOG.info(
+                "Ongoing rebalance tasks: {}.",
+                coordinatorContext.getOngoingRebalanceTasks().size());
+        LOG.info(
+                "Finished rebalance tasks: {}.",
+                coordinatorContext.getFinishedRebalanceTasks().size());
         if (coordinatorContext.getOngoingRebalanceTasks().isEmpty()) {
             coordinatorContext.getFinishedRebalanceTasks().clear();
             // zk to remove rebalance task.
@@ -1395,8 +1398,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
         replicaStateMachine.handleStateChanges(replicasToBeDeleted, OfflineReplica);
         // send stop replica command to the old replicas.
         replicaStateMachine.handleStateChanges(replicasToBeDeleted, ReplicaDeletionStarted);
-        replicaStateMachine.handleStateChanges(replicasToBeDeleted, ReplicaDeletionSuccessful);
-        replicaStateMachine.handleStateChanges(replicasToBeDeleted, NonExistentReplica);
+        // replicaStateMachine.handleStateChanges(replicasToBeDeleted, ReplicaDeletionSuccessful);
+        // replicaStateMachine.handleStateChanges(replicasToBeDeleted, NonExistentReplica);
     }
 
     private void updateReplicaAssignmentForBucket(
