@@ -342,6 +342,11 @@ public class ReplicaManager {
                     List<NotifyLeaderAndIsrData> replicasToBeLeader = new ArrayList<>();
                     List<NotifyLeaderAndIsrData> replicasToBeFollower = new ArrayList<>();
                     for (NotifyLeaderAndIsrData data : notifyLeaderAndIsrDataList) {
+                        LOG.info(
+                                "Try to become leaderAndFollower for {} with isr {}, replicas: {}",
+                                data.getTableBucket(),
+                                data.getIsr(),
+                                data.getReplicas());
                         TableBucket tb = data.getTableBucket();
                         try {
                             boolean becomeLeader = validateAndGetIsBecomeLeader(data);

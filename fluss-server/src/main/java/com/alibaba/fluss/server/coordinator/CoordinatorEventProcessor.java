@@ -1167,8 +1167,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 coordinatorContext.putOngoingRebalanceTask(
                         tableBucket,
                         new RebalanceResultForBucket(
-                                planForBucket.getOriginalLeader(),
-                                planForBucket.getNewLeader(),
+                                planForBucket.getOriginReplicas(),
+                                planForBucket.getNewReplicas(),
                                 RebalanceStatusForBucket.PENDING));
                 continue;
             }
