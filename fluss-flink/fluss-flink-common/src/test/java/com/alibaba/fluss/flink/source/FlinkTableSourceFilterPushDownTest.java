@@ -159,7 +159,8 @@ public class FlinkTableSourceFilterPushDownTest {
                             DataTypes.ROW(
                                             DataTypes.FIELD("id", DataTypes.INT()),
                                             DataTypes.FIELD("name", DataTypes.STRING()),
-                                            DataTypes.FIELD("value", DataTypes.BIGINT()))
+                                            DataTypes.FIELD("value", DataTypes.BIGINT()),
+                                            DataTypes.FIELD("region", DataTypes.BIGINT()))
                                     .getLogicalType();
 
             TablePath tablePath = TablePath.of("test_db", "test_log_table");
@@ -193,22 +194,28 @@ public class FlinkTableSourceFilterPushDownTest {
         void testLogTableRecordBatchFilterPushdown() {
             // Test record batch filter pushdown for log table
             // Log tables should support record batch filter pushdown
-            FieldReferenceExpression fieldRef =
-                    new FieldReferenceExpression("id", DataTypes.INT(), 0, 0);
-            ValueLiteralExpression literal = new ValueLiteralExpression(5);
-            CallExpression equalCall =
+            FieldReferenceExpression valueFieldRef =
+                    new FieldReferenceExpression("value", DataTypes.STRING(), 0, 2);
+            FieldReferenceExpression regionFieldRef =
+                    new FieldReferenceExpression("region", DataTypes.STRING(), 0, 3);
+
+            CallExpression regionEqualCall =
                     new CallExpression(
                             BuiltInFunctionDefinitions.EQUALS,
-                            Arrays.asList(fieldRef, literal),
+                            Arrays.asList(regionFieldRef, new ValueLiteralExpression("HangZhou")),
+                            DataTypes.BOOLEAN());
+            CallExpression valueRangeCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.GREATER_THAN,
+                            Arrays.asList(regionFieldRef, new ValueLiteralExpression(1000)),
                             DataTypes.BOOLEAN());
 
-            List<ResolvedExpression> filters = Arrays.asList(equalCall);
+            List<ResolvedExpression> filters = Arrays.asList(regionEqualCall, valueRangeCall);
 
             FlinkTableSource.Result result = tableSource.applyFilters(filters);
 
-            // Log tables should support record batch filter pushdown
-            assertThat(result.getAcceptedFilters()).hasSize(1);
-            assertThat(result.getRemainingFilters()).hasSize(1);
+            assertThat(result.getAcceptedFilters()).hasSize(2);
+            assertThat(result.getRemainingFilters()).hasSize(2);
             assertThat(tableSource.getLogRecordBatchFilter()).isNotNull();
             assertThat(tableSource.getSingleRowFilter()).isNull();
         }

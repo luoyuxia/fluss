@@ -23,6 +23,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.exception.CorruptRecordException;
 import com.alibaba.fluss.exception.InvalidColumnProjectionException;
 import com.alibaba.fluss.exception.InvalidRecordException;
+import com.alibaba.fluss.exception.LogOffsetOutOfRangeException;
 import com.alibaba.fluss.exception.LogSegmentOffsetOverflowException;
 import com.alibaba.fluss.metadata.LogFormat;
 import com.alibaba.fluss.predicate.Predicate;
@@ -32,11 +33,14 @@ import com.alibaba.fluss.record.FileLogInputStream.FileChannelLogRecordBatch;
 import com.alibaba.fluss.record.FileLogProjection;
 import com.alibaba.fluss.record.FileLogRecords;
 import com.alibaba.fluss.record.LogRecordBatch;
+import com.alibaba.fluss.record.LogRecordBatchIterator;
 import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.record.TimestampAndOffset;
 import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.record.bytesview.MultiBytesView;
+import com.alibaba.fluss.server.metrics.ServerMetricUtils;
+import com.alibaba.fluss.server.metrics.group.TabletServerMetricGroup;
 import com.alibaba.fluss.shaded.guava32.com.google.common.collect.Iterables;
 import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
@@ -49,7 +53,6 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Iterator;
 import java.util.Optional;
 
 import static com.alibaba.fluss.record.LogRecordBatchFormat.HEADER_SIZE_UP_TO_MAGIC;
@@ -586,7 +589,7 @@ public final class LogSegment {
             @Nullable LogRecordBatch.ReadContext readContext)
             throws IOException {
 
-        Iterator<FileChannelLogRecordBatch> iter =
+        LogRecordBatchIterator<FileChannelLogRecordBatch> iter =
                 fileLogRecords.batchIterator(startOffset, 0).filter(recordBatchFilter, readContext);
         if (!iter.hasNext()) {
             return null;
@@ -621,6 +624,21 @@ public final class LogSegment {
                 }
             }
         }
+
+        Optional<TabletServerMetricGroup> metricGroupOpt =
+                ServerMetricUtils.getTabletServerMetricGroup();
+        if (metricGroupOpt.isPresent()) {
+            LogRecordBatchIterator.Statistics statistics = iter.getStatistics();
+            metricGroupOpt
+                    .get()
+                    .logRecordBatchStatisticsProcessCount()
+                    .inc(statistics.getProcessedStatisticCount());
+            metricGroupOpt
+                    .get()
+                    .logRecordBatchStatisticsFilterOutCount()
+                    .inc(statistics.getFilteredOutRecordBatchCount());
+        }
+
         LogOffsetMetadata offsetMetadata =
                 new LogOffsetMetadata(startOffset, this.baseOffset, startPosition);
 

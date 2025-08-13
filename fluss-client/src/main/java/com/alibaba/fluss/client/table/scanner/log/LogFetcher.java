@@ -100,7 +100,6 @@ public class LogFetcher implements Closeable {
     private final LogFetchBuffer logFetchBuffer;
     private final LogFetchCollector logFetchCollector;
     private final RemoteLogDownloader remoteLogDownloader;
-    private final boolean recordBatchFilterEnabled;
 
     @GuardedBy("this")
     private final Set<Integer> nodesWithPendingFetchRequests;
@@ -149,8 +148,6 @@ public class LogFetcher implements Closeable {
         this.remoteLogDownloader =
                 new RemoteLogDownloader(
                         tablePath, conf, remoteFileDownloader, scannerMetricGroup, metadataUpdater);
-        this.recordBatchFilterEnabled =
-                conf.getBoolean(ConfigOptions.CLIENT_LOG_RECORD_BATCH_FILTER_ENABLED);
     }
 
     /**
@@ -460,7 +457,7 @@ public class LogFetcher implements Closeable {
                         } else {
                             reqForTable.setProjectionPushdownEnabled(false);
                         }
-                        if (null != recordBatchFilter && recordBatchFilterEnabled) {
+                        if (null != recordBatchFilter) {
                             reqForTable.setRecordBatchFilter(
                                     PredicateMessageUtils.toPbPredicate(recordBatchFilter));
                         }

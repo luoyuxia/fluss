@@ -39,6 +39,8 @@ public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIt
 
     private @Nullable Long targetOffset;
 
+    protected Statistics statistics = new Statistics();
+
     public LogRecordBatchIterator(LogInputStream<T> logInputStream) {
         this.logInputStream = logInputStream;
     }
@@ -60,6 +62,7 @@ public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIt
             if (null == targetOffset || batch.lastLogOffset() >= targetOffset) {
                 return batch;
             }
+            statistics.processedRecordBatchCount++;
             return batch;
         } catch (EOFException e) {
             throw new CorruptMessageException(
@@ -67,6 +70,10 @@ public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIt
         } catch (IOException e) {
             throw new FlussRuntimeException(e);
         }
+    }
+
+    public Statistics getStatistics() {
+        return statistics;
     }
 
     public LogRecordBatchIterator<T> filter(
@@ -108,6 +115,7 @@ public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIt
                     // If no statistics available, return the batch
                     return batch;
                 }
+                super.statistics.processedStatisticCount++;
                 if (recordBatchFilter.test(
                         batch.getRecordCount(),
                         statisticsOpt.get().getMinValues(),
@@ -115,8 +123,34 @@ public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIt
                         statisticsOpt.get().getNullCounts())) {
                     return batch;
                 }
+                statistics.filteredOutRecordBatchCount++;
             }
             return allDone();
+        }
+    }
+
+    /** Statistics for the LogRecordBatchIterator. */
+    public static class Statistics {
+        long processedRecordBatchCount;
+        long processedStatisticCount;
+        long filteredOutRecordBatchCount;
+
+        public Statistics() {
+            processedRecordBatchCount = 0;
+            processedStatisticCount = 0;
+            filteredOutRecordBatchCount = 0;
+        }
+
+        public long getProcessedRecordBatchCount() {
+            return processedRecordBatchCount;
+        }
+
+        public long getProcessedStatisticCount() {
+            return processedStatisticCount;
+        }
+
+        public long getFilteredOutRecordBatchCount() {
+            return filteredOutRecordBatchCount;
         }
     }
 }

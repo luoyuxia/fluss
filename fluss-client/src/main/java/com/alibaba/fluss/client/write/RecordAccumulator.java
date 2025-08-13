@@ -111,7 +111,6 @@ public final class RecordAccumulator {
     private final IdempotenceManager idempotenceManager;
     private final Clock clock;
     private final DynamicWriteBatchSizeEstimator batchSizeEstimator;
-    private final boolean statisticsEnabled;
 
     // TODO add retryBackoffMs to retry the produce request upon receiving an error.
     // TODO add deliveryTimeoutMs to report success or failure on record delivery.
@@ -145,7 +144,6 @@ public final class RecordAccumulator {
                         (int) conf.get(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE).getBytes());
         this.idempotenceManager = idempotenceManager;
         this.clock = clock;
-        this.statisticsEnabled = conf.getBoolean(ConfigOptions.CLIENT_LOG_STATISTICS_ENABLED);
         registerMetrics(writerMetricGroup);
     }
 
@@ -617,8 +615,7 @@ public final class RecordAccumulator {
                             schemaId,
                             arrowWriter,
                             outputView,
-                            clock.milliseconds(),
-                            statisticsEnabled);
+                            clock.milliseconds());
         } else {
             batch =
                     new IndexedLogWriteBatch(

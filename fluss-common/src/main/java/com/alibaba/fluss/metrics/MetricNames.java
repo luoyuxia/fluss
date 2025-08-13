@@ -63,6 +63,11 @@ public class MetricNames {
     public static final String DELAYED_FETCH_FROM_CLIENT_EXPIRES_RATE =
             "delayedFetchFromClientExpiresPerSecond";
 
+    public static final String LOG_RECORD_BATCH_STATISTICS_PROCESS_COUNT =
+            "logRecordBatchStatisticsProcessCount";
+    public static final String LOG_RECORD_BATCH_STATISTICS_FILTER_OUT_COUNT =
+            "logRecordBatchStatisticsFilterOutCount";
+
     // --------------------------------------------------------------------------------------------
     // metrics for table
     // --------------------------------------------------------------------------------------------
