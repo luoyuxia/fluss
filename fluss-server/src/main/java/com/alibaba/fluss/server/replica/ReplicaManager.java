@@ -302,6 +302,10 @@ public class ReplicaManager {
         serverMetricGroup.gauge(MetricNames.DELAYED_WRITE_COUNT, delayedWriteManager::numDelayed);
         serverMetricGroup.gauge(
                 MetricNames.DELAYED_FETCH_COUNT, delayedFetchLogManager::numDelayed);
+
+        serverMetricGroup.gauge(MetricNames.UNDER_REPLICATED, this::underReplicatedCount);
+        serverMetricGroup.gauge(MetricNames.UNDER_MIN_ISR, this::underMinIsrCount);
+        serverMetricGroup.gauge(MetricNames.AT_MIN_ISR, this::atMinIsrCount);
     }
 
     private Stream<Replica> onlineReplicas() {
@@ -316,6 +320,18 @@ public class ReplicaManager {
                         })
                 .filter(Optional::isPresent)
                 .map(t -> (Replica) t.get());
+    }
+
+    private long underReplicatedCount() {
+        return onlineReplicas().filter(Replica::isUnderReplicated).count();
+    }
+
+    private long underMinIsrCount() {
+        return onlineReplicas().filter(Replica::isUnderMinIsr).count();
+    }
+
+    private long atMinIsrCount() {
+        return onlineReplicas().filter(Replica::isAtMinIsr).count();
     }
 
     private int writerIdCount() {
