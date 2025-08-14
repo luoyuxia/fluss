@@ -388,7 +388,7 @@ public class ZooKeeperClient implements AutoCloseable {
             throws Exception {
         String path = PartitionIdZNode.path(partitionId);
         zkClient.setData().forPath(path, PartitionIdZNode.encode(partitionAssignment));
-        LOG.info(
+        LOG.debug(
                 "Updated partition assignment {} for partition id {}.",
                 partitionAssignment,
                 partitionId);

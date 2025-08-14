@@ -1195,6 +1195,13 @@ public class CoordinatorEventProcessor implements EventProcessor {
         // try to trigger leader election together.
         tableBucketStateMachine.handleStateChange(
                 electableBuckets, OnlineBucket, REASSIGN_BUCKET_LEADER_ELECTION);
+        electableBuckets.forEach(
+                tableBucket ->
+                        coordinatorContext.putFinishedRebalanceTask(
+                                tableBucket,
+                                coordinatorContext
+                                        .removeOngoingRebalanceTask(tableBucket)
+                                        .markCompleted()));
 
         // then try to trigger bucket reassignments.
         reassignments.forEach(
@@ -1334,13 +1341,16 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                     OnlineReplica));
             List<Integer> targetReplicas = reassignment.getTargetReplicas();
             // B2. Set RS = TRS, AR = [], RR = [] in memory.
-            coordinatorContext.updateBucketReplicaAssignment(tableBucket, targetReplicas);
+            coordinatorContext.updateBucketReplicaAssignment(tableBucket, reassignment.replicas);
             // B3. Send LeaderAndIsr request with a potential new leader (if current leader not in
             // TRS) and a new RS (using TRS) and same isr to every tabletServer in ORS + TRS or TRS
             maybeReassignedBucketLeaderIfRequired(tableBucket, targetReplicas);
             // B4. replicas in RR -> Offline (force those replicas out of isr)
             // B5. replicas in RR -> NonExistentReplica (force those replicas to be deleted)
             stopRemovedReplicasOfReassignedBucket(tableBucket, removingReplicas);
+            // B2. Set RS = TRS, AR = [], RR = [] in memory.
+            coordinatorContext.updateBucketReplicaAssignment(
+                    tableBucket, reassignment.getTargetReplicas());
             // B6. Update ZK with RS = TRS, AR = [], RR = [].
             updateReplicaAssignmentForBucket(tableBucket, targetReplicas);
             // B7. After electing a leader in B3, the replicas and isr information changes, so
