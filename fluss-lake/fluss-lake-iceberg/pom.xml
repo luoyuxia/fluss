@@ -112,6 +112,13 @@
             </exclusions>
         </dependency>
 
+        <!-- Flink test dependency -->
+        <dependency>
+            <groupId>com.alibaba.fluss</groupId>
+            <artifactId>fluss-flink-${flink.major.version}</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>

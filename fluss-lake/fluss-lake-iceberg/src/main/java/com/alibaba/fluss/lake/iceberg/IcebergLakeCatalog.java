@@ -94,8 +94,9 @@ public class IcebergLakeCatalog implements LakeCatalog {
                 catalogType,
                 catalogName,
                 icebergProps,
-                null // Optional: pass Hadoop configuration if available
-                );
+                // todo: current is an empty configuration, need to init from env or fluss
+                // configurations
+                new org.apache.hadoop.conf.Configuration());
     }
 
     @Override

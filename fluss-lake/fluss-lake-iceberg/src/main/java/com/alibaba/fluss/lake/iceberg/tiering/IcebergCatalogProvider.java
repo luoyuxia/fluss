@@ -18,6 +18,7 @@
 package com.alibaba.fluss.lake.iceberg.tiering;
 
 import com.alibaba.fluss.config.Configuration;
+
 import org.apache.iceberg.catalog.Catalog;
 
 import java.io.Serializable;
@@ -29,9 +30,6 @@ import static org.apache.iceberg.CatalogUtil.loadCatalog;
 public class IcebergCatalogProvider implements Serializable {
 
     private static final long serialVersionUID = 1L;
-    private static volatile Catalog catalogInstance;
-    private static String lastConfigKey;
-
     private final Configuration icebergConfig;
 
     public IcebergCatalogProvider(Configuration icebergConfig) {
@@ -47,16 +45,13 @@ public class IcebergCatalogProvider implements Serializable {
         }
 
         String catalogName = icebergProps.getOrDefault("name", "fluss-iceberg-catalog");
-        String configKey = catalogType + ":" + catalogName + ":" + icebergProps.get("warehouse");
 
-        if (catalogInstance == null || !configKey.equals(lastConfigKey)) {
-            synchronized (IcebergCatalogProvider.class) {
-                if (catalogInstance == null || !configKey.equals(lastConfigKey)) {
-                    catalogInstance = loadCatalog(catalogType, catalogName, icebergProps, null);
-                    lastConfigKey = configKey;
-                }
-            }
-        }
-        return catalogInstance;
+        return loadCatalog(
+                catalogType,
+                catalogName,
+                icebergProps,
+                // todo: current is an empty configuration, need to init from env or fluss
+                // configurations
+                new org.apache.hadoop.conf.Configuration());
     }
 }
