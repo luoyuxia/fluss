@@ -105,7 +105,8 @@ public class LeaderReplicaDistributionGoal extends ReplicaDistributionAbstractGo
         int numLeaderReplicas = server.leaderReplicas().size();
         boolean isExcludedForReplicaMove = isExcludedForReplicaMove(server);
         boolean requireLessLeaderReplicas =
-                numLeaderReplicas > (isExcludedForReplicaMove ? 0 : rebalanceUpperLimit);
+                numLeaderReplicas > (isExcludedForReplicaMove ? 0 : rebalanceUpperLimit)
+                        || !server.isAlive();
         boolean requireMoreLeaderReplicas =
                 !isExcludedForReplicaMove
                         && server.isAlive()
