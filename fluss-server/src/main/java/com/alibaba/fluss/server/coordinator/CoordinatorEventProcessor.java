@@ -1322,7 +1322,12 @@ public class CoordinatorEventProcessor implements EventProcessor {
             // A1. Send LeaderAndIsr request to every replica in ORS + TRS (with the new RS, AR and
             // RR).
             updateLeaderEpochAndSendRequest(tableBucket, reassignment);
-            // A2. replicas in AR -> NewReplica
+
+            // A2. Set RS = TRS, AR = [], RR = [] in memory.
+            coordinatorContext.updateBucketReplicaAssignment(tableBucket, reassignment.replicas);
+            updateReplicaAssignmentForBucket(tableBucket, reassignment.replicas);
+
+            // A3. replicas in AR -> NewReplica
             // send the start replica request to the tabletSevers in the reassigned replicas list
             // that are not in the assigned
             addingReplicas.forEach(
@@ -1340,8 +1345,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                             new TableBucketReplica(tableBucket, replica)),
                                     OnlineReplica));
             List<Integer> targetReplicas = reassignment.getTargetReplicas();
-            // B2. Set RS = TRS, AR = [], RR = [] in memory.
-            coordinatorContext.updateBucketReplicaAssignment(tableBucket, reassignment.replicas);
             // B3. Send LeaderAndIsr request with a potential new leader (if current leader not in
             // TRS) and a new RS (using TRS) and same isr to every tabletServer in ORS + TRS or TRS
             maybeReassignedBucketLeaderIfRequired(tableBucket, targetReplicas);
