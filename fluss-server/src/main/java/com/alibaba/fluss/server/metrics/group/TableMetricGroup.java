@@ -234,6 +234,10 @@ public class TableMetricGroup extends AbstractMetricGroup {
         return buckets.size();
     }
 
+    public TabletServerMetricGroup getTabletServerMetricGroup() {
+        return (TabletServerMetricGroup) parent;
+    }
+
     /** Metric group for specific kind of tablet of a table. */
     private static class TabletMetricGroup extends AbstractMetricGroup {
         private final TabletType tabletType;
