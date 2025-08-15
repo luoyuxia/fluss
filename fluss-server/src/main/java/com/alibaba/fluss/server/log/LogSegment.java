@@ -393,6 +393,7 @@ public final class LogSegment {
     public long readNextOffset() throws IOException {
         FetchDataInfo fetchData =
                 read(
+                        false,
                         offsetIndex().lastOffset(),
                         fileLogRecords.sizeInBytes(),
                         fileLogRecords.sizeInBytes(),
@@ -467,9 +468,21 @@ public final class LogSegment {
      */
     @Nullable
     public FetchDataInfo read(
-            long startOffset, int maxSize, long maxPosition, boolean minOneMessage)
+            boolean fetchDataFromClient,
+            long startOffset,
+            int maxSize,
+            long maxPosition,
+            boolean minOneMessage)
             throws IOException {
-        return read(startOffset, maxSize, maxPosition, minOneMessage, null, null, null);
+        return read(
+                fetchDataFromClient,
+                startOffset,
+                maxSize,
+                maxPosition,
+                minOneMessage,
+                null,
+                null,
+                null);
     }
 
     /**
@@ -492,6 +505,7 @@ public final class LogSegment {
      *     read.
      */
     public FetchDataInfo read(
+            boolean fetchDataFromClient,
             long startOffset,
             int maxSize,
             long maxPosition,
@@ -508,6 +522,7 @@ public final class LogSegment {
 
         if (recordBatchFilter != null) {
             return readWithFilter(
+                    fetchDataFromClient,
                     startOffset,
                     maxSize,
                     maxPosition,
@@ -516,7 +531,13 @@ public final class LogSegment {
                     recordBatchFilter,
                     readContext);
         } else {
-            return readWithoutFilter(startOffset, maxSize, maxPosition, minOneMessage, projection);
+            return readWithoutFilter(
+                    fetchDataFromClient,
+                    startOffset,
+                    maxSize,
+                    maxPosition,
+                    minOneMessage,
+                    projection);
         }
     }
 
@@ -537,6 +558,7 @@ public final class LogSegment {
 
     @Nullable
     private FetchDataInfo readWithoutFilter(
+            boolean fetchDataFromClient,
             long startOffset,
             int maxSize,
             long maxPosition,
@@ -580,6 +602,7 @@ public final class LogSegment {
 
     @Nullable
     private FetchDataInfo readWithFilter(
+            boolean fetchDataFromClient,
             long startOffset,
             int maxSize,
             long maxPosition,
@@ -613,7 +636,11 @@ public final class LogSegment {
             }
 
             if (null == projection) {
-                builder.addBytes(batch.getBytesView());
+                if (fetchDataFromClient) {
+                    builder.addBytes(batch.getBytesViewWithoutStatistics());
+                } else {
+                    builder.addBytes(batch.getBytesView());
+                }
             } else {
                 BytesView projectedBytesView = projection.projectRecordBatch(batch);
                 if (projectedBytesView.getBytesLength() > 0) {

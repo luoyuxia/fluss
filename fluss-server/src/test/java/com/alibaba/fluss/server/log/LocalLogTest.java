@@ -393,6 +393,7 @@ final class LocalLogTest extends LogTestBase {
 
     private FetchDataInfo readLog(LocalLog log, long startOffset, int maxLength) throws Exception {
         return log.read(
+                false,
                 startOffset,
                 maxLength,
                 false,

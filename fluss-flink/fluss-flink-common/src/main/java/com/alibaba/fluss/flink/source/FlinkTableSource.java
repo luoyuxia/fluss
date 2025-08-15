@@ -65,6 +65,8 @@ import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -90,6 +92,8 @@ public class FlinkTableSource
                 SupportsRowLevelModificationScan,
                 SupportsLimitPushDown,
                 SupportsAggregatePushDown {
+
+    private static final Logger LOG = LoggerFactory.getLogger(FlinkTableSource.class);
 
     private final TablePath tablePath;
     private final Configuration flussConfig;
@@ -391,6 +395,14 @@ public class FlinkTableSource
 
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
+        LOG.info("Applying filters for table {}: {} filters received", tablePath, filters.size());
+        LOG.info(
+                "Table configuration: streaming={}, startupMode={}, hasPrimaryKey={}, primaryKeyCount={}",
+                streaming,
+                startupOptions.startupMode,
+                hasPrimaryKey(),
+                primaryKeyIndexes.length);
+
         List<ResolvedExpression> acceptedFilters = new ArrayList<>();
         List<ResolvedExpression> remainingFilters = new ArrayList<>();
 
@@ -403,6 +415,9 @@ public class FlinkTableSource
                 && startupOptions.startupMode == FlinkConnectorOptions.ScanStartupMode.FULL
                 && hasPrimaryKey()
                 && filters.size() == primaryKeyIndexes.length) {
+            LOG.info(
+                    "Attempting primary key pushdown: batch mode, full startup, pk table, filter count matches pk count");
+
             Map<Integer, LogicalType> primaryKeyTypes = getPrimaryKeyTypes();
             List<FieldEqual> fieldEquals =
                     extractFieldEquals(
@@ -411,22 +426,47 @@ public class FlinkTableSource
                             acceptedFilters,
                             remainingFilters,
                             FLINK_INTERNAL_VALUE);
+
+            LOG.info("Extracted {} field equals from filters", fieldEquals.size());
+
             int[] keyRowProjection = getKeyRowProjection();
             HashSet<Integer> visitedPkFields = new HashSet<>();
             GenericRowData lookupRow = new GenericRowData(primaryKeyIndexes.length);
             for (FieldEqual fieldEqual : fieldEquals) {
                 lookupRow.setField(keyRowProjection[fieldEqual.fieldIndex], fieldEqual.equalValue);
                 visitedPkFields.add(fieldEqual.fieldIndex);
+                LOG.info(
+                        "Set primary key field[{}] = {}",
+                        fieldEqual.fieldIndex,
+                        fieldEqual.equalValue);
             }
+
             // if not all primary key fields are in condition, we skip to pushdown
             if (!visitedPkFields.equals(primaryKeyTypes.keySet())) {
+                LOG.info(
+                        "Primary key pushdown skipped: not all primary key fields are in condition. "
+                                + "Visited fields: {}, required fields: {}",
+                        visitedPkFields,
+                        primaryKeyTypes.keySet());
                 return Result.of(Collections.emptyList(), filters);
             }
+
+            LOG.info(
+                    "Primary key pushdown successful: all primary key fields covered, setting single row filter");
             singleRowFilter = lookupRow;
             return Result.of(acceptedFilters, remainingFilters);
+        } else {
+            LOG.info(
+                    "Primary key pushdown conditions not met: streaming={}, startupMode={}, hasPrimaryKey={}, filterCount={}, pkCount={}",
+                    streaming,
+                    startupOptions.startupMode,
+                    hasPrimaryKey(),
+                    filters.size(),
+                    primaryKeyIndexes.length);
         }
 
         if (isPartitioned()) {
+            LOG.info("Table is partitioned, attempting partition filter pushdown");
             // dynamic partition pushdown
             List<FieldEqual> fieldEquals =
                     extractFieldEquals(
@@ -435,26 +475,46 @@ public class FlinkTableSource
                             acceptedFilters,
                             remainingFilters,
                             FLINK_INTERNAL_VALUE);
+            LOG.info("Extracted {} partition field equals", fieldEquals.size());
+
             // partitions are filtered by string representations, convert the equals to string first
             fieldEquals = stringifyFieldEquals(fieldEquals);
+            LOG.info("Partition filters after stringification: {}", fieldEquals);
 
             this.partitionFilters = fieldEquals;
+        } else {
+            LOG.info("Table is not partitioned, skipping partition filter pushdown");
         }
 
         if (acceptedFilters.isEmpty() && remainingFilters.isEmpty()) {
+            LOG.info("No filters were processed yet, adding all filters to remaining filters");
             remainingFilters.addAll(filters);
         }
 
         if (!hasPrimaryKey()) {
+            LOG.info("Table has no primary key, attempting record batch filter pushdown");
             Result recordBatchResult = pushdownRecordBatchFilter(remainingFilters);
             acceptedFilters.addAll(recordBatchResult.getAcceptedFilters());
             remainingFilters = recordBatchResult.getRemainingFilters();
+            LOG.info(
+                    "Record batch filter pushdown result: {} accepted, {} remaining",
+                    recordBatchResult.getAcceptedFilters().size(),
+                    recordBatchResult.getRemainingFilters().size());
+        } else {
+            LOG.info("Table has primary key, skipping record batch filter pushdown");
         }
 
+        LOG.info(
+                "Filter pushdown completed for table {}: {} accepted filters, {} remaining filters",
+                tablePath,
+                acceptedFilters.size(),
+                remainingFilters.size());
         return Result.of(acceptedFilters, remainingFilters);
     }
 
     private Result pushdownRecordBatchFilter(List<ResolvedExpression> filters) {
+        LOG.info("Starting record batch filter pushdown for {} filters", filters.size());
+
         List<com.alibaba.fluss.predicate.Predicate> pushdownPredicates = new ArrayList<>();
         com.alibaba.fluss.types.RowType flussRowType =
                 com.alibaba.fluss.flink.utils.FlinkConversions.toFlussRowType(
@@ -469,12 +529,19 @@ public class FlinkTableSource
                             (org.apache.flink.table.types.logical.RowType) tableOutputType, filter);
             if (predicateOpt.isPresent()) {
                 com.alibaba.fluss.predicate.Predicate predicate = predicateOpt.get();
+                LOG.info("Converted filter to predicate: {}", predicate);
+
                 if (!containsBinaryTypeByVisitor(predicate, flussRowType)) {
+                    LOG.info("Predicate accepted for pushdown (no binary types)");
                     pushdownPredicates.add(predicate);
                     acceptedFilters.add(filter);
                     remainingFilters.add(filter);
                     continue;
+                } else {
+                    LOG.info("Predicate rejected for pushdown (contains binary types)");
                 }
+            } else {
+                LOG.info("Filter could not be converted to predicate");
             }
             remainingFilters.add(filter);
         }
@@ -484,10 +551,15 @@ public class FlinkTableSource
                     pushdownPredicates.size() == 1
                             ? pushdownPredicates.get(0)
                             : com.alibaba.fluss.predicate.PredicateBuilder.and(pushdownPredicates);
+            LOG.info("Created merged predicate for record batch filter: {}", merged);
             this.logRecordBatchFilter = merged;
         } else {
+            LOG.info("No predicates for record batch filter pushdown, setting to null");
             this.logRecordBatchFilter = null;
         }
+        LOG.info(
+                "Record batch filter pushdown completed: {} predicates merged",
+                pushdownPredicates.size());
         return Result.of(acceptedFilters, remainingFilters);
     }
 

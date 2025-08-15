@@ -394,7 +394,7 @@ public class MemoryLogRecordsArrowBuilderTest {
 
         // Verify batch properties
         assertThat(batch.getRecordCount()).isEqualTo(testData.size());
-        assertThat(batch.baseLogOffset()).isEqualTo(0L);
+        assertThat(batch.baseLogOffset()).isEqualTo(0);
         assertThat(batch.lastLogOffset()).isEqualTo(testData.size() - 1);
         assertThat(batch.nextLogOffset()).isEqualTo(testData.size());
         assertThat(batch.writerId()).isEqualTo(1L);
@@ -407,6 +407,7 @@ public class MemoryLogRecordsArrowBuilderTest {
 
         // Test statistics reading
         Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+        System.out.println("Statistics present: " + statisticsOpt.isPresent());
         assertThat(statisticsOpt).isPresent();
 
         LogRecordBatchStatistics statistics = statisticsOpt.get();
@@ -548,13 +549,19 @@ public class MemoryLogRecordsArrowBuilderTest {
         ArrowWriter writer =
                 provider.getOrCreateWriter(
                         1L, DEFAULT_SCHEMA_ID, 1024 * 10, testRowType, NO_COMPRESSION);
+
+        // Create statistics collector for the writer's schema
+        LogRecordBatchStatisticsCollector statisticsCollector =
+                new LogRecordBatchStatisticsCollector(writer.getSchema());
+
         MemoryLogRecordsArrowBuilder builder =
                 MemoryLogRecordsArrowBuilder.builder(
                         0,
                         CURRENT_LOG_MAGIC_VALUE,
                         DEFAULT_SCHEMA_ID,
                         writer,
-                        new ManagedPagedOutputView(new TestingMemorySegmentPool(1024 * 10)));
+                        new ManagedPagedOutputView(new TestingMemorySegmentPool(1024 * 10)),
+                        statisticsCollector);
 
         // Append test data with different change types
         List<InternalRow> rows =
@@ -632,11 +639,17 @@ public class MemoryLogRecordsArrowBuilderTest {
                 new MemorySize((long) maxPages * pageSizeInBytes));
         conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(pageSizeInBytes));
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(pageSizeInBytes));
+
+        // Create statistics collector for the writer's schema
+        LogRecordBatchStatisticsCollector statisticsCollector =
+                new LogRecordBatchStatisticsCollector(writer.getSchema());
+
         return MemoryLogRecordsArrowBuilder.builder(
                 baseOffset,
                 CURRENT_LOG_MAGIC_VALUE,
                 DEFAULT_SCHEMA_ID,
                 writer,
-                new ManagedPagedOutputView(new TestingMemorySegmentPool(pageSizeInBytes)));
+                new ManagedPagedOutputView(new TestingMemorySegmentPool(pageSizeInBytes)),
+                statisticsCollector);
     }
 }

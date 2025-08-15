@@ -20,8 +20,10 @@ package com.alibaba.fluss.record;
 import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.compression.ArrowCompressionInfo;
 import com.alibaba.fluss.exception.InvalidColumnProjectionException;
+import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.record.FileLogInputStream.FileChannelLogRecordBatch;
 import com.alibaba.fluss.record.bytesview.BytesView;
+import com.alibaba.fluss.record.bytesview.MemorySegmentBytesView;
 import com.alibaba.fluss.record.bytesview.MultiBytesView;
 import com.alibaba.fluss.shaded.arrow.com.google.flatbuffers.FlatBufferBuilder;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.flatbuf.Buffer;
@@ -38,8 +40,10 @@ import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.ipc.message.ArrowR
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.ipc.message.MessageSerializer;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.types.pojo.Field;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.types.pojo.Schema;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.ArrowUtils;
+import com.alibaba.fluss.utils.crc.Crc32C;
 import com.alibaba.fluss.utils.types.Tuple2;
 
 import java.io.ByteArrayOutputStream;
@@ -63,10 +67,14 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_OVERHEAD;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.MAGIC_OFFSET;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.STATISTICS_FLAG_MASK;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.arrowChangeTypeOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.attributeOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.crcOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordsCountOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.schemaIdOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
 import static com.alibaba.fluss.utils.FileUtils.readFullyOrFail;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 import static com.alibaba.fluss.utils.Preconditions.checkState;
@@ -267,6 +275,20 @@ public class FileLogProjection {
         // 4. update and copy log batch header
         logHeaderBuffer.position(LENGTH_OFFSET);
         logHeaderBuffer.putInt(newBatchSizeInBytes - LOG_OVERHEAD);
+
+        // Clear statistics flag and length for V2+ versions when projecting for client
+        if (magic >= LOG_MAGIC_VALUE_V2) {
+            // Clear statistics flag in attributes
+            int attributeOffset = attributeOffset(magic);
+            byte attributes = logHeaderBuffer.get(attributeOffset);
+            attributes &= ~STATISTICS_FLAG_MASK; // clear statistics flag
+            logHeaderBuffer.put(attributeOffset, attributes);
+
+            // Clear statistics length field
+            int statsLengthOffset = statisticsLengthOffset(magic);
+            logHeaderBuffer.putInt(statsLengthOffset, 0);
+        }
+
         logHeaderBuffer.rewind();
         // the logHeader can't be reused, as it will be sent to network
         byte[] logHeader = new byte[recordBatchHeaderSize(magic)];
@@ -281,6 +303,31 @@ public class FileLogProjection {
         final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;
         projectedArrowBatch.buffers.forEach(
                 b -> builder.addBytes(channel, bufferOffset + b.getOffset(), (int) b.getSize()));
+
+        // Recalculate CRC for V2+ versions after clearing statistics
+        if (magic >= LOG_MAGIC_VALUE_V2) {
+            MultiBytesView result = builder.build();
+            ByteBuf byteBuf = result.getByteBuf();
+            byte[] bytes = new byte[byteBuf.readableBytes()];
+            byteBuf.getBytes(0, bytes);
+
+            // Calculate new CRC from schemaId to end of batch
+            int schemaIdOffset = schemaIdOffset(magic);
+            long newCrc =
+                    Crc32C.compute(bytes, schemaIdOffset, newBatchSizeInBytes - schemaIdOffset);
+
+            // Update CRC in the header
+            int crcOffset = crcOffset(magic);
+            // Write CRC in little-endian order
+            bytes[crcOffset] = (byte) (newCrc & 0xFF);
+            bytes[crcOffset + 1] = (byte) ((newCrc >> 8) & 0xFF);
+            bytes[crcOffset + 2] = (byte) ((newCrc >> 16) & 0xFF);
+            bytes[crcOffset + 3] = (byte) ((newCrc >> 24) & 0xFF);
+
+            // Create final result with updated CRC
+            return new MemorySegmentBytesView(MemorySegment.wrap(bytes), 0, newBatchSizeInBytes);
+        }
+
         return builder.build();
     }
 
@@ -395,22 +442,79 @@ public class FileLogProjection {
             // 4. update and copy log batch header
             logHeaderBuffer.position(LENGTH_OFFSET);
             logHeaderBuffer.putInt(newBatchSizeInBytes - LOG_OVERHEAD);
+
+            // Clear statistics flag and length for V2+ versions when projecting for client
+            if (magic >= LOG_MAGIC_VALUE_V2) {
+                // Clear statistics flag in attributes
+                int attributeOffset = attributeOffset(magic);
+                byte attributes = logHeaderBuffer.get(attributeOffset);
+                attributes &= ~STATISTICS_FLAG_MASK; // clear statistics flag
+                logHeaderBuffer.put(attributeOffset, attributes);
+
+                // Clear statistics length field
+                int statsLengthOffset = statisticsLengthOffset(magic);
+                logHeaderBuffer.putInt(statsLengthOffset, 0);
+            }
+
             logHeaderBuffer.rewind();
             // the logHeader can't be reused, as it will be sent to network
             byte[] logHeader = new byte[recordBatchHeaderSize];
             logHeaderBuffer.get(logHeader);
 
-            // 5. build log records
-            builder.addBytes(logHeader);
-            if (!isAppendOnly) {
-                builder.addBytes(channel, position + arrowChangeTypeOffset(magic), changeTypeBytes);
+            // 5. build log records with CRC recalculation for V2+ versions
+            if (magic >= LOG_MAGIC_VALUE_V2) {
+                // For V2+ versions, we need to recalculate CRC after clearing statistics
+                // Create a temporary builder for this batch
+                MultiBytesView.Builder batchBuilder = MultiBytesView.builder();
+                batchBuilder.addBytes(logHeader);
+                if (!isAppendOnly) {
+                    batchBuilder.addBytes(
+                            channel, position + arrowChangeTypeOffset(magic), changeTypeBytes);
+                }
+                batchBuilder.addBytes(headerMetadata);
+                final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;
+                projectedArrowBatch.buffers.forEach(
+                        b ->
+                                batchBuilder.addBytes(
+                                        channel, bufferOffset + b.getOffset(), (int) b.getSize()));
+
+                // Recalculate CRC for this batch
+                MultiBytesView batchResult = batchBuilder.build();
+                ByteBuf byteBuf = batchResult.getByteBuf();
+                byte[] bytes = new byte[byteBuf.readableBytes()];
+                byteBuf.getBytes(0, bytes);
+
+                // Calculate new CRC from schemaId to end of batch
+                int schemaIdOffset = schemaIdOffset(magic);
+                long newCrc =
+                        Crc32C.compute(bytes, schemaIdOffset, newBatchSizeInBytes - schemaIdOffset);
+
+                // Update CRC in the header
+                int crcOffset = crcOffset(magic);
+                // Write CRC in little-endian order
+                bytes[crcOffset] = (byte) (newCrc & 0xFF);
+                bytes[crcOffset + 1] = (byte) ((newCrc >> 8) & 0xFF);
+                bytes[crcOffset + 2] = (byte) ((newCrc >> 16) & 0xFF);
+                bytes[crcOffset + 3] = (byte) ((newCrc >> 24) & 0xFF);
+
+                // Add the corrected batch to the main builder
+                builder.addBytes(
+                        new MemorySegmentBytesView(
+                                MemorySegment.wrap(bytes), 0, newBatchSizeInBytes));
+            } else {
+                // For V0/V1 versions, no CRC recalculation needed
+                builder.addBytes(logHeader);
+                if (!isAppendOnly) {
+                    builder.addBytes(
+                            channel, position + arrowChangeTypeOffset(magic), changeTypeBytes);
+                }
+                builder.addBytes(headerMetadata);
+                final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;
+                projectedArrowBatch.buffers.forEach(
+                        b ->
+                                builder.addBytes(
+                                        channel, bufferOffset + b.getOffset(), (int) b.getSize()));
             }
-            builder.addBytes(headerMetadata);
-            final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;
-            projectedArrowBatch.buffers.forEach(
-                    b ->
-                            builder.addBytes(
-                                    channel, bufferOffset + b.getOffset(), (int) b.getSize()));
 
             maxBytes -= newBatchSizeInBytes;
             position += batchSizeInBytes;

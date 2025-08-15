@@ -17,862 +17,745 @@
 
 package com.alibaba.fluss.record;
 
-import com.alibaba.fluss.row.BinaryString;
-import com.alibaba.fluss.row.Decimal;
-import com.alibaba.fluss.row.GenericRow;
-import com.alibaba.fluss.row.InternalRow;
-import com.alibaba.fluss.row.TimestampLtz;
-import com.alibaba.fluss.row.TimestampNtz;
-import com.alibaba.fluss.types.BooleanType;
+import com.alibaba.fluss.memory.MemorySegment;
+import com.alibaba.fluss.metadata.LogFormat;
+import com.alibaba.fluss.types.DataField;
 import com.alibaba.fluss.types.DataTypes;
-import com.alibaba.fluss.types.IntType;
 import com.alibaba.fluss.types.RowType;
-import com.alibaba.fluss.types.StringType;
+import com.alibaba.fluss.utils.CloseableIterator;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
-import java.io.IOException;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
+import java.io.File;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
 
+import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
+import static com.alibaba.fluss.record.TestData.DEFAULT_SCHEMA_ID;
+import static com.alibaba.fluss.testutils.DataTestUtils.createRecordsWithoutBaseLogOffset;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Test for {@link LogRecordBatchStatistics} and {@link LogRecordBatchStatisticsSerializer}. */
-public class LogRecordBatchStatisticsTest {
+/**
+ * Comprehensive test for getStatistics method of both DefaultLogRecordBatch and
+ * FileChannelLogRecordBatch implementations.
+ */
+public class LogRecordBatchStatisticsTest extends LogTestBase {
+
+    private @TempDir File tempDir;
+
+    // Test data with different data types for comprehensive statistics testing
+    private static final List<Object[]> MIXED_DATA =
+            Arrays.asList(
+                    new Object[] {1, "a", 10.5, true},
+                    new Object[] {2, "b", 20.3, false},
+                    new Object[] {3, "c", 15.7, true},
+                    new Object[] {4, "d", 8.9, false},
+                    new Object[] {5, "e", 30.1, true});
+
+    private static final RowType MIXED_ROW_TYPE =
+            DataTypes.ROW(
+                    new DataField("id", DataTypes.INT()),
+                    new DataField("name", DataTypes.STRING()),
+                    new DataField("value", DataTypes.DOUBLE()),
+                    new DataField("flag", DataTypes.BOOLEAN()));
+
+    // Test data with null values
+    private static final List<Object[]> DATA_WITH_NULLS =
+            Arrays.asList(
+                    new Object[] {1, "a", 10.5},
+                    new Object[] {null, "b", 20.3},
+                    new Object[] {3, null, 15.7},
+                    new Object[] {4, "d", null},
+                    new Object[] {5, "e", 30.1});
+
+    private static final RowType DATA_WITH_NULLS_ROW_TYPE =
+            DataTypes.ROW(
+                    new DataField("id", DataTypes.INT()),
+                    new DataField("name", DataTypes.STRING()),
+                    new DataField("value", DataTypes.DOUBLE()));
+
+    // ==================== Debug Test ====================
 
     @Test
-    public void testStatisticsCollectorBasic() {
-        RowType rowType =
-                DataTypes.ROW(new IntType(false), new StringType(false), new BooleanType(false));
+    void testDebugStatisticsCreation() throws Exception {
+        // Create test data with statistics using V2 format
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
+        // Get the batch
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
+        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
 
-        // Process some rows
-        collector.processRow(GenericRow.of(1, BinaryString.fromString("hello"), true));
-        collector.processRow(GenericRow.of(2, BinaryString.fromString("world"), false));
-        collector.processRow(GenericRow.of(3, BinaryString.fromString("test"), true));
+        // Debug: Check if statistics are present in the batch
+        int statisticsSize = batch.statisticsSizeInBytes();
+        System.out.println("Statistics size: " + statisticsSize);
 
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
+        // Debug: Check if batch has statistics flag
+        System.out.println("Batch magic: " + batch.magic());
+        System.out.println("Batch schema ID: " + batch.schemaId());
+        System.out.println("Batch record count: " + batch.getRecordCount());
+        System.out.println("Batch size in bytes: " + batch.sizeInBytes());
 
-        // Check min values
-        assertThat(stats.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(stats.getMinValues().getString(1).toString()).isEqualTo("hello");
-        assertThat(stats.getMinValues().getBoolean(2)).isEqualTo(false);
+        // Test getStatistics with valid context
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+            System.out.println(
+                    "Read context row type: " + readContext.getRowType(DEFAULT_SCHEMA_ID));
 
-        // Check max values
-        assertThat(stats.getMaxValues().getInt(0)).isEqualTo(3);
-        assertThat(stats.getMaxValues().getString(1).toString()).isEqualTo("world");
-        assertThat(stats.getMaxValues().getBoolean(2)).isEqualTo(true);
+            Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+            System.out.println("Statistics present: " + statisticsOpt.isPresent());
 
-        // Check null counts (should be 0 for all fields)
-        assertThat(stats.getNullCounts()[0]).isEqualTo(0);
-        assertThat(stats.getNullCounts()[1]).isEqualTo(0);
-        assertThat(stats.getNullCounts()[2]).isEqualTo(0);
+            if (statisticsOpt.isPresent()) {
+                LogRecordBatchStatistics statistics = statisticsOpt.get();
+                System.out.println("Statistics: " + statistics);
+                System.out.println("Min values: " + statistics.getMinValues());
+                System.out.println("Max values: " + statistics.getMaxValues());
+                System.out.println("Null counts: " + Arrays.toString(statistics.getNullCounts()));
+            } else {
+                System.out.println(
+                        "No statistics found - this indicates a problem with statistics creation or parsing");
+
+                // Try to debug the parsing issue
+                try {
+                    int statisticsLength = batch.statisticsSizeInBytes();
+                    System.out.println("Statistics length from method: " + statisticsLength);
+
+                    if (statisticsLength > 0) {
+                        RowType rowType = readContext.getRowType(DEFAULT_SCHEMA_ID);
+                        System.out.println("Row type for parsing: " + rowType);
+                        System.out.println("Row type field count: " + rowType.getFieldCount());
+
+                        int statisticsDataOffset = batch.sizeInBytes() - statisticsLength;
+                        System.out.println("Statistics data offset: " + statisticsDataOffset);
+
+                        // Try to parse manually to see what fails
+                        // Note: We can't access the private segment field, so we'll just check the
+                        // parameters
+                        System.out.println("Would try to parse statistics with:");
+                        System.out.println("  - Statistics length: " + statisticsLength);
+                        System.out.println("  - Statistics data offset: " + statisticsDataOffset);
+                        System.out.println("  - Row type: " + rowType);
+                    }
+                } catch (Exception e) {
+                    System.out.println("Exception during debugging: " + e.getMessage());
+                    e.printStackTrace();
+                }
+            }
+        }
     }
 
     @Test
-    public void testStatisticsCollectorWithNulls() {
-        RowType rowType = DataTypes.ROW(DataTypes.INT(), DataTypes.STRING());
+    void testDebugStatisticsContent() throws Exception {
+        // Create test data with statistics using V2 format
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
+        // Get the batch
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
+        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
 
-        // Process rows with some null values
-        Object[] row1 = new Object[2];
-        row1[0] = 1;
-        row1[1] = BinaryString.fromString("hello");
-        collector.processRow(GenericRow.of(row1));
+        // Debug: Check if statistics are present in the batch
+        int statisticsSize = batch.statisticsSizeInBytes();
+        System.out.println("Statistics size: " + statisticsSize);
 
-        Object[] row2 = new Object[2];
-        row2[0] = null;
-        row2[1] = BinaryString.fromString("world");
-        collector.processRow(GenericRow.of(row2));
+        // Get the raw bytes of the batch to inspect statistics
+        int totalBatchSize = batch.sizeInBytes();
+        System.out.println("Total batch size: " + totalBatchSize);
 
-        Object[] row3 = new Object[2];
-        row3[0] = 3;
-        row3[1] = null;
-        collector.processRow(GenericRow.of(row3));
+        // Calculate statistics offset
+        int statisticsOffset = totalBatchSize - statisticsSize;
+        System.out.println("Statistics offset: " + statisticsOffset);
 
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
+        // Extract statistics bytes using MemorySegment
+        DefaultLogRecordBatch defaultBatch = (DefaultLogRecordBatch) batch;
+        // Use reflection to access private fields for debugging
+        try {
+            java.lang.reflect.Field segmentField =
+                    DefaultLogRecordBatch.class.getDeclaredField("segment");
+            java.lang.reflect.Field positionField =
+                    DefaultLogRecordBatch.class.getDeclaredField("position");
+            segmentField.setAccessible(true);
+            positionField.setAccessible(true);
 
-        // Check null counts
-        assertThat(stats.getNullCounts()[0]).isEqualTo(1); // one null in first column
-        assertThat(stats.getNullCounts()[1]).isEqualTo(1); // one null in second column
+            com.alibaba.fluss.memory.MemorySegment segment =
+                    (com.alibaba.fluss.memory.MemorySegment) segmentField.get(defaultBatch);
+            int position = (int) positionField.get(defaultBatch);
 
-        // Check min/max values (should only consider non-null values)
-        assertThat(stats.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(stats.getMaxValues().getInt(0)).isEqualTo(3);
-        assertThat(stats.getMinValues().getString(1).toString()).isEqualTo("hello");
-        assertThat(stats.getMaxValues().getString(1).toString()).isEqualTo("world");
+            // Extract statistics bytes
+            byte[] statisticsBytes = new byte[statisticsSize];
+            segment.get(position + statisticsOffset, statisticsBytes, 0, statisticsSize);
+
+            // Print first few bytes of statistics
+            System.out.println("Statistics bytes (first 20): ");
+            for (int i = 0; i < Math.min(20, statisticsSize); i++) {
+                System.out.printf("%02X ", statisticsBytes[i] & 0xFF);
+            }
+            System.out.println();
+
+            // Parse statistics manually to understand the format
+            System.out.println("Manual parsing:");
+            System.out.println(
+                    "Expected STATISTICS_VERSION: "
+                            + com.alibaba.fluss.record.LogRecordBatchFormat.STATISTICS_VERSION);
+            System.out.println("Actual version byte: " + (statisticsBytes[0] & 0xFF));
+
+            if (statisticsSize >= 3) {
+                // Read field count (2 bytes after version)
+                int fieldCount = ((statisticsBytes[1] & 0xFF) << 8) | (statisticsBytes[2] & 0xFF);
+                System.out.println("Expected field count: " + MIXED_ROW_TYPE.getFieldCount());
+                System.out.println("Actual field count: " + fieldCount);
+
+                // Check if field count matches
+                if (fieldCount != MIXED_ROW_TYPE.getFieldCount()) {
+                    System.out.println("FIELD COUNT MISMATCH - This is the problem!");
+                }
+            }
+
+            // Try to parse statistics directly
+            ByteViewLogRecordBatchStatistics parsedStats =
+                    LogRecordBatchStatisticsParser.parseStatistics(statisticsBytes, MIXED_ROW_TYPE);
+            System.out.println(
+                    "Direct parsing result: " + (parsedStats != null ? "SUCCESS" : "FAILED"));
+
+            if (parsedStats != null) {
+                System.out.println("Parsed statistics: " + parsedStats);
+                System.out.println("Min values: " + parsedStats.getMinValues());
+                System.out.println("Max values: " + parsedStats.getMaxValues());
+                System.out.println("Null counts: " + Arrays.toString(parsedStats.getNullCounts()));
+            }
+        } catch (Exception e) {
+            System.out.println("Failed to access private fields: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    // ==================== DefaultLogRecordBatch Tests ====================
+
+    @Test
+    void testDefaultLogRecordBatchGetStatisticsWithValidData() throws Exception {
+        // Create test data with statistics using V2 format
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
+
+        // Get the batch
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
+        assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
+
+        // Test getStatistics with valid context
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+            Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+            assertThat(statisticsOpt).isPresent();
+
+            LogRecordBatchStatistics statistics = statisticsOpt.get();
+            assertThat(statistics.getMinValues()).isNotNull();
+            assertThat(statistics.getMaxValues()).isNotNull();
+            assertThat(statistics.getNullCounts()).isNotNull();
+
+            // Verify statistics content
+            assertThat(statistics.getMinValues().getInt(0)).isEqualTo(1); // min id
+            assertThat(statistics.getMaxValues().getInt(0)).isEqualTo(5); // max id
+            assertThat(statistics.getMinValues().getDouble(2)).isEqualTo(8.9); // min value
+            assertThat(statistics.getMaxValues().getDouble(2)).isEqualTo(30.1); // max value
+            assertThat(statistics.getMinValues().getBoolean(3)).isEqualTo(false); // min flag
+            assertThat(statistics.getMaxValues().getBoolean(3)).isEqualTo(true); // max flag
+
+            // Verify null counts (should be 0 for this data)
+            assertThat(statistics.getNullCounts()[0]).isEqualTo(0);
+            assertThat(statistics.getNullCounts()[1]).isEqualTo(0);
+            assertThat(statistics.getNullCounts()[2]).isEqualTo(0);
+            assertThat(statistics.getNullCounts()[3]).isEqualTo(0);
+        }
     }
 
     @Test
-    public void testStatisticsSerializationDeserialization() throws IOException {
-        RowType rowType =
-                DataTypes.ROW(new IntType(false), new StringType(false), new BooleanType(false));
+    void testDefaultLogRecordBatchGetStatisticsWithNullValues() throws Exception {
+        // Create test data with null values
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        DATA_WITH_NULLS, DATA_WITH_NULLS_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Create statistics
-        InternalRow minValues =
-                GenericRow.of(new Object[] {1, BinaryString.fromString("hello"), false});
-        InternalRow maxValues =
-                GenericRow.of(new Object[] {3, BinaryString.fromString("world"), true});
-        Long[] nullCounts = new Long[] {0L, 0L, 0L};
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(
+                        DATA_WITH_NULLS_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+            Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+            assertThat(statisticsOpt).isPresent();
 
-        // Serialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        assertThat(serialized).isNotEmpty();
+            LogRecordBatchStatistics statistics = statisticsOpt.get();
+            assertThat(statistics.getNullCounts()).isNotNull();
 
-        // Deserialize
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
-        assertThat(deserializedStats).isNotNull();
-
-        // Check min values
-        assertThat(deserializedStats.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(deserializedStats.getMinValues().getString(1).toString()).isEqualTo("hello");
-        assertThat(deserializedStats.getMinValues().getBoolean(2)).isEqualTo(false);
-
-        // Check max values
-        assertThat(deserializedStats.getMaxValues().getInt(0)).isEqualTo(3);
-        assertThat(deserializedStats.getMaxValues().getString(1).toString()).isEqualTo("world");
-        assertThat(deserializedStats.getMaxValues().getBoolean(2)).isEqualTo(true);
-
-        // Check null counts
-        assertThat(deserializedStats.getNullCounts()[0]).isEqualTo(0);
-        assertThat(deserializedStats.getNullCounts()[1]).isEqualTo(0);
-        assertThat(deserializedStats.getNullCounts()[2]).isEqualTo(0);
+            // Verify null counts
+            assertThat(statistics.getNullCounts()[0]).isEqualTo(1); // one null in id field
+            assertThat(statistics.getNullCounts()[1]).isEqualTo(1); // one null in name field
+            assertThat(statistics.getNullCounts()[2]).isEqualTo(1); // one null in value field
+        }
     }
 
     @Test
-    public void testEmptyStatisticsSerialization() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.INT());
+    void testDefaultLogRecordBatchGetStatisticsWithNullContext() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test null statistics
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(null, rowType);
-        assertThat(serialized).isEmpty();
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
 
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
-        assertThat(deserializedStats).isNull();
-
-        // Test empty data
-        LogRecordBatchStatistics emptyStats =
-                LogRecordBatchStatisticsSerializer.deserialize(new byte[0], rowType);
-        assertThat(emptyStats).isNull();
-    }
-
-    // ==================== 新增的序列化反序列化测试 ====================
-
-    @Test
-    public void testAllNumericTypesSerialization() throws IOException {
-        RowType rowType =
-                DataTypes.ROW(
-                        DataTypes.TINYINT(),
-                        DataTypes.SMALLINT(),
-                        DataTypes.INT(),
-                        DataTypes.BIGINT(),
-                        DataTypes.FLOAT(),
-                        DataTypes.DOUBLE());
-
-        // Create statistics with all numeric types
-        InternalRow minValues =
-                GenericRow.of(
-                        (byte) -128,
-                        (short) -32768,
-                        -2147483648,
-                        -9223372036854775808L,
-                        -3.4028235E38f,
-                        -1.7976931348623157E308);
-        InternalRow maxValues =
-                GenericRow.of(
-                        (byte) 127,
-                        (short) 32767,
-                        2147483647,
-                        9223372036854775807L,
-                        3.4028235E38f,
-                        1.7976931348623157E308);
-        Long[] nullCounts = new Long[] {0L, 0L, 0L, 0L, 0L, 0L};
-
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
-
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
-
-        // Verify all numeric types
-        assertThat(deserializedStats.getMinValues().getByte(0)).isEqualTo((byte) -128);
-        assertThat(deserializedStats.getMinValues().getShort(1)).isEqualTo((short) -32768);
-        assertThat(deserializedStats.getMinValues().getInt(2)).isEqualTo(-2147483648);
-        assertThat(deserializedStats.getMinValues().getLong(3)).isEqualTo(-9223372036854775808L);
-        assertThat(deserializedStats.getMinValues().getFloat(4)).isEqualTo(-3.4028235E38f);
-        assertThat(deserializedStats.getMinValues().getDouble(5))
-                .isEqualTo(-1.7976931348623157E308);
-
-        assertThat(deserializedStats.getMaxValues().getByte(0)).isEqualTo((byte) 127);
-        assertThat(deserializedStats.getMaxValues().getShort(1)).isEqualTo((short) 32767);
-        assertThat(deserializedStats.getMaxValues().getInt(2)).isEqualTo(2147483647);
-        assertThat(deserializedStats.getMaxValues().getLong(3)).isEqualTo(9223372036854775807L);
-        assertThat(deserializedStats.getMaxValues().getFloat(4)).isEqualTo(3.4028235E38f);
-        assertThat(deserializedStats.getMaxValues().getDouble(5)).isEqualTo(1.7976931348623157E308);
+        // Test with null context
+        Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(null);
+        assertThat(statisticsOpt).isEmpty();
     }
 
     @Test
-    public void testStringSerializationWithSpecialCharacters() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.STRING());
+    void testDefaultLogRecordBatchGetStatisticsWithInvalidSchemaId() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test strings with special characters
-        String testString = "Hello\nWorld\tTest\r\n\"Quote\"'Single'\\Backslash";
-        InternalRow minValues = GenericRow.of(BinaryString.fromString(testString));
-        InternalRow maxValues = GenericRow.of(BinaryString.fromString(testString));
-        Long[] nullCounts = new Long[] {0L};
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+        // Test with invalid schema ID
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(
+                        MIXED_ROW_TYPE, 999)) { // Invalid schema ID
+            Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+            assertThat(statisticsOpt).isEmpty();
+        }
+    }
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    void testDefaultLogRecordBatchGetStatisticsWithOldMagicVersions(byte magic) throws Exception {
+        // Create test data with old magic versions (which don't support statistics)
+        MemoryLogRecords memoryLogRecords =
+                createRecordsWithoutBaseLogOffset(
+                        MIXED_ROW_TYPE,
+                        DEFAULT_SCHEMA_ID,
+                        0L,
+                        -1L,
+                        magic,
+                        Collections.singletonList(new Object[] {1, "a", 10.5, true}),
+                        LogFormat.ARROW);
 
-        // Verify string content
-        assertThat(deserializedStats.getMinValues().getString(0).toString()).isEqualTo(testString);
-        assertThat(deserializedStats.getMaxValues().getString(0).toString()).isEqualTo(testString);
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
+        assertThat(batch.magic()).isEqualTo(magic);
+
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+            Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+            assertThat(statisticsOpt).isEmpty();
+        }
     }
 
     @Test
-    public void testBooleanSerialization() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.BOOLEAN());
+    void testDefaultLogRecordBatchGetStatisticsCaching() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test all boolean combinations
-        InternalRow minValues = GenericRow.of(false);
-        InternalRow maxValues = GenericRow.of(true);
-        Long[] nullCounts = new Long[] {0L};
+        LogRecordBatch batch = memoryLogRecords.batches().iterator().next();
+        assertThat(batch).isInstanceOf(DefaultLogRecordBatch.class);
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+            // First call
+            Optional<LogRecordBatchStatistics> statisticsOpt1 = batch.getStatistics(readContext);
+            assertThat(statisticsOpt1).isPresent();
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            // Second call - should return cached result
+            Optional<LogRecordBatchStatistics> statisticsOpt2 = batch.getStatistics(readContext);
+            assertThat(statisticsOpt2).isPresent();
+            assertThat(statisticsOpt2.get()).isSameAs(statisticsOpt1.get());
 
-        // Verify boolean values
-        assertThat(deserializedStats.getMinValues().getBoolean(0)).isFalse();
-        assertThat(deserializedStats.getMaxValues().getBoolean(0)).isTrue();
+            // Third call - should return cached result
+            Optional<LogRecordBatchStatistics> statisticsOpt3 = batch.getStatistics(readContext);
+            assertThat(statisticsOpt3).isPresent();
+            assertThat(statisticsOpt3.get()).isSameAs(statisticsOpt1.get());
+        }
     }
 
     @Test
-    public void testNullValuesSerialization() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.INT(), DataTypes.STRING(), DataTypes.BOOLEAN());
+    void testDefaultLogRecordBatchGetStatisticsCacheReset() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Create statistics with null values
-        InternalRow minValues = GenericRow.of(1, null, false);
-        InternalRow maxValues = GenericRow.of(3, null, true);
-        Long[] nullCounts = new Long[] {0L, 2L, 0L};
+        DefaultLogRecordBatch batch =
+                (DefaultLogRecordBatch) memoryLogRecords.batches().iterator().next();
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+            // First call
+            Optional<LogRecordBatchStatistics> statisticsOpt1 = batch.getStatistics(readContext);
+            assertThat(statisticsOpt1).isPresent();
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            // Point to new memory segment - should reset cache
+            MemorySegment newSegment = MemorySegment.wrap(new byte[1024]);
+            batch.pointTo(newSegment, 0);
 
-        // Verify null handling
-        assertThat(deserializedStats.getMinValues().isNullAt(1)).isTrue();
-        assertThat(deserializedStats.getMaxValues().isNullAt(1)).isTrue();
-        assertThat(deserializedStats.getNullCounts()[1]).isEqualTo(2);
+            // Second call after cache reset - should return empty (new segment has no valid data)
+            Optional<LogRecordBatchStatistics> statisticsOpt2 = batch.getStatistics(readContext);
+            assertThat(statisticsOpt2).isEmpty();
+        }
+    }
+
+    // ==================== FileChannelLogRecordBatch Tests ====================
+
+    @Test
+    void testFileChannelLogRecordBatchGetStatisticsWithValidData() throws Exception {
+        // Create test data with statistics using V2 format
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
+
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_valid_data.tmp"))) {
+            fileLogRecords.append(memoryLogRecords);
+            fileLogRecords.flush();
+
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
+
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
+            assertThat(batch.magic()).isEqualTo(LOG_MAGIC_VALUE_V2);
+
+            // Test getStatistics with valid context
+            try (LogRecordReadContext readContext =
+                    LogRecordReadContext.createArrowReadContext(
+                            MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+                Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+                assertThat(statisticsOpt).isPresent();
+
+                LogRecordBatchStatistics statistics = statisticsOpt.get();
+                assertThat(statistics.getMinValues()).isNotNull();
+                assertThat(statistics.getMaxValues()).isNotNull();
+                assertThat(statistics.getNullCounts()).isNotNull();
+
+                // Verify statistics content
+                assertThat(statistics.getMinValues().getInt(0)).isEqualTo(1); // min id
+                assertThat(statistics.getMaxValues().getInt(0)).isEqualTo(5); // max id
+                assertThat(statistics.getMinValues().getDouble(2)).isEqualTo(8.9); // min value
+                assertThat(statistics.getMaxValues().getDouble(2)).isEqualTo(30.1); // max value
+                assertThat(statistics.getMinValues().getBoolean(3)).isEqualTo(false); // min flag
+                assertThat(statistics.getMaxValues().getBoolean(3)).isEqualTo(true); // max flag
+
+                // Verify null counts (should be 0 for this data)
+                assertThat(statistics.getNullCounts()[0]).isEqualTo(0);
+                assertThat(statistics.getNullCounts()[1]).isEqualTo(0);
+                assertThat(statistics.getNullCounts()[2]).isEqualTo(0);
+                assertThat(statistics.getNullCounts()[3]).isEqualTo(0);
+            }
+        }
     }
 
     @Test
-    public void testLargeNullCounts() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.INT());
+    void testFileChannelLogRecordBatchGetStatisticsWithNullValues() throws Exception {
+        // Create test data with null values
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        DATA_WITH_NULLS, DATA_WITH_NULLS_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test with large null counts
-        InternalRow minValues = GenericRow.of(1);
-        InternalRow maxValues = GenericRow.of(100);
-        Long[] nullCounts = new Long[] {Long.MAX_VALUE};
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_null_values.tmp"))) {
+            fileLogRecords.append(memoryLogRecords);
+            fileLogRecords.flush();
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
 
-        // Verify large null count
-        assertThat(deserializedStats.getNullCounts()[0]).isEqualTo(Long.MAX_VALUE);
+            try (LogRecordReadContext readContext =
+                    LogRecordReadContext.createArrowReadContext(
+                            DATA_WITH_NULLS_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+                Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+                assertThat(statisticsOpt).isPresent();
+
+                LogRecordBatchStatistics statistics = statisticsOpt.get();
+                assertThat(statistics.getNullCounts()).isNotNull();
+
+                // Verify null counts
+                assertThat(statistics.getNullCounts()[0]).isEqualTo(1); // one null in id field
+                assertThat(statistics.getNullCounts()[1]).isEqualTo(1); // one null in name field
+                assertThat(statistics.getNullCounts()[2]).isEqualTo(1); // one null in value field
+            }
+        }
     }
 
     @Test
-    public void testMixedNullAndNonNullValues() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.INT(), DataTypes.STRING(), DataTypes.BOOLEAN());
+    void testFileChannelLogRecordBatchGetStatisticsWithNullContext() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Create statistics with mixed null and non-null values
-        InternalRow minValues = GenericRow.of(1, BinaryString.fromString("min"), false);
-        InternalRow maxValues = GenericRow.of(100, BinaryString.fromString("max"), true);
-        Long[] nullCounts = new Long[] {0L, 5L, 10L};
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_null_context.tmp"))) {
+            fileLogRecords.append(memoryLogRecords);
+            fileLogRecords.flush();
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
 
-        // Verify mixed values
-        assertThat(deserializedStats.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(deserializedStats.getMinValues().getString(1).toString()).isEqualTo("min");
-        assertThat(deserializedStats.getMinValues().getBoolean(2)).isFalse();
-
-        assertThat(deserializedStats.getMaxValues().getInt(0)).isEqualTo(100);
-        assertThat(deserializedStats.getMaxValues().getString(1).toString()).isEqualTo("max");
-        assertThat(deserializedStats.getMaxValues().getBoolean(2)).isTrue();
-
-        assertThat(deserializedStats.getNullCounts()[0]).isEqualTo(0);
-        assertThat(deserializedStats.getNullCounts()[1]).isEqualTo(5);
-        assertThat(deserializedStats.getNullCounts()[2]).isEqualTo(10);
+            // Test with null context
+            Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(null);
+            assertThat(statisticsOpt).isEmpty();
+        }
     }
 
     @Test
-    public void testEmptyStringSerialization() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.STRING());
+    void testFileChannelLogRecordBatchGetStatisticsWithInvalidSchemaId() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test empty string
-        InternalRow minValues = GenericRow.of(BinaryString.fromString(""));
-        InternalRow maxValues = GenericRow.of(BinaryString.fromString(""));
-        Long[] nullCounts = new Long[] {0L};
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_invalid_schema.tmp"))) {
+            fileLogRecords.append(memoryLogRecords);
+            fileLogRecords.flush();
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
 
-        // Verify empty string
-        assertThat(deserializedStats.getMinValues().getString(0).toString()).isEmpty();
-        assertThat(deserializedStats.getMaxValues().getString(0).toString()).isEmpty();
+            // Test with invalid schema ID
+            try (LogRecordReadContext readContext =
+                    LogRecordReadContext.createArrowReadContext(
+                            MIXED_ROW_TYPE, 999)) { // Invalid schema ID
+                Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+                assertThat(statisticsOpt).isEmpty();
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    void testFileChannelLogRecordBatchGetStatisticsWithOldMagicVersions(byte magic)
+            throws Exception {
+        // Create test data with old magic versions (which don't support statistics)
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_old_magic.tmp"))) {
+            fileLogRecords.append(
+                    createRecordsWithoutBaseLogOffset(
+                            MIXED_ROW_TYPE,
+                            DEFAULT_SCHEMA_ID,
+                            0L,
+                            -1L,
+                            magic,
+                            Collections.singletonList(new Object[] {1, "a", 10.5, true}),
+                            LogFormat.ARROW));
+            fileLogRecords.flush();
+
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
+
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
+            assertThat(batch.magic()).isEqualTo(magic);
+
+            try (LogRecordReadContext readContext =
+                    LogRecordReadContext.createArrowReadContext(
+                            MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+                Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+                assertThat(statisticsOpt).isEmpty();
+            }
+        }
     }
 
     @Test
-    public void testUnicodeStringSerialization() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.STRING());
+    void testFileChannelLogRecordBatchGetStatisticsCaching() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test Unicode strings
-        String unicodeString = "Hello world 测试 🚀";
-        InternalRow minValues = GenericRow.of(BinaryString.fromString(unicodeString));
-        InternalRow maxValues = GenericRow.of(BinaryString.fromString(unicodeString));
-        Long[] nullCounts = new Long[] {0L};
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_caching.tmp"))) {
+            fileLogRecords.append(memoryLogRecords);
+            fileLogRecords.flush();
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
 
-        // Verify Unicode string
-        assertThat(deserializedStats.getMinValues().getString(0).toString())
-                .isEqualTo(unicodeString);
-        assertThat(deserializedStats.getMaxValues().getString(0).toString())
-                .isEqualTo(unicodeString);
+            try (LogRecordReadContext readContext =
+                    LogRecordReadContext.createArrowReadContext(
+                            MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+                // First call
+                Optional<LogRecordBatchStatistics> statisticsOpt1 =
+                        batch.getStatistics(readContext);
+                assertThat(statisticsOpt1).isPresent();
+
+                // Second call - should return cached result
+                Optional<LogRecordBatchStatistics> statisticsOpt2 =
+                        batch.getStatistics(readContext);
+                assertThat(statisticsOpt2).isPresent();
+                assertThat(statisticsOpt2.get()).isSameAs(statisticsOpt1.get());
+
+                // Third call - should return cached result
+                Optional<LogRecordBatchStatistics> statisticsOpt3 =
+                        batch.getStatistics(readContext);
+                assertThat(statisticsOpt3).isPresent();
+                assertThat(statisticsOpt3.get()).isSameAs(statisticsOpt1.get());
+            }
+        }
     }
 
     @Test
-    public void testZeroValuesSerialization() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.INT(), DataTypes.FLOAT(), DataTypes.DOUBLE());
+    void testFileChannelLogRecordBatchGetStatisticsErrorHandling() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test zero values
-        InternalRow minValues = GenericRow.of(0, 0.0f, 0.0);
-        InternalRow maxValues = GenericRow.of(0, 0.0f, 0.0);
-        Long[] nullCounts = new Long[] {0L, 0L, 0L};
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_error_handling.tmp"))) {
+            fileLogRecords.append(memoryLogRecords);
+            fileLogRecords.flush();
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
 
-        // Verify zero values
-        assertThat(deserializedStats.getMinValues().getInt(0)).isEqualTo(0);
-        assertThat(deserializedStats.getMinValues().getFloat(1)).isEqualTo(0.0f);
-        assertThat(deserializedStats.getMinValues().getDouble(2)).isEqualTo(0.0);
+            // Test with context that has wrong row type (should handle gracefully)
+            RowType wrongRowType = DataTypes.ROW(new DataField("wrong_field", DataTypes.INT()));
+
+            try (LogRecordReadContext readContext =
+                    LogRecordReadContext.createArrowReadContext(wrongRowType, DEFAULT_SCHEMA_ID)) {
+                Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+                // Should handle the error gracefully and return empty
+                assertThat(statisticsOpt).isEmpty();
+            }
+        }
     }
 
     @Test
-    public void testNegativeValuesSerialization() throws IOException {
-        RowType rowType = DataTypes.ROW(DataTypes.INT(), DataTypes.FLOAT(), DataTypes.DOUBLE());
+    void testFileChannelLogRecordBatchGetStatisticsDataIntegrity() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
 
-        // Test negative values
-        InternalRow minValues = GenericRow.of(-100, -3.14f, -2.718);
-        InternalRow maxValues = GenericRow.of(-1, -0.001f, -0.0001);
-        Long[] nullCounts = new Long[] {0L, 0L, 0L};
+        try (FileLogRecords fileLogRecords =
+                FileLogRecords.open(new File(tempDir, "test_data_integrity.tmp"))) {
+            fileLogRecords.append(memoryLogRecords);
+            fileLogRecords.flush();
 
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
+            FileLogInputStream logInputStream =
+                    new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
 
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
+            FileLogInputStream.FileChannelLogRecordBatch batch = logInputStream.nextBatch();
+            assertThat(batch).isNotNull();
 
-        // Verify negative values
-        assertThat(deserializedStats.getMinValues().getInt(0)).isEqualTo(-100);
-        assertThat(deserializedStats.getMinValues().getFloat(1)).isEqualTo(-3.14f);
-        assertThat(deserializedStats.getMinValues().getDouble(2)).isEqualTo(-2.718);
+            try (LogRecordReadContext readContext =
+                    LogRecordReadContext.createArrowReadContext(
+                            MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+                // Test statistics reading
+                Optional<LogRecordBatchStatistics> statisticsOpt = batch.getStatistics(readContext);
+                assertThat(statisticsOpt).isPresent();
 
-        assertThat(deserializedStats.getMaxValues().getInt(0)).isEqualTo(-1);
-        assertThat(deserializedStats.getMaxValues().getFloat(1)).isEqualTo(-0.001f);
-        assertThat(deserializedStats.getMaxValues().getDouble(2)).isEqualTo(-0.0001);
+                // Test that records can still be read correctly after statistics access
+                try (CloseableIterator<LogRecord> iterator = batch.records(readContext)) {
+                    assertThat(iterator.hasNext()).isTrue();
+                    int recordCount = 0;
+                    while (iterator.hasNext()) {
+                        LogRecord record = iterator.next();
+                        assertThat(record).isNotNull();
+                        assertThat(record.getRow().getFieldCount()).isEqualTo(4);
+                        recordCount++;
+                    }
+                    assertThat(recordCount).isEqualTo(MIXED_DATA.size());
+                }
+
+                // Test statistics again to ensure they're still accessible
+                Optional<LogRecordBatchStatistics> statisticsOpt2 =
+                        batch.getStatistics(readContext);
+                assertThat(statisticsOpt2).isPresent();
+                assertThat(statisticsOpt2.get()).isSameAs(statisticsOpt.get());
+            }
+        }
     }
 
-    @Test
-    public void testFieldCountMismatch() {
-        RowType rowType = DataTypes.ROW(DataTypes.INT(), DataTypes.STRING());
-
-        // Create invalid data with wrong field count
-        byte[] invalidData = {1, 0, 3}; // Version 1, field count 3 (but rowType has 2 fields)
-
-        assertThatThrownBy(
-                        () -> LogRecordBatchStatisticsSerializer.deserialize(invalidData, rowType))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("Field count mismatch");
-    }
+    // ==================== Comparison Tests ====================
 
     @Test
-    public void testUnsupportedVersion() {
-        RowType rowType = DataTypes.ROW(DataTypes.INT());
-
-        // Create invalid data with unsupported version
-        byte[] invalidData = {99, 0, 1}; // Version 99, field count 1
-
-        assertThatThrownBy(
-                        () -> LogRecordBatchStatisticsSerializer.deserialize(invalidData, rowType))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("Unsupported statistics version: 99");
-    }
-
-    @Test
-    public void testStatisticsCollectorReset() {
-        RowType rowType = DataTypes.ROW(DataTypes.INT(), DataTypes.STRING());
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process some rows
-        collector.processRow(GenericRow.of(1, BinaryString.fromString("first")));
-        collector.processRow(GenericRow.of(2, BinaryString.fromString("second")));
-
-        LogRecordBatchStatistics stats1 = collector.getStatistics();
-        assertThat(stats1).isNotNull();
-        assertThat(stats1.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(stats1.getMaxValues().getInt(0)).isEqualTo(2);
-
-        // Reset collector
-        collector.reset();
-
-        // Process new rows
-        collector.processRow(GenericRow.of(10, BinaryString.fromString("reset")));
-        collector.processRow(GenericRow.of(20, BinaryString.fromString("test")));
-
-        LogRecordBatchStatistics stats2 = collector.getStatistics();
-        assertThat(stats2).isNotNull();
-        assertThat(stats2.getMinValues().getInt(0)).isEqualTo(10);
-        assertThat(stats2.getMaxValues().getInt(0)).isEqualTo(20);
-    }
-
-    @Test
-    public void testStatisticsCollectorEmpty() {
-        RowType rowType = DataTypes.ROW(DataTypes.INT());
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // No rows processed
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNull();
-    }
-
-    @Test
-    public void testDefaultLogRecordBatchStatisticsToString() {
-        InternalRow minValues = GenericRow.of(1, BinaryString.fromString("min"));
-        InternalRow maxValues = GenericRow.of(100, BinaryString.fromString("max"));
-        Long[] nullCounts = new Long[] {0L, 5L};
-
-        DefaultLogRecordBatchStatistics stats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
-
-        String toString = stats.toString();
-        assertThat(toString).contains("DefaultLogRecordBatchStatistics");
-        assertThat(toString).contains("minValues=");
-        assertThat(toString).contains("maxValues=");
-        assertThat(toString).contains("nullCounts=");
-    }
-
-    // ==================== 新增的数据类型测试 ====================
-
-    @Test
-    public void testDecimalTypeStatistics() {
-        RowType rowType = DataTypes.ROW(DataTypes.DECIMAL(10, 2), DataTypes.DECIMAL(20, 5));
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with decimal values
-        collector.processRow(
-                GenericRow.of(
-                        Decimal.fromBigDecimal(new java.math.BigDecimal("123.45"), 10, 2),
-                        Decimal.fromBigDecimal(
-                                new java.math.BigDecimal("1234567890.12345"), 20, 5)));
-        collector.processRow(
-                GenericRow.of(
-                        Decimal.fromBigDecimal(new java.math.BigDecimal("67.89"), 10, 2),
-                        Decimal.fromBigDecimal(
-                                new java.math.BigDecimal("9876543210.98765"), 20, 5)));
-        collector.processRow(
-                GenericRow.of(
-                        Decimal.fromBigDecimal(new java.math.BigDecimal("999.99"), 10, 2),
-                        Decimal.fromBigDecimal(
-                                new java.math.BigDecimal("1111111111.11111"), 20, 5)));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check min values
-        assertThat(stats.getMinValues().getDecimal(0, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("67.89"));
-        assertThat(stats.getMinValues().getDecimal(1, 20, 5).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("1111111111.11111"));
-
-        // Check max values
-        assertThat(stats.getMaxValues().getDecimal(0, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("999.99"));
-        assertThat(stats.getMaxValues().getDecimal(1, 20, 5).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("9876543210.98765"));
-
-        // Check null counts
-        assertThat(stats.getNullCounts()[0]).isEqualTo(0);
-        assertThat(stats.getNullCounts()[1]).isEqualTo(0);
-    }
-
-    @Test
-    public void testDateTypeStatistics() {
-        RowType rowType = DataTypes.ROW(DataTypes.DATE());
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with date values (days since epoch)
-        collector.processRow(GenericRow.of((int) LocalDate.of(2023, 1, 1).toEpochDay()));
-        collector.processRow(GenericRow.of((int) LocalDate.of(2023, 6, 15).toEpochDay()));
-        collector.processRow(GenericRow.of((int) LocalDate.of(2023, 12, 31).toEpochDay()));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check min/max values
-        assertThat(stats.getMinValues().getInt(0))
-                .isEqualTo((int) LocalDate.of(2023, 1, 1).toEpochDay());
-        assertThat(stats.getMaxValues().getInt(0))
-                .isEqualTo((int) LocalDate.of(2023, 12, 31).toEpochDay());
-
-        // Check null counts
-        assertThat(stats.getNullCounts()[0]).isEqualTo(0);
-    }
-
-    @Test
-    public void testTimeTypeStatistics() {
-        RowType rowType = DataTypes.ROW(DataTypes.TIME(3));
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with time values (milliseconds of day)
-        collector.processRow(
-                GenericRow.of((int) (LocalTime.of(9, 30, 0).toNanoOfDay() / 1_000_000)));
-        collector.processRow(
-                GenericRow.of((int) (LocalTime.of(12, 0, 0).toNanoOfDay() / 1_000_000)));
-        collector.processRow(
-                GenericRow.of((int) (LocalTime.of(18, 45, 30).toNanoOfDay() / 1_000_000)));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check min/max values
-        assertThat(stats.getMinValues().getInt(0))
-                .isEqualTo((int) (LocalTime.of(9, 30, 0).toNanoOfDay() / 1_000_000));
-        assertThat(stats.getMaxValues().getInt(0))
-                .isEqualTo((int) (LocalTime.of(18, 45, 30).toNanoOfDay() / 1_000_000));
-
-        // Check null counts
-        assertThat(stats.getNullCounts()[0]).isEqualTo(0);
-    }
-
-    @Test
-    public void testTimestampNtzTypeStatistics() {
-        RowType rowType = DataTypes.ROW(DataTypes.TIMESTAMP(6));
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with timestamp values
-        collector.processRow(
-                GenericRow.of(
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 1, 1, 9, 30, 0))));
-        collector.processRow(
-                GenericRow.of(
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 6, 15, 12, 0, 0))));
-        collector.processRow(
-                GenericRow.of(
-                        TimestampNtz.fromLocalDateTime(
-                                LocalDateTime.of(2023, 12, 31, 18, 45, 30))));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check min/max values
-        assertThat(stats.getMinValues().getTimestampNtz(0, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0));
-        assertThat(stats.getMaxValues().getTimestampNtz(0, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30));
-
-        // Check null counts
-        assertThat(stats.getNullCounts()[0]).isEqualTo(0);
-    }
-
-    @Test
-    public void testTimestampLtzTypeStatistics() {
-        RowType rowType = DataTypes.ROW(DataTypes.TIMESTAMP_LTZ(6));
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with timestamp with local time zone values
-        collector.processRow(
-                GenericRow.of(
-                        TimestampLtz.fromLocalDateTime(LocalDateTime.of(2023, 1, 1, 9, 30, 0))));
-        collector.processRow(
-                GenericRow.of(
-                        TimestampLtz.fromLocalDateTime(LocalDateTime.of(2023, 6, 15, 12, 0, 0))));
-        collector.processRow(
-                GenericRow.of(
-                        TimestampLtz.fromLocalDateTime(
-                                LocalDateTime.of(2023, 12, 31, 18, 45, 30))));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check min/max values
-        assertThat(stats.getMinValues().getTimestampLtz(0, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0));
-        assertThat(stats.getMaxValues().getTimestampLtz(0, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30));
-
-        // Check null counts
-        assertThat(stats.getNullCounts()[0]).isEqualTo(0);
-    }
-
-    @Test
-    public void testAllNewTypesSerialization() throws IOException {
-        RowType rowType =
-                DataTypes.ROW(
-                        DataTypes.DECIMAL(10, 2),
-                        DataTypes.DATE(),
-                        DataTypes.TIME(3),
-                        DataTypes.TIMESTAMP(6),
-                        DataTypes.TIMESTAMP_LTZ(6));
-
-        // Create statistics with all new types
-        InternalRow minValues =
-                GenericRow.of(
-                        Decimal.fromBigDecimal(new java.math.BigDecimal("123.45"), 10, 2),
-                        (int) LocalDate.of(2023, 1, 1).toEpochDay(),
-                        (int) (LocalTime.of(9, 30, 0).toNanoOfDay() / 1_000_000),
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 1, 1, 9, 30, 0)),
-                        TimestampLtz.fromLocalDateTime(LocalDateTime.of(2023, 1, 1, 9, 30, 0)));
-
-        InternalRow maxValues =
-                GenericRow.of(
-                        Decimal.fromBigDecimal(new java.math.BigDecimal("999.99"), 10, 2),
-                        (int) LocalDate.of(2023, 12, 31).toEpochDay(),
-                        (int) (LocalTime.of(18, 45, 30).toNanoOfDay() / 1_000_000),
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 12, 31, 18, 45, 30)),
-                        TimestampLtz.fromLocalDateTime(LocalDateTime.of(2023, 12, 31, 18, 45, 30)));
-
-        Long[] nullCounts = new Long[] {0L, 0L, 0L, 0L, 0L};
-
-        LogRecordBatchStatistics originalStats =
-                new DefaultLogRecordBatchStatistics(minValues, maxValues, nullCounts);
-
-        // Serialize and deserialize
-        byte[] serialized = LogRecordBatchStatisticsSerializer.serialize(originalStats, rowType);
-        LogRecordBatchStatistics deserializedStats =
-                LogRecordBatchStatisticsSerializer.deserialize(serialized, rowType);
-
-        // Verify all new types
-        assertThat(deserializedStats.getMinValues().getDecimal(0, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("123.45"));
-        assertThat(deserializedStats.getMinValues().getInt(1))
-                .isEqualTo((int) LocalDate.of(2023, 1, 1).toEpochDay());
-        assertThat(deserializedStats.getMinValues().getInt(2))
-                .isEqualTo((int) (LocalTime.of(9, 30, 0).toNanoOfDay() / 1_000_000));
-        assertThat(deserializedStats.getMinValues().getTimestampNtz(3, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0));
-        assertThat(deserializedStats.getMinValues().getTimestampLtz(4, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0));
-
-        assertThat(deserializedStats.getMaxValues().getDecimal(0, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("999.99"));
-        assertThat(deserializedStats.getMaxValues().getInt(1))
-                .isEqualTo((int) LocalDate.of(2023, 12, 31).toEpochDay());
-        assertThat(deserializedStats.getMaxValues().getInt(2))
-                .isEqualTo((int) (LocalTime.of(18, 45, 30).toNanoOfDay() / 1_000_000));
-        assertThat(deserializedStats.getMaxValues().getTimestampNtz(3, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30));
-        assertThat(deserializedStats.getMaxValues().getTimestampLtz(4, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30));
-    }
-
-    @Test
-    public void testDecimalWithNulls() {
-        RowType rowType = DataTypes.ROW(DataTypes.DECIMAL(10, 2));
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with some null decimal values
-        collector.processRow(
-                GenericRow.of(Decimal.fromBigDecimal(new java.math.BigDecimal("123.45"), 10, 2)));
-        collector.processRow(GenericRow.of((Object) null));
-        collector.processRow(
-                GenericRow.of(Decimal.fromBigDecimal(new java.math.BigDecimal("999.99"), 10, 2)));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check null count
-        assertThat(stats.getNullCounts()[0]).isEqualTo(1);
-
-        // Check min/max values (should only consider non-null values)
-        assertThat(stats.getMinValues().getDecimal(0, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("123.45"));
-        assertThat(stats.getMaxValues().getDecimal(0, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("999.99"));
-    }
-
-    @Test
-    public void testTimestampWithDifferentPrecisions() {
-        RowType rowType =
-                DataTypes.ROW(
-                        DataTypes.TIMESTAMP(3), DataTypes.TIMESTAMP(6), DataTypes.TIMESTAMP_LTZ(9));
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with timestamps of different precisions
-        collector.processRow(
-                GenericRow.of(
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 1, 1, 9, 30, 0)),
-                        TimestampNtz.fromLocalDateTime(
-                                LocalDateTime.of(2023, 1, 1, 9, 30, 0, 123456000)),
-                        TimestampLtz.fromLocalDateTime(
-                                LocalDateTime.of(2023, 1, 1, 9, 30, 0, 123456789))));
-
-        collector.processRow(
-                GenericRow.of(
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 12, 31, 18, 45, 30)),
-                        TimestampNtz.fromLocalDateTime(
-                                LocalDateTime.of(2023, 12, 31, 18, 45, 30, 654321000)),
-                        TimestampLtz.fromLocalDateTime(
-                                LocalDateTime.of(2023, 12, 31, 18, 45, 30, 987654321))));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check min/max values for different precisions
-        assertThat(stats.getMinValues().getTimestampNtz(0, 3).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0));
-        assertThat(stats.getMaxValues().getTimestampNtz(0, 3).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30));
-
-        assertThat(stats.getMinValues().getTimestampNtz(1, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0, 123456000));
-        assertThat(stats.getMaxValues().getTimestampNtz(1, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30, 654321000));
-
-        assertThat(stats.getMinValues().getTimestampLtz(2, 9).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0, 123456789));
-        assertThat(stats.getMaxValues().getTimestampLtz(2, 9).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30, 987654321));
-    }
-
-    @Test
-    public void testMixedTypesWithNewTypes() {
-        RowType rowType =
-                DataTypes.ROW(
-                        DataTypes.INT(),
-                        DataTypes.DECIMAL(10, 2),
-                        DataTypes.DATE(),
-                        DataTypes.TIMESTAMP(6),
-                        DataTypes.STRING());
-
-        LogRecordBatchStatisticsCollector collector =
-                new LogRecordBatchStatisticsCollector(rowType);
-
-        // Process rows with mixed types
-        collector.processRow(
-                GenericRow.of(
-                        1,
-                        Decimal.fromBigDecimal(new java.math.BigDecimal("123.45"), 10, 2),
-                        (int) LocalDate.of(2023, 1, 1).toEpochDay(),
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 1, 1, 9, 30, 0)),
-                        BinaryString.fromString("first")));
-
-        collector.processRow(
-                GenericRow.of(
-                        100,
-                        Decimal.fromBigDecimal(new java.math.BigDecimal("999.99"), 10, 2),
-                        (int) LocalDate.of(2023, 12, 31).toEpochDay(),
-                        TimestampNtz.fromLocalDateTime(LocalDateTime.of(2023, 12, 31, 18, 45, 30)),
-                        BinaryString.fromString("last")));
-
-        LogRecordBatchStatistics stats = collector.getStatistics();
-        assertThat(stats).isNotNull();
-
-        // Check all types work together
-        assertThat(stats.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(stats.getMinValues().getDecimal(1, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("123.45"));
-        assertThat(stats.getMinValues().getInt(2))
-                .isEqualTo((int) LocalDate.of(2023, 1, 1).toEpochDay());
-        assertThat(stats.getMinValues().getTimestampNtz(3, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 1, 1, 9, 30, 0));
-        assertThat(stats.getMinValues().getString(4).toString()).isEqualTo("first");
-
-        assertThat(stats.getMaxValues().getInt(0)).isEqualTo(100);
-        assertThat(stats.getMaxValues().getDecimal(1, 10, 2).toBigDecimal())
-                .isEqualByComparingTo(new java.math.BigDecimal("999.99"));
-        assertThat(stats.getMaxValues().getInt(2))
-                .isEqualTo((int) LocalDate.of(2023, 12, 31).toEpochDay());
-        assertThat(stats.getMaxValues().getTimestampNtz(3, 6).toLocalDateTime())
-                .isEqualTo(LocalDateTime.of(2023, 12, 31, 18, 45, 30));
-        assertThat(stats.getMaxValues().getString(4).toString()).isEqualTo("last");
+    void testDefaultVsFileChannelLogRecordBatchStatisticsConsistency() throws Exception {
+        MemoryLogRecords memoryLogRecords =
+                LogRecordBatchTestUtils.createLogRecordsWithStatistics(
+                        MIXED_DATA, MIXED_ROW_TYPE, 0L, DEFAULT_SCHEMA_ID);
+
+        // Get DefaultLogRecordBatch statistics
+        LogRecordBatch defaultBatch = memoryLogRecords.batches().iterator().next();
+        assertThat(defaultBatch).isInstanceOf(DefaultLogRecordBatch.class);
+
+        try (LogRecordReadContext readContext =
+                LogRecordReadContext.createArrowReadContext(MIXED_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
+            Optional<LogRecordBatchStatistics> defaultStatsOpt =
+                    defaultBatch.getStatistics(readContext);
+            assertThat(defaultStatsOpt).isPresent();
+            LogRecordBatchStatistics defaultStats = defaultStatsOpt.get();
+
+            // Create FileChannelLogRecordBatch and get statistics
+            try (FileLogRecords fileLogRecords =
+                    FileLogRecords.open(new File(tempDir, "test_consistency.tmp"))) {
+                fileLogRecords.append(memoryLogRecords);
+                fileLogRecords.flush();
+
+                FileLogInputStream logInputStream =
+                        new FileLogInputStream(fileLogRecords, 0, fileLogRecords.sizeInBytes());
+
+                FileLogInputStream.FileChannelLogRecordBatch fileBatch = logInputStream.nextBatch();
+                assertThat(fileBatch).isNotNull();
+
+                Optional<LogRecordBatchStatistics> fileStatsOpt =
+                        fileBatch.getStatistics(readContext);
+                assertThat(fileStatsOpt).isPresent();
+                LogRecordBatchStatistics fileStats = fileStatsOpt.get();
+
+                // Verify that both implementations return the same statistics
+                assertThat(fileStats.getMinValues().getInt(0))
+                        .isEqualTo(defaultStats.getMinValues().getInt(0));
+                assertThat(fileStats.getMaxValues().getInt(0))
+                        .isEqualTo(defaultStats.getMaxValues().getInt(0));
+                assertThat(fileStats.getMinValues().getDouble(2))
+                        .isEqualTo(defaultStats.getMinValues().getDouble(2));
+                assertThat(fileStats.getMaxValues().getDouble(2))
+                        .isEqualTo(defaultStats.getMaxValues().getDouble(2));
+                assertThat(fileStats.getMinValues().getBoolean(3))
+                        .isEqualTo(defaultStats.getMinValues().getBoolean(3));
+                assertThat(fileStats.getMaxValues().getBoolean(3))
+                        .isEqualTo(defaultStats.getMaxValues().getBoolean(3));
+
+                // Verify null counts are the same
+                for (int i = 0; i < fileStats.getNullCounts().length; i++) {
+                    assertThat(fileStats.getNullCounts()[i])
+                            .isEqualTo(defaultStats.getNullCounts()[i]);
+                }
+            }
+        }
     }
 }

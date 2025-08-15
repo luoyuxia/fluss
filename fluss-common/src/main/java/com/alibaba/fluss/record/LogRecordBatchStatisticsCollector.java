@@ -17,6 +17,7 @@
 
 package com.alibaba.fluss.record;
 
+import com.alibaba.fluss.memory.OutputView;
 import com.alibaba.fluss.row.BinaryString;
 import com.alibaba.fluss.row.Decimal;
 import com.alibaba.fluss.row.InternalRow;
@@ -31,6 +32,7 @@ import com.alibaba.fluss.types.LocalZonedTimestampType;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.types.TimestampType;
 
+import java.io.IOException;
 import java.util.Arrays;
 
 /**
@@ -53,6 +55,16 @@ public class LogRecordBatchStatisticsCollector {
     private final boolean[] minSet;
     private final boolean[] maxSet;
 
+    // Reusable objects for writeStatistics
+    private final Object[] finalMinValues;
+    private final Object[] finalMaxValues;
+    private final CompactedRowWriter minRowWriter;
+    private final CompactedRowWriter maxRowWriter;
+    private final CompactedRowWriter.FieldWriter[] fieldWriters;
+    private final CompactedRow minCompactedRow;
+    private final CompactedRow maxCompactedRow;
+    private final LogRecordBatchStatisticsWriter statisticsWriter;
+
     private long totalRowCount = 0;
 
     public LogRecordBatchStatisticsCollector(RowType rowType) {
@@ -71,6 +83,21 @@ public class LogRecordBatchStatisticsCollector {
         this.nullCounts = new Long[fieldCount];
         this.minSet = new boolean[fieldCount];
         this.maxSet = new boolean[fieldCount];
+
+        // Initialize reusable objects
+        this.finalMinValues = new Object[fieldCount];
+        this.finalMaxValues = new Object[fieldCount];
+        this.minRowWriter = new CompactedRowWriter(fieldCount);
+        this.maxRowWriter = new CompactedRowWriter(fieldCount);
+        this.fieldWriters = new CompactedRowWriter.FieldWriter[fieldCount];
+        this.minCompactedRow = new CompactedRow(fieldCount, deserializer);
+        this.maxCompactedRow = new CompactedRow(fieldCount, deserializer);
+        this.statisticsWriter = new LogRecordBatchStatisticsWriter(rowType);
+
+        // Create field writers for each field type
+        for (int i = 0; i < fieldCount; i++) {
+            fieldWriters[i] = CompactedRowWriter.createFieldWriter(fieldTypes[i]);
+        }
 
         // Initialize arrays
         Arrays.fill(minSet, false);
@@ -96,62 +123,48 @@ public class LogRecordBatchStatisticsCollector {
     }
 
     /**
-     * Get the collected statistics using CompactedRow for optimal space efficiency.
+     * Write the collected statistics to an OutputView. This method provides better support for
+     * cross-segment scenarios by using OutputView's automatic segment management.
      *
-     * @return The collected statistics, or null if no rows were processed
+     * @param outputView The target output view
+     * @return The number of bytes written, or 0 if no rows were processed
+     * @throws IOException If writing fails
      */
-    public LogRecordBatchStatistics getStatistics() {
+    public int writeStatistics(OutputView outputView) throws IOException {
         if (totalRowCount == 0) {
-            return null;
+            return 0;
         }
 
-        // Create min/max rows with null for unset values
-        Object[] finalMinValues = new Object[fieldCount];
-        Object[] finalMaxValues = new Object[fieldCount];
-
+        // Prepare min/max values using reusable arrays
         for (int i = 0; i < fieldCount; i++) {
             finalMinValues[i] = minSet[i] ? minValues[i] : null;
             finalMaxValues[i] = maxSet[i] ? maxValues[i] : null;
         }
 
-        // Create CompactedRow for min values
-        CompactedRow minCompactedRow = createCompactedRow(finalMinValues);
-
-        // Create CompactedRow for max values
-        CompactedRow maxCompactedRow = createCompactedRow(finalMaxValues);
-
-        return new DefaultLogRecordBatchStatistics(minCompactedRow, maxCompactedRow, nullCounts);
-    }
-
-    /**
-     * Create a CompactedRow from the given values array.
-     *
-     * @param values The values to encode into a CompactedRow
-     * @return The created CompactedRow
-     */
-    private CompactedRow createCompactedRow(Object[] values) {
-        CompactedRowWriter writer = new CompactedRowWriter(fieldCount);
-        CompactedRowWriter.FieldWriter[] fieldWriters =
-                new CompactedRowWriter.FieldWriter[fieldCount];
-
-        // Create field writers for each field type
+        // Check if any field has min/max values set
+        boolean hasMinMaxValues = false;
         for (int i = 0; i < fieldCount; i++) {
-            fieldWriters[i] = CompactedRowWriter.createFieldWriter(fieldTypes[i]);
-        }
-
-        writer.reset();
-
-        for (int i = 0; i < fieldCount; i++) {
-            if (values[i] == null) {
-                writer.setNullAt(i);
-            } else {
-                fieldWriters[i].writeField(writer, i, values[i]);
+            if (minSet[i] || maxSet[i]) {
+                hasMinMaxValues = true;
+                break;
             }
         }
 
-        CompactedRow row = new CompactedRow(fieldCount, deserializer);
-        row.pointTo(writer.segment(), 0, writer.position());
-        return row;
+        CompactedRow minRow = null;
+        CompactedRow maxRow = null;
+
+        if (hasMinMaxValues) {
+            // Create CompactedRow for min values using reusable writer
+            createCompactedRowReusable(finalMinValues, minRowWriter, minCompactedRow);
+            minRow = minCompactedRow;
+
+            // Create CompactedRow for max values using reusable writer
+            createCompactedRowReusable(finalMaxValues, maxRowWriter, maxCompactedRow);
+            maxRow = maxCompactedRow;
+        }
+
+        // Write statistics using reusable writer with OutputView
+        return statisticsWriter.writeStatistics(minRow, maxRow, nullCounts, outputView);
     }
 
     /**
@@ -171,6 +184,10 @@ public class LogRecordBatchStatisticsCollector {
         Arrays.fill(nullCounts, 0L);
         Arrays.fill(minValues, null);
         Arrays.fill(maxValues, null);
+
+        // Reset reusable arrays
+        Arrays.fill(finalMinValues, null);
+        Arrays.fill(finalMaxValues, null);
     }
 
     private void updateMinMax(int fieldIndex, InternalRow row) {
@@ -527,5 +544,58 @@ public class LogRecordBatchStatisticsCollector {
                 maxValues[fieldIndex] = value;
             }
         }
+    }
+
+    /**
+     * Create a CompactedRow from the given values array using reusable objects.
+     *
+     * @param values The values to encode into a CompactedRow
+     * @param writer The reusable CompactedRowWriter
+     * @param row The reusable CompactedRow to populate
+     */
+    private void createCompactedRowReusable(
+            Object[] values, CompactedRowWriter writer, CompactedRow row) {
+        writer.reset();
+
+        for (int i = 0; i < fieldCount; i++) {
+            if (values[i] == null) {
+                writer.setNullAt(i);
+            } else {
+                fieldWriters[i].writeField(writer, i, values[i]);
+            }
+        }
+
+        row.pointTo(writer.segment(), 0, writer.position());
+    }
+
+    /**
+     * Create a CompactedRow from the given values array.
+     *
+     * @param values The values to encode into a CompactedRow
+     * @return The created CompactedRow
+     */
+    private CompactedRow createCompactedRow(Object[] values) {
+        CompactedRowWriter writer = new CompactedRowWriter(fieldCount);
+        CompactedRowWriter.FieldWriter[] fieldWriters =
+                new CompactedRowWriter.FieldWriter[fieldCount];
+
+        // Create field writers for each field type
+        for (int i = 0; i < fieldCount; i++) {
+            fieldWriters[i] = CompactedRowWriter.createFieldWriter(fieldTypes[i]);
+        }
+
+        writer.reset();
+
+        for (int i = 0; i < fieldCount; i++) {
+            if (values[i] == null) {
+                writer.setNullAt(i);
+            } else {
+                fieldWriters[i].writeField(writer, i, values[i]);
+            }
+        }
+
+        CompactedRow row = new CompactedRow(fieldCount, deserializer);
+        row.pointTo(writer.segment(), 0, writer.position());
+        return row;
     }
 }

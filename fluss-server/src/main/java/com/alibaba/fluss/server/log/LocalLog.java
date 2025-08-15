@@ -348,7 +348,8 @@ public final class LocalLog {
      * offset is out of range, throw an OffsetOutOfRangeException.
      */
     LogOffsetMetadata convertToOffsetMetadataOrThrow(long offset) throws IOException {
-        FetchDataInfo fetchDataInfo = read(offset, 1, false, nextOffsetMetadata, null, null, null);
+        FetchDataInfo fetchDataInfo =
+                read(false, offset, 1, false, nextOffsetMetadata, null, null, null);
         return fetchDataInfo.getFetchOffsetMetadata();
     }
 
@@ -370,6 +371,7 @@ public final class LocalLog {
      *     read.
      */
     public FetchDataInfo read(
+            boolean fetchDataFromClient,
             long readOffset,
             int maxLength,
             boolean minOneMessage,
@@ -430,6 +432,7 @@ public final class LocalLog {
                                 : segment.getSizeInBytes();
                 fetchDataInfo =
                         segment.read(
+                                fetchDataFromClient,
                                 readOffset,
                                 maxLength,
                                 maxPosition,

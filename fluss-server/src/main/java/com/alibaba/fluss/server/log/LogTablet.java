@@ -370,6 +370,7 @@ public final class LogTablet {
     }
 
     public FetchDataInfo read(
+            boolean fetchDataFromClient,
             long readOffset,
             int maxLength,
             FetchIsolation fetchIsolation,
@@ -386,6 +387,7 @@ public final class LogTablet {
         }
 
         return localLog.read(
+                fetchDataFromClient,
                 readOffset,
                 maxLength,
                 minOneMessage,
@@ -1214,7 +1216,7 @@ public final class LogTablet {
                     }
 
                     FetchDataInfo fetchDataInfo =
-                            segment.read(startOffset, Integer.MAX_VALUE, maxPosition, false);
+                            segment.read(false, startOffset, Integer.MAX_VALUE, maxPosition, false);
                     if (fetchDataInfo != null) {
                         loadWritersFromRecords(writerStateManager, fetchDataInfo.getRecords());
                     }

@@ -60,13 +60,18 @@ public class LogRecordBatchTestUtils {
                     writerPool.getOrCreateWriter(
                             1L, schemaId, Integer.MAX_VALUE, rowType, DEFAULT_COMPRESSION);
 
+            // Create statistics collector for the writer's schema
+            LogRecordBatchStatisticsCollector statisticsCollector =
+                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
                             baseOffset,
                             CURRENT_LOG_MAGIC_VALUE,
                             schemaId,
                             writer,
-                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)));
+                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)),
+                            statisticsCollector);
 
             // Convert data to InternalRow and add to builder
             List<InternalRow> rows =
@@ -128,13 +133,18 @@ public class LogRecordBatchTestUtils {
                     writerPool.getOrCreateWriter(
                             1L, schemaId, Integer.MAX_VALUE, rowType, compressionInfo);
 
+            // Create statistics collector for the writer's schema
+            LogRecordBatchStatisticsCollector statisticsCollector =
+                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
                             baseOffset,
                             CURRENT_LOG_MAGIC_VALUE,
                             schemaId,
                             writer,
-                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)));
+                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)),
+                            statisticsCollector);
 
             // Convert data to InternalRow and add to builder
             List<InternalRow> rows =
@@ -182,13 +192,18 @@ public class LogRecordBatchTestUtils {
                     writerPool.getOrCreateWriter(
                             1L, schemaId, Integer.MAX_VALUE, rowType, DEFAULT_COMPRESSION);
 
+            // Create statistics collector for the writer's schema
+            LogRecordBatchStatisticsCollector statisticsCollector =
+                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
                             baseOffset,
                             CURRENT_LOG_MAGIC_VALUE,
                             schemaId,
                             writer,
-                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)));
+                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)),
+                            statisticsCollector);
 
             // Convert data to InternalRow and add to builder
             List<InternalRow> rows =
@@ -240,13 +255,18 @@ public class LogRecordBatchTestUtils {
                     writerPool.getOrCreateWriter(
                             1L, schemaId, Integer.MAX_VALUE, rowType, DEFAULT_COMPRESSION);
 
+            // Create statistics collector for the writer's schema
+            LogRecordBatchStatisticsCollector statisticsCollector =
+                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
                             baseOffset,
                             CURRENT_LOG_MAGIC_VALUE,
                             schemaId,
                             writer,
-                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)));
+                            new ManagedPagedOutputView(new TestingMemorySegmentPool(10 * 1024)),
+                            statisticsCollector);
 
             // Convert data to InternalRow and add to builder
             List<InternalRow> rows =

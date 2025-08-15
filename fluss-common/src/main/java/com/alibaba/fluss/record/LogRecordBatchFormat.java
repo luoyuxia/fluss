@@ -257,6 +257,9 @@ public class LogRecordBatchFormat {
     // Attribute flags for V2
     public static final byte STATISTICS_FLAG_MASK = 0x02; // bit 1
 
+    // Statistics format version
+    public static final byte STATISTICS_VERSION = 1;
+
     // ----------------------------------------------------------------------------------------
     // Static Methods
     // ----------------------------------------------------------------------------------------

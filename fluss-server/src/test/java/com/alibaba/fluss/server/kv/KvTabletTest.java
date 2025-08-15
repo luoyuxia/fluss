@@ -878,6 +878,7 @@ class KvTabletTest {
             throws Exception {
         return logTablet
                 .read(
+                        false,
                         startOffset,
                         Integer.MAX_VALUE,
                         FetchIsolation.LOG_END,

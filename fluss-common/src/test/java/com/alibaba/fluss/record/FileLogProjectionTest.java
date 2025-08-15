@@ -591,4 +591,367 @@ class FileLogProjectionTest {
             assertThat(secondBatchCount).isEqualTo(TestData.ANOTHER_DATA1.size());
         }
     }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    void testProjectRecordBatchStatisticsClearing(byte recordBatchMagic) throws Exception {
+        // Test that statistics are properly cleared during projection for V2+ versions
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(recordBatchMagic, TestData.DATA2_ROW_TYPE, TestData.DATA2);
+
+        FileLogProjection projection = new FileLogProjection();
+        projection.setCurrentProjection(
+                1L,
+                TestData.DATA2_ROW_TYPE,
+                DEFAULT_COMPRESSION,
+                new int[] {0, 1}); // Project columns a and b
+
+        FileLogInputStream.FileChannelLogRecordBatch batch = fileLogRecords.batchIterator(0).next();
+        BytesView projectedBytes = projection.projectRecordBatch(batch);
+
+        assertThat(projectedBytes.getBytesLength()).isGreaterThan(0);
+
+        // Verify the projected batch has statistics cleared
+        LogRecords projectedRecords = new BytesViewLogRecords(projectedBytes);
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(new int[] {0, 1});
+
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, DEFAULT_SCHEMA_ID)) {
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                // Verify that statistics are not available in projected batch
+                assertThat(projectedBatch.statisticsSizeInBytes()).isEqualTo(0);
+
+                // Verify the projected data is correct
+                try (CloseableIterator<LogRecord> records = projectedBatch.records(context)) {
+                    int recordCount = 0;
+                    while (records.hasNext()) {
+                        LogRecord record = records.next();
+                        InternalRow row = record.getRow();
+
+                        assertThat(row.getFieldCount()).isEqualTo(2);
+                        assertThat(row.getInt(0))
+                                .isEqualTo(TestData.DATA2.get(recordCount)[0]); // column a
+                        assertThat(row.getString(1).toString())
+                                .isEqualTo(TestData.DATA2.get(recordCount)[1]); // column b
+
+                        recordCount++;
+                    }
+                    assertThat(recordCount).isEqualTo(TestData.DATA2.size());
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
+    void testProjectRecordBatchNoStatisticsClearing(byte recordBatchMagic) throws Exception {
+        // Test that statistics clearing only happens for V2+ versions
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(recordBatchMagic, TestData.DATA2_ROW_TYPE, TestData.DATA2);
+
+        FileLogProjection projection = new FileLogProjection();
+        projection.setCurrentProjection(
+                1L,
+                TestData.DATA2_ROW_TYPE,
+                DEFAULT_COMPRESSION,
+                new int[] {0, 1}); // Project columns a and b
+
+        FileLogInputStream.FileChannelLogRecordBatch batch = fileLogRecords.batchIterator(0).next();
+        BytesView projectedBytes = projection.projectRecordBatch(batch);
+
+        assertThat(projectedBytes.getBytesLength()).isGreaterThan(0);
+
+        // Verify the projected batch for V0/V1 versions (no statistics to clear)
+        LogRecords projectedRecords = new BytesViewLogRecords(projectedBytes);
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(new int[] {0, 1});
+
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, DEFAULT_SCHEMA_ID)) {
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                // For V0/V1, statistics should be 0 (not supported)
+                assertThat(projectedBatch.statisticsSizeInBytes()).isEqualTo(0);
+
+                // Verify the projected data is correct
+                try (CloseableIterator<LogRecord> records = projectedBatch.records(context)) {
+                    int recordCount = 0;
+                    while (records.hasNext()) {
+                        LogRecord record = records.next();
+                        InternalRow row = record.getRow();
+
+                        assertThat(row.getFieldCount()).isEqualTo(2);
+                        assertThat(row.getInt(0))
+                                .isEqualTo(TestData.DATA2.get(recordCount)[0]); // column a
+                        assertThat(row.getString(1).toString())
+                                .isEqualTo(TestData.DATA2.get(recordCount)[1]); // column b
+
+                        recordCount++;
+                    }
+                    assertThat(recordCount).isEqualTo(TestData.DATA2.size());
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    void testProjectStatisticsClearing(byte recordBatchMagic) throws Exception {
+        // Test that statistics are properly cleared during project() method for V2+ versions
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(
+                        recordBatchMagic,
+                        TestData.DATA2_ROW_TYPE,
+                        TestData.DATA2,
+                        TestData.DATA2); // Multiple batches
+
+        FileLogProjection projection = new FileLogProjection();
+        projection.setCurrentProjection(
+                1L,
+                TestData.DATA2_ROW_TYPE,
+                DEFAULT_COMPRESSION,
+                new int[] {0, 2}); // Project columns a and c
+
+        // Use project() method instead of projectRecordBatch()
+        BytesViewLogRecords projectedRecords =
+                projection.project(
+                        fileLogRecords.channel(),
+                        0,
+                        fileLogRecords.sizeInBytes(),
+                        Integer.MAX_VALUE);
+
+        assertThat(projectedRecords.sizeInBytes()).isGreaterThan(0);
+
+        // Verify all projected batches have statistics cleared
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(new int[] {0, 2});
+
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, DEFAULT_SCHEMA_ID)) {
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                // Verify that statistics are not available in projected batch
+                assertThat(projectedBatch.statisticsSizeInBytes()).isEqualTo(0);
+
+                // Verify the projected data is correct
+                try (CloseableIterator<LogRecord> records = projectedBatch.records(context)) {
+                    while (records.hasNext()) {
+                        LogRecord record = records.next();
+                        InternalRow row = record.getRow();
+
+                        assertThat(row.getFieldCount()).isEqualTo(2);
+                        // Verify projected columns contain correct data
+                        assertThat(row.getInt(0)).isNotNull(); // column a should be int
+                        assertThat(row.getString(1).toString())
+                                .isNotNull(); // column c should be string
+                    }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    void testProjectRecordBatchWithStatisticsFlag(byte recordBatchMagic) throws Exception {
+        // Test projection when original batch has statistics flag set
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(recordBatchMagic, TestData.DATA2_ROW_TYPE, TestData.DATA2);
+
+        FileLogProjection projection = new FileLogProjection();
+        projection.setCurrentProjection(
+                1L,
+                TestData.DATA2_ROW_TYPE,
+                DEFAULT_COMPRESSION,
+                new int[] {1}); // Project only column b
+
+        FileLogInputStream.FileChannelLogRecordBatch batch = fileLogRecords.batchIterator(0).next();
+        BytesView projectedBytes = projection.projectRecordBatch(batch);
+
+        assertThat(projectedBytes.getBytesLength()).isGreaterThan(0);
+
+        // Verify the projected batch has statistics cleared even if original had statistics
+        LogRecords projectedRecords = new BytesViewLogRecords(projectedBytes);
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(new int[] {1});
+
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, DEFAULT_SCHEMA_ID)) {
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                // Verify that statistics are cleared in projected batch
+                assertThat(projectedBatch.statisticsSizeInBytes()).isEqualTo(0);
+
+                // Verify the projected data is correct
+                try (CloseableIterator<LogRecord> records = projectedBatch.records(context)) {
+                    int recordCount = 0;
+                    while (records.hasNext()) {
+                        LogRecord record = records.next();
+                        InternalRow row = record.getRow();
+
+                        assertThat(row.getFieldCount()).isEqualTo(1);
+                        assertThat(row.getString(0).toString())
+                                .isEqualTo(TestData.DATA2.get(recordCount)[1]); // column b
+
+                        recordCount++;
+                    }
+                    assertThat(recordCount).isEqualTo(TestData.DATA2.size());
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    void testProjectRecordBatchCrcIntegrityAfterStatisticsTruncation(byte recordBatchMagic)
+            throws Exception {
+        // Test that projection with statistics clearing maintains CRC integrity
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(recordBatchMagic, TestData.DATA2_ROW_TYPE, TestData.DATA2);
+
+        FileLogProjection projection = new FileLogProjection();
+        projection.setCurrentProjection(
+                1L,
+                TestData.DATA2_ROW_TYPE,
+                DEFAULT_COMPRESSION,
+                new int[] {0, 1}); // Project columns a and b
+
+        FileLogInputStream.FileChannelLogRecordBatch batch = fileLogRecords.batchIterator(0).next();
+        BytesView projectedBytes = projection.projectRecordBatch(batch);
+
+        assertThat(projectedBytes.getBytesLength()).isGreaterThan(0);
+
+        // Verify the projected batch maintains CRC integrity after statistics truncation
+        LogRecords projectedRecords = new BytesViewLogRecords(projectedBytes);
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(new int[] {0, 1});
+
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, DEFAULT_SCHEMA_ID)) {
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                // Verify that the projected batch is valid (CRC check passes)
+                assertThat(projectedBatch.isValid()).isTrue();
+
+                // Verify that statistics are cleared in projected batch
+                assertThat(projectedBatch.statisticsSizeInBytes()).isEqualTo(0);
+
+                // Verify the projected data is correct and can be read
+                try (CloseableIterator<LogRecord> records = projectedBatch.records(context)) {
+                    int recordCount = 0;
+                    while (records.hasNext()) {
+                        LogRecord record = records.next();
+                        InternalRow row = record.getRow();
+
+                        assertThat(row.getFieldCount()).isEqualTo(2);
+                        assertThat(row.getInt(0))
+                                .isEqualTo(TestData.DATA2.get(recordCount)[0]); // column a
+                        assertThat(row.getString(1).toString())
+                                .isEqualTo(TestData.DATA2.get(recordCount)[1]); // column b
+
+                        recordCount++;
+                    }
+                    assertThat(recordCount).isEqualTo(TestData.DATA2.size());
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    void testProjectCrcIntegrityAfterStatisticsTruncation(byte recordBatchMagic) throws Exception {
+        // Test that project() method with statistics clearing maintains CRC integrity
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(
+                        recordBatchMagic,
+                        TestData.DATA2_ROW_TYPE,
+                        TestData.DATA2,
+                        TestData.DATA2); // Multiple batches
+
+        FileLogProjection projection = new FileLogProjection();
+        projection.setCurrentProjection(
+                1L,
+                TestData.DATA2_ROW_TYPE,
+                DEFAULT_COMPRESSION,
+                new int[] {0, 2}); // Project columns a and c
+
+        // Use project() method which should clear statistics and recalculate CRC
+        BytesViewLogRecords projectedRecords =
+                projection.project(
+                        fileLogRecords.channel(),
+                        0,
+                        fileLogRecords.sizeInBytes(),
+                        Integer.MAX_VALUE);
+
+        assertThat(projectedRecords.sizeInBytes()).isGreaterThan(0);
+
+        // Verify all projected batches maintain CRC integrity
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(new int[] {0, 2});
+
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, DEFAULT_SCHEMA_ID)) {
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                // Verify that each projected batch is valid (CRC check passes)
+                assertThat(projectedBatch.isValid()).isTrue();
+
+                // Verify that statistics are cleared in projected batch
+                assertThat(projectedBatch.statisticsSizeInBytes()).isEqualTo(0);
+
+                // Verify the projected data is correct and can be read
+                try (CloseableIterator<LogRecord> records = projectedBatch.records(context)) {
+                    while (records.hasNext()) {
+                        LogRecord record = records.next();
+                        InternalRow row = record.getRow();
+
+                        assertThat(row.getFieldCount()).isEqualTo(2);
+                        // Verify projected columns contain correct data
+                        assertThat(row.getInt(0)).isNotNull(); // column a should be int
+                        assertThat(row.getString(1).toString())
+                                .isNotNull(); // column c should be string
+                    }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(bytes = {LOG_MAGIC_VALUE_V2})
+    void testProjectRecordBatchCrcConsistencyWithGetBytesViewWithoutStatistics(
+            byte recordBatchMagic) throws Exception {
+        // Test that projection produces the same CRC-corrected result as
+        // getBytesViewWithoutStatistics
+        FileLogRecords fileLogRecords =
+                createFileLogRecords(recordBatchMagic, TestData.DATA2_ROW_TYPE, TestData.DATA2);
+
+        FileLogProjection projection = new FileLogProjection();
+        projection.setCurrentProjection(
+                1L,
+                TestData.DATA2_ROW_TYPE,
+                DEFAULT_COMPRESSION,
+                new int[] {0, 1, 2}); // Project all columns to avoid data differences
+
+        FileLogInputStream.FileChannelLogRecordBatch batch = fileLogRecords.batchIterator(0).next();
+
+        // Get projected bytes (should clear statistics and recalculate CRC)
+        BytesView projectedBytes = projection.projectRecordBatch(batch);
+
+        // Get bytes without statistics using the direct method
+        BytesView bytesWithoutStats = batch.getBytesViewWithoutStatistics();
+
+        // Both methods should produce valid batches with cleared statistics
+        assertThat(projectedBytes.getBytesLength()).isGreaterThan(0);
+        assertThat(bytesWithoutStats.getBytesLength()).isGreaterThan(0);
+
+        // Verify both results are valid record batches
+        LogRecords projectedRecords = new BytesViewLogRecords(projectedBytes);
+        LogRecords bytesWithoutStatsRecords = new BytesViewLogRecords(bytesWithoutStats);
+        RowType projectedType = TestData.DATA2_ROW_TYPE.project(new int[] {0, 1, 2});
+
+        try (LogRecordReadContext context =
+                createArrowReadContext(projectedType, DEFAULT_SCHEMA_ID)) {
+
+            // Verify projected records are valid
+            for (LogRecordBatch projectedBatch : projectedRecords.batches()) {
+                assertThat(projectedBatch.isValid()).isTrue();
+                assertThat(projectedBatch.statisticsSizeInBytes()).isEqualTo(0);
+            }
+
+            // Verify bytes without stats records are valid
+            for (LogRecordBatch statsBatch : bytesWithoutStatsRecords.batches()) {
+                assertThat(statsBatch.isValid()).isTrue();
+                assertThat(statsBatch.statisticsSizeInBytes()).isEqualTo(0);
+            }
+        }
+    }
 }

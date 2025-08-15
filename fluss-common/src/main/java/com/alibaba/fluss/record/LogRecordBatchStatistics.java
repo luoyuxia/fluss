@@ -19,12 +19,27 @@ package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.row.InternalRow;
 
-/** Statistics infomation of {@link LogRecordBatch LogRecordBatch}. */
+/** Statistics information of {@link LogRecordBatch LogRecordBatch}. */
 public interface LogRecordBatchStatistics {
 
+    /**
+     * Get the minimum values as an InternalRow.
+     *
+     * @return The minimum values
+     */
     InternalRow getMinValues();
 
+    /**
+     * Get the maximum values as an InternalRow.
+     *
+     * @return The maximum values
+     */
     InternalRow getMaxValues();
 
+    /**
+     * Get the null counts for each field.
+     *
+     * @return Array of null counts
+     */
     Long[] getNullCounts();
 }

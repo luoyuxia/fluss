@@ -79,9 +79,14 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     private MemorySegment segment;
     private int position;
 
+    // Cache for statistics to avoid repeated parsing
+    private Optional<LogRecordBatchStatistics> cachedStatistics = null;
+
     public void pointTo(MemorySegment segment, int position) {
         this.segment = segment;
         this.position = position;
+        // Reset cache when pointing to new memory segment
+        this.cachedStatistics = null;
     }
 
     public void setBaseLogOffset(long baseLogOffset) {
@@ -422,29 +427,41 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
             return Optional.empty();
         }
 
+        // Return cached statistics if already parsed
+        if (cachedStatistics != null) {
+            return cachedStatistics;
+        }
+
         try {
             int statisticsLength = statisticsSizeInBytes();
             if (statisticsLength == 0) {
-                return Optional.empty();
+                // Cache the empty result to avoid repeated checks
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
             }
 
             // Get row type from context
             RowType rowType = context.getRowType(schemaId());
             if (rowType == null) {
-                return Optional.empty();
+                // Cache the empty result to avoid repeated checks
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
             }
 
             int statisticsDataOffset = sizeInBytes() - statisticsLength;
 
-            // Read and deserialize statistics
-            byte[] statisticsData = new byte[statisticsLength];
-            segment.get(statisticsDataOffset, statisticsData, 0, statisticsLength);
-
+            // Parse statistics directly from memory segment without creating heap objects
             LogRecordBatchStatistics statistics =
-                    LogRecordBatchStatisticsSerializer.deserialize(statisticsData, rowType);
-            return Optional.of(statistics);
+                    LogRecordBatchStatisticsParser.parseStatistics(
+                            segment, statisticsDataOffset, statisticsLength, rowType);
+
+            // Cache the parsed statistics
+            cachedStatistics = Optional.ofNullable(statistics);
+            return cachedStatistics;
         } catch (Exception e) {
-            return Optional.empty();
+            // Cache the empty result to avoid repeated parsing attempts
+            cachedStatistics = Optional.empty();
+            return cachedStatistics;
         }
     }
 

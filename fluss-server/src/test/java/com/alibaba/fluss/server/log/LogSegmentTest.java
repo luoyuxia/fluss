@@ -93,7 +93,7 @@ final class LogSegmentTest extends LogTestBase {
     void testReadOnEmptySegment() throws Exception {
         // Read beyond the last offset in the segment should be null.
         LogSegment segment = createSegment(40);
-        FetchDataInfo read = segment.read(40, 300, 300, false);
+        FetchDataInfo read = segment.read(false, 40, 300, 300, false);
         assertThat(read).isNull();
     }
 
@@ -111,7 +111,7 @@ final class LogSegmentTest extends LogTestBase {
                                 new Object[] {3, "little"},
                                 new Object[] {4, "bee"}));
         segment.append(53, -1L, -1L, memoryRecords);
-        FetchDataInfo read = segment.read(41, 300, segment.getSizeInBytes(), true);
+        FetchDataInfo read = segment.read(false, 41, 300, segment.getSizeInBytes(), true);
         assertThat(read).isNotNull();
         LogRecords actualRecords = read.getRecords();
         assertLogRecordsEquals(actualRecords, memoryRecords);
@@ -125,7 +125,7 @@ final class LogSegmentTest extends LogTestBase {
                 genMemoryLogRecordsWithBaseOffset(
                         50, Arrays.asList(new Object[] {1, "hello"}, new Object[] {2, "there"}));
         segment.append(51, -1L, -1L, memoryRecords);
-        FetchDataInfo read = segment.read(52, 300, segment.getSizeInBytes(), true);
+        FetchDataInfo read = segment.read(false, 52, 300, segment.getSizeInBytes(), true);
         assertThat(read).isNull();
     }
 
@@ -142,7 +142,7 @@ final class LogSegmentTest extends LogTestBase {
                 genMemoryLogRecordsWithBaseOffset(
                         60, Arrays.asList(new Object[] {1, "alpha"}, new Object[] {2, "beta"}));
         segment.append(61, -1L, -1L, memoryRecords2);
-        FetchDataInfo read = segment.read(55, 200, segment.getSizeInBytes(), true);
+        FetchDataInfo read = segment.read(false, 55, 200, segment.getSizeInBytes(), true);
         assertThat(read).isNotNull();
         assertLogRecordsEquals(read.getRecords(), memoryRecords2);
     }
@@ -163,14 +163,15 @@ final class LogSegmentTest extends LogTestBase {
                             offset + 1, Collections.singletonList(new Object[] {1, "hello"}));
             segment.append(offset + 1, -1L, -1L, memoryRecords2);
             // check that we can read back both messages
-            FetchDataInfo read = segment.read(offset, 10000, segment.getSizeInBytes(), true);
+            FetchDataInfo read = segment.read(false, offset, 10000, segment.getSizeInBytes(), true);
             assertThat(read).isNotNull();
             assertLogRecordsListEquals(
                     Arrays.asList(memoryRecords1, memoryRecords2), read.getRecords());
 
             // now truncate off the last message
             segment.truncateTo(offset + 1);
-            FetchDataInfo read2 = segment.read(offset, 10000, segment.getSizeInBytes(), true);
+            FetchDataInfo read2 =
+                    segment.read(false, offset, 10000, segment.getSizeInBytes(), true);
             assertThat(read2).isNotNull();
             assertLogRecordsEquals(read2.getRecords(), memoryRecords1);
             offset += 1;
@@ -245,7 +246,7 @@ final class LogSegmentTest extends LogTestBase {
 
         segment.truncateTo(0);
         assertThat(segment.offsetIndex().isFull()).isFalse();
-        assertThat(segment.read(0, 1024, 1024, false)).isNull();
+        assertThat(segment.read(false, 0, 1024, 1024, false)).isNull();
 
         segment.append(
                 41,
@@ -349,7 +350,7 @@ final class LogSegmentTest extends LogTestBase {
         try (LogRecordReadContext readContext =
                 LogRecordReadContext.createArrowReadContext(DATA1_ROW_TYPE, DEFAULT_SCHEMA_ID)) {
             for (int i = 0; i < 100; i++) {
-                FetchDataInfo read = segment.read(i, 100, segment.getSizeInBytes(), true);
+                FetchDataInfo read = segment.read(false, i, 100, segment.getSizeInBytes(), true);
                 assertThat(read).isNotNull();
                 Iterable<LogRecordBatch> batches = read.getRecords().batches();
                 LogRecordBatch batch = batches.iterator().next();
@@ -399,7 +400,7 @@ final class LogSegmentTest extends LogTestBase {
                 genMemoryLogRecordsWithBaseOffset(
                         60, Arrays.asList(new Object[] {1, "alpha"}, new Object[] {2, "beta"}));
         segment.append(61, -1L, -1L, memoryRecords2);
-        FetchDataInfo read = segment.read(55, 200, segment.getSizeInBytes(), true);
+        FetchDataInfo read = segment.read(false, 55, 200, segment.getSizeInBytes(), true);
         assertThat(read).isNotNull();
         assertLogRecordsEquals(read.getRecords(), memoryRecords2);
     }
@@ -417,7 +418,7 @@ final class LogSegmentTest extends LogTestBase {
                 genMemoryLogRecordsWithBaseOffset(
                         60, Arrays.asList(new Object[] {1, "alpha"}, new Object[] {2, "beta"}));
         segment.append(61, -1L, -1L, memoryRecords2);
-        FetchDataInfo read = segment.read(55, 200, segment.getSizeInBytes(), true);
+        FetchDataInfo read = segment.read(false, 55, 200, segment.getSizeInBytes(), true);
         assertThat(read).isNotNull();
         assertLogRecordsEquals(read.getRecords(), memoryRecords2);
 
@@ -430,7 +431,8 @@ final class LogSegmentTest extends LogTestBase {
         // After close, file should be trimmed
         assertThat(segment.getFileLogRecords().file().length()).isEqualTo(oldSize);
         LogSegment segmentReopen = createSegment(40, true, 1024 * 1024);
-        FetchDataInfo readAgain = segmentReopen.read(55, 200, segment.getSizeInBytes(), true);
+        FetchDataInfo readAgain =
+                segmentReopen.read(false, 55, 200, segment.getSizeInBytes(), true);
         assertThat(readAgain).isNotNull();
         assertLogRecordsEquals(readAgain.getRecords(), memoryRecords2);
         int size = segmentReopen.getFileLogRecords().sizeInBytes();
@@ -463,6 +465,7 @@ final class LogSegmentTest extends LogTestBase {
             // Read with filter
             FetchDataInfo read =
                     segment.read(
+                            false,
                             50,
                             300,
                             segment.getSizeInBytes(),
@@ -511,6 +514,7 @@ final class LogSegmentTest extends LogTestBase {
             // Read with filter
             FetchDataInfo read =
                     segment.read(
+                            false,
                             50,
                             300,
                             segment.getSizeInBytes(),
@@ -558,6 +562,7 @@ final class LogSegmentTest extends LogTestBase {
             // Read with filter
             FetchDataInfo read =
                     segment.read(
+                            false,
                             50,
                             300,
                             segment.getSizeInBytes(),
@@ -606,6 +611,7 @@ final class LogSegmentTest extends LogTestBase {
             // Read with filter
             FetchDataInfo read =
                     segment.read(
+                            false,
                             50,
                             300,
                             segment.getSizeInBytes(),
@@ -669,6 +675,7 @@ final class LogSegmentTest extends LogTestBase {
             // Read with filter
             FetchDataInfo read =
                     segment.read(
+                            false,
                             50,
                             1000,
                             segment.getSizeInBytes(),
@@ -708,6 +715,7 @@ final class LogSegmentTest extends LogTestBase {
             // Read with filter on empty segment should return null
             FetchDataInfo read =
                     segment.read(
+                            false,
                             40,
                             300,
                             segment.getSizeInBytes(),
