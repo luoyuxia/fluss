@@ -117,6 +117,8 @@ public final class LogTablet {
     private volatile long remoteLogStartOffset = Long.MAX_VALUE;
     // tracking the log end offset in remote storage
     private volatile long remoteLogEndOffset = -1L;
+    // tracking the log size in remote storage
+    private volatile long remoteLogSize = 0;
 
     // tracking the log start/end offset in lakehouse storage
     private volatile long lakeTableSnapshotId = -1;
@@ -339,7 +341,20 @@ public final class LogTablet {
         metricGroup.gauge(
                 MetricNames.LOG_NUM_SEGMENTS, () -> localLog.getSegments().numberOfSegments());
         metricGroup.gauge(MetricNames.LOG_END_OFFSET, localLog::getLocalLogEndOffset);
-        metricGroup.gauge(MetricNames.LOG_SIZE, () -> localLog.getSegments().sizeInBytes());
+    }
+
+    public long logSize() {
+        return localLog.getSegments().sizeInBytes();
+    }
+
+    public long logicalStorageSize() {
+        if (remoteLogEndOffset <= 0L) {
+            return localLog.getSegments().sizeInBytes();
+        } else {
+            return localLog.getSegments().higherSegments(remoteLogEndOffset).stream()
+                    .mapToLong(LogSegment::getSizeInBytes)
+                    .reduce(remoteLogSize, Long::sum);
+        }
     }
 
     public void updateLeaderEndOffsetSnapshot() {
@@ -468,6 +483,10 @@ public final class LogTablet {
         if (prev == Long.MAX_VALUE || remoteLogStartOffset > prev) {
             this.remoteLogStartOffset = remoteLogStartOffset;
         }
+    }
+
+    public void updateRemoteLogSize(long remoteLogSize) {
+        this.remoteLogSize = remoteLogSize;
     }
 
     public void updateRemoteLogEndOffset(long remoteLogEndOffset) {
