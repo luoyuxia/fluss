@@ -21,6 +21,7 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshotStore;
 import com.alibaba.fluss.server.kv.snapshot.ZooKeeperCompletedSnapshotHandleStore;
+import com.alibaba.fluss.server.metrics.group.TestingMetricGroups;
 import com.alibaba.fluss.server.testutils.KvTestUtils;
 import com.alibaba.fluss.server.zk.NOPErrorHandler;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
@@ -175,7 +176,10 @@ class CompletedSnapshotStoreManagerTest {
     private CompletedSnapshotStoreManager createCompletedSnapshotStoreManager(
             int maxNumberOfSnapshotsToRetain) {
         return new CompletedSnapshotStoreManager(
-                maxNumberOfSnapshotsToRetain, ioExecutor, zookeeperClient);
+                maxNumberOfSnapshotsToRetain,
+                ioExecutor,
+                zookeeperClient,
+                TestingMetricGroups.COORDINATOR_METRICS);
     }
 
     private CompletedSnapshot getLatestCompletedSnapshot(

@@ -357,8 +357,8 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   </thead>
   <tbody>
     <tr>
-      <th rowspan="25"><strong>tabletserver</strong></th>
-      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="25">-</td>
+      <th rowspan="30"><strong>tabletserver</strong></th>
+      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="30">-</td>
       <td>messagesInPerSecond</td>
       <td>The number of messages written per second to this server.</td>
       <td>Meter</td>
@@ -482,6 +482,31 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>preWriteBufferTruncateAsErrorPerSecond</td>
       <td>The number of kv pre-write buffer truncate due to the error happened when writing cdc to log per second.</td>
       <td>Meter</td>
+    </tr>
+    <tr>
+      <td>logSize</td>
+      <td>The total size of log managed by this TabletServer.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>remoteLogSize</td>
+      <td>The total size of remote log managed by this TabletServer.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>kvLatestSnapshotSize</td>
+      <td>The total size of kv latest snapshot managed by this TabletServer.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>logicalStorageSize</td>
+      <td>The logical storage size managed by this TabletServer.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>physicalStorageSize</td>
+      <td>The physical storage size managed by this TabletServer.</td>
+      <td>Gauge</td>
     </tr>
   </tbody>
 </table>
