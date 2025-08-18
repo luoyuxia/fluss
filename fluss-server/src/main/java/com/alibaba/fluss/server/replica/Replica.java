@@ -40,6 +40,8 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.metrics.Counter;
 import com.alibaba.fluss.record.DefaultValueRecordBatch;
 import com.alibaba.fluss.record.KvRecordBatch;
+import com.alibaba.fluss.record.LogRecordBatch;
+import com.alibaba.fluss.record.LogRecordReadContext;
 import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.rpc.protocol.Errors;
@@ -167,7 +169,8 @@ public final class Replica {
 
     private final Schema schema;
     private final TableConfig tableConfig;
-    // logFormat and arrowCompressionInfo are used in hot-path, so cache them here.
+    private final TableInfo tableInfo;
+
     private final LogFormat logFormat;
     private final ArrowCompressionInfo arrowCompressionInfo;
     private final AtomicReference<Integer> leaderReplicaIdOpt = new AtomicReference<>();
@@ -231,6 +234,7 @@ public final class Replica {
         this.bucketMetricGroup = bucketMetricGroup;
         this.schema = tableInfo.getSchema();
         this.tableConfig = tableInfo.getTableConfig();
+        this.tableInfo = tableInfo;
         this.logFormat = tableConfig.getLogFormat();
         this.arrowCompressionInfo = tableConfig.getArrowCompressionInfo();
         this.snapshotContext = snapshotContext;
@@ -1167,10 +1171,13 @@ public final class Replica {
                                 Math.max(logTablet.logStartOffset(), highWatermark - limit);
                         FetchDataInfo dataInfo =
                                 logTablet.read(
+                                        true,
                                         readOffset,
                                         Integer.MAX_VALUE,
                                         FetchIsolation.HIGH_WATERMARK,
                                         true,
+                                        null,
+                                        null,
                                         null);
                         return dataInfo.getRecords();
                     } catch (IOException e) {
@@ -1315,13 +1322,30 @@ public final class Replica {
 
         // todo validate fetched epoch.
 
+        // Create ReadContext for batch filtering if needed
+        LogRecordBatch.ReadContext readContext = null;
+        if (fetchParams.gatTableRecordBatchFilter(tableBucket.getTableId()) != null) {
+            if (logFormat == LogFormat.ARROW) {
+                readContext =
+                        LogRecordReadContext.createArrowReadContext(
+                                schema.getRowType(), tableInfo.getSchemaId());
+            } else if (logFormat == LogFormat.INDEXED) {
+                readContext =
+                        LogRecordReadContext.createIndexedReadContext(
+                                schema.getRowType(), tableInfo.getSchemaId());
+            }
+        }
+
         FetchDataInfo fetchDataInfo =
                 logTablet.read(
+                        !fetchParams.isFromFollower(),
                         readOffset,
                         fetchParams.maxFetchBytes(),
                         fetchParams.isolation(),
                         fetchParams.minOneMessage(),
-                        fetchParams.projection());
+                        fetchParams.projection(),
+                        fetchParams.gatTableRecordBatchFilter(tableBucket.getTableId()),
+                        readContext);
         return new LogReadInfo(fetchDataInfo, initialHighWatermark, initialLogEndOffset);
     }
 

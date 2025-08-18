@@ -21,7 +21,7 @@ import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.LogRecordBatch;
 
-import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
 
 /**
  * This class is used to validate the records appended by a given writer before they are written to

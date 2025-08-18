@@ -32,6 +32,7 @@ import com.alibaba.fluss.flink.source.state.FlussSourceEnumeratorStateSerializer
 import com.alibaba.fluss.flink.source.state.SourceEnumeratorState;
 import com.alibaba.fluss.flink.utils.PushdownUtils.FieldEqual;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.types.RowType;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -70,6 +71,8 @@ public class FlinkSource<OUT>
 
     private final List<FieldEqual> partitionFilters;
 
+    @Nullable private final Predicate logRecordBatchFilter;
+
     public FlinkSource(
             Configuration flussConf,
             TablePath tablePath,
@@ -81,7 +84,8 @@ public class FlinkSource<OUT>
             long scanPartitionDiscoveryIntervalMs,
             FlussDeserializationSchema<OUT> deserializationSchema,
             boolean streaming,
-            List<FieldEqual> partitionFilters) {
+            List<FieldEqual> partitionFilters,
+            @Nullable Predicate logRecordBatchFilter) {
         this.flussConf = flussConf;
         this.tablePath = tablePath;
         this.hasPrimaryKey = hasPrimaryKey;
@@ -93,6 +97,7 @@ public class FlinkSource<OUT>
         this.deserializationSchema = deserializationSchema;
         this.streaming = streaming;
         this.partitionFilters = checkNotNull(partitionFilters);
+        this.logRecordBatchFilter = logRecordBatchFilter;
     }
 
     @Override
@@ -165,6 +170,7 @@ public class FlinkSource<OUT>
                 sourceOutputType,
                 context,
                 projectedFields,
+                logRecordBatchFilter,
                 flinkSourceReaderMetrics,
                 recordEmitter);
     }

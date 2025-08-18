@@ -73,6 +73,8 @@ public class TabletServerMetricGroup extends AbstractMetricGroup {
     private final Counter isrShrinks;
     private final Counter isrExpands;
     private final Counter failedIsrUpdates;
+    private final Counter logRecordBatchStatisticsProcessCount;
+    private final Counter logRecordBatchStatisticsFilterOutCount;
 
     public TabletServerMetricGroup(
             MetricRegistry registry, String clusterId, String rack, String hostname, int serverId) {
@@ -133,6 +135,14 @@ public class TabletServerMetricGroup extends AbstractMetricGroup {
         meter(MetricNames.ISR_SHRINKS_RATE, new MeterView(isrShrinks));
         failedIsrUpdates = new SimpleCounter();
         meter(MetricNames.FAILED_ISR_UPDATES_RATE, new MeterView(failedIsrUpdates));
+        logRecordBatchStatisticsProcessCount = new ThreadSafeSimpleCounter();
+        meter(
+                MetricNames.LOG_RECORD_BATCH_STATISTICS_PROCESS_COUNT,
+                new MeterView(logRecordBatchStatisticsProcessCount));
+        logRecordBatchStatisticsFilterOutCount = new ThreadSafeSimpleCounter();
+        meter(
+                MetricNames.LOG_RECORD_BATCH_STATISTICS_FILTER_OUT_COUNT,
+                new MeterView(logRecordBatchStatisticsFilterOutCount));
     }
 
     @Override
@@ -219,6 +229,14 @@ public class TabletServerMetricGroup extends AbstractMetricGroup {
 
     public Counter failedIsrUpdates() {
         return failedIsrUpdates;
+    }
+
+    public Counter logRecordBatchStatisticsProcessCount() {
+        return logRecordBatchStatisticsProcessCount;
+    }
+
+    public Counter logRecordBatchStatisticsFilterOutCount() {
+        return logRecordBatchStatisticsFilterOutCount;
     }
 
     // ------------------------------------------------------------------------

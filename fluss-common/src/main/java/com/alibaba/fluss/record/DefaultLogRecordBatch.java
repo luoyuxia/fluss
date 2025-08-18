@@ -33,13 +33,15 @@ import com.alibaba.fluss.utils.crc.Crc32C;
 
 import java.nio.ByteBuffer;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 
 import static com.alibaba.fluss.record.LogRecordBatchFormat.BASE_OFFSET_OFFSET;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.LENGTH_OFFSET;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_OVERHEAD;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.MAGIC_OFFSET;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.NO_LEADER_EPOCH;
-import static com.alibaba.fluss.record.LogRecordBatchFormat.arrowChangeTypeOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.STATISTICS_FLAG_MASK;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.attributeOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.batchSequenceOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.commitTimestampOffset;
@@ -49,6 +51,7 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.leaderEpochOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordsCountOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.schemaIdOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.writeClientIdOffset;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
@@ -76,9 +79,14 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     private MemorySegment segment;
     private int position;
 
+    // Cache for statistics to avoid repeated parsing
+    private Optional<LogRecordBatchStatistics> cachedStatistics = null;
+
     public void pointTo(MemorySegment segment, int position) {
         this.segment = segment;
         this.position = position;
+        // Reset cache when pointing to new memory segment
+        this.cachedStatistics = null;
     }
 
     public void setBaseLogOffset(long baseLogOffset) {
@@ -282,7 +290,7 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
         if (isAppendOnly) {
             // append only batch, no change type vector,
             // the start of the arrow data is the beginning of the batch records
-            int recordBatchHeaderSize = recordBatchHeaderSize(magic);
+            int recordBatchHeaderSize = LogRecordBatchFormat.recordBatchHeaderSize(magic);
             int arrowOffset = position + recordBatchHeaderSize;
             int arrowLength = sizeInBytes() - recordBatchHeaderSize;
             ArrowReader reader =
@@ -297,12 +305,14 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
         } else {
             // with change type, decode the change type vector first,
             // the arrow data starts after the change type vector
-            int changeTypeOffset = position + arrowChangeTypeOffset(magic);
+            int changeTypeOffset = position + LogRecordBatchFormat.arrowChangeTypeOffset(magic);
             ChangeTypeVector changeTypeVector =
                     new ChangeTypeVector(segment, changeTypeOffset, getRecordCount());
             int arrowOffset = changeTypeOffset + changeTypeVector.sizeInBytes();
             int arrowLength =
-                    sizeInBytes() - arrowChangeTypeOffset(magic) - changeTypeVector.sizeInBytes();
+                    sizeInBytes()
+                            - LogRecordBatchFormat.arrowChangeTypeOffset(magic)
+                            - changeTypeVector.sizeInBytes();
             ArrowReader reader =
                     ArrowUtils.createArrowReader(
                             segment, arrowOffset, arrowLength, root, allocator, rowType);
@@ -409,5 +419,62 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
         public void remove() {
             throw new UnsupportedOperationException();
         }
+    }
+
+    @Override
+    public Optional<LogRecordBatchStatistics> getStatistics(ReadContext context) {
+        if (context == null) {
+            return Optional.empty();
+        }
+
+        // Return cached statistics if already parsed
+        if (cachedStatistics != null) {
+            return cachedStatistics;
+        }
+
+        try {
+            int statisticsLength = statisticsSizeInBytes();
+            if (statisticsLength == 0) {
+                // Cache the empty result to avoid repeated checks
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
+            }
+
+            // Get row type from context
+            RowType rowType = context.getRowType(schemaId());
+            if (rowType == null) {
+                // Cache the empty result to avoid repeated checks
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
+            }
+
+            int statisticsDataOffset = sizeInBytes() - statisticsLength;
+
+            // Parse statistics directly from memory segment without creating heap objects
+            LogRecordBatchStatistics statistics =
+                    LogRecordBatchStatisticsParser.parseStatistics(
+                            segment, statisticsDataOffset, statisticsLength, rowType);
+
+            // Cache the parsed statistics
+            cachedStatistics = Optional.ofNullable(statistics);
+            return cachedStatistics;
+        } catch (Exception e) {
+            // Cache the empty result to avoid repeated parsing attempts
+            cachedStatistics = Optional.empty();
+            return cachedStatistics;
+        }
+    }
+
+    @Override
+    public int statisticsSizeInBytes() {
+        byte magic = magic();
+        if (magic < LOG_MAGIC_VALUE_V2) {
+            return 0;
+        }
+        byte attribute = attributes();
+        if ((attribute & STATISTICS_FLAG_MASK) == 0) {
+            return 0;
+        }
+        return segment.getInt(position + statisticsLengthOffset(magic));
     }
 }

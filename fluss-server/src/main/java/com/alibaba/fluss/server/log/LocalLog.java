@@ -26,7 +26,9 @@ import com.alibaba.fluss.metadata.LogFormat;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metrics.Counter;
 import com.alibaba.fluss.metrics.Histogram;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.FileLogProjection;
+import com.alibaba.fluss.record.LogRecordBatch;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.server.metrics.group.TabletServerMetricGroup;
 import com.alibaba.fluss.utils.FileUtils;
@@ -345,7 +347,8 @@ public final class LocalLog {
      * offset is out of range, throw an OffsetOutOfRangeException.
      */
     LogOffsetMetadata convertToOffsetMetadataOrThrow(long offset) throws IOException {
-        FetchDataInfo fetchDataInfo = read(offset, 1, false, nextOffsetMetadata, null);
+        FetchDataInfo fetchDataInfo =
+                read(false, offset, 1, false, nextOffsetMetadata, null, null, null);
         return fetchDataInfo.getFetchOffsetMetadata();
     }
 
@@ -357,17 +360,31 @@ public final class LocalLog {
      * @param minOneMessage If this is true, the first message will be returned even if it exceeds
      *     `maxLength` (if one exists)
      * @param maxOffsetMetadata The metadata of the maximum offset to be fetched
+     * @param projection The column projection to apply to the log records
+     * @param recordBatchFilter The filter to apply to the log records (must be null if readContext
+     *     is null)
+     * @param readContext The read context for batch filtering (must be null if recordBatchFilter is
+     *     null)
      * @throws LogOffsetOutOfRangeException If startOffset is beyond the log start and end offset
      * @return The fetch data information including fetch starting offset metadata and messages
      *     read.
      */
     public FetchDataInfo read(
+            boolean fetchDataFromClient,
             long readOffset,
             int maxLength,
             boolean minOneMessage,
             LogOffsetMetadata maxOffsetMetadata,
-            @Nullable FileLogProjection projection)
+            @Nullable FileLogProjection projection,
+            @Nullable Predicate recordBatchFilter,
+            @Nullable LogRecordBatch.ReadContext readContext)
             throws IOException {
+        // Validate that recordBatchFilter and readContext are either both null or both non-null
+        if ((recordBatchFilter == null) != (readContext == null)) {
+            throw new IllegalArgumentException(
+                    "recordBatchFilter and readContext must be either both null or both non-null");
+        }
+
         if (LOG.isTraceEnabled()) {
             LOG.trace(
                     "Reading maximum {} bytes at offset {} from log with total length {} bytes",
@@ -413,7 +430,15 @@ public final class LocalLog {
                                 ? maxOffsetMetadata.getRelativePositionInSegment()
                                 : segment.getSizeInBytes();
                 fetchDataInfo =
-                        segment.read(readOffset, maxLength, maxPosition, minOneMessage, projection);
+                        segment.read(
+                                fetchDataFromClient,
+                                readOffset,
+                                maxLength,
+                                maxPosition,
+                                minOneMessage,
+                                projection,
+                                recordBatchFilter,
+                                readContext);
                 if (fetchDataInfo == null) {
                     segmentOpt = segments.higherSegment(baseOffset);
                 }

@@ -21,6 +21,7 @@ import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.exception.CorruptSnapshotException;
 import com.alibaba.fluss.exception.UnknownWriterIdException;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.record.LogRecordBatch;
 import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import com.alibaba.fluss.utils.json.JsonDeserializer;
