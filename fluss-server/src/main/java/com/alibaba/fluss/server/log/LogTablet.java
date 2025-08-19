@@ -33,6 +33,7 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.metrics.MeterView;
 import com.alibaba.fluss.metrics.MetricNames;
 import com.alibaba.fluss.metrics.groups.MetricGroup;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.DefaultLogRecordBatch;
 import com.alibaba.fluss.record.FileLogProjection;
 import com.alibaba.fluss.record.FileLogRecords;
@@ -368,13 +369,15 @@ public final class LogTablet {
         return append(records, false);
     }
 
-    /** Read messages from the local log. */
     public FetchDataInfo read(
+            boolean fetchDataFromClient,
             long readOffset,
             int maxLength,
             FetchIsolation fetchIsolation,
             boolean minOneMessage,
-            @Nullable FileLogProjection projection)
+            @Nullable FileLogProjection projection,
+            @Nullable Predicate recordBatchFilter,
+            @Nullable LogRecordBatch.ReadContext readContext)
             throws IOException {
         LogOffsetMetadata maxOffsetMetadata = null;
         if (fetchIsolation == FetchIsolation.LOG_END) {
@@ -383,7 +386,15 @@ public final class LogTablet {
             maxOffsetMetadata = fetchHighWatermarkMetadata();
         }
 
-        return localLog.read(readOffset, maxLength, minOneMessage, maxOffsetMetadata, projection);
+        return localLog.read(
+                fetchDataFromClient,
+                readOffset,
+                maxLength,
+                minOneMessage,
+                maxOffsetMetadata,
+                projection,
+                recordBatchFilter,
+                readContext);
     }
 
     /**
@@ -1205,7 +1216,7 @@ public final class LogTablet {
                     }
 
                     FetchDataInfo fetchDataInfo =
-                            segment.read(startOffset, Integer.MAX_VALUE, maxPosition, false);
+                            segment.read(false, startOffset, Integer.MAX_VALUE, maxPosition, false);
                     if (fetchDataInfo != null) {
                         loadWritersFromRecords(writerStateManager, fetchDataInfo.getRecords());
                     }
