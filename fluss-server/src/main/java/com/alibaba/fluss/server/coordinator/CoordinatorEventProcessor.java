@@ -1020,7 +1020,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 event.getAddCompletedSnapshotData().getCompletedSnapshot();
         // add completed snapshot
         CompletedSnapshotStore completedSnapshotStore =
-                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(tb);
+                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(
+                        coordinatorContext.getTablePathById(tb.getTableId()), tb);
         completedSnapshotStore.add(completedSnapshot);
 
         // send notify snapshot request to all replicas.

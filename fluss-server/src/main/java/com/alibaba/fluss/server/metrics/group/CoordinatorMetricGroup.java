@@ -74,6 +74,16 @@ public class CoordinatorMetricGroup extends AbstractMetricGroup {
     // ------------------------------------------------------------------------
     //  table buckets groups
     // ------------------------------------------------------------------------
+
+    public @Nullable BucketMetricGroup getTableBucketMetricGroup(
+            TablePath tablePath, TableBucket tableBucket) {
+        SimpleTableMetricGroup tableMetricGroup = metricGroupByTable.get(tablePath);
+        if (tableMetricGroup == null) {
+            return null;
+        }
+        return tableMetricGroup.buckets.get(tableBucket);
+    }
+
     public void addTableBucketMetricGroup(
             PhysicalTablePath physicalTablePath,
             long tableId,

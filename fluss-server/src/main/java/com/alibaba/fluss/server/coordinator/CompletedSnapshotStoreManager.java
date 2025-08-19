@@ -18,6 +18,7 @@
 package com.alibaba.fluss.server.coordinator;
 
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.metrics.MetricNames;
 import com.alibaba.fluss.metrics.groups.MetricGroup;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
@@ -26,6 +27,7 @@ import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshotHandleStore;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshotStore;
 import com.alibaba.fluss.server.kv.snapshot.SharedKvFileRegistry;
 import com.alibaba.fluss.server.kv.snapshot.ZooKeeperCompletedSnapshotHandleStore;
+import com.alibaba.fluss.server.metrics.group.BucketMetricGroup;
 import com.alibaba.fluss.server.metrics.group.CoordinatorMetricGroup;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
 
@@ -97,7 +99,8 @@ public class CompletedSnapshotStoreManager {
         return bucketCompletedSnapshotStores.get(tableBucket).getPhysicalStorageRemoteKvSize();
     }
 
-    public CompletedSnapshotStore getOrCreateCompletedSnapshotStore(TableBucket tableBucket) {
+    public CompletedSnapshotStore getOrCreateCompletedSnapshotStore(
+            TablePath tablePath, TableBucket tableBucket) {
         return bucketCompletedSnapshotStores.computeIfAbsent(
                 tableBucket,
                 (bucket) -> {
@@ -112,11 +115,16 @@ public class CompletedSnapshotStoreManager {
                                 bucket,
                                 end - start);
 
-                        coordinatorMetricGroup.gauge(
-                                MetricNames.KV_NUM_SNAPSHOTS, () -> getNumSnapshots(bucket));
-                        coordinatorMetricGroup.gauge(
-                                MetricNames.KV_ALL_SNAPSHOT_SIZE, () -> getAllSnapshotSize(bucket));
-
+                        BucketMetricGroup bucketMetricGroup =
+                                coordinatorMetricGroup.getTableBucketMetricGroup(
+                                        tablePath, tableBucket);
+                        if (bucketMetricGroup != null) {
+                            bucketMetricGroup.gauge(
+                                    MetricNames.KV_NUM_SNAPSHOTS, () -> getNumSnapshots(bucket));
+                            bucketMetricGroup.gauge(
+                                    MetricNames.KV_ALL_SNAPSHOT_SIZE,
+                                    () -> getAllSnapshotSize(bucket));
+                        }
                         return snapshotStore;
                     } catch (Exception e) {
                         throw new RuntimeException(
