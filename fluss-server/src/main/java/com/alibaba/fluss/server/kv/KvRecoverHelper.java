@@ -127,10 +127,13 @@ public class KvRecoverHelper {
             LogRecords logRecords =
                     logTablet
                             .read(
+                                    false,
                                     nextFetchOffset,
                                     recoverContext.maxFetchLogSizeInRecoverKv,
                                     fetchIsolation,
                                     true,
+                                    null,
+                                    null,
                                     null)
                             .getRecords();
             if (logRecords == MemoryLogRecords.EMPTY) {

@@ -528,7 +528,7 @@ public class DataTestUtils {
 
             ((DefaultLogRecordBatch) memoryLogRecords.batches().iterator().next())
                     .setCommitTimestamp(maxTimestamp);
-            memoryLogRecords.ensureValid(CURRENT_LOG_MAGIC_VALUE);
+            memoryLogRecords.ensureValid(magic);
             return memoryLogRecords;
         }
     }
