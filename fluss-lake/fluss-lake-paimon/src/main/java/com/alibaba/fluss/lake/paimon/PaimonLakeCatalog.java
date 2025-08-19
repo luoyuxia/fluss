@@ -27,7 +27,6 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.utils.IOUtils;
 
 import com.alibaba.alake.common.options.AlakeOptionsBuilder;
-import com.alibaba.alake.core.builder.check.trace.model.EngineType;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
@@ -83,9 +82,9 @@ public class PaimonLakeCatalog implements LakeCatalog {
         catalogOptions.set("dlf.deploy.env", "prod");
         // 引擎类型，不同引擎使用不同的值
         // 具体枚举参考com.alibaba.alake.core.buidler.check.trace.model.EngineType
-        catalogOptions.set("dlf.request.engine", EngineType.ALAKE.name());
+        catalogOptions.set("dlf.request.engine", "fluss");
 
-        catalogOptions.set("dlf.catalog.endpoint", "metastore-inner.aliyuncs.com");
+        catalogOptions.set("dlf.catalog.endpoint", "metastore-pre.aliyuncs.com");
         catalogOptions.set("uri", "dlf-jindo-bennett.alibaba-inc.com");
 
         LOG.info("catalog options: {}", catalogOptions);

@@ -44,6 +44,8 @@ import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -76,6 +78,8 @@ public class TieringCommitOperator<WriteResult, Committable>
         extends AbstractStreamOperator<CommittableMessage<Committable>>
         implements OneInputStreamOperator<
                 TableBucketWriteResult<WriteResult>, CommittableMessage<Committable>> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TieringCommitOperator.class);
 
     private static final long serialVersionUID = 1L;
 
@@ -156,6 +160,7 @@ public class TieringCommitOperator<WriteResult, Committable>
                 operatorEventGateway.sendEventToCoordinator(
                         new SourceEventWrapper(new FinishedTieringEvent(tableId)));
             } catch (Exception e) {
+                LOG.error("Fail to commit to paimon", e);
                 // if any exception happens, send to source coordinator to mark it as failed
                 operatorEventGateway.sendEventToCoordinator(
                         new SourceEventWrapper(
