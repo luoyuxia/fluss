@@ -877,7 +877,15 @@ class KvTabletTest {
             LogTablet logTablet, long startOffset, @Nullable FileLogProjection projection)
             throws Exception {
         return logTablet
-                .read(startOffset, Integer.MAX_VALUE, FetchIsolation.LOG_END, false, projection)
+                .read(
+                        false,
+                        startOffset,
+                        Integer.MAX_VALUE,
+                        FetchIsolation.LOG_END,
+                        false,
+                        projection,
+                        null,
+                        null)
                 .getRecords();
     }
 

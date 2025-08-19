@@ -29,6 +29,7 @@ import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
@@ -43,6 +44,7 @@ public class TableScan implements Scan {
 
     /** The projected fields to do projection. No projection if is null. */
     @Nullable private final int[] projectedColumns;
+
     /** The limited row number to read. No limit if is null. */
     @Nullable private final Integer limit;
 
@@ -97,7 +99,23 @@ public class TableScan implements Scan {
                 conn.getMetadataUpdater(),
                 conn.getClientMetricGroup(),
                 conn.getOrCreateRemoteFileDownloader(),
-                projectedColumns);
+                projectedColumns,
+                null);
+    }
+
+    @Override
+    public LogScanner createLogScanner(Predicate recordBatchFilter) {
+        if (limit != null) {
+            throw new UnsupportedOperationException("LogScanner doesn't support limit pushdown.");
+        }
+        return new LogScannerImpl(
+                conn.getConfiguration(),
+                tableInfo,
+                conn.getMetadataUpdater(),
+                conn.getClientMetricGroup(),
+                conn.getOrCreateRemoteFileDownloader(),
+                projectedColumns,
+                recordBatchFilter);
     }
 
     @Override

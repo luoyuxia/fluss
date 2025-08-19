@@ -20,6 +20,8 @@ package fluss;
 option java_package = "com.alibaba.fluss.rpc.messages";
 option optimize_for = LITE_RUNTIME;
 
+import "Predicate.proto";
+
 /**
 * NOTICE: To ensure a smooth upgrade to Proto3 syntax while maintaining backward compatibility in
 * the future, please adhere to the following limitations:
@@ -618,6 +620,7 @@ message PbFetchLogReqForTable {
   required bool projection_pushdown_enabled = 2;
   repeated int32 projected_fields = 3 [packed = true];
   repeated PbFetchLogReqForBucket buckets_req = 4;
+  optional PbPredicate recordBatchFilter = 5;
 }
 
 message PbFetchLogReqForBucket {

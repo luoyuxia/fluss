@@ -23,6 +23,7 @@ import com.alibaba.fluss.exception.UnknownTableOrBucketException;
 import com.alibaba.fluss.fs.FileSystem;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.KvRecordBatch;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
@@ -70,6 +71,7 @@ import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.entity.FetchReqInfo;
 import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrData;
 import com.alibaba.fluss.server.log.FetchParams;
+import com.alibaba.fluss.server.log.FetchParamsBuilder;
 import com.alibaba.fluss.server.log.ListOffsetsParam;
 import com.alibaba.fluss.server.metadata.TabletServerMetadataCache;
 import com.alibaba.fluss.server.replica.ReplicaManager;
@@ -101,6 +103,7 @@ import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getNotifySnap
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getProduceLogData;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getPutKvData;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getStopReplicaData;
+import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getTableRecordBatchFilterMap;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getTargetColumns;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.getUpdateMetadataRequestData;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeFetchLogResponse;
@@ -186,18 +189,24 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
 
     private static FetchParams getFetchParams(FetchLogRequest request) {
         FetchParams fetchParams;
+        Map<Long, Predicate> tableRecordBatchFilterMap = getTableRecordBatchFilterMap(request);
         if (request.hasMinBytes()) {
             fetchParams =
-                    new FetchParams(
-                            request.getFollowerServerId(),
-                            request.getMaxBytes(),
-                            request.getMinBytes(),
-                            request.hasMaxWaitMs()
-                                    ? request.getMaxWaitMs()
-                                    : DEFAULT_MAX_WAIT_MS_WHEN_MIN_BYTES_ENABLE);
+                    new FetchParamsBuilder(request.getFollowerServerId(), request.getMaxBytes())
+                            .withMinFetchBytes(request.getMinBytes())
+                            .withMaxWaitMs(
+                                    request.hasMaxWaitMs()
+                                            ? request.getMaxWaitMs()
+                                            : DEFAULT_MAX_WAIT_MS_WHEN_MIN_BYTES_ENABLE)
+                            .withTableRecordBatchFilterMap(tableRecordBatchFilterMap)
+                            .build();
         } else {
-            fetchParams = new FetchParams(request.getFollowerServerId(), request.getMaxBytes());
+            fetchParams =
+                    new FetchParamsBuilder(request.getFollowerServerId(), request.getMaxBytes())
+                            .withTableRecordBatchFilterMap(tableRecordBatchFilterMap)
+                            .build();
         }
+
         return fetchParams;
     }
 

@@ -22,6 +22,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.source.deserializer.FlussDeserializationSchema;
 import com.alibaba.fluss.flink.source.enumerator.initializer.OffsetsInitializer;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
@@ -66,6 +67,7 @@ public class FlussSource<OUT> extends FlinkSource<OUT> {
             boolean isPartitioned,
             RowType sourceOutputType,
             @Nullable int[] projectedFields,
+            @Nullable Predicate logRecordBatchFilter,
             OffsetsInitializer offsetsInitializer,
             long scanPartitionDiscoveryIntervalMs,
             FlussDeserializationSchema<OUT> deserializationSchema,
@@ -82,7 +84,8 @@ public class FlussSource<OUT> extends FlinkSource<OUT> {
                 scanPartitionDiscoveryIntervalMs,
                 deserializationSchema,
                 streaming,
-                Collections.emptyList());
+                Collections.emptyList(),
+                logRecordBatchFilter);
     }
 
     /**

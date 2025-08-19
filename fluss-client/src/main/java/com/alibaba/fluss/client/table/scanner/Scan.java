@@ -21,6 +21,7 @@ import com.alibaba.fluss.annotation.PublicEvolving;
 import com.alibaba.fluss.client.table.scanner.batch.BatchScanner;
 import com.alibaba.fluss.client.table.scanner.log.LogScanner;
 import com.alibaba.fluss.metadata.TableBucket;
+import com.alibaba.fluss.predicate.Predicate;
 
 import javax.annotation.Nullable;
 
@@ -64,6 +65,13 @@ public interface Scan {
      * <p>Note: this API doesn't support pre-configured with {@link #limit(int)}.
      */
     LogScanner createLogScanner();
+
+    /**
+     * Creates a {@link LogScanner} to continuously read log data for this scan with filter.
+     *
+     * <p>Note: this API doesn't support pre-configured with {@link #limit(int)}.
+     */
+    LogScanner createLogScanner(Predicate recordBatchFilter);
 
     /**
      * Creates a {@link BatchScanner} to read current data in the given table bucket for this scan.

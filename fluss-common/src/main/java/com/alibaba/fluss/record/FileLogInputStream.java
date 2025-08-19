@@ -19,14 +19,21 @@ package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.memory.MemorySegment;
+import com.alibaba.fluss.record.bytesview.BytesView;
+import com.alibaba.fluss.record.bytesview.FileRegionBytesView;
+import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.CloseableIterator;
 import com.alibaba.fluss.utils.FileUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.util.Objects;
+import java.util.Optional;
 
 import static com.alibaba.fluss.record.LogRecordBatchFormat.BASE_OFFSET_OFFSET;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.HEADER_SIZE_UP_TO_MAGIC;
@@ -42,6 +49,8 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.recordBatchHeaderSiz
 /** A log input stream which is backed by a {@link FileChannel}. */
 public class FileLogInputStream
         implements LogInputStream<FileLogInputStream.FileChannelLogRecordBatch> {
+    private static final Logger LOG = LoggerFactory.getLogger(FileLogInputStream.class);
+
     private int position;
     private final int end;
     private final FileLogRecords fileRecords;
@@ -95,6 +104,10 @@ public class FileLogInputStream
 
         private LogRecordBatch fullBatch;
         private LogRecordBatch batchHeader;
+        private LogRecordBatchStatistics statistics;
+
+        // Cache for statistics to avoid repeated parsing
+        private Optional<LogRecordBatchStatistics> cachedStatistics = null;
 
         FileChannelLogRecordBatch(
                 long offset, byte magic, FileLogRecords fileRecords, int position, int batchSize) {
@@ -122,6 +135,10 @@ public class FileLogInputStream
 
         public int position() {
             return position;
+        }
+
+        public BytesView getBytesView() {
+            return new FileRegionBytesView(fileRecords.channel(), position, sizeInBytes());
         }
 
         @Override
@@ -272,6 +289,68 @@ public class FileLogInputStream
                     + ", size: "
                     + batchSize
                     + ")";
+        }
+
+        @Override
+        public Optional<LogRecordBatchStatistics> getStatistics(ReadContext context) {
+            if (context == null) {
+                return Optional.empty();
+            }
+
+            // Return cached statistics if already parsed
+            if (cachedStatistics != null) {
+                return cachedStatistics;
+            }
+
+            if (magic < LogRecordBatchFormat.LOG_MAGIC_VALUE_V2) {
+                // Statistics are only available in V2 and later
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
+            }
+
+            try {
+                // Load and parse statistics
+                if (statistics != null) {
+                    cachedStatistics = Optional.of(statistics);
+                    return cachedStatistics;
+                }
+
+                RowType rowType = context.getRowType(schemaId());
+                if (rowType == null) {
+                    cachedStatistics = Optional.empty();
+                    return cachedStatistics;
+                }
+
+                int statisticsLength = loadBatchHeader().statisticsSizeInBytes();
+
+                if (statisticsLength <= 0) {
+                    cachedStatistics = Optional.empty();
+                    return cachedStatistics;
+                }
+
+                int statisticsDataOffset = sizeInBytes() - statisticsLength;
+
+                ByteBuffer statisticsData =
+                        loadByteBufferWithSize(
+                                statisticsLength, position + statisticsDataOffset, "statistics");
+
+                // Parse statistics directly from byte buffer without creating heap objects
+                statistics =
+                        LogRecordBatchStatisticsParser.parseStatistics(
+                                statisticsData.array(), rowType);
+                cachedStatistics = Optional.ofNullable(statistics);
+                return cachedStatistics;
+            } catch (Exception e) {
+                // If loading statistics fails, log the error and return empty
+                LOG.warn("Failed to load statistics for record batch at position {}", position, e);
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
+            }
+        }
+
+        @Override
+        public int statisticsSizeInBytes() {
+            return loadBatchHeader().statisticsSizeInBytes();
         }
     }
 }
