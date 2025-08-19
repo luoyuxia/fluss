@@ -46,6 +46,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import static com.alibaba.fluss.record.TestData.DATA1_TABLE_PATH;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link CompletedSnapshotStoreManager}. */
@@ -110,7 +111,8 @@ class CompletedSnapshotStoreManagerTest {
             // check has retain number of snapshots
             assertThat(
                             completedSnapshotStoreManager
-                                    .getOrCreateCompletedSnapshotStore(tableBucket)
+                                    .getOrCreateCompletedSnapshotStore(
+                                            DATA1_TABLE_PATH, tableBucket)
                                     .getAllSnapshots())
                     .hasSize(maxNumberOfSnapshotsToRetain);
         }
@@ -137,7 +139,8 @@ class CompletedSnapshotStoreManagerTest {
             // check has retain number of snapshots
             assertThat(
                             completedSnapshotStoreManager
-                                    .getOrCreateCompletedSnapshotStore(tableBucket)
+                                    .getOrCreateCompletedSnapshotStore(
+                                            DATA1_TABLE_PATH, tableBucket)
                                     .getAllSnapshots())
                     .hasSize(maxNumberOfSnapshotsToRetain);
         }
@@ -146,7 +149,7 @@ class CompletedSnapshotStoreManagerTest {
         TableBucket nonExistBucket = new TableBucket(10, 100);
         assertThat(
                         completedSnapshotStoreManager
-                                .getOrCreateCompletedSnapshotStore(nonExistBucket)
+                                .getOrCreateCompletedSnapshotStore(DATA1_TABLE_PATH, nonExistBucket)
                                 .getAllSnapshots())
                 .hasSize(0);
     }
@@ -185,7 +188,8 @@ class CompletedSnapshotStoreManagerTest {
     private CompletedSnapshot getLatestCompletedSnapshot(
             CompletedSnapshotStoreManager completedSnapshotStoreManager, TableBucket tableBucket) {
         CompletedSnapshotStore completedSnapshotStore =
-                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(tableBucket);
+                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(
+                        DATA1_TABLE_PATH, tableBucket);
         return completedSnapshotStore.getLatestSnapshot().get();
     }
 
@@ -195,7 +199,8 @@ class CompletedSnapshotStoreManagerTest {
             throws Exception {
         TableBucket tableBucket = completedSnapshot.getTableBucket();
         CompletedSnapshotStore completedSnapshotStore =
-                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(tableBucket);
+                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(
+                        DATA1_TABLE_PATH, tableBucket);
         completedSnapshotStore.add(completedSnapshot);
     }
 
