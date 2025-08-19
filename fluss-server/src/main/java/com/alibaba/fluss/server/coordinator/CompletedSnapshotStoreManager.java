@@ -119,6 +119,7 @@ public class CompletedSnapshotStoreManager {
                                 coordinatorMetricGroup.getTableBucketMetricGroup(
                                         tablePath, tableBucket);
                         if (bucketMetricGroup != null) {
+                            LOG.info("ADDED bucketMetricGroup for tableBucket {}.", bucket);
                             bucketMetricGroup.gauge(
                                     MetricNames.KV_NUM_SNAPSHOTS, () -> getNumSnapshots(bucket));
                             bucketMetricGroup.gauge(

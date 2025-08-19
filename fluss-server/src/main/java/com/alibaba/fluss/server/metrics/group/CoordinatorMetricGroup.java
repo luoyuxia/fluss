@@ -123,7 +123,7 @@ public class CoordinatorMetricGroup extends AbstractMetricGroup {
 
         private final TablePath tablePath;
 
-        protected MetricRegistry registry;
+        private final MetricRegistry registry;
 
         public SimpleTableMetricGroup(
                 MetricRegistry registry,
@@ -138,6 +138,7 @@ public class CoordinatorMetricGroup extends AbstractMetricGroup {
                     serverMetricGroup);
 
             this.tablePath = tablePath;
+            this.registry = registry;
         }
 
         @Override
