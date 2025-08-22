@@ -232,14 +232,24 @@ final class ServerConnection {
         }
 
         @Override
-        public void onRequestResult(int requestId, ApiMessage response) {
-            InflightRequest request = inflightRequests.remove(requestId);
-            if (request != null && !request.responseFuture.isDone()) {
-                connectionMetricGroup.updateMetricsAfterGetResponse(
-                        ApiKeys.forId(request.apiKey),
-                        request.requestStartTime,
-                        response.totalSize());
-                request.responseFuture.complete(response);
+        public void onRequestResult(int requestId, ApiMessage response, boolean lazilyRelease) {
+            try {
+                InflightRequest request = inflightRequests.remove(requestId);
+                if (request != null && !request.responseFuture.isDone()) {
+                    connectionMetricGroup.updateMetricsAfterGetResponse(
+                            ApiKeys.forId(request.apiKey),
+                            request.requestStartTime,
+                            response.totalSize());
+                    request.responseFuture.complete(response);
+                }
+            } catch (Throwable t) {
+                LOG.warn("Failed to handle response for request {}.", requestId, t);
+                if (lazilyRelease) {
+                    ByteBuf parsedByteBuf = response.getParsedByteBuf();
+                    if (parsedByteBuf != null) {
+                        parsedByteBuf.release();
+                    }
+                }
             }
         }
 

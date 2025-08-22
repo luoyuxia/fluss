@@ -246,6 +246,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                 }
                 bucketStatusMapLock.unlock();
             }
+        } else {
+            LOG.warn("the return is null");
         }
 
         if (!bucketsWithError.isEmpty()) {

@@ -34,8 +34,9 @@ public interface ClientHandlerCallback {
      *
      * @param requestId ID of the request
      * @param response The received response
+     * @param lazilyRelease whether the response is lazily parsed
      */
-    void onRequestResult(int requestId, ApiMessage response);
+    void onRequestResult(int requestId, ApiMessage response, boolean lazilyRelease);
 
     /**
      * Called on a failed request.
