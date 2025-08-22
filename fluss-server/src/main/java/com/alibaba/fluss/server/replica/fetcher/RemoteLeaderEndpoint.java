@@ -30,6 +30,10 @@ import com.alibaba.fluss.rpc.messages.PbFetchLogRespForTable;
 import com.alibaba.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import com.alibaba.fluss.rpc.protocol.Errors;
 import com.alibaba.fluss.server.log.ListOffsetsParam;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -43,6 +47,8 @@ import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeListOffse
 
 /** Facilitates fetches from a remote replica leader in one tablet server. */
 final class RemoteLeaderEndpoint implements LeaderEndpoint {
+    private static final Logger LOG = LoggerFactory.getLogger(RemoteLeaderEndpoint.class);
+
     private final int followerServerId;
     private final int remoteServerId;
     private final TabletServerGateway tabletServerGateway;
@@ -97,31 +103,43 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
                 .fetchLog(fetchLogRequest)
                 .thenApply(
                         fetchLogResponse -> {
-                            Map<TableBucket, FetchLogResultForBucket> fetchLogResultMap =
-                                    new HashMap<>();
-                            List<PbFetchLogRespForTable> tablesRespList =
-                                    fetchLogResponse.getTablesRespsList();
-                            for (PbFetchLogRespForTable tableResp : tablesRespList) {
-                                long tableId = tableResp.getTableId();
-                                List<PbFetchLogRespForBucket> bucketsRespList =
-                                        tableResp.getBucketsRespsList();
-                                for (PbFetchLogRespForBucket bucketResp : bucketsRespList) {
-                                    TableBucket tableBucket =
-                                            new TableBucket(
-                                                    tableId,
-                                                    bucketResp.hasPartitionId()
-                                                            ? bucketResp.getPartitionId()
-                                                            : null,
-                                                    bucketResp.getBucketId());
-                                    TablePath tablePath = fetchLogContext.getTablePath(tableId);
-                                    FetchLogResultForBucket fetchLogResultForBucket =
-                                            getFetchLogResultForBucket(
-                                                    tableBucket, tablePath, bucketResp);
-                                    fetchLogResultMap.put(tableBucket, fetchLogResultForBucket);
+                            try {
+                                Map<TableBucket, FetchLogResultForBucket> fetchLogResultMap =
+                                        new HashMap<>();
+                                List<PbFetchLogRespForTable> tablesRespList =
+                                        fetchLogResponse.getTablesRespsList();
+                                for (PbFetchLogRespForTable tableResp : tablesRespList) {
+                                    long tableId = tableResp.getTableId();
+                                    List<PbFetchLogRespForBucket> bucketsRespList =
+                                            tableResp.getBucketsRespsList();
+                                    for (PbFetchLogRespForBucket bucketResp : bucketsRespList) {
+                                        TableBucket tableBucket =
+                                                new TableBucket(
+                                                        tableId,
+                                                        bucketResp.hasPartitionId()
+                                                                ? bucketResp.getPartitionId()
+                                                                : null,
+                                                        bucketResp.getBucketId());
+                                        TablePath tablePath = fetchLogContext.getTablePath(tableId);
+                                        FetchLogResultForBucket fetchLogResultForBucket =
+                                                getFetchLogResultForBucket(
+                                                        tableBucket, tablePath, bucketResp);
+                                        fetchLogResultMap.put(tableBucket, fetchLogResultForBucket);
+                                    }
                                 }
-                            }
 
-                            return new FetchData(fetchLogResponse, fetchLogResultMap);
+                                return new FetchData(fetchLogResponse, fetchLogResultMap);
+                            } catch (Throwable t) {
+                                LOG.warn(
+                                        "Maybe lead: Error in response for fetch log request {}",
+                                        fetchLogRequest,
+                                        t);
+                                ByteBuf parsedByteBuf = fetchLogResponse.getParsedByteBuf();
+                                if (parsedByteBuf != null) {
+                                    parsedByteBuf.release();
+                                }
+                                return null;
+                            }
                         });
     }
 

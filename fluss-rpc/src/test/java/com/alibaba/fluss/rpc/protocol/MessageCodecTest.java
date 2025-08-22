@@ -174,7 +174,7 @@ class MessageCodecTest {
         }
 
         @Override
-        public void onRequestResult(int requestId, ApiMessage response) {
+        public void onRequestResult(int requestId, ApiMessage response, boolean lazilyRelease) {
             this.requestId = requestId;
             this.response = response;
         }

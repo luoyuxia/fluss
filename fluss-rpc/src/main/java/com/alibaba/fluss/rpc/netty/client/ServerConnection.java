@@ -232,14 +232,34 @@ final class ServerConnection {
         }
 
         @Override
-        public void onRequestResult(int requestId, ApiMessage response) {
-            InflightRequest request = inflightRequests.remove(requestId);
-            if (request != null && !request.responseFuture.isDone()) {
-                connectionMetricGroup.updateMetricsAfterGetResponse(
-                        ApiKeys.forId(request.apiKey),
-                        request.requestStartTime,
-                        response.totalSize());
-                request.responseFuture.complete(response);
+        public void onRequestResult(int requestId, ApiMessage response, boolean lazilyRelease) {
+            try {
+                InflightRequest request = inflightRequests.remove(requestId);
+                if (request != null && !request.responseFuture.isDone()) {
+                    connectionMetricGroup.updateMetricsAfterGetResponse(
+                            ApiKeys.forId(request.apiKey),
+                            request.requestStartTime,
+                            response.totalSize());
+                    boolean accept = request.responseFuture.complete(response);
+
+                    if (!accept) {
+                        LOG.warn("Maybe lead: The complete feture cannot to accept");
+                        if (lazilyRelease) {
+                            ByteBuf parsedByteBuf = response.getParsedByteBuf();
+                            if (parsedByteBuf != null) {
+                                parsedByteBuf.release();
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                LOG.warn("Maybe lead: Failed to handle response for request {}.", requestId, t);
+                if (lazilyRelease) {
+                    ByteBuf parsedByteBuf = response.getParsedByteBuf();
+                    if (parsedByteBuf != null) {
+                        parsedByteBuf.release();
+                    }
+                }
             }
         }
 

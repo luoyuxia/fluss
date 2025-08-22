@@ -89,6 +89,7 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                     return;
                 }
                 ApiMessage response = apiMethod.getResponseConstructor().get();
+                boolean lazyRelease = false;
                 if (response.isLazilyParsed()) {
                     if (isInnerClient && response instanceof FetchLogResponse) {
                         // For the FetchLogResponse returned by the FetchLogRequest sent by the
@@ -100,6 +101,7 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                         // Fluss client, We also aim to avoid this memory copy operation, traced by
                         // https://github.com/alibaba/fluss/issues/1184
                         response.parseFrom(buffer, messageSize);
+                        lazyRelease = true;
                     } else {
                         // copy the buffer into a heap buffer, this can avoid the network buffer
                         // being released before the bytes fields of the response are lazily parsed.
@@ -116,7 +118,7 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                     buffer.release();
                 }
                 needRelease = false;
-                callback.onRequestResult(requestId, response);
+                callback.onRequestResult(requestId, response, lazyRelease);
             } else if (respType == ResponseType.ERROR_RESPONSE) {
                 int requestId = buffer.readInt();
                 int messageSize = frameLength - RESPONSE_HEADER_LENGTH;
