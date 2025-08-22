@@ -39,7 +39,6 @@ import com.alibaba.fluss.server.metrics.group.TabletServerMetricGroup;
 import com.alibaba.fluss.server.replica.Replica;
 import com.alibaba.fluss.server.replica.ReplicaManager;
 import com.alibaba.fluss.server.replica.fetcher.LeaderEndpoint.FetchData;
-import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 import com.alibaba.fluss.utils.concurrent.ShutdownableThread;
@@ -239,11 +238,12 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             try {
                 handleFetchLogResponse(responseData.getFetchLogResultMap(), bucketsWithError);
             } finally {
-                // release buffer handle by fetchLogResponse.
-                ByteBuf parsedByteBuf = responseData.getFetchLogResponse().getParsedByteBuf();
-                if (parsedByteBuf != null) {
-                    parsedByteBuf.release();
-                }
+                //                // release buffer handle by fetchLogResponse.
+                //                ByteBuf parsedByteBuf =
+                // responseData.getFetchLogResponse().getParsedByteBuf();
+                //                if (parsedByteBuf != null) {
+                //                    parsedByteBuf.release();
+                //                }
                 bucketStatusMapLock.unlock();
             }
         }
