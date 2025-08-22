@@ -192,7 +192,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         ioExecutor,
                         zooKeeperClient,
                         coordinatorMetricGroup);
-        this.coordinatorMetricGroup = coordinatorMetricGroup;
         this.autoPartitionManager = autoPartitionManager;
         this.lakeTableTieringManager = lakeTableTieringManager;
         this.coordinatorMetricGroup = coordinatorMetricGroup;
