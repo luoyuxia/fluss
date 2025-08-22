@@ -131,7 +131,7 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
                                 return new FetchData(fetchLogResponse, fetchLogResultMap);
                             } catch (Throwable t) {
                                 LOG.warn(
-                                        "Error in response for fetch log request {}",
+                                        "Maybe lead: Error in response for fetch log request {}",
                                         fetchLogRequest,
                                         t);
                                 ByteBuf parsedByteBuf = fetchLogResponse.getParsedByteBuf();

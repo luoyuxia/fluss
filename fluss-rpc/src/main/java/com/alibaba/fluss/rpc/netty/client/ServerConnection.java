@@ -240,10 +240,20 @@ final class ServerConnection {
                             ApiKeys.forId(request.apiKey),
                             request.requestStartTime,
                             response.totalSize());
-                    request.responseFuture.complete(response);
+                    boolean accept = request.responseFuture.complete(response);
+
+                    if (!accept) {
+                        LOG.warn("Maybe lead: The complete feture cannot to accept");
+                        if (lazilyRelease) {
+                            ByteBuf parsedByteBuf = response.getParsedByteBuf();
+                            if (parsedByteBuf != null) {
+                                parsedByteBuf.release();
+                            }
+                        }
+                    }
                 }
             } catch (Throwable t) {
-                LOG.warn("Failed to handle response for request {}.", requestId, t);
+                LOG.warn("Maybe lead: Failed to handle response for request {}.", requestId, t);
                 if (lazilyRelease) {
                     ByteBuf parsedByteBuf = response.getParsedByteBuf();
                     if (parsedByteBuf != null) {
