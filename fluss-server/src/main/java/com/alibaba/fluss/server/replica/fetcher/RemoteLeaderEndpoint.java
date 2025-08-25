@@ -30,8 +30,8 @@ import com.alibaba.fluss.rpc.messages.PbFetchLogRespForTable;
 import com.alibaba.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import com.alibaba.fluss.rpc.protocol.Errors;
 import com.alibaba.fluss.server.log.ListOffsetsParam;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
