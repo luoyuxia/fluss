@@ -21,9 +21,8 @@ import com.alibaba.fluss.record.send.Send;
 import com.alibaba.fluss.record.send.SendWritableOutput;
 import com.alibaba.fluss.rpc.messages.ApiMessage;
 import com.alibaba.fluss.rpc.messages.ErrorResponse;
-
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
 
 /** Utilities for encoding and decoding RPC messages. */
 public final class MessageCodec {

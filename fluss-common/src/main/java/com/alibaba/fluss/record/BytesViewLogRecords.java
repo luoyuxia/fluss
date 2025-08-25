@@ -21,9 +21,8 @@ import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.record.bytesview.MultiBytesView;
 import com.alibaba.fluss.record.send.ByteBufWritableOutput;
-
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
-import org.apache.fluss.shaded.netty4.io.netty.buffer.Unpooled;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.Unpooled;
 
 import static com.alibaba.fluss.utils.Preconditions.checkState;
 

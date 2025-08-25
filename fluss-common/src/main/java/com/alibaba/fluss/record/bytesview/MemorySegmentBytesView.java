@@ -18,9 +18,8 @@
 package com.alibaba.fluss.record.bytesview;
 
 import com.alibaba.fluss.memory.MemorySegment;
-
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
-import org.apache.fluss.shaded.netty4.io.netty.buffer.Unpooled;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.Unpooled;
 
 import java.nio.ByteBuffer;
 

@@ -19,8 +19,7 @@ package com.alibaba.fluss.row.arrow.writers;
 
 import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.row.InternalRow;
-
-import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.IntVector;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.IntVector;
 
 /** {@link ArrowFieldWriter} for Int. */
 @Internal
