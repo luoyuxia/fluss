@@ -19,8 +19,7 @@ package com.alibaba.fluss.rpc.messages;
 
 import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.record.send.WritableOutput;
-
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 
 /**
  * An object that can serialize itself. The serialization protocol is versioned. Messages also

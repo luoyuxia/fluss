@@ -19,8 +19,7 @@ package com.alibaba.fluss.compression;
 
 import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
-
-import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionCodec;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionCodec;
 
 /** Compression information for Arrow record batches. */
 public class ArrowCompressionInfo {

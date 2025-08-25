@@ -36,6 +36,8 @@ import com.alibaba.fluss.metadata.ResolvedPartitionSpec;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonFactory;
+import com.alibaba.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import com.alibaba.fluss.utils.ExceptionUtils;
 import com.alibaba.fluss.utils.json.BucketOffsetJsonSerde;
 
@@ -45,8 +47,6 @@ import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonFactory;
-import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 
 import javax.annotation.Nullable;
 

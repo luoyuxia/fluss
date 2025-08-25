@@ -22,8 +22,7 @@ import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.columnar.ColumnVector;
 import com.alibaba.fluss.row.columnar.ColumnarRow;
 import com.alibaba.fluss.row.columnar.VectorizedColumnBatch;
-
-import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 

@@ -18,10 +18,9 @@
 package com.alibaba.fluss.compression;
 
 import com.alibaba.fluss.annotation.Internal;
-
-import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionCodec;
-import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
-import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.compression.NoCompressionCodec;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionCodec;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.CompressionUtil;
+import com.alibaba.fluss.shaded.arrow.org.apache.arrow.vector.compression.NoCompressionCodec;
 
 /* This file is based on source code of Apache Arrow-java Project (https://github.com/apache/arrow-java), licensed by
  * the Apache Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with

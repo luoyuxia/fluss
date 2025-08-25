@@ -21,8 +21,7 @@ import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.record.bytesview.FileRegionBytesView;
 import com.alibaba.fluss.record.bytesview.MemorySegmentBytesView;
 import com.alibaba.fluss.record.bytesview.MultiBytesView;
-
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 
 import java.util.ArrayDeque;
 import java.util.Queue;

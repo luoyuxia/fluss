@@ -17,9 +17,10 @@
 
 package com.alibaba.fluss.protogen.benchmark;
 
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
-import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBufUtil;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
+import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBufUtil;
+
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Measurement;

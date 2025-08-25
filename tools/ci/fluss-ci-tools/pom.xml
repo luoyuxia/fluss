@@ -34,9 +34,8 @@
     <dependencies>
 
         <dependency>
-            <groupId>org.apache.fluss</groupId>
+            <groupId>com.alibaba.fluss</groupId>
             <artifactId>fluss-shaded-guava</artifactId>
-            <version>${guava.version}-${fluss.shaded.version}</version>
         </dependency>
 
         <dependency>

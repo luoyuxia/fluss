@@ -19,9 +19,8 @@ package com.alibaba.fluss.rpc.protocol;
 
 import com.alibaba.fluss.cluster.ServerType;
 import com.alibaba.fluss.rpc.messages.ApiMessage;
+import com.alibaba.fluss.shaded.guava32.com.google.common.collect.ImmutableList;
 import com.alibaba.fluss.utils.InstantiationUtils;
-
-import org.apache.fluss.shaded.guava32.com.google.common.collect.ImmutableList;
 
 import javax.annotation.concurrent.ThreadSafe;
 

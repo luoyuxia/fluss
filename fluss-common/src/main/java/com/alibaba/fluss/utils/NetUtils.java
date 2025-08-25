@@ -19,8 +19,7 @@ package com.alibaba.fluss.utils;
 
 import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.exception.IllegalConfigurationException;
-
-import org.apache.fluss.shaded.guava32.com.google.common.net.InetAddresses;
+import com.alibaba.fluss.shaded.guava32.com.google.common.net.InetAddresses;
 
 import java.io.IOException;
 import java.net.Inet6Address;

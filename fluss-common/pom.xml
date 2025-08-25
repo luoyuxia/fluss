@@ -42,23 +42,23 @@
         </dependency>
 
         <dependency>
-            <groupId>org.apache.fluss</groupId>
+            <groupId>com.alibaba.fluss</groupId>
             <artifactId>fluss-shaded-guava</artifactId>
         </dependency>
 
         <dependency>
-            <groupId>org.apache.fluss</groupId>
+            <groupId>com.alibaba.fluss</groupId>
             <artifactId>fluss-shaded-jackson</artifactId>
         </dependency>
 
         <!-- Netty dependencies used for LogRecords -->
         <dependency>
-            <groupId>org.apache.fluss</groupId>
+            <groupId>com.alibaba.fluss</groupId>
             <artifactId>fluss-shaded-netty</artifactId>
         </dependency>
 
         <dependency>
-            <groupId>org.apache.fluss</groupId>
+            <groupId>com.alibaba.fluss</groupId>
             <artifactId>fluss-shaded-arrow</artifactId>
         </dependency>
 
