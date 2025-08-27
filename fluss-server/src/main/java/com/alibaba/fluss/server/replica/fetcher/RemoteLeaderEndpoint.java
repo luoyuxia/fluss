@@ -30,7 +30,6 @@ import com.alibaba.fluss.rpc.messages.PbFetchLogRespForTable;
 import com.alibaba.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import com.alibaba.fluss.rpc.protocol.Errors;
 import com.alibaba.fluss.server.log.ListOffsetsParam;
-import com.alibaba.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,7 +43,6 @@ import java.util.concurrent.CompletableFuture;
 
 import static com.alibaba.fluss.rpc.util.CommonRpcMessageUtils.getFetchLogResultForBucket;
 import static com.alibaba.fluss.server.utils.ServerRpcMessageUtils.makeListOffsetsRequest;
-import static com.alibaba.fluss.shaded.netty4.io.netty.util.ReferenceCountUtil.safeRelease;
 
 /** Facilitates fetches from a remote replica leader in one tablet server. */
 final class RemoteLeaderEndpoint implements LeaderEndpoint {
@@ -135,10 +133,6 @@ final class RemoteLeaderEndpoint implements LeaderEndpoint {
                                         "Maybe leak: Error in response for fetch log request {}",
                                         fetchLogRequest,
                                         t);
-                                ByteBuf parsedByteBuf = fetchLogResponse.getParsedByteBuf();
-                                if (parsedByteBuf != null) {
-                                    safeRelease(parsedByteBuf);
-                                }
                                 return null;
                             }
                         });
