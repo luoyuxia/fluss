@@ -20,7 +20,6 @@ package com.alibaba.fluss.server.kv.wal;
 import com.alibaba.fluss.memory.ManagedPagedOutputView;
 import com.alibaba.fluss.memory.MemorySegmentPool;
 import com.alibaba.fluss.record.ChangeType;
-import com.alibaba.fluss.record.LogRecordBatchStatisticsCollector;
 import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.record.MemoryLogRecordsArrowBuilder;
 import com.alibaba.fluss.record.bytesview.MultiBytesView;
@@ -35,16 +34,13 @@ public class ArrowWalBuilder implements WalBuilder {
     private final MemorySegmentPool memorySegmentPool;
     private final ManagedPagedOutputView outputView;
     private final MemoryLogRecordsArrowBuilder recordsBuilder;
-    private final LogRecordBatchStatisticsCollector statisticsCollector;
 
     public ArrowWalBuilder(int schemaId, ArrowWriter writer, MemorySegmentPool memorySegmentPool)
             throws IOException {
         this.memorySegmentPool = memorySegmentPool;
         this.outputView = new ManagedPagedOutputView(memorySegmentPool);
-        this.statisticsCollector = new LogRecordBatchStatisticsCollector(writer.getSchema());
         this.recordsBuilder =
-                MemoryLogRecordsArrowBuilder.builder(
-                        schemaId, writer, outputView, false, statisticsCollector);
+                MemoryLogRecordsArrowBuilder.builder(schemaId, writer, outputView, false, null);
     }
 
     @Override

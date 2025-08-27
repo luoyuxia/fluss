@@ -18,7 +18,7 @@
 package com.alibaba.fluss.server.log;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
-import com.alibaba.fluss.predicate.Predicate;
+import com.alibaba.fluss.record.RecordBatchFilter;
 
 import java.util.Map;
 
@@ -30,7 +30,7 @@ public final class FetchParamsBuilder {
     private int replicaId;
     private boolean fetchOnlyLeader;
     private int maxFetchBytes;
-    private Map<Long, Predicate> tableRecordBatchFilterMap;
+    private Map<Long, RecordBatchFilter> tableRecordBatchFilterMap;
     private int minFetchBytes;
     private long maxWaitMs;
 
@@ -48,7 +48,7 @@ public final class FetchParamsBuilder {
     }
 
     public FetchParamsBuilder withTableRecordBatchFilterMap(
-            Map<Long, Predicate> tableRecordBatchFilterMap) {
+            Map<Long, RecordBatchFilter> tableRecordBatchFilterMap) {
         this.tableRecordBatchFilterMap = tableRecordBatchFilterMap;
         return this;
     }

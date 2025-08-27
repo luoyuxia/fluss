@@ -121,9 +121,12 @@ public class LogFetcher implements Closeable {
             RemoteFileDownloader remoteFileDownloader) {
         this.tablePath = tableInfo.getTablePath();
         this.isPartitioned = tableInfo.isPartitioned();
-        this.readContext = LogRecordReadContext.createReadContext(tableInfo, false, projection);
+        this.readContext =
+                LogRecordReadContext.createReadContext(
+                        tableInfo, false, projection, recordBatchFilter != null);
         this.remoteReadContext =
-                LogRecordReadContext.createReadContext(tableInfo, true, projection);
+                LogRecordReadContext.createReadContext(
+                        tableInfo, true, projection, recordBatchFilter != null);
         this.projection = projection;
         this.recordBatchFilter = recordBatchFilter;
         this.logScannerStatus = logScannerStatus;
@@ -330,7 +333,8 @@ public class LogFetcher implements Closeable {
                         } else {
                             LogRecords logRecords = fetchResultForBucket.recordsOrEmpty();
                             if (!MemoryLogRecords.EMPTY.equals(logRecords)
-                                    || fetchResultForBucket.getErrorCode() != Errors.NONE.code()) {
+                                    || fetchResultForBucket.getErrorCode() != Errors.NONE.code()
+                                    || fetchResultForBucket.getSkipToNextFetchOffset() > 0) {
                                 // In oder to not signal notEmptyCondition, add completed fetch to
                                 // buffer until log records is not empty.
                                 DefaultCompletedFetch completedFetch =
@@ -459,7 +463,8 @@ public class LogFetcher implements Closeable {
                         }
                         if (null != recordBatchFilter) {
                             reqForTable.setRecordBatchFilter(
-                                    PredicateMessageUtils.toPbPredicate(recordBatchFilter));
+                                    PredicateMessageUtils.toPbRecordBatchFilter(
+                                            recordBatchFilter, readContext.getSchemaId()));
                         }
                         reqForTable.addAllBucketsReqs(reqForBuckets);
                         fetchLogRequest.addAllTablesReqs(Collections.singletonList(reqForTable));

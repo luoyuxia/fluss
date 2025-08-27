@@ -67,6 +67,7 @@ public class MetricNames {
             "logRecordBatchStatisticsProcessCount";
     public static final String LOG_RECORD_BATCH_STATISTICS_FILTER_OUT_COUNT =
             "logRecordBatchStatisticsFilterOutCount";
+    public static final String LOG_RECORD_BATCH_PROCESSED_COUNT = "logRecordBatchProcessedCount";
 
     // --------------------------------------------------------------------------------------------
     // metrics for table

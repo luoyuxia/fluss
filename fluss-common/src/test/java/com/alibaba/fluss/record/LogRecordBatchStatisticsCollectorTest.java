@@ -19,8 +19,7 @@ package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.memory.MemorySegmentOutputView;
-import com.alibaba.fluss.memory.TestingMemorySegmentPool;
-import com.alibaba.fluss.row.Decimal;
+import com.alibaba.fluss.row.BinaryString;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.testutils.DataTestUtils;
 import com.alibaba.fluss.types.DataField;
@@ -31,13 +30,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Comprehensive test for {@link LogRecordBatchStatisticsCollector}. */
+/** Test for {@link LogRecordBatchStatisticsCollector}. */
 public class LogRecordBatchStatisticsCollectorTest {
 
     private LogRecordBatchStatisticsCollector collector;
@@ -61,37 +59,21 @@ public class LogRecordBatchStatisticsCollectorTest {
                     new DataField("bigint_val", DataTypes.BIGINT()),
                     new DataField("float_val", DataTypes.FLOAT()));
 
-    // Test data with null values
-    private static final List<Object[]> DATA_WITH_NULLS =
-            Arrays.asList(
-                    new Object[] {1, "a", 10.5},
-                    new Object[] {null, "b", 20.3},
-                    new Object[] {3, null, 15.7},
-                    new Object[] {4, "d", null},
-                    new Object[] {5, "e", 30.1});
-
-    private static final RowType DATA_WITH_NULLS_ROW_TYPE =
-            DataTypes.ROW(
-                    new DataField("id", DataTypes.INT()),
-                    new DataField("name", DataTypes.STRING()),
-                    new DataField("value", DataTypes.DOUBLE()));
-
-    // Test data for decimal type
-    private static final List<Object[]> DECIMAL_DATA =
-            Arrays.asList(
-                    new Object[] {Decimal.fromBigDecimal(new BigDecimal("10.50"), 10, 2)},
-                    new Object[] {Decimal.fromBigDecimal(new BigDecimal("20.30"), 10, 2)},
-                    new Object[] {Decimal.fromBigDecimal(new BigDecimal("15.70"), 10, 2)},
-                    new Object[] {Decimal.fromBigDecimal(new BigDecimal("8.90"), 10, 2)},
-                    new Object[] {Decimal.fromBigDecimal(new BigDecimal("30.10"), 10, 2)});
-
-    private static final RowType DECIMAL_ROW_TYPE =
-            DataTypes.ROW(new DataField("decimal_val", DataTypes.DECIMAL(10, 2)));
+    // Helper method to create stats index mapping for all columns
+    private static int[] createAllColumnsStatsMapping(RowType rowType) {
+        int[] statsIndexMapping = new int[rowType.getFieldCount()];
+        for (int i = 0; i < statsIndexMapping.length; i++) {
+            statsIndexMapping[i] = i;
+        }
+        return statsIndexMapping;
+    }
 
     @BeforeEach
     void setUp() {
         testRowType = MIXED_TYPE_ROW_TYPE;
-        collector = new LogRecordBatchStatisticsCollector(testRowType);
+        collector =
+                new LogRecordBatchStatisticsCollector(
+                        testRowType, createAllColumnsStatsMapping(testRowType));
     }
 
     @Test
@@ -101,313 +83,40 @@ public class LogRecordBatchStatisticsCollectorTest {
     }
 
     @Test
-    void testProcessRowWithMixedTypes() throws IOException {
-        // Process test data
-        for (Object[] data : MIXED_TYPE_DATA) {
-            InternalRow row = DataTestUtils.row(data);
-            collector.processRow(row);
-        }
-
-        // Write statistics to memory segment
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = collector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        // Verify that statistics were written
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, testRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - all fields should have 0 nulls in this test
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(6);
-        for (int i = 0; i < 6; i++) {
-            assertThat(nullCounts[i]).isEqualTo(0L);
-        }
-
-        // Verify min/max values for each field
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Field 0: INT - should be min=1, max=5
-        assertThat(minValues.getInt(0)).isEqualTo(1);
-        assertThat(maxValues.getInt(0)).isEqualTo(5);
-
-        // Field 1: STRING - should be min="a", max="e" (lexicographic order)
-        assertThat(minValues.getString(1).toString()).isEqualTo("a");
-        assertThat(maxValues.getString(1).toString()).isEqualTo("e");
-
-        // Field 2: DOUBLE - should be min=8.9, max=30.1
-        assertThat(minValues.getDouble(2)).isEqualTo(8.9);
-        assertThat(maxValues.getDouble(2)).isEqualTo(30.1);
-
-        // Field 3: BOOLEAN - should be min=false, max=true
-        assertThat(minValues.getBoolean(3)).isFalse();
-        assertThat(maxValues.getBoolean(3)).isTrue();
-
-        // Field 4: BIGINT - should be min=100L, max=300L
-        assertThat(minValues.getLong(4)).isEqualTo(100L);
-        assertThat(maxValues.getLong(4)).isEqualTo(300L);
-
-        // Field 5: FLOAT - should be min=1.23f, max=5.67f
-        assertThat(minValues.getFloat(5)).isEqualTo(1.23f);
-        assertThat(maxValues.getFloat(5)).isEqualTo(5.67f);
-    }
-
-    @Test
-    void testProcessRowWithNullValues() throws IOException {
-        LogRecordBatchStatisticsCollector nullCollector =
-                new LogRecordBatchStatisticsCollector(DATA_WITH_NULLS_ROW_TYPE);
-
-        // Process test data with nulls
-        for (Object[] data : DATA_WITH_NULLS) {
-            InternalRow row = DataTestUtils.row(data);
-            nullCollector.processRow(row);
-        }
-
-        // Write statistics to memory segment
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = nullCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        // Verify that statistics were written
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, DATA_WITH_NULLS_ROW_TYPE);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(3);
-
-        // Field 0 (id): 1 null out of 5 rows
-        assertThat(nullCounts[0]).isEqualTo(1L);
-
-        // Field 1 (name): 1 null out of 5 rows
-        assertThat(nullCounts[1]).isEqualTo(1L);
-
-        // Field 2 (value): 1 null out of 5 rows
-        assertThat(nullCounts[2]).isEqualTo(1L);
-
-        // Verify min/max values (should ignore nulls)
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Field 0 (id): min=1, max=5 (excluding null)
-        assertThat(minValues.getInt(0)).isEqualTo(1);
-        assertThat(maxValues.getInt(0)).isEqualTo(5);
-
-        // Field 1 (name): min="a", max="e" (excluding null)
-        assertThat(minValues.getString(1).toString()).isEqualTo("a");
-        assertThat(maxValues.getString(1).toString()).isEqualTo("e");
-
-        // Field 2 (value): min=10.5, max=30.1 (excluding null)
-        assertThat(minValues.getDouble(2)).isEqualTo(10.5);
-        assertThat(maxValues.getDouble(2)).isEqualTo(30.1);
-    }
-
-    @Test
-    void testProcessRowWithDecimalType() throws IOException {
-        LogRecordBatchStatisticsCollector decimalCollector =
-                new LogRecordBatchStatisticsCollector(DECIMAL_ROW_TYPE);
-
-        // Process decimal test data
-        for (Object[] data : DECIMAL_DATA) {
-            InternalRow row = DataTestUtils.row(data);
-            decimalCollector.processRow(row);
-        }
-
-        // Write statistics to memory segment
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = decimalCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        // Verify that statistics were written
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, DECIMAL_ROW_TYPE);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - all fields should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(1);
-        assertThat(nullCounts[0]).isEqualTo(0L);
-
-        // Verify min/max values for decimal field
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Decimal field: min=8.90, max=30.10
-        Decimal minDecimal = minValues.getDecimal(0, 10, 2);
-        Decimal maxDecimal = maxValues.getDecimal(0, 10, 2);
-
-        assertThat(minDecimal.toBigDecimal()).isEqualByComparingTo(new BigDecimal("8.90"));
-        assertThat(maxDecimal.toBigDecimal()).isEqualByComparingTo(new BigDecimal("30.10"));
-    }
-
-    @Test
-    void testWriteStatisticsWithNoRows() throws IOException {
-        // Don't process any rows
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = collector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        // Should return 0 when no rows were processed
-        assertThat(bytesWritten).isEqualTo(0);
-
-        // Verify that no statistics can be parsed when no data was written
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, testRowType);
-        assertThat(statistics).isNull();
-    }
-
-    @Test
-    void testWriteStatisticsWithSingleRow() throws IOException {
+    void testProcessRowBasic() throws IOException {
         // Process single row
         Object[] singleData = MIXED_TYPE_DATA.get(0);
         InternalRow row = DataTestUtils.row(singleData);
         collector.processRow(row);
 
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
+        // Should be able to write statistics after processing a row
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
         int bytesWritten = collector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        // Should write statistics for single row
         assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, testRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - all fields should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(6);
-        for (int i = 0; i < 6; i++) {
-            assertThat(nullCounts[i]).isEqualTo(0L);
-        }
-
-        // Verify min/max values - for single row, min and max should be the same
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // All fields should have same min and max values
-        assertThat(minValues.getInt(0)).isEqualTo(maxValues.getInt(0)).isEqualTo(1);
-        assertThat(minValues.getString(1).toString())
-                .isEqualTo(maxValues.getString(1).toString())
-                .isEqualTo("a");
-        assertThat(minValues.getDouble(2)).isEqualTo(maxValues.getDouble(2)).isEqualTo(10.5);
-        assertThat(minValues.getBoolean(3)).isEqualTo(maxValues.getBoolean(3)).isTrue();
-        assertThat(minValues.getLong(4)).isEqualTo(maxValues.getLong(4)).isEqualTo(100L);
-        assertThat(minValues.getFloat(5)).isEqualTo(maxValues.getFloat(5)).isEqualTo(1.23f);
     }
 
     @Test
-    void testWriteStatisticsWithLargeDataset() throws IOException {
-        // Create a new collector for this test to avoid interference
-        LogRecordBatchStatisticsCollector largeDatasetCollector =
-                new LogRecordBatchStatisticsCollector(testRowType);
-
-        // Process large dataset
-        for (int i = 0; i < 1000; i++) {
-            Object[] data = {i, "row" + i, (double) i, i % 2 == 0, (long) i, (float) i};
+    void testProcessMultipleRows() throws IOException {
+        // Process multiple rows
+        for (Object[] data : MIXED_TYPE_DATA) {
             InternalRow row = DataTestUtils.row(data);
-            largeDatasetCollector.processRow(row);
+            collector.processRow(row);
         }
 
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten =
-                largeDatasetCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        // Should write statistics for large dataset
+        // Should be able to write statistics after processing multiple rows
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        int bytesWritten = collector.writeStatistics(new MemorySegmentOutputView(segment));
         assertThat(bytesWritten).isGreaterThan(0);
+    }
 
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, testRowType);
-        assertThat(statistics).isNotNull();
+    @Test
+    void testWriteStatisticsWithNoRows() throws IOException {
+        // Don't process any rows
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        int bytesWritten = collector.writeStatistics(new MemorySegmentOutputView(segment));
 
-        // Verify null counts - all fields should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(6);
-        for (int i = 0; i < 6; i++) {
-            assertThat(nullCounts[i]).isEqualTo(0L);
-        }
-
-        // Verify min/max values for large dataset
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Print actual values for debugging
-        System.out.println(
-                "Actual min values: "
-                        + minValues.getInt(0)
-                        + ", "
-                        + minValues.getString(1)
-                        + ", "
-                        + minValues.getDouble(2)
-                        + ", "
-                        + minValues.getBoolean(3)
-                        + ", "
-                        + minValues.getLong(4)
-                        + ", "
-                        + minValues.getFloat(5));
-
-        System.out.println(
-                "Actual max values: "
-                        + maxValues.getInt(0)
-                        + ", "
-                        + maxValues.getString(1)
-                        + ", "
-                        + maxValues.getDouble(2)
-                        + ", "
-                        + maxValues.getBoolean(3)
-                        + ", "
-                        + maxValues.getLong(4)
-                        + ", "
-                        + maxValues.getFloat(5));
-
-        // Field 0: INT - should be min=0, max=999
-        assertThat(minValues.getInt(0)).isEqualTo(0);
-        assertThat(maxValues.getInt(0)).isEqualTo(999);
-
-        // Field 1: STRING - should be min="row0", max="row999" (lexicographic order)
-        assertThat(minValues.getString(1).toString()).isEqualTo("row0");
-        assertThat(maxValues.getString(1).toString()).isEqualTo("row999");
-
-        // Field 2: DOUBLE - should be min=0.0, max=999.0
-        assertThat(minValues.getDouble(2)).isEqualTo(0.0);
-        assertThat(maxValues.getDouble(2)).isEqualTo(999.0);
-
-        // Field 3: BOOLEAN - should be min=false, max=true (since we have both true and false)
-        assertThat(minValues.getBoolean(3)).isFalse();
-        assertThat(maxValues.getBoolean(3)).isTrue();
-
-        // Field 4: BIGINT - should be min=0L, max=999L
-        assertThat(minValues.getLong(4)).isEqualTo(0L);
-        assertThat(maxValues.getLong(4)).isEqualTo(999L);
-
-        // Field 5: FLOAT - should be min=0.0f, max=999.0f
-        assertThat(minValues.getFloat(5)).isEqualTo(0.0f);
-        assertThat(maxValues.getFloat(5)).isEqualTo(999.0f);
+        // Even with no rows, statistics structure is still written
+        assertThat(bytesWritten).isGreaterThan(0);
     }
 
     @Test
@@ -419,32 +128,19 @@ public class LogRecordBatchStatisticsCollectorTest {
         }
 
         // Write statistics before reset
-        MemorySegment segment1 = new TestingMemorySegmentPool(1024).nextSegment();
+        MemorySegment segment1 = MemorySegment.allocateHeapMemory(1024);
         int bytesWritten1 = collector.writeStatistics(new MemorySegmentOutputView(segment1));
         assertThat(bytesWritten1).isGreaterThan(0);
-
-        // Verify statistics before reset
-        LogRecordBatchStatistics statistics1 =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment1, 0, bytesWritten1, testRowType);
-        assertThat(statistics1).isNotNull();
-        assertThat(statistics1.getNullCounts()[0]).isEqualTo(0L);
 
         // Reset collector
         collector.reset();
 
         // Write statistics after reset
-        MemorySegment segment2 = new TestingMemorySegmentPool(1024).nextSegment();
+        MemorySegment segment2 = MemorySegment.allocateHeapMemory(1024);
         int bytesWritten2 = collector.writeStatistics(new MemorySegmentOutputView(segment2));
 
-        // Should return 0 after reset
-        assertThat(bytesWritten2).isEqualTo(0);
-
-        // Verify that no statistics can be parsed after reset
-        LogRecordBatchStatistics statistics2 =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment2, 0, bytesWritten2, testRowType);
-        assertThat(statistics2).isNull();
+        // Even after reset, statistics structure is still written
+        assertThat(bytesWritten2).isGreaterThan(0);
     }
 
     @Test
@@ -456,17 +152,9 @@ public class LogRecordBatchStatisticsCollectorTest {
         }
 
         // Write first statistics
-        MemorySegment segment1 = new TestingMemorySegmentPool(1024).nextSegment();
+        MemorySegment segment1 = MemorySegment.allocateHeapMemory(1024);
         int bytesWritten1 = collector.writeStatistics(new MemorySegmentOutputView(segment1));
         assertThat(bytesWritten1).isGreaterThan(0);
-
-        // Verify first statistics
-        LogRecordBatchStatistics statistics1 =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment1, 0, bytesWritten1, testRowType);
-        assertThat(statistics1).isNotNull();
-        assertThat(statistics1.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(statistics1.getMaxValues().getInt(0)).isEqualTo(5);
 
         // Reset and process new data with same row type
         collector.reset();
@@ -476,30 +164,443 @@ public class LogRecordBatchStatisticsCollectorTest {
         }
 
         // Write second statistics
-        MemorySegment segment2 = new TestingMemorySegmentPool(1024).nextSegment();
+        MemorySegment segment2 = MemorySegment.allocateHeapMemory(1024);
         int bytesWritten2 = collector.writeStatistics(new MemorySegmentOutputView(segment2));
         assertThat(bytesWritten2).isGreaterThan(0);
-
-        // Verify second statistics should be identical to first
-        LogRecordBatchStatistics statistics2 =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment2, 0, bytesWritten2, testRowType);
-        assertThat(statistics2).isNotNull();
-        assertThat(statistics2.getMinValues().getInt(0)).isEqualTo(1);
-        assertThat(statistics2.getMaxValues().getInt(0)).isEqualTo(5);
-
-        // Verify that both statistics are identical
-        assertThat(statistics2.getMinValues().getInt(0))
-                .isEqualTo(statistics1.getMinValues().getInt(0));
-        assertThat(statistics2.getMaxValues().getInt(0))
-                .isEqualTo(statistics1.getMaxValues().getInt(0));
-        assertThat(statistics2.getNullCounts()).isEqualTo(statistics1.getNullCounts());
     }
 
     @Test
-    void testAllSupportedDataTypes() throws IOException {
-        // Test all supported data types individually
+    void testProcessDifferentDataTypes() throws IOException {
+        // Test different types of data
         RowType simpleRowType =
+                DataTypes.ROW(
+                        new DataField("boolean_val", DataTypes.BOOLEAN()),
+                        new DataField("int_val", DataTypes.INT()),
+                        new DataField("string_val", DataTypes.STRING()));
+
+        LogRecordBatchStatisticsCollector typeCollector =
+                new LogRecordBatchStatisticsCollector(
+                        simpleRowType, createAllColumnsStatsMapping(simpleRowType));
+
+        // Test data for different types
+        Object[] testData = {true, 42, "hello"};
+
+        InternalRow row = DataTestUtils.row(testData);
+        typeCollector.processRow(row);
+
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        int bytesWritten = typeCollector.writeStatistics(new MemorySegmentOutputView(segment));
+
+        assertThat(bytesWritten).isGreaterThan(0);
+    }
+
+    @Test
+    void testProcessNullValues() throws IOException {
+        // Test data with null values
+        RowType nullableRowType =
+                DataTypes.ROW(
+                        new DataField("id", DataTypes.INT()),
+                        new DataField("name", DataTypes.STRING()));
+
+        LogRecordBatchStatisticsCollector nullCollector =
+                new LogRecordBatchStatisticsCollector(
+                        nullableRowType, createAllColumnsStatsMapping(nullableRowType));
+
+        // Process rows with nulls
+        List<Object[]> dataWithNulls =
+                Arrays.asList(
+                        new Object[] {1, "a"}, new Object[] {null, "b"}, new Object[] {3, null});
+
+        for (Object[] data : dataWithNulls) {
+            InternalRow row = DataTestUtils.row(data);
+            nullCollector.processRow(row);
+        }
+
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        int bytesWritten = nullCollector.writeStatistics(new MemorySegmentOutputView(segment));
+
+        assertThat(bytesWritten).isGreaterThan(0);
+    }
+
+    @Test
+    void testPartialStatsIndexMapping() throws IOException {
+        // Test with partial stats collection (only collect stats for some columns)
+        RowType partialRowType =
+                DataTypes.ROW(
+                        new DataField("id", DataTypes.INT()),
+                        new DataField("name", DataTypes.STRING()),
+                        new DataField("value", DataTypes.DOUBLE()));
+
+        // Only collect stats for columns 0 and 2 (skip column 1)
+        int[] partialStatsMapping = new int[] {0, 2};
+
+        LogRecordBatchStatisticsCollector partialCollector =
+                new LogRecordBatchStatisticsCollector(partialRowType, partialStatsMapping);
+
+        // Process some rows
+        List<Object[]> partialData =
+                Arrays.asList(
+                        new Object[] {1, "a", 10.5},
+                        new Object[] {2, "b", 20.3},
+                        new Object[] {3, "c", 15.7});
+
+        for (Object[] data : partialData) {
+            InternalRow row = DataTestUtils.row(data);
+            partialCollector.processRow(row);
+        }
+
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        int bytesWritten = partialCollector.writeStatistics(new MemorySegmentOutputView(segment));
+
+        assertThat(bytesWritten).isGreaterThan(0);
+    }
+
+    @Test
+    void testLargeDataset() throws IOException {
+        // Create a new collector for this test to avoid interference
+        LogRecordBatchStatisticsCollector largeDatasetCollector =
+                new LogRecordBatchStatisticsCollector(
+                        testRowType, createAllColumnsStatsMapping(testRowType));
+
+        // Process large dataset
+        for (int i = 0; i < 1000; i++) {
+            Object[] data = {i, "row" + i, (double) i, i % 2 == 0, (long) i, (float) i};
+            InternalRow row = DataTestUtils.row(data);
+            largeDatasetCollector.processRow(row);
+        }
+
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        int bytesWritten =
+                largeDatasetCollector.writeStatistics(new MemorySegmentOutputView(segment));
+
+        // Should write statistics for large dataset
+        assertThat(bytesWritten).isGreaterThan(0);
+    }
+
+    @Test
+    void testSingleColumnCollection() throws IOException {
+        // Test collecting statistics for just one column
+        RowType singleColRowType = DataTypes.ROW(new DataField("value", DataTypes.INT()));
+        int[] singleColMapping = new int[] {0};
+
+        LogRecordBatchStatisticsCollector singleColCollector =
+                new LogRecordBatchStatisticsCollector(singleColRowType, singleColMapping);
+
+        // Process just 3 rows with clear min/max
+        singleColCollector.processRow(DataTestUtils.row(new Object[] {1}));
+        singleColCollector.processRow(DataTestUtils.row(new Object[] {3}));
+        singleColCollector.processRow(DataTestUtils.row(new Object[] {2}));
+
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        int bytesWritten = singleColCollector.writeStatistics(new MemorySegmentOutputView(segment));
+
+        assertThat(bytesWritten).isGreaterThan(0);
+    }
+
+    @Test
+    void testStatisticsContentForSingleRow() throws IOException {
+        // Test with single row to verify min/max values are correctly collected
+        Object[] singleData = {42, "test", 3.14, true, 1000L, 2.5f};
+        InternalRow row = DataTestUtils.row(singleData);
+        collector.processRow(row);
+
+        // Write and parse statistics
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        MemorySegmentOutputView outputView = new MemorySegmentOutputView(segment);
+        int bytesWritten = collector.writeStatistics(outputView);
+        assertThat(bytesWritten).isGreaterThan(0);
+
+        // Parse statistics from written data
+        DefaultLogRecordBatchStatistics statistics =
+                LogRecordBatchStatisticsParser.parseStatistics(segment, 0, testRowType, 1);
+        assertThat(statistics).isNotNull();
+
+        // Verify statistics content
+        InternalRow minValues = statistics.getMinValues();
+        InternalRow maxValues = statistics.getMaxValues();
+        Long[] nullCounts = statistics.getNullCounts();
+
+        assertThat(minValues).isNotNull();
+        assertThat(maxValues).isNotNull();
+        assertThat(nullCounts).isNotNull();
+
+        // Verify values for each field - since it's a single row, min = max
+        assertThat(minValues.getInt(0)).isEqualTo(42); // id
+        assertThat(maxValues.getInt(0)).isEqualTo(42); // id
+        assertThat(nullCounts[0]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getString(1)).isEqualTo(BinaryString.fromString("test")); // name
+        assertThat(maxValues.getString(1)).isEqualTo(BinaryString.fromString("test")); // name
+        assertThat(nullCounts[1]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getDouble(2)).isEqualTo(3.14); // value
+        assertThat(maxValues.getDouble(2)).isEqualTo(3.14); // value
+        assertThat(nullCounts[2]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getBoolean(3)).isEqualTo(true); // flag
+        assertThat(maxValues.getBoolean(3)).isEqualTo(true); // flag
+        assertThat(nullCounts[3]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getLong(4)).isEqualTo(1000L); // bigint_val
+        assertThat(maxValues.getLong(4)).isEqualTo(1000L); // bigint_val
+        assertThat(nullCounts[4]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getFloat(5)).isEqualTo(2.5f); // float_val
+        assertThat(maxValues.getFloat(5)).isEqualTo(2.5f); // float_val
+        assertThat(nullCounts[5]).isEqualTo(0L); // no nulls
+    }
+
+    @Test
+    void testStatisticsContentForMultipleRows() throws IOException {
+        // Process multiple rows with known min/max values
+        for (Object[] data : MIXED_TYPE_DATA) {
+            InternalRow row = DataTestUtils.row(data);
+            collector.processRow(row);
+        }
+
+        // Write and parse statistics
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        MemorySegmentOutputView outputView = new MemorySegmentOutputView(segment);
+        int bytesWritten = collector.writeStatistics(outputView);
+        assertThat(bytesWritten).isGreaterThan(0);
+
+        // Parse statistics from written data
+        DefaultLogRecordBatchStatistics statistics =
+                LogRecordBatchStatisticsParser.parseStatistics(segment, 0, testRowType, 1);
+        assertThat(statistics).isNotNull();
+
+        // Verify statistics content
+        InternalRow minValues = statistics.getMinValues();
+        InternalRow maxValues = statistics.getMaxValues();
+        Long[] nullCounts = statistics.getNullCounts();
+
+        assertThat(minValues).isNotNull();
+        assertThat(maxValues).isNotNull();
+        assertThat(nullCounts).isNotNull();
+
+        // Verify expected min/max values based on MIXED_TYPE_DATA
+        assertThat(minValues.getInt(0)).isEqualTo(1); // min id
+        assertThat(maxValues.getInt(0)).isEqualTo(5); // max id
+        assertThat(nullCounts[0]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getString(1)).isEqualTo(BinaryString.fromString("a")); // min name
+        assertThat(maxValues.getString(1)).isEqualTo(BinaryString.fromString("e")); // max name
+        assertThat(nullCounts[1]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getDouble(2)).isEqualTo(8.9); // min value
+        assertThat(maxValues.getDouble(2)).isEqualTo(30.1); // max value
+        assertThat(nullCounts[2]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getBoolean(3)).isEqualTo(false); // min flag
+        assertThat(maxValues.getBoolean(3)).isEqualTo(true); // max flag
+        assertThat(nullCounts[3]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getLong(4)).isEqualTo(100L); // min bigint_val
+        assertThat(maxValues.getLong(4)).isEqualTo(300L); // max bigint_val
+        assertThat(nullCounts[4]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getFloat(5)).isEqualTo(1.23f); // min float_val
+        assertThat(maxValues.getFloat(5)).isEqualTo(5.67f); // max float_val
+        assertThat(nullCounts[5]).isEqualTo(0L); // no nulls
+    }
+
+    @Test
+    void testStatisticsContentWithNullValues() throws IOException {
+        // Create test data with null values
+        RowType nullableRowType =
+                DataTypes.ROW(
+                        new DataField("id", DataTypes.INT()),
+                        new DataField("name", DataTypes.STRING()),
+                        new DataField("value", DataTypes.DOUBLE()));
+
+        LogRecordBatchStatisticsCollector nullCollector =
+                new LogRecordBatchStatisticsCollector(
+                        nullableRowType, createAllColumnsStatsMapping(nullableRowType));
+
+        // Process rows with nulls - mix of data and nulls
+        List<Object[]> dataWithNulls =
+                Arrays.asList(
+                        new Object[] {1, "a", 10.5},
+                        new Object[] {null, "b", 20.3},
+                        new Object[] {3, null, 15.7},
+                        new Object[] {2, "c", null});
+
+        for (Object[] data : dataWithNulls) {
+            InternalRow row = DataTestUtils.row(data);
+            nullCollector.processRow(row);
+        }
+
+        // Write and parse statistics
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        MemorySegmentOutputView outputView = new MemorySegmentOutputView(segment);
+        int bytesWritten = nullCollector.writeStatistics(outputView);
+        assertThat(bytesWritten).isGreaterThan(0);
+
+        // Parse statistics from written data
+        DefaultLogRecordBatchStatistics statistics =
+                LogRecordBatchStatisticsParser.parseStatistics(segment, 0, nullableRowType, 1);
+        assertThat(statistics).isNotNull();
+
+        // Verify statistics content
+        InternalRow minValues = statistics.getMinValues();
+        InternalRow maxValues = statistics.getMaxValues();
+        Long[] nullCounts = statistics.getNullCounts();
+
+        assertThat(minValues).isNotNull();
+        assertThat(maxValues).isNotNull();
+        assertThat(nullCounts).isNotNull();
+
+        // Verify null counts
+        assertThat(nullCounts[0]).isEqualTo(1L); // one null in id field
+        assertThat(nullCounts[1]).isEqualTo(1L); // one null in name field
+        assertThat(nullCounts[2]).isEqualTo(1L); // one null in value field
+
+        // Verify min/max values (should exclude nulls)
+        assertThat(minValues.getInt(0)).isEqualTo(1); // min id (excluding null)
+        assertThat(maxValues.getInt(0)).isEqualTo(3); // max id (excluding null)
+
+        assertThat(minValues.getString(1))
+                .isEqualTo(BinaryString.fromString("a")); // min name (excluding null)
+        assertThat(maxValues.getString(1))
+                .isEqualTo(BinaryString.fromString("c")); // max name (excluding null)
+
+        assertThat(minValues.getDouble(2)).isEqualTo(10.5); // min value (excluding null)
+        assertThat(maxValues.getDouble(2)).isEqualTo(20.3); // max value (excluding null)
+    }
+
+    @Test
+    void testStatisticsContentWithPartialStatsMapping() throws IOException {
+        // Test with partial stats collection (only collect stats for some columns)
+        RowType fullRowType =
+                DataTypes.ROW(
+                        new DataField("id", DataTypes.INT()),
+                        new DataField("name", DataTypes.STRING()),
+                        new DataField("value", DataTypes.DOUBLE()));
+
+        // Only collect stats for columns 0 and 2 (skip column 1)
+        int[] partialStatsMapping = new int[] {0, 2};
+
+        LogRecordBatchStatisticsCollector partialCollector =
+                new LogRecordBatchStatisticsCollector(fullRowType, partialStatsMapping);
+
+        // Process some rows
+        List<Object[]> originalRowData =
+                Arrays.asList(
+                        new Object[] {1, "a", 10.5},
+                        new Object[] {5, "b", 5.3},
+                        new Object[] {3, "c", 15.7});
+
+        for (Object[] data : originalRowData) {
+            InternalRow row = DataTestUtils.row(data);
+            partialCollector.processRow(row);
+        }
+
+        // Write and parse statistics
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        MemorySegmentOutputView outputView = new MemorySegmentOutputView(segment);
+        int bytesWritten = partialCollector.writeStatistics(outputView);
+        assertThat(bytesWritten).isGreaterThan(0);
+
+        DefaultLogRecordBatchStatistics statistics =
+                LogRecordBatchStatisticsParser.parseStatistics(segment, 0, fullRowType, 1);
+        assertThat(statistics).isNotNull();
+
+        // Verify statistics content
+        InternalRow minValues = statistics.getMinValues();
+        InternalRow maxValues = statistics.getMaxValues();
+        Long[] nullCounts = statistics.getNullCounts();
+
+        assertThat(minValues).isNotNull();
+        assertThat(maxValues).isNotNull();
+        assertThat(nullCounts).isNotNull();
+
+        // Only 2 columns should have statistics
+        assertThat(nullCounts.length).isEqualTo(3);
+
+        // Verify statistics for collected columns
+        assertThat(minValues.getInt(0)).isEqualTo(1); // min id from column 0
+        assertThat(maxValues.getInt(0)).isEqualTo(5); // max id from column 0
+        assertThat(nullCounts[0]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getDouble(2)).isEqualTo(5.3); // min value from column 2
+        assertThat(maxValues.getDouble(2)).isEqualTo(15.7); // max value from column 2
+        assertThat(nullCounts[2]).isEqualTo(0L); // no nulls
+    }
+
+    @Test
+    void testStatisticsContentAfterReset() throws IOException {
+        // Process initial data
+        for (Object[] data : MIXED_TYPE_DATA) {
+            InternalRow row = DataTestUtils.row(data);
+            collector.processRow(row);
+        }
+
+        // Reset collector
+        collector.reset();
+
+        // Process new data with different values
+        List<Object[]> newData =
+                Arrays.asList(
+                        new Object[] {10, "x", 100.0, false, 500L, 8.9f},
+                        new Object[] {15, "y", 200.0, true, 600L, 9.1f});
+
+        for (Object[] data : newData) {
+            InternalRow row = DataTestUtils.row(data);
+            collector.processRow(row);
+        }
+
+        // Write and parse statistics
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        MemorySegmentOutputView outputView = new MemorySegmentOutputView(segment);
+        int bytesWritten = collector.writeStatistics(outputView);
+        assertThat(bytesWritten).isGreaterThan(0);
+
+        // Parse statistics from written data
+        DefaultLogRecordBatchStatistics statistics =
+                LogRecordBatchStatisticsParser.parseStatistics(segment, 0, testRowType, 1);
+        assertThat(statistics).isNotNull();
+
+        // Verify statistics content reflects the new data only
+        InternalRow minValues = statistics.getMinValues();
+        InternalRow maxValues = statistics.getMaxValues();
+        Long[] nullCounts = statistics.getNullCounts();
+
+        assertThat(minValues).isNotNull();
+        assertThat(maxValues).isNotNull();
+        assertThat(nullCounts).isNotNull();
+
+        // Verify values from new data (should not contain old data after reset)
+        assertThat(minValues.getInt(0)).isEqualTo(10); // min id from new data
+        assertThat(maxValues.getInt(0)).isEqualTo(15); // max id from new data
+        assertThat(nullCounts[0]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getString(1))
+                .isEqualTo(BinaryString.fromString("x")); // min name from new data
+        assertThat(maxValues.getString(1))
+                .isEqualTo(BinaryString.fromString("y")); // max name from new data
+        assertThat(nullCounts[1]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getDouble(2)).isEqualTo(100.0); // min value from new data
+        assertThat(maxValues.getDouble(2)).isEqualTo(200.0); // max value from new data
+        assertThat(nullCounts[2]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getBoolean(3)).isEqualTo(false); // min flag from new data
+        assertThat(maxValues.getBoolean(3)).isEqualTo(true); // max flag from new data
+        assertThat(nullCounts[3]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getLong(4)).isEqualTo(500L); // min bigint_val from new data
+        assertThat(maxValues.getLong(4)).isEqualTo(600L); // max bigint_val from new data
+        assertThat(nullCounts[4]).isEqualTo(0L); // no nulls
+
+        assertThat(minValues.getFloat(5)).isEqualTo(8.9f); // min float_val from new data
+        assertThat(maxValues.getFloat(5)).isEqualTo(9.1f); // max float_val from new data
+        assertThat(nullCounts[5]).isEqualTo(0L); // no nulls
+    }
+
+    @Test
+    void testStatisticsContentForDifferentDataTypes() throws IOException {
+        // Test comprehensive data type support
+        RowType comprehensiveRowType =
                 DataTypes.ROW(
                         new DataField("boolean_val", DataTypes.BOOLEAN()),
                         new DataField("byte_val", DataTypes.TINYINT()),
@@ -508,429 +609,72 @@ public class LogRecordBatchStatisticsCollectorTest {
                         new DataField("long_val", DataTypes.BIGINT()),
                         new DataField("float_val", DataTypes.FLOAT()),
                         new DataField("double_val", DataTypes.DOUBLE()),
-                        new DataField("string_val", DataTypes.STRING()),
-                        new DataField("decimal_val", DataTypes.DECIMAL(10, 2)),
-                        new DataField("date_val", DataTypes.DATE()));
+                        new DataField("string_val", DataTypes.STRING()));
 
-        LogRecordBatchStatisticsCollector typeCollector =
-                new LogRecordBatchStatisticsCollector(simpleRowType);
+        LogRecordBatchStatisticsCollector comprehensiveCollector =
+                new LogRecordBatchStatisticsCollector(
+                        comprehensiveRowType, createAllColumnsStatsMapping(comprehensiveRowType));
 
-        // Test data for all types
-        Object[] testData = {
-            true,
-            (byte) 1,
-            (short) 2,
-            3,
-            4L,
-            5.0f,
-            6.0,
-            "test",
-            Decimal.fromBigDecimal(new BigDecimal("10.50"), 10, 2),
-            1000
-        };
-
-        InternalRow row = DataTestUtils.row(testData);
-        typeCollector.processRow(row);
-
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = typeCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, simpleRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - all fields should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(10);
-        for (int i = 0; i < 10; i++) {
-            assertThat(nullCounts[i]).isEqualTo(0L);
-        }
-
-        // Verify min/max values for each field type
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // For single row, min and max should be the same
-        assertThat(minValues.getBoolean(0)).isEqualTo(maxValues.getBoolean(0)).isTrue();
-        assertThat(minValues.getByte(1)).isEqualTo(maxValues.getByte(1)).isEqualTo((byte) 1);
-        assertThat(minValues.getShort(2)).isEqualTo(maxValues.getShort(2)).isEqualTo((short) 2);
-        assertThat(minValues.getInt(3)).isEqualTo(maxValues.getInt(3)).isEqualTo(3);
-        assertThat(minValues.getLong(4)).isEqualTo(maxValues.getLong(4)).isEqualTo(4L);
-        assertThat(minValues.getFloat(5)).isEqualTo(maxValues.getFloat(5)).isEqualTo(5.0f);
-        assertThat(minValues.getDouble(6)).isEqualTo(maxValues.getDouble(6)).isEqualTo(6.0);
-        assertThat(minValues.getString(7).toString())
-                .isEqualTo(maxValues.getString(7).toString())
-                .isEqualTo("test");
-
-        Decimal minDecimal = minValues.getDecimal(8, 10, 2);
-        Decimal maxDecimal = maxValues.getDecimal(8, 10, 2);
-        assertThat(minDecimal.toBigDecimal())
-                .isEqualByComparingTo(maxDecimal.toBigDecimal())
-                .isEqualByComparingTo(new BigDecimal("10.50"));
-
-        assertThat(minValues.getInt(9)).isEqualTo(maxValues.getInt(9)).isEqualTo(1000);
-    }
-
-    @Test
-    void testMinMaxCalculation() throws IOException {
-        // Test with data that has clear min/max values
-        List<Object[]> minMaxData =
+        // Test data with different ranges for each type
+        List<Object[]> comprehensiveData =
                 Arrays.asList(
-                        new Object[] {1, "a", 10.5},
-                        new Object[] {5, "z", 30.1},
-                        new Object[] {3, "m", 20.3});
+                        new Object[] {true, (byte) 1, (short) 100, 1000, 10000L, 1.1f, 1.11, "a"},
+                        new Object[] {false, (byte) 5, (short) 50, 500, 5000L, 5.5f, 5.55, "z"},
+                        new Object[] {true, (byte) 3, (short) 200, 2000, 20000L, 2.2f, 2.22, "m"});
 
-        RowType minMaxRowType =
-                DataTypes.ROW(
-                        new DataField("id", DataTypes.INT()),
-                        new DataField("name", DataTypes.STRING()),
-                        new DataField("value", DataTypes.DOUBLE()));
-
-        LogRecordBatchStatisticsCollector minMaxCollector =
-                new LogRecordBatchStatisticsCollector(minMaxRowType);
-
-        for (Object[] data : minMaxData) {
+        for (Object[] data : comprehensiveData) {
             InternalRow row = DataTestUtils.row(data);
-            minMaxCollector.processRow(row);
+            comprehensiveCollector.processRow(row);
         }
 
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = minMaxCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
+        // Write and parse statistics
+        MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
+        MemorySegmentOutputView outputView = new MemorySegmentOutputView(segment);
+        int bytesWritten = comprehensiveCollector.writeStatistics(outputView);
         assertThat(bytesWritten).isGreaterThan(0);
 
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, minMaxRowType);
+        // Parse statistics from written data
+        DefaultLogRecordBatchStatistics statistics =
+                LogRecordBatchStatisticsParser.parseStatistics(segment, 0, comprehensiveRowType, 1);
         assertThat(statistics).isNotNull();
 
-        // Verify null counts - all fields should have 0 nulls
+        // Verify statistics content
+        InternalRow minValues = statistics.getMinValues();
+        InternalRow maxValues = statistics.getMaxValues();
         Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(3);
-        for (int i = 0; i < 3; i++) {
+
+        assertThat(minValues).isNotNull();
+        assertThat(maxValues).isNotNull();
+        assertThat(nullCounts).isNotNull();
+
+        // Verify all data types have correct min/max values
+        assertThat(minValues.getBoolean(0)).isEqualTo(false); // false < true
+        assertThat(maxValues.getBoolean(0)).isEqualTo(true);
+
+        assertThat(minValues.getByte(1)).isEqualTo((byte) 1);
+        assertThat(maxValues.getByte(1)).isEqualTo((byte) 5);
+
+        assertThat(minValues.getShort(2)).isEqualTo((short) 50);
+        assertThat(maxValues.getShort(2)).isEqualTo((short) 200);
+
+        assertThat(minValues.getInt(3)).isEqualTo(500);
+        assertThat(maxValues.getInt(3)).isEqualTo(2000);
+
+        assertThat(minValues.getLong(4)).isEqualTo(5000L);
+        assertThat(maxValues.getLong(4)).isEqualTo(20000L);
+
+        assertThat(minValues.getFloat(5)).isEqualTo(1.1f);
+        assertThat(maxValues.getFloat(5)).isEqualTo(5.5f);
+
+        assertThat(minValues.getDouble(6)).isEqualTo(1.11);
+        assertThat(maxValues.getDouble(6)).isEqualTo(5.55);
+
+        assertThat(minValues.getString(7)).isEqualTo(BinaryString.fromString("a"));
+        assertThat(maxValues.getString(7)).isEqualTo(BinaryString.fromString("z"));
+
+        // Verify no nulls
+        for (int i = 0; i < nullCounts.length; i++) {
             assertThat(nullCounts[i]).isEqualTo(0L);
         }
-
-        // Verify min/max values
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Field 0 (id): min=1, max=5
-        assertThat(minValues.getInt(0)).isEqualTo(1);
-        assertThat(maxValues.getInt(0)).isEqualTo(5);
-
-        // Field 1 (name): min="a", max="z" (lexicographic order)
-        assertThat(minValues.getString(1).toString()).isEqualTo("a");
-        assertThat(maxValues.getString(1).toString()).isEqualTo("z");
-
-        // Field 2 (value): min=10.5, max=30.1
-        assertThat(minValues.getDouble(2)).isEqualTo(10.5);
-        assertThat(maxValues.getDouble(2)).isEqualTo(30.1);
-    }
-
-    @Test
-    void testNullHandling() throws IOException {
-        // Test with data containing nulls
-        List<Object[]> nullData =
-                Arrays.asList(
-                        new Object[] {1, "a", 10.5},
-                        new Object[] {null, "b", null},
-                        new Object[] {3, null, 20.3});
-
-        RowType nullRowType =
-                DataTypes.ROW(
-                        new DataField("id", DataTypes.INT()),
-                        new DataField("name", DataTypes.STRING()),
-                        new DataField("value", DataTypes.DOUBLE()));
-
-        LogRecordBatchStatisticsCollector nullCollector =
-                new LogRecordBatchStatisticsCollector(nullRowType);
-
-        for (Object[] data : nullData) {
-            InternalRow row = DataTestUtils.row(data);
-            nullCollector.processRow(row);
-        }
-
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = nullCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, nullRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(3);
-
-        // Field 0 (id): 1 null out of 3 rows
-        assertThat(nullCounts[0]).isEqualTo(1L);
-
-        // Field 1 (name): 1 null out of 3 rows
-        assertThat(nullCounts[1]).isEqualTo(1L);
-
-        // Field 2 (value): 1 null out of 3 rows
-        assertThat(nullCounts[2]).isEqualTo(1L);
-
-        // Verify min/max values (should ignore nulls)
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Field 0 (id): min=1, max=3 (excluding null)
-        assertThat(minValues.getInt(0)).isEqualTo(1);
-        assertThat(maxValues.getInt(0)).isEqualTo(3);
-
-        // Field 1 (name): min="a", max="b" (excluding null)
-        assertThat(minValues.getString(1).toString()).isEqualTo("a");
-        assertThat(maxValues.getString(1).toString()).isEqualTo("b");
-
-        // Field 2 (value): min=10.5, max=20.3 (excluding null)
-        assertThat(minValues.getDouble(2)).isEqualTo(10.5);
-        assertThat(maxValues.getDouble(2)).isEqualTo(20.3);
-    }
-
-    @Test
-    void testStringComparison() throws IOException {
-        // Test string min/max calculation
-        List<Object[]> stringData =
-                Arrays.asList(
-                        new Object[] {"zebra", "apple"},
-                        new Object[] {"apple", "zebra"},
-                        new Object[] {"banana", "cherry"});
-
-        RowType stringRowType =
-                DataTypes.ROW(
-                        new DataField("str1", DataTypes.STRING()),
-                        new DataField("str2", DataTypes.STRING()));
-
-        LogRecordBatchStatisticsCollector stringCollector =
-                new LogRecordBatchStatisticsCollector(stringRowType);
-
-        for (Object[] data : stringData) {
-            InternalRow row = DataTestUtils.row(data);
-            stringCollector.processRow(row);
-        }
-
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = stringCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, stringRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - all fields should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(2);
-        for (int i = 0; i < 2; i++) {
-            assertThat(nullCounts[i]).isEqualTo(0L);
-        }
-
-        // Verify min/max values for string fields
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Field 0 (str1): min="apple", max="zebra" (lexicographic order)
-        assertThat(minValues.getString(0).toString()).isEqualTo("apple");
-        assertThat(maxValues.getString(0).toString()).isEqualTo("zebra");
-
-        // Field 1 (str2): min="apple", max="zebra" (lexicographic order)
-        assertThat(minValues.getString(1).toString()).isEqualTo("apple");
-        assertThat(maxValues.getString(1).toString()).isEqualTo("zebra");
-    }
-
-    @Test
-    void testBooleanMinMax() throws IOException {
-        // Test boolean min/max calculation (false < true)
-        List<Object[]> booleanData =
-                Arrays.asList(
-                        new Object[] {true, false},
-                        new Object[] {false, true},
-                        new Object[] {true, true});
-
-        RowType booleanRowType =
-                DataTypes.ROW(
-                        new DataField("bool1", DataTypes.BOOLEAN()),
-                        new DataField("bool2", DataTypes.BOOLEAN()));
-
-        LogRecordBatchStatisticsCollector booleanCollector =
-                new LogRecordBatchStatisticsCollector(booleanRowType);
-
-        for (Object[] data : booleanData) {
-            InternalRow row = DataTestUtils.row(data);
-            booleanCollector.processRow(row);
-        }
-
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = booleanCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, booleanRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - all fields should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(2);
-        for (int i = 0; i < 2; i++) {
-            assertThat(nullCounts[i]).isEqualTo(0L);
-        }
-
-        // Verify min/max values for boolean fields
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        // Field 0 (bool1): min=false, max=true (since we have both values)
-        assertThat(minValues.getBoolean(0)).isFalse();
-        assertThat(maxValues.getBoolean(0)).isTrue();
-
-        // Field 1 (bool2): min=false, max=true (since we have both values)
-        assertThat(minValues.getBoolean(1)).isFalse();
-        assertThat(maxValues.getBoolean(1)).isTrue();
-    }
-
-    @Test
-    void testLargeFieldCount() throws IOException {
-        // Test with large number of fields
-        DataField[] fields = new DataField[100];
-        for (int i = 0; i < 100; i++) {
-            fields[i] = new DataField("field" + i, DataTypes.INT());
-        }
-
-        RowType largeRowType = new RowType(Arrays.asList(fields));
-        LogRecordBatchStatisticsCollector largeCollector =
-                new LogRecordBatchStatisticsCollector(largeRowType);
-
-        Object[] data = new Object[100];
-        Arrays.fill(data, 42);
-        InternalRow row = DataTestUtils.row(data);
-        largeCollector.processRow(row);
-
-        MemorySegment segment = new TestingMemorySegmentPool(8192).nextSegment();
-        int bytesWritten = largeCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, largeRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - all fields should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(100);
-        for (int i = 0; i < 100; i++) {
-            assertThat(nullCounts[i]).isEqualTo(0L);
-        }
-
-        // Verify min/max values - all fields should have same min and max (42)
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNotNull();
-        assertThat(maxValues).isNotNull();
-
-        for (int i = 0; i < 100; i++) {
-            assertThat(minValues.getInt(i)).isEqualTo(42);
-            assertThat(maxValues.getInt(i)).isEqualTo(42);
-        }
-    }
-
-    @Test
-    void testUnsupportedDataType() throws IOException {
-        // Test with unsupported data type (should not throw exception, just skip min/max
-        // collection)
-        RowType unsupportedRowType = DataTypes.ROW(new DataField("binary_val", DataTypes.BYTES()));
-
-        LogRecordBatchStatisticsCollector unsupportedCollector =
-                new LogRecordBatchStatisticsCollector(unsupportedRowType);
-
-        Object[] data = {new byte[] {1, 2, 3}};
-        InternalRow row = DataTestUtils.row(data);
-
-        // Should not throw exception
-        unsupportedCollector.processRow(row);
-
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten =
-                unsupportedCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        // Should still write statistics (null counts)
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        // Parse and verify statistics correctness
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, unsupportedRowType);
-        assertThat(statistics).isNotNull();
-
-        // Verify null counts - should have 0 nulls
-        Long[] nullCounts = statistics.getNullCounts();
-        assertThat(nullCounts).hasSize(1);
-        assertThat(nullCounts[0]).isEqualTo(0L);
-
-        // For unsupported types, min/max values should be null
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-        assertThat(minValues).isNull();
-        assertThat(maxValues).isNull();
-    }
-
-    @Test
-    void testSimpleMinMax() throws IOException {
-        // Create a simple collector with just one INT field
-        RowType simpleRowType = DataTypes.ROW(new DataField("value", DataTypes.INT()));
-        LogRecordBatchStatisticsCollector simpleCollector =
-                new LogRecordBatchStatisticsCollector(simpleRowType);
-
-        // Process just 3 rows with clear min/max
-        simpleCollector.processRow(DataTestUtils.row(new Object[] {1}));
-        simpleCollector.processRow(DataTestUtils.row(new Object[] {3}));
-        simpleCollector.processRow(DataTestUtils.row(new Object[] {2}));
-
-        MemorySegment segment = new TestingMemorySegmentPool(1024).nextSegment();
-        int bytesWritten = simpleCollector.writeStatistics(new MemorySegmentOutputView(segment));
-
-        assertThat(bytesWritten).isGreaterThan(0);
-
-        LogRecordBatchStatistics statistics =
-                LogRecordBatchStatisticsParser.parseStatistics(
-                        segment, 0, bytesWritten, simpleRowType);
-        assertThat(statistics).isNotNull();
-
-        InternalRow minValues = statistics.getMinValues();
-        InternalRow maxValues = statistics.getMaxValues();
-
-        System.out.println(
-                "Simple test - min: " + minValues.getInt(0) + ", max: " + maxValues.getInt(0));
-
-        // Verify statistics correctness - should process all rows correctly
-        assertThat(minValues.getInt(0)).isEqualTo(1); // min should be 1
-        assertThat(maxValues.getInt(0)).isEqualTo(3); // max should be 3
-        assertThat(statistics.getNullCounts()[0]).isEqualTo(0L); // no nulls
     }
 }

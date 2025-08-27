@@ -28,10 +28,10 @@ import com.alibaba.fluss.metrics.Counter;
 import com.alibaba.fluss.metrics.DescriptiveStatisticsHistogram;
 import com.alibaba.fluss.metrics.Histogram;
 import com.alibaba.fluss.metrics.SimpleCounter;
-import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.FileLogProjection;
 import com.alibaba.fluss.record.LogRecordBatch;
 import com.alibaba.fluss.record.MemoryLogRecords;
+import com.alibaba.fluss.record.RecordBatchFilter;
 import com.alibaba.fluss.utils.FileUtils;
 import com.alibaba.fluss.utils.FlussPaths;
 
@@ -348,8 +348,7 @@ public final class LocalLog {
      * offset is out of range, throw an OffsetOutOfRangeException.
      */
     LogOffsetMetadata convertToOffsetMetadataOrThrow(long offset) throws IOException {
-        FetchDataInfo fetchDataInfo =
-                read(false, offset, 1, false, nextOffsetMetadata, null, null, null);
+        FetchDataInfo fetchDataInfo = read(offset, 1, false, nextOffsetMetadata, null, null, null);
         return fetchDataInfo.getFetchOffsetMetadata();
     }
 
@@ -371,13 +370,12 @@ public final class LocalLog {
      *     read.
      */
     public FetchDataInfo read(
-            boolean fetchDataFromClient,
             long readOffset,
             int maxLength,
             boolean minOneMessage,
             LogOffsetMetadata maxOffsetMetadata,
             @Nullable FileLogProjection projection,
-            @Nullable Predicate recordBatchFilter,
+            @Nullable RecordBatchFilter recordBatchFilter,
             @Nullable LogRecordBatch.ReadContext readContext)
             throws IOException {
         // Validate that recordBatchFilter and readContext are either both null or both non-null
@@ -432,7 +430,6 @@ public final class LocalLog {
                                 : segment.getSizeInBytes();
                 fetchDataInfo =
                         segment.read(
-                                fetchDataFromClient,
                                 readOffset,
                                 maxLength,
                                 maxPosition,
@@ -451,7 +448,14 @@ public final class LocalLog {
                 // start offset is in range, this can happen when all messages with offset larger
                 // than start offsets have been deleted. In this case, we will return the empty set
                 // with log end offset metadata
-                return new FetchDataInfo(nextOffsetMetadata, MemoryLogRecords.EMPTY);
+                // When using filter, we should create a filtered empty response to notify client
+                // about the correct offset to continue fetching from
+                if (recordBatchFilter != null) {
+                    return FetchDataInfo.createFilteredEmptyResponse(
+                            nextOffsetMetadata, nextOffsetMetadata.getMessageOffset());
+                } else {
+                    return new FetchDataInfo(nextOffsetMetadata, MemoryLogRecords.EMPTY);
+                }
             }
         }
     }

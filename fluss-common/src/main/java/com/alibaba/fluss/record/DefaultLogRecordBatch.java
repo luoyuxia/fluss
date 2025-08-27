@@ -18,6 +18,7 @@
 package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.annotation.PublicEvolving;
+import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.exception.CorruptMessageException;
 import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.metadata.LogFormat;
@@ -51,7 +52,7 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.leaderEpochOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordsCountOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.schemaIdOffset;
-import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsOffsetOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.writeClientIdOffset;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
@@ -210,6 +211,10 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     @Override
     public int getRecordCount() {
         return segment.getInt(position + recordsCountOffset(magic()));
+    }
+
+    public int getStatisticsOffset() {
+        return segment.getInt(position + statisticsOffsetOffset(magic()));
     }
 
     @Override
@@ -433,8 +438,23 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
         }
 
         try {
-            int statisticsLength = statisticsSizeInBytes();
-            if (statisticsLength == 0) {
+            byte magic = magic();
+            if (magic < LOG_MAGIC_VALUE_V2) {
+                // Cache the empty result to avoid repeated checks
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
+            }
+
+            byte attribute = attributes();
+            if ((attribute & STATISTICS_FLAG_MASK) == 0) {
+                // Cache the empty result to avoid repeated checks
+                cachedStatistics = Optional.empty();
+                return cachedStatistics;
+            }
+
+            // Get the statistics offset from header
+            int statisticsOffset = segment.getInt(position + statisticsOffsetOffset(magic));
+            if (statisticsOffset == 0) {
                 // Cache the empty result to avoid repeated checks
                 cachedStatistics = Optional.empty();
                 return cachedStatistics;
@@ -447,13 +467,10 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
                 cachedStatistics = Optional.empty();
                 return cachedStatistics;
             }
-
-            int statisticsDataOffset = sizeInBytes() - statisticsLength;
-
             // Parse statistics directly from memory segment without creating heap objects
             LogRecordBatchStatistics statistics =
                     LogRecordBatchStatisticsParser.parseStatistics(
-                            segment, statisticsDataOffset, statisticsLength, rowType);
+                            segment, position + statisticsOffset, rowType, schemaId());
 
             // Cache the parsed statistics
             cachedStatistics = Optional.ofNullable(statistics);
@@ -465,16 +482,27 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
         }
     }
 
-    @Override
-    public int statisticsSizeInBytes() {
-        byte magic = magic();
-        if (magic < LOG_MAGIC_VALUE_V2) {
-            return 0;
-        }
-        byte attribute = attributes();
-        if ((attribute & STATISTICS_FLAG_MASK) == 0) {
-            return 0;
-        }
-        return segment.getInt(position + statisticsLengthOffset(magic));
+    // -----------------------------------------------------------------------
+    // Methods for testing only
+    // -----------------------------------------------------------------------
+
+    /**
+     * Get the memory segment for testing purposes only.
+     *
+     * @return The memory segment
+     */
+    @VisibleForTesting
+    MemorySegment segment() {
+        return segment;
+    }
+
+    /**
+     * Get the position for testing purposes only.
+     *
+     * @return The position
+     */
+    @VisibleForTesting
+    int position() {
+        return position;
     }
 }

@@ -50,6 +50,7 @@ public class TabletServerMetricGroup extends AbstractMetricGroup {
 
     private final Counter logRecordBatchStatisticsProcessCount;
     private final Counter logRecordBatchStatisticsFilterOutCount;
+    private final Counter processedRecordBatchCount;
 
     public TabletServerMetricGroup(
             MetricRegistry registry, String clusterId, String hostname, int serverId) {
@@ -81,6 +82,10 @@ public class TabletServerMetricGroup extends AbstractMetricGroup {
         meter(
                 MetricNames.LOG_RECORD_BATCH_STATISTICS_FILTER_OUT_COUNT,
                 new MeterView(logRecordBatchStatisticsFilterOutCount));
+        processedRecordBatchCount = new ThreadSafeSimpleCounter();
+        meter(
+                MetricNames.LOG_RECORD_BATCH_PROCESSED_COUNT,
+                new MeterView(processedRecordBatchCount));
     }
 
     @Override
@@ -121,6 +126,10 @@ public class TabletServerMetricGroup extends AbstractMetricGroup {
 
     public Counter logRecordBatchStatisticsFilterOutCount() {
         return logRecordBatchStatisticsFilterOutCount;
+    }
+
+    public Counter processedRecordBatchCount() {
+        return processedRecordBatchCount;
     }
 
     // ------------------------------------------------------------------------

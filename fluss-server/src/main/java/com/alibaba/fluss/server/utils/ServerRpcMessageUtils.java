@@ -30,7 +30,6 @@ import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
-import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.BytesViewLogRecords;
 import com.alibaba.fluss.record.DefaultKvRecordBatch;
 import com.alibaba.fluss.record.DefaultValueRecordBatch;
@@ -39,6 +38,7 @@ import com.alibaba.fluss.record.FileLogRecords;
 import com.alibaba.fluss.record.KvRecordBatch;
 import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
+import com.alibaba.fluss.record.RecordBatchFilter;
 import com.alibaba.fluss.remote.RemoteLogFetchInfo;
 import com.alibaba.fluss.remote.RemoteLogSegment;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
@@ -691,14 +691,15 @@ public class ServerRpcMessageUtils {
         return produceResponse;
     }
 
-    public static Map<Long, Predicate> getTableRecordBatchFilterMap(FetchLogRequest request) {
+    public static Map<Long, RecordBatchFilter> getTableRecordBatchFilterMap(
+            FetchLogRequest request) {
         return request.getTablesReqsList().stream()
                 .filter(PbFetchLogReqForTable::hasRecordBatchFilter)
                 .map(
                         tableReq ->
                                 new AbstractMap.SimpleEntry<>(
                                         tableReq.getTableId(),
-                                        PredicateMessageUtils.toPredicate(
+                                        PredicateMessageUtils.toRecordBatchFilter(
                                                 tableReq.getRecordBatchFilter())))
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
@@ -749,6 +750,12 @@ public class ServerRpcMessageUtils {
             FetchLogResultForBucket bucketResult = entry.getValue();
             PbFetchLogRespForBucket fetchLogRespForBucket =
                     new PbFetchLogRespForBucket().setBucketId(tb.getBucket());
+            if (bucketResult.getSkipToNextFetchOffset() > 0) {
+                fetchLogRespForBucket.setSkipToNextFetchOffset(
+                        bucketResult.getSkipToNextFetchOffset());
+            } else {
+                fetchLogRespForBucket.setSkipToNextFetchOffset(-1);
+            }
             if (tb.getPartitionId() != null) {
                 fetchLogRespForBucket.setPartitionId(tb.getPartitionId());
             }

@@ -31,7 +31,7 @@ import com.alibaba.fluss.row.BinaryString;
 import com.alibaba.fluss.row.Decimal;
 import com.alibaba.fluss.row.TimestampLtz;
 import com.alibaba.fluss.row.TimestampNtz;
-import com.alibaba.fluss.rpc.messages.predicate.PbPredicate;
+import com.alibaba.fluss.rpc.messages.PbPredicate;
 import com.alibaba.fluss.types.BigIntType;
 import com.alibaba.fluss.types.BinaryType;
 import com.alibaba.fluss.types.BooleanType;

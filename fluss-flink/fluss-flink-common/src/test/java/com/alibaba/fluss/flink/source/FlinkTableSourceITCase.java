@@ -69,7 +69,6 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static com.alibaba.fluss.flink.FlinkConnectorOptions.BOOTSTRAP_SERVERS;
 import static com.alibaba.fluss.flink.source.testutils.FlinkRowAssertionsUtils.assertResultsIgnoreOrder;
 import static com.alibaba.fluss.flink.utils.FlinkTestBase.waitUntilPartitions;
 import static com.alibaba.fluss.flink.utils.FlinkTestBase.writeRows;
@@ -128,7 +127,7 @@ abstract class FlinkTableSourceITCase extends AbstractTestBase {
         tEnv.executeSql(
                 String.format(
                         "create catalog %s with ('type' = 'fluss', '%s' = '%s')",
-                        CATALOG_NAME, BOOTSTRAP_SERVERS.key(), bootstrapServers));
+                        CATALOG_NAME, ConfigOptions.BOOTSTRAP_SERVERS.key(), bootstrapServers));
         tEnv.executeSql("use catalog " + CATALOG_NAME);
         tEnv.getConfig().set(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 4);
         tEnv.executeSql("create database " + DEFAULT_DB);
@@ -1132,7 +1131,7 @@ abstract class FlinkTableSourceITCase extends AbstractTestBase {
     void testStreamingReadNonPKTableWithCombinedFilters() throws Exception {
         tEnv.executeSql(
                 "create table combined_filters_table"
-                        + " (a int not null, b varchar, c string, d int) partitioned by (c) ");
+                        + " (a int not null, b varchar, c string, d int) partitioned by (c)");
         TablePath tablePath = TablePath.of(DEFAULT_DB, "combined_filters_table");
         tEnv.executeSql("alter table combined_filters_table add partition (c=2025)");
         tEnv.executeSql("alter table combined_filters_table add partition (c=2026)");
@@ -1178,6 +1177,90 @@ abstract class FlinkTableSourceITCase extends AbstractTestBase {
                         .collect();
 
         assertResultsIgnoreOrder(rowIter, expectedRowValues, true);
+    }
+
+    /**
+     * Test RecordBatchFilter push down with large dataset and multiple range filters to verify
+     * correctness when log segments have gaps due to filtering.
+     */
+    @Test
+    void testRecordBatchFilterPushDownWithLogGaps() throws Exception {
+        // Create a log table for testing record batch filter push down with specific batch size
+        // configurations
+        // to ensure predictable RecordBatch sizes during writing and reading
+        tEnv.executeSql(
+                "create table record_batch_filter_test "
+                        + "(id int, sequence_num int, name varchar, score double) "
+                        + "with ("
+                        + "'table.log.format' = 'ARROW', "
+                        // Writer configuration: aim for ~500 records per RecordBatch
+                        // Each record has: int(4) + int(4) + varchar(~12) + double(8) ≈ 28 bytes
+                        // So 500 records ≈ 14KB, set batch size to 32KB to account for overhead
+                        + "'client.writer.batch-size' = '32kb', "
+                        // Shorter timeout for predictable batching
+                        + "'client.writer.batch-timeout' = '10ms', "
+                        // limit read batch size to 500 records max
+                        + "'client.scanner.log.max-poll-records' = '500', "
+                        + "'client.scanner.log.fetch.max-bytes-for-bucket' = '32kb' "
+                        + ")");
+
+        TablePath tablePath = TablePath.of(DEFAULT_DB, "record_batch_filter_test");
+
+        // Write 10,000 ordered rows with sequential sequence_num in controlled batches
+        // to ensure predictable RecordBatch sizes
+        int totalRecords = 10000;
+        int batchSize = 500;
+
+        for (int batchStart = 0; batchStart < totalRecords; batchStart += batchSize) {
+            List<InternalRow> batchRows = new ArrayList<>();
+            int batchEnd = Math.min(batchStart + batchSize, totalRecords);
+
+            for (int i = batchStart; i < batchEnd; i++) {
+                batchRows.add(row(i, i, "value_" + i, i * 0.1));
+            }
+
+            // Write each batch separately to ensure proper RecordBatch formation
+            writeRows(conn, tablePath, batchRows, true);
+
+            // Small delay to ensure batches are processed distinctly
+            Thread.sleep(20);
+        }
+
+        // Define three ranges to filter: 6500-6999, 8350-8400, 9400-10000
+        String query =
+                "select id, sequence_num, name from record_batch_filter_test "
+                        + "where (sequence_num >= 5500 and sequence_num < 6000) "
+                        + "or (sequence_num >= 8350 and sequence_num <= 8400) "
+                        + "or (sequence_num >= 9400 and sequence_num < 10000)";
+
+        // Verify that record batch filters are pushed down
+        String plan = tEnv.explainSql(query);
+        // The plan should contain filter push down information
+        assertThat(plan)
+                .contains(
+                        "TableSourceScan(table=[[testcatalog, defaultdb, record_batch_filter_test, filter=[OR(OR(AND(>=(sequence_num,");
+
+        // Collect results and verify correctness
+        List<String> expectedResults = new ArrayList<>();
+
+        // Range 1: 5500-5999 (500 records)
+        for (int i = 5500; i < 6000; i++) {
+            expectedResults.add(String.format("+I[%d, %d, value_%d]", i, i, i));
+        }
+
+        // Range 2: 8350-8400 (51 records)
+        for (int i = 8350; i <= 8400; i++) {
+            expectedResults.add(String.format("+I[%d, %d, value_%d]", i, i, i));
+        }
+
+        // Range 3: 9400-9999 (600 records)
+        for (int i = 9400; i < 10000; i++) {
+            expectedResults.add(String.format("+I[%d, %d, value_%d]", i, i, i));
+        }
+
+        try (CloseableIterator<Row> rowIter = tEnv.executeSql(query).collect()) {
+            assertResultsIgnoreOrder(rowIter, expectedResults, true);
+        }
     }
 
     private List<String> writeRowsToTwoPartition(TablePath tablePath, Collection<String> partitions)

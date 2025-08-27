@@ -20,12 +20,10 @@ package com.alibaba.fluss.record;
 import com.alibaba.fluss.memory.OutputView;
 import com.alibaba.fluss.row.BinaryString;
 import com.alibaba.fluss.row.Decimal;
+import com.alibaba.fluss.row.GenericRow;
 import com.alibaba.fluss.row.InternalRow;
 import com.alibaba.fluss.row.TimestampLtz;
 import com.alibaba.fluss.row.TimestampNtz;
-import com.alibaba.fluss.row.compacted.CompactedRow;
-import com.alibaba.fluss.row.compacted.CompactedRowDeserializer;
-import com.alibaba.fluss.row.compacted.CompactedRowWriter;
 import com.alibaba.fluss.types.DataType;
 import com.alibaba.fluss.types.DecimalType;
 import com.alibaba.fluss.types.LocalZonedTimestampType;
@@ -37,134 +35,67 @@ import java.util.Arrays;
 
 /**
  * Collector for {@link LogRecordBatchStatistics} that accumulates statistics during record batch
- * construction using CompactedRow for optimal space efficiency.
+ * construction using IndexedRow for optimal space efficiency and better deserialization
+ * performance. Only supports schema-aware statistics format.
  */
 public class LogRecordBatchStatisticsCollector {
 
     private final RowType rowType;
-    private final int fieldCount;
-    private final DataType[] fieldTypes;
-    private final CompactedRowDeserializer deserializer;
+    private final int[] statsIndexMapping;
 
-    // Statistics arrays
+    // Statistics arrays (only for columns that need statistics)
     private final Object[] minValues;
     private final Object[] maxValues;
     private final Long[] nullCounts;
-
-    // Flags to track if values have been set
     private final boolean[] minSet;
     private final boolean[] maxSet;
 
-    // Reusable objects for writeStatistics
-    private final Object[] finalMinValues;
-    private final Object[] finalMaxValues;
-    private final CompactedRowWriter minRowWriter;
-    private final CompactedRowWriter maxRowWriter;
-    private final CompactedRowWriter.FieldWriter[] fieldWriters;
-    private final CompactedRow minCompactedRow;
-    private final CompactedRow maxCompactedRow;
     private final LogRecordBatchStatisticsWriter statisticsWriter;
 
-    private long totalRowCount = 0;
-
-    public LogRecordBatchStatisticsCollector(RowType rowType) {
+    public LogRecordBatchStatisticsCollector(RowType rowType, int[] statsIndexMapping) {
         this.rowType = rowType;
-        this.fieldCount = rowType.getFieldCount();
-        this.fieldTypes = new DataType[fieldCount];
+        this.statsIndexMapping = statsIndexMapping;
 
-        for (int i = 0; i < fieldCount; i++) {
-            fieldTypes[i] = rowType.getTypeAt(i);
-        }
+        // Initialize statistics arrays
+        this.minValues = new Object[statsIndexMapping.length];
+        this.maxValues = new Object[statsIndexMapping.length];
+        this.nullCounts = new Long[statsIndexMapping.length];
+        this.minSet = new boolean[statsIndexMapping.length];
+        this.maxSet = new boolean[statsIndexMapping.length];
 
-        this.deserializer = new CompactedRowDeserializer(fieldTypes);
+        this.statisticsWriter = new LogRecordBatchStatisticsWriter(rowType, statsIndexMapping);
 
-        this.minValues = new Object[fieldCount];
-        this.maxValues = new Object[fieldCount];
-        this.nullCounts = new Long[fieldCount];
-        this.minSet = new boolean[fieldCount];
-        this.maxSet = new boolean[fieldCount];
-
-        // Initialize reusable objects
-        this.finalMinValues = new Object[fieldCount];
-        this.finalMaxValues = new Object[fieldCount];
-        this.minRowWriter = new CompactedRowWriter(fieldCount);
-        this.maxRowWriter = new CompactedRowWriter(fieldCount);
-        this.fieldWriters = new CompactedRowWriter.FieldWriter[fieldCount];
-        this.minCompactedRow = new CompactedRow(fieldCount, deserializer);
-        this.maxCompactedRow = new CompactedRow(fieldCount, deserializer);
-        this.statisticsWriter = new LogRecordBatchStatisticsWriter(rowType);
-
-        // Create field writers for each field type
-        for (int i = 0; i < fieldCount; i++) {
-            fieldWriters[i] = CompactedRowWriter.createFieldWriter(fieldTypes[i]);
-        }
-
-        // Initialize arrays
         Arrays.fill(minSet, false);
         Arrays.fill(maxSet, false);
         Arrays.fill(nullCounts, 0L);
     }
 
     /**
-     * Process a row and update statistics.
+     * Process a row and update statistics for configured columns only.
      *
      * @param row The row to process
      */
     public void processRow(InternalRow row) {
-        totalRowCount++;
-
-        for (int i = 0; i < fieldCount; i++) {
-            if (row.isNullAt(i)) {
-                nullCounts[i]++;
+        for (int statIndex = 0; statIndex < statsIndexMapping.length; statIndex++) {
+            int fullRowIndex = statsIndexMapping[statIndex];
+            if (row.isNullAt(fullRowIndex)) {
+                nullCounts[statIndex]++;
             } else {
-                updateMinMax(i, row);
+                updateMinMax(statIndex, fullRowIndex, row);
             }
         }
     }
 
     /**
-     * Write the collected statistics to an OutputView. This method provides better support for
-     * cross-segment scenarios by using OutputView's automatic segment management.
+     * Write the collected statistics to an OutputView.
      *
      * @param outputView The target output view
-     * @return The number of bytes written, or 0 if no rows were processed
+     * @return The number of bytes written, or 0 if no statistics collected
      * @throws IOException If writing fails
      */
     public int writeStatistics(OutputView outputView) throws IOException {
-        if (totalRowCount == 0) {
-            return 0;
-        }
-
-        // Prepare min/max values using reusable arrays
-        for (int i = 0; i < fieldCount; i++) {
-            finalMinValues[i] = minSet[i] ? minValues[i] : null;
-            finalMaxValues[i] = maxSet[i] ? maxValues[i] : null;
-        }
-
-        // Check if any field has min/max values set
-        boolean hasMinMaxValues = false;
-        for (int i = 0; i < fieldCount; i++) {
-            if (minSet[i] || maxSet[i]) {
-                hasMinMaxValues = true;
-                break;
-            }
-        }
-
-        CompactedRow minRow = null;
-        CompactedRow maxRow = null;
-
-        if (hasMinMaxValues) {
-            // Create CompactedRow for min values using reusable writer
-            createCompactedRowReusable(finalMinValues, minRowWriter, minCompactedRow);
-            minRow = minCompactedRow;
-
-            // Create CompactedRow for max values using reusable writer
-            createCompactedRowReusable(finalMaxValues, maxRowWriter, maxCompactedRow);
-            maxRow = maxCompactedRow;
-        }
-
-        // Write statistics using reusable writer with OutputView
-        return statisticsWriter.writeStatistics(minRow, maxRow, nullCounts, outputView);
+        return statisticsWriter.writeStatistics(
+                GenericRow.of(minValues), GenericRow.of(maxValues), nullCounts, outputView);
     }
 
     /**
@@ -178,81 +109,83 @@ public class LogRecordBatchStatisticsCollector {
 
     /** Reset the collector to collect new statistics. */
     public void reset() {
-        totalRowCount = 0;
         Arrays.fill(minSet, false);
         Arrays.fill(maxSet, false);
         Arrays.fill(nullCounts, 0L);
         Arrays.fill(minValues, null);
         Arrays.fill(maxValues, null);
-
-        // Reset reusable arrays
-        Arrays.fill(finalMinValues, null);
-        Arrays.fill(finalMaxValues, null);
     }
 
-    private void updateMinMax(int fieldIndex, InternalRow row) {
-        DataType fieldType = fieldTypes[fieldIndex];
+    /**
+     * Update min/max values for a specific field.
+     *
+     * @param statsIndex the index in the statistics arrays
+     * @param schemaIndex the index in the full schema
+     * @param row the row being processed
+     */
+    private void updateMinMax(int statsIndex, int schemaIndex, InternalRow row) {
+        DataType fieldType = rowType.getTypeAt(schemaIndex);
 
         switch (fieldType.getTypeRoot()) {
             case BOOLEAN:
-                boolean boolValue = row.getBoolean(fieldIndex);
-                updateBooleanMinMax(fieldIndex, boolValue);
+                boolean boolValue = row.getBoolean(schemaIndex);
+                updateBooleanMinMax(statsIndex, boolValue);
                 break;
             case TINYINT:
-                byte byteValue = row.getByte(fieldIndex);
-                updateByteMinMax(fieldIndex, byteValue);
+                byte byteValue = row.getByte(schemaIndex);
+                updateByteMinMax(statsIndex, byteValue);
                 break;
             case SMALLINT:
-                short shortValue = row.getShort(fieldIndex);
-                updateShortMinMax(fieldIndex, shortValue);
+                short shortValue = row.getShort(schemaIndex);
+                updateShortMinMax(statsIndex, shortValue);
                 break;
             case INTEGER:
-                int intValue = row.getInt(fieldIndex);
-                updateIntMinMax(fieldIndex, intValue);
+                int intValue = row.getInt(schemaIndex);
+                updateIntMinMax(statsIndex, intValue);
                 break;
             case BIGINT:
-                long longValue = row.getLong(fieldIndex);
-                updateLongMinMax(fieldIndex, longValue);
+                long longValue = row.getLong(schemaIndex);
+                updateLongMinMax(statsIndex, longValue);
                 break;
             case FLOAT:
-                float floatValue = row.getFloat(fieldIndex);
-                updateFloatMinMax(fieldIndex, floatValue);
+                float floatValue = row.getFloat(schemaIndex);
+                updateFloatMinMax(statsIndex, floatValue);
                 break;
             case DOUBLE:
-                double doubleValue = row.getDouble(fieldIndex);
-                updateDoubleMinMax(fieldIndex, doubleValue);
+                double doubleValue = row.getDouble(schemaIndex);
+                updateDoubleMinMax(statsIndex, doubleValue);
                 break;
             case STRING:
-                BinaryString stringValue = row.getString(fieldIndex);
-                updateStringMinMax(fieldIndex, stringValue);
+                BinaryString stringValue = row.getString(schemaIndex);
+                updateStringMinMax(statsIndex, stringValue);
                 break;
             case DECIMAL:
                 DecimalType decimalType = (DecimalType) fieldType;
                 Decimal decimalValue =
                         row.getDecimal(
-                                fieldIndex, decimalType.getPrecision(), decimalType.getScale());
-                updateDecimalMinMax(fieldIndex, decimalValue);
+                                schemaIndex, decimalType.getPrecision(), decimalType.getScale());
+                updateDecimalMinMax(statsIndex, decimalValue);
                 break;
             case DATE:
-                int dateValue = row.getInt(fieldIndex);
-                updateDateMinMax(fieldIndex, dateValue);
+                int dateValue = row.getInt(schemaIndex);
+                updateDateMinMax(statsIndex, dateValue);
                 break;
             case TIME_WITHOUT_TIME_ZONE:
-                int timeValue = row.getInt(fieldIndex);
-                updateTimeMinMax(fieldIndex, timeValue);
+                int timeValue = row.getInt(schemaIndex);
+                updateTimeMinMax(statsIndex, timeValue);
                 break;
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 TimestampType timestampType = (TimestampType) fieldType;
                 TimestampNtz timestampNtzValue =
-                        row.getTimestampNtz(fieldIndex, timestampType.getPrecision());
-                updateTimestampNtzMinMax(fieldIndex, timestampNtzValue);
+                        row.getTimestampNtz(schemaIndex, timestampType.getPrecision());
+                updateTimestampNtzMinMax(statsIndex, timestampNtzValue);
                 break;
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 LocalZonedTimestampType localZonedTimestampType =
                         (LocalZonedTimestampType) fieldType;
                 TimestampLtz timestampLtzValue =
-                        row.getTimestampLtz(fieldIndex, localZonedTimestampType.getPrecision());
-                updateTimestampLtzMinMax(fieldIndex, timestampLtzValue);
+                        row.getTimestampLtz(schemaIndex, localZonedTimestampType.getPrecision());
+                updateTimestampLtzMinMax(statsIndex, timestampLtzValue);
                 break;
             default:
                 // For unsupported types, don't collect min/max
@@ -260,342 +193,253 @@ public class LogRecordBatchStatisticsCollector {
         }
     }
 
-    private void updateBooleanMinMax(int fieldIndex, boolean value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateBooleanMinMax(int statsIndex, boolean value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            boolean currentMin = (Boolean) minValues[fieldIndex];
+            boolean currentMin = (Boolean) minValues[statsIndex];
             if (!value && currentMin) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = false;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            boolean currentMax = (Boolean) maxValues[fieldIndex];
+            boolean currentMax = (Boolean) maxValues[statsIndex];
             if (value && !currentMax) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateByteMinMax(int fieldIndex, byte value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateByteMinMax(int statsIndex, byte value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            byte currentMin = (Byte) minValues[fieldIndex];
+            byte currentMin = (Byte) minValues[statsIndex];
             if (value < currentMin) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            byte currentMax = (Byte) maxValues[fieldIndex];
+            byte currentMax = (Byte) maxValues[statsIndex];
             if (value > currentMax) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateShortMinMax(int fieldIndex, short value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateShortMinMax(int statsIndex, short value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            short currentMin = (Short) minValues[fieldIndex];
+            short currentMin = (Short) minValues[statsIndex];
             if (value < currentMin) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            short currentMax = (Short) maxValues[fieldIndex];
+            short currentMax = (Short) maxValues[statsIndex];
             if (value > currentMax) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateIntMinMax(int fieldIndex, int value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateIntMinMax(int statsIndex, int value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            int currentMin = (Integer) minValues[fieldIndex];
+            int currentMin = (Integer) minValues[statsIndex];
             if (value < currentMin) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            int currentMax = (Integer) maxValues[fieldIndex];
+            int currentMax = (Integer) maxValues[statsIndex];
             if (value > currentMax) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateLongMinMax(int fieldIndex, long value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateLongMinMax(int statsIndex, long value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            long currentMin = (Long) minValues[fieldIndex];
+            long currentMin = (Long) minValues[statsIndex];
             if (value < currentMin) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            long currentMax = (Long) maxValues[fieldIndex];
+            long currentMax = (Long) maxValues[statsIndex];
             if (value > currentMax) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateFloatMinMax(int fieldIndex, float value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateFloatMinMax(int statsIndex, float value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            float currentMin = (Float) minValues[fieldIndex];
+            float currentMin = (Float) minValues[statsIndex];
             if (value < currentMin) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            float currentMax = (Float) maxValues[fieldIndex];
+            float currentMax = (Float) maxValues[statsIndex];
             if (value > currentMax) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateDoubleMinMax(int fieldIndex, double value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateDoubleMinMax(int statsIndex, double value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            double currentMin = (Double) minValues[fieldIndex];
+            double currentMin = (Double) minValues[statsIndex];
             if (value < currentMin) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            double currentMax = (Double) maxValues[fieldIndex];
+            double currentMax = (Double) maxValues[statsIndex];
             if (value > currentMax) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateStringMinMax(int fieldIndex, BinaryString value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value.copy();
-            minSet[fieldIndex] = true;
+    private void updateStringMinMax(int statsIndex, BinaryString value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value.copy();
+            minSet[statsIndex] = true;
         } else {
-            BinaryString currentMin = (BinaryString) minValues[fieldIndex];
+            BinaryString currentMin = (BinaryString) minValues[statsIndex];
             if (value.compareTo(currentMin) < 0) {
-                minValues[fieldIndex] = value.copy();
+                minValues[statsIndex] = value.copy();
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value.copy();
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value.copy();
+            maxSet[statsIndex] = true;
         } else {
-            BinaryString currentMax = (BinaryString) maxValues[fieldIndex];
+            BinaryString currentMax = (BinaryString) maxValues[statsIndex];
             if (value.compareTo(currentMax) > 0) {
-                maxValues[fieldIndex] = value.copy();
+                maxValues[statsIndex] = value.copy();
             }
         }
     }
 
-    private void updateDecimalMinMax(int fieldIndex, Decimal value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateDecimalMinMax(int statsIndex, Decimal value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            Decimal currentMin = (Decimal) minValues[fieldIndex];
+            Decimal currentMin = (Decimal) minValues[statsIndex];
             if (value.compareTo(currentMin) < 0) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            Decimal currentMax = (Decimal) maxValues[fieldIndex];
+            Decimal currentMax = (Decimal) maxValues[statsIndex];
             if (value.compareTo(currentMax) > 0) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateDateMinMax(int fieldIndex, int value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
-        } else {
-            int currentMin = (Integer) minValues[fieldIndex];
-            if (value < currentMin) {
-                minValues[fieldIndex] = value;
-            }
-        }
-
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
-        } else {
-            int currentMax = (Integer) maxValues[fieldIndex];
-            if (value > currentMax) {
-                maxValues[fieldIndex] = value;
-            }
-        }
+    private void updateDateMinMax(int statsIndex, int value) {
+        updateIntMinMax(statsIndex, value);
     }
 
-    private void updateTimeMinMax(int fieldIndex, int value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
-        } else {
-            int currentMin = (Integer) minValues[fieldIndex];
-            if (value < currentMin) {
-                minValues[fieldIndex] = value;
-            }
-        }
-
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
-        } else {
-            int currentMax = (Integer) maxValues[fieldIndex];
-            if (value > currentMax) {
-                maxValues[fieldIndex] = value;
-            }
-        }
+    private void updateTimeMinMax(int statsIndex, int value) {
+        updateIntMinMax(statsIndex, value);
     }
 
-    private void updateTimestampNtzMinMax(int fieldIndex, TimestampNtz value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateTimestampNtzMinMax(int statsIndex, TimestampNtz value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            TimestampNtz currentMin = (TimestampNtz) minValues[fieldIndex];
+            TimestampNtz currentMin = (TimestampNtz) minValues[statsIndex];
             if (value.compareTo(currentMin) < 0) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            TimestampNtz currentMax = (TimestampNtz) maxValues[fieldIndex];
+            TimestampNtz currentMax = (TimestampNtz) maxValues[statsIndex];
             if (value.compareTo(currentMax) > 0) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
     }
 
-    private void updateTimestampLtzMinMax(int fieldIndex, TimestampLtz value) {
-        if (!minSet[fieldIndex]) {
-            minValues[fieldIndex] = value;
-            minSet[fieldIndex] = true;
+    private void updateTimestampLtzMinMax(int statsIndex, TimestampLtz value) {
+        if (!minSet[statsIndex]) {
+            minValues[statsIndex] = value;
+            minSet[statsIndex] = true;
         } else {
-            TimestampLtz currentMin = (TimestampLtz) minValues[fieldIndex];
+            TimestampLtz currentMin = (TimestampLtz) minValues[statsIndex];
             if (value.compareTo(currentMin) < 0) {
-                minValues[fieldIndex] = value;
+                minValues[statsIndex] = value;
             }
         }
 
-        if (!maxSet[fieldIndex]) {
-            maxValues[fieldIndex] = value;
-            maxSet[fieldIndex] = true;
+        if (!maxSet[statsIndex]) {
+            maxValues[statsIndex] = value;
+            maxSet[statsIndex] = true;
         } else {
-            TimestampLtz currentMax = (TimestampLtz) maxValues[fieldIndex];
+            TimestampLtz currentMax = (TimestampLtz) maxValues[statsIndex];
             if (value.compareTo(currentMax) > 0) {
-                maxValues[fieldIndex] = value;
+                maxValues[statsIndex] = value;
             }
         }
-    }
-
-    /**
-     * Create a CompactedRow from the given values array using reusable objects.
-     *
-     * @param values The values to encode into a CompactedRow
-     * @param writer The reusable CompactedRowWriter
-     * @param row The reusable CompactedRow to populate
-     */
-    private void createCompactedRowReusable(
-            Object[] values, CompactedRowWriter writer, CompactedRow row) {
-        writer.reset();
-
-        for (int i = 0; i < fieldCount; i++) {
-            if (values[i] == null) {
-                writer.setNullAt(i);
-            } else {
-                fieldWriters[i].writeField(writer, i, values[i]);
-            }
-        }
-
-        row.pointTo(writer.segment(), 0, writer.position());
-    }
-
-    /**
-     * Create a CompactedRow from the given values array.
-     *
-     * @param values The values to encode into a CompactedRow
-     * @return The created CompactedRow
-     */
-    private CompactedRow createCompactedRow(Object[] values) {
-        CompactedRowWriter writer = new CompactedRowWriter(fieldCount);
-        CompactedRowWriter.FieldWriter[] fieldWriters =
-                new CompactedRowWriter.FieldWriter[fieldCount];
-
-        // Create field writers for each field type
-        for (int i = 0; i < fieldCount; i++) {
-            fieldWriters[i] = CompactedRowWriter.createFieldWriter(fieldTypes[i]);
-        }
-
-        writer.reset();
-
-        for (int i = 0; i < fieldCount; i++) {
-            if (values[i] == null) {
-                writer.setNullAt(i);
-            } else {
-                fieldWriters[i].writeField(writer, i, values[i]);
-            }
-        }
-
-        CompactedRow row = new CompactedRow(fieldCount, deserializer);
-        row.pointTo(writer.segment(), 0, writer.position());
-        return row;
     }
 }

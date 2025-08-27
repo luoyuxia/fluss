@@ -1180,7 +1180,6 @@ public final class Replica {
                                 Math.max(logTablet.logStartOffset(), highWatermark - limit);
                         FetchDataInfo dataInfo =
                                 logTablet.read(
-                                        true,
                                         readOffset,
                                         Integer.MAX_VALUE,
                                         FetchIsolation.HIGH_WATERMARK,
@@ -1347,7 +1346,6 @@ public final class Replica {
 
         FetchDataInfo fetchDataInfo =
                 logTablet.read(
-                        !fetchParams.isFromFollower(),
                         readOffset,
                         fetchParams.maxFetchBytes(),
                         fetchParams.isolation(),
