@@ -59,6 +59,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+import static com.alibaba.fluss.shaded.netty4.io.netty.util.ReferenceCountUtil.safeRelease;
 import static com.alibaba.fluss.utils.IOUtils.closeQuietly;
 
 /** Connection to a Netty server used by the {@link NettyClient}. */
@@ -241,23 +242,22 @@ final class ServerConnection {
                             request.requestStartTime,
                             response.totalSize());
                     boolean accept = request.responseFuture.complete(response);
-
                     if (!accept) {
-                        LOG.warn("Maybe lead: The complete feture cannot to accept");
+                        LOG.warn("Maybe leak: The complete feature cannot to accept");
                         if (lazilyRelease) {
                             ByteBuf parsedByteBuf = response.getParsedByteBuf();
                             if (parsedByteBuf != null) {
-                                parsedByteBuf.release();
+                                safeRelease(parsedByteBuf);
                             }
                         }
                     }
                 }
             } catch (Throwable t) {
-                LOG.warn("Maybe lead: Failed to handle response for request {}.", requestId, t);
+                LOG.warn("Maybe leak: Failed to handle response for request {}.", requestId, t);
                 if (lazilyRelease) {
                     ByteBuf parsedByteBuf = response.getParsedByteBuf();
                     if (parsedByteBuf != null) {
-                        parsedByteBuf.release();
+                        safeRelease(parsedByteBuf);
                     }
                 }
             }
