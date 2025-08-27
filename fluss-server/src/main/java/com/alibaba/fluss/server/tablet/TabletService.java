@@ -23,9 +23,9 @@ import com.alibaba.fluss.exception.UnknownTableOrBucketException;
 import com.alibaba.fluss.fs.FileSystem;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TablePath;
-import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.KvRecordBatch;
 import com.alibaba.fluss.record.MemoryLogRecords;
+import com.alibaba.fluss.record.RecordBatchFilter;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
 import com.alibaba.fluss.rpc.entity.LookupResultForBucket;
 import com.alibaba.fluss.rpc.entity.PrefixLookupResultForBucket;
@@ -189,7 +189,8 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
 
     private static FetchParams getFetchParams(FetchLogRequest request) {
         FetchParams fetchParams;
-        Map<Long, Predicate> tableRecordBatchFilterMap = getTableRecordBatchFilterMap(request);
+        Map<Long, RecordBatchFilter> tableRecordBatchFilterMap =
+                getTableRecordBatchFilterMap(request);
         if (request.hasMinBytes()) {
             fetchParams =
                     new FetchParamsBuilder(request.getFollowerServerId(), request.getMaxBytes())

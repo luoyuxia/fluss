@@ -59,6 +59,7 @@ import java.util.Set;
 
 import static com.alibaba.fluss.config.ConfigOptions.TABLE_DATALAKE_FORMAT;
 import static com.alibaba.fluss.config.FlussConfigUtils.CLIENT_PREFIX;
+import static com.alibaba.fluss.config.FlussConfigUtils.TABLE_PREFIX;
 import static com.alibaba.fluss.flink.catalog.FlinkCatalog.LAKE_TABLE_SPLITTER;
 import static com.alibaba.fluss.flink.utils.DataLakeUtils.getDatalakeFormat;
 import static com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils.getBucketKeyIndexes;
@@ -132,6 +133,7 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 toFlussTablePath(context.getObjectIdentifier()),
                 toFlussClientConfig(
                         context.getCatalogTable().getOptions(), context.getConfiguration()),
+                toFlussTableConfig(tableOptions),
                 tableOutputType,
                 primaryKeyIndexes,
                 bucketKeyIndexes,
@@ -237,6 +239,22 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 ConfigOptions.CLIENT_SCANNER_IO_TMP_DIR,
                 new File(flinkConfig.get(CoreOptions.TMP_DIRS), "/fluss").getAbsolutePath());
         return flussConfig;
+    }
+
+    private static Configuration toFlussTableConfig(ReadableConfig tableOptions) {
+        Configuration tableConfig = new Configuration();
+
+        // forward all table-level configs
+        tableOptions
+                .toMap()
+                .forEach(
+                        (key, value) -> {
+                            if (key.startsWith(TABLE_PREFIX)) {
+                                tableConfig.setString(key, value);
+                            }
+                        });
+
+        return tableConfig;
     }
 
     private static TablePath toFlussTablePath(ObjectIdentifier tablePath) {

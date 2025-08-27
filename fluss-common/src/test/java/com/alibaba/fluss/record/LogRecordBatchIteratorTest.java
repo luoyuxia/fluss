@@ -36,7 +36,10 @@ import static com.alibaba.fluss.record.TestData.DATA1_ROW_TYPE;
 import static com.alibaba.fluss.record.TestData.DEFAULT_SCHEMA_ID;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Test for {@link LogRecordBatchIterator} and {@link FilteredLogRecordBatchIterator}. */
+/**
+ * Test for {@link LogRecordBatchIterator} and {@link
+ * LogRecordBatchIterator.FilteredLogRecordBatchIterator}.
+ */
 public class LogRecordBatchIteratorTest {
 
     @Test
@@ -124,7 +127,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(equalPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(equalPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -186,7 +190,9 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(greaterThanPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(greaterThanPredicate, DEFAULT_SCHEMA_ID),
+                        readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -248,7 +254,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(isNotNullPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(isNotNullPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -310,7 +317,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(equalPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(equalPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator has no data
         assertThat(filteredIterator.hasNext()).isFalse();
@@ -342,7 +350,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(equalPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(equalPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator has no data
         assertThat(filteredIterator.hasNext()).isFalse();
@@ -394,7 +403,9 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(greaterThanPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(greaterThanPredicate, DEFAULT_SCHEMA_ID),
+                        readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -472,7 +483,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(equalPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(equalPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -532,7 +544,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(equalPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(equalPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator behavior (when no statistics, should return all batches)
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -587,14 +600,17 @@ public class LogRecordBatchIteratorTest {
 
         // Apply first filter
         LogRecordBatchIterator<LogRecordBatch> filteredIterator1 =
-                iterator.filter(greaterThanPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(greaterThanPredicate, DEFAULT_SCHEMA_ID),
+                        readContext);
 
         // Create second predicate: less than 7
         Predicate lessThanPredicate = builder.lessThan(0, 7);
 
         // Apply second filter
         LogRecordBatchIterator<LogRecordBatch> filteredIterator2 =
-                filteredIterator1.filter(lessThanPredicate, readContext);
+                filteredIterator1.filter(
+                        new RecordBatchFilter(lessThanPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify final filtered iterator has data
         assertThat(filteredIterator2.hasNext()).isTrue();
@@ -660,7 +676,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(complexPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(complexPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -724,7 +741,8 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(equalPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(equalPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -843,7 +861,9 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter with read context
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(greaterThanPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(greaterThanPredicate, DEFAULT_SCHEMA_ID),
+                        readContext);
 
         // Verify filtered iterator has data
         assertThat(filteredIterator.hasNext()).isTrue();
@@ -907,7 +927,8 @@ public class LogRecordBatchIteratorTest {
         Predicate equalToMinPredicate = builder.equal(0, 1);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator1 =
-                iterator.filter(equalToMinPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(equalToMinPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         assertThat(filteredIterator1.hasNext()).isTrue();
         LogRecordBatch batch1 = filteredIterator1.next();
@@ -924,7 +945,8 @@ public class LogRecordBatchIteratorTest {
         Predicate equalToMaxPredicate = builder.equal(0, 10);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator2 =
-                iterator2.filter(equalToMaxPredicate, readContext);
+                iterator2.filter(
+                        new RecordBatchFilter(equalToMaxPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         assertThat(filteredIterator2.hasNext()).isTrue();
         LogRecordBatch batch2 = filteredIterator2.next();
@@ -941,7 +963,9 @@ public class LogRecordBatchIteratorTest {
         Predicate greaterThanMaxPredicate = builder.greaterThan(0, 10);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator3 =
-                iterator3.filter(greaterThanMaxPredicate, readContext);
+                iterator3.filter(
+                        new RecordBatchFilter(greaterThanMaxPredicate, DEFAULT_SCHEMA_ID),
+                        readContext);
 
         assertThat(filteredIterator3.hasNext()).isFalse();
 
@@ -956,7 +980,9 @@ public class LogRecordBatchIteratorTest {
         Predicate lessThanMinPredicate = builder.lessThan(0, 1);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator4 =
-                iterator4.filter(lessThanMinPredicate, readContext);
+                iterator4.filter(
+                        new RecordBatchFilter(lessThanMinPredicate, DEFAULT_SCHEMA_ID),
+                        readContext);
 
         assertThat(filteredIterator4.hasNext()).isFalse();
 
@@ -993,7 +1019,8 @@ public class LogRecordBatchIteratorTest {
         Predicate isNotNullPredicate = builder.isNotNull(0);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(isNotNullPredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(isNotNullPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         assertThat(filteredIterator.hasNext()).isTrue();
         LogRecordBatch batch = filteredIterator.next();
@@ -1025,7 +1052,8 @@ public class LogRecordBatchIteratorTest {
         Predicate isNullPredicate = builder.isNull(0);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator2 =
-                iterator2.filter(isNullPredicate, readContext);
+                iterator2.filter(
+                        new RecordBatchFilter(isNullPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         assertThat(filteredIterator2.hasNext()).isTrue();
         LogRecordBatch batch2 = filteredIterator2.next();
@@ -1080,7 +1108,8 @@ public class LogRecordBatchIteratorTest {
         Predicate rangePredicate = builder.greaterThan(0, 4);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator =
-                iterator.filter(rangePredicate, readContext);
+                iterator.filter(
+                        new RecordBatchFilter(rangePredicate, DEFAULT_SCHEMA_ID), readContext);
 
         assertThat(filteredIterator.hasNext()).isTrue();
         LogRecordBatch batch = filteredIterator.next();
@@ -1111,7 +1140,8 @@ public class LogRecordBatchIteratorTest {
         Predicate noMatchPredicate = builder.greaterThan(0, 10);
 
         LogRecordBatchIterator<LogRecordBatch> filteredIterator2 =
-                iterator2.filter(noMatchPredicate, readContext);
+                iterator2.filter(
+                        new RecordBatchFilter(noMatchPredicate, DEFAULT_SCHEMA_ID), readContext);
 
         assertThat(filteredIterator2.hasNext()).isFalse();
 
@@ -1140,14 +1170,14 @@ public class LogRecordBatchIteratorTest {
 
         // Apply filter multiple times and verify consistent results
         LogRecordBatchIterator<LogRecordBatch> filteredIterator1 =
-                iterator.filter(predicate, readContext);
+                iterator.filter(new RecordBatchFilter(predicate, DEFAULT_SCHEMA_ID), readContext);
         LogRecordBatchIterator<LogRecordBatch> filteredIterator2 =
                 new LogRecordBatchIterator<>(
                                 new MemorySegmentLogInputStream(
                                         memoryLogRecords.getMemorySegment(),
                                         memoryLogRecords.getPosition(),
                                         memoryLogRecords.sizeInBytes()))
-                        .filter(predicate, readContext);
+                        .filter(new RecordBatchFilter(predicate, DEFAULT_SCHEMA_ID), readContext);
 
         // Verify both iterators have the same number of batches
         int count1 = 0;
@@ -1172,7 +1202,7 @@ public class LogRecordBatchIteratorTest {
                                         memoryLogRecords.getMemorySegment(),
                                         memoryLogRecords.getPosition(),
                                         memoryLogRecords.sizeInBytes()))
-                        .filter(predicate, readContext);
+                        .filter(new RecordBatchFilter(predicate, count2), readContext);
 
         while (filteredIterator3.hasNext()) {
             LogRecordBatch batch = filteredIterator3.next();

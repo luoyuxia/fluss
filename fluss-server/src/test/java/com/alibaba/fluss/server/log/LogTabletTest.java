@@ -582,7 +582,7 @@ final class LogTabletTest extends LogTestBase {
             FetchIsolation isolation,
             boolean minOneMessage)
             throws Exception {
-        return logTablet.read(false, offset, maxLength, isolation, minOneMessage, null, null, null);
+        return logTablet.read(offset, maxLength, isolation, minOneMessage, null, null, null);
     }
 
     private void assertValidLogOffsetMetadata(LogOffsetMetadata offsetMetadata) throws IOException {
@@ -599,11 +599,7 @@ final class LogTabletTest extends LogTestBase {
 
         FetchDataInfo readInfo =
                 segment.read(
-                        false,
-                        offsetMetadata.getMessageOffset(),
-                        2048,
-                        segment.getSizeInBytes(),
-                        false);
+                        offsetMetadata.getMessageOffset(), 2048, segment.getSizeInBytes(), false);
 
         if (offsetMetadata.getRelativePositionInSegment() < segment.getSizeInBytes()) {
             assertThat(readInfo.getFetchOffsetMetadata()).isEqualTo(offsetMetadata);

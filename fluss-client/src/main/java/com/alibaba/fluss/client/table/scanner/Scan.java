@@ -60,18 +60,21 @@ public interface Scan {
     Scan limit(int rowNumber);
 
     /**
+     * Returns a new scan from this that will apply the given predicate filter.
+     *
+     * <p>Note: the filter currently only supports record batch level filtering, not row level
+     * filtering. The computing engine still needs to perform secondary filtering on the results.
+     *
+     * @param predicate the predicate to apply for record batch level filtering
+     */
+    Scan filter(@Nullable Predicate predicate);
+
+    /**
      * Creates a {@link LogScanner} to continuously read log data for this scan.
      *
      * <p>Note: this API doesn't support pre-configured with {@link #limit(int)}.
      */
     LogScanner createLogScanner();
-
-    /**
-     * Creates a {@link LogScanner} to continuously read log data for this scan with filter.
-     *
-     * <p>Note: this API doesn't support pre-configured with {@link #limit(int)}.
-     */
-    LogScanner createLogScanner(Predicate recordBatchFilter);
 
     /**
      * Creates a {@link BatchScanner} to read current data in the given table bucket for this scan.

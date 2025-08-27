@@ -32,6 +32,7 @@ import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metrics.MetricNames;
+import com.alibaba.fluss.record.LogRecordBatchStatisticsCollector;
 import com.alibaba.fluss.row.arrow.ArrowWriter;
 import com.alibaba.fluss.row.arrow.ArrowWriterPool;
 import com.alibaba.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
@@ -608,6 +609,12 @@ public final class RecordAccumulator {
                             outputView.getPreAllocatedSize(),
                             tableInfo.getRowType(),
                             tableInfo.getTableConfig().getArrowCompressionInfo());
+            LogRecordBatchStatisticsCollector statisticsCollector = null;
+            if (tableInfo.isStatisticsEnabled()) {
+                statisticsCollector =
+                        new LogRecordBatchStatisticsCollector(
+                                tableInfo.getRowType(), tableInfo.getStatsIndexMapping());
+            }
             batch =
                     new ArrowLogWriteBatch(
                             bucketId,
@@ -615,7 +622,8 @@ public final class RecordAccumulator {
                             schemaId,
                             arrowWriter,
                             outputView,
-                            clock.milliseconds());
+                            clock.milliseconds(),
+                            statisticsCollector);
         } else {
             batch =
                     new IndexedLogWriteBatch(

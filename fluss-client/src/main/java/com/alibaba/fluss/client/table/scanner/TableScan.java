@@ -48,24 +48,29 @@ public class TableScan implements Scan {
     /** The limited row number to read. No limit if is null. */
     @Nullable private final Integer limit;
 
+    /** The record batch filter to apply. No filter if is null. */
+    @Nullable private final Predicate recordBatchFilter;
+
     public TableScan(FlussConnection conn, TableInfo tableInfo) {
-        this(conn, tableInfo, null, null);
+        this(conn, tableInfo, null, null, null);
     }
 
     private TableScan(
             FlussConnection conn,
             TableInfo tableInfo,
             @Nullable int[] projectedColumns,
-            @Nullable Integer limit) {
+            @Nullable Integer limit,
+            @Nullable Predicate recordBatchFilter) {
         this.conn = conn;
         this.tableInfo = tableInfo;
         this.projectedColumns = projectedColumns;
         this.limit = limit;
+        this.recordBatchFilter = recordBatchFilter;
     }
 
     @Override
     public Scan project(@Nullable int[] projectedColumns) {
-        return new TableScan(conn, tableInfo, projectedColumns, limit);
+        return new TableScan(conn, tableInfo, projectedColumns, limit, recordBatchFilter);
     }
 
     @Override
@@ -80,31 +85,21 @@ public class TableScan implements Scan {
             }
             columnIndexes[i] = index;
         }
-        return new TableScan(conn, tableInfo, columnIndexes, limit);
+        return new TableScan(conn, tableInfo, columnIndexes, limit, recordBatchFilter);
     }
 
     @Override
     public Scan limit(int rowNumber) {
-        return new TableScan(conn, tableInfo, projectedColumns, rowNumber);
+        return new TableScan(conn, tableInfo, projectedColumns, rowNumber, recordBatchFilter);
+    }
+
+    @Override
+    public Scan filter(@Nullable Predicate predicate) {
+        return new TableScan(conn, tableInfo, projectedColumns, limit, predicate);
     }
 
     @Override
     public LogScanner createLogScanner() {
-        if (limit != null) {
-            throw new UnsupportedOperationException("LogScanner doesn't support limit pushdown.");
-        }
-        return new LogScannerImpl(
-                conn.getConfiguration(),
-                tableInfo,
-                conn.getMetadataUpdater(),
-                conn.getClientMetricGroup(),
-                conn.getOrCreateRemoteFileDownloader(),
-                projectedColumns,
-                null);
-    }
-
-    @Override
-    public LogScanner createLogScanner(Predicate recordBatchFilter) {
         if (limit != null) {
             throw new UnsupportedOperationException("LogScanner doesn't support limit pushdown.");
         }

@@ -19,8 +19,8 @@ package com.alibaba.fluss.server.log;
 
 import com.alibaba.fluss.annotation.VisibleForTesting;
 import com.alibaba.fluss.compression.ArrowCompressionInfo;
-import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.FileLogProjection;
+import com.alibaba.fluss.record.RecordBatchFilter;
 import com.alibaba.fluss.rpc.messages.FetchLogRequest;
 import com.alibaba.fluss.types.RowType;
 
@@ -63,7 +63,7 @@ public final class FetchParams {
     private long fetchOffset;
     // whether column projection is enabled
     private boolean projectionEnabled = false;
-    private Map<Long, Predicate> tableRecordBatchFilterMap;
+    private Map<Long, RecordBatchFilter> tableRecordBatchFilterMap;
     // the lazily initialized projection util to read and project file logs
     @Nullable private FileLogProjection fileLogProjection;
     private final int minFetchBytes;
@@ -85,7 +85,7 @@ public final class FetchParams {
             int maxFetchBytes,
             int minFetchBytes,
             long maxWaitMs,
-            @Nullable Map<Long, Predicate> tableRecordBatchFilterMap) {
+            @Nullable Map<Long, RecordBatchFilter> tableRecordBatchFilterMap) {
         this.replicaId = replicaId;
         this.fetchOnlyLeader = fetchOnlyLeader;
         this.maxFetchBytes = maxFetchBytes;
@@ -132,7 +132,7 @@ public final class FetchParams {
     }
 
     @Nullable
-    public Predicate gatTableRecordBatchFilter(long tableId) {
+    public RecordBatchFilter gatTableRecordBatchFilter(long tableId) {
         if (null == tableRecordBatchFilterMap) {
             return null;
         }

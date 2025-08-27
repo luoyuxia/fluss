@@ -17,6 +17,7 @@
 
 package com.alibaba.fluss.flink.source;
 
+import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.FlinkConnectorOptions;
 import com.alibaba.fluss.flink.utils.FlinkConnectorOptionsUtils;
@@ -71,10 +72,16 @@ public class FlinkTableSourceFilterPushDownTest {
                     new FlinkConnectorOptionsUtils.StartupOptions();
             startupOptions.startupMode = FlinkConnectorOptions.ScanStartupMode.EARLIEST;
 
+            // Create table config for testing
+            Configuration tableConfig = new Configuration();
+
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "*");
+
             tableSource =
                     new FlinkTableSource(
                             tablePath,
                             flussConfig,
+                            tableConfig,
                             tableOutputType,
                             new int[] {0}, // primary key indexes (id)
                             new int[] {}, // bucket key indexes
@@ -167,6 +174,11 @@ public class FlinkTableSourceFilterPushDownTest {
             Configuration flussConfig = new Configuration();
             flussConfig.setString(FlinkConnectorOptions.BOOTSTRAP_SERVERS.key(), "localhost:9092");
 
+            // Create table config for testing
+            Configuration tableConfig = new Configuration();
+
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "*");
+
             FlinkConnectorOptionsUtils.StartupOptions startupOptions =
                     new FlinkConnectorOptionsUtils.StartupOptions();
             startupOptions.startupMode = FlinkConnectorOptions.ScanStartupMode.EARLIEST;
@@ -175,6 +187,7 @@ public class FlinkTableSourceFilterPushDownTest {
                     new FlinkTableSource(
                             tablePath,
                             flussConfig,
+                            tableConfig,
                             tableOutputType,
                             new int[] {}, // no primary key indexes
                             new int[] {}, // bucket key indexes
@@ -284,6 +297,11 @@ public class FlinkTableSourceFilterPushDownTest {
             Configuration flussConfig = new Configuration();
             flussConfig.setString(FlinkConnectorOptions.BOOTSTRAP_SERVERS.key(), "localhost:9092");
 
+            // Create table config for testing
+            Configuration tableConfig = new Configuration();
+
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "*");
+
             FlinkConnectorOptionsUtils.StartupOptions startupOptions =
                     new FlinkConnectorOptionsUtils.StartupOptions();
             startupOptions.startupMode = FlinkConnectorOptions.ScanStartupMode.EARLIEST;
@@ -292,6 +310,7 @@ public class FlinkTableSourceFilterPushDownTest {
                     new FlinkTableSource(
                             tablePath,
                             flussConfig,
+                            tableConfig,
                             tableOutputType,
                             new int[] {0}, // primary key indexes (id)
                             new int[] {}, // bucket key indexes
@@ -376,6 +395,11 @@ public class FlinkTableSourceFilterPushDownTest {
             Configuration flussConfig = new Configuration();
             flussConfig.setString(FlinkConnectorOptions.BOOTSTRAP_SERVERS.key(), "localhost:9092");
 
+            // Create table config for testing
+            Configuration tableConfig = new Configuration();
+
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "*");
+
             FlinkConnectorOptionsUtils.StartupOptions startupOptions =
                     new FlinkConnectorOptionsUtils.StartupOptions();
             startupOptions.startupMode = FlinkConnectorOptions.ScanStartupMode.EARLIEST;
@@ -384,6 +408,7 @@ public class FlinkTableSourceFilterPushDownTest {
                     new FlinkTableSource(
                             tablePath,
                             flussConfig,
+                            tableConfig,
                             tableOutputType,
                             new int[] {}, // no primary key indexes
                             new int[] {}, // bucket key indexes
@@ -545,6 +570,252 @@ public class FlinkTableSourceFilterPushDownTest {
     }
 
     @Nested
+    class PartialStatisticsColumnTests {
+        private FlinkTableSource tableSource;
+
+        @BeforeEach
+        void setUp() {
+            // Create a log table schema: id, name, value, region (no primary key)
+            RowType tableOutputType =
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD("id", DataTypes.INT()),
+                                            DataTypes.FIELD("name", DataTypes.STRING()),
+                                            DataTypes.FIELD("value", DataTypes.BIGINT()),
+                                            DataTypes.FIELD("region", DataTypes.STRING()),
+                                            DataTypes.FIELD("attachment", DataTypes.BYTES()))
+                                    .getLogicalType();
+
+            TablePath tablePath = TablePath.of("test_db", "test_partial_stats_table");
+            Configuration flussConfig = new Configuration();
+            flussConfig.setString(FlinkConnectorOptions.BOOTSTRAP_SERVERS.key(), "localhost:9092");
+
+            // Create table config with only partial columns for statistics
+            Configuration tableConfig = new Configuration();
+            // Only enable statistics for 'id' and 'value' columns, not for 'name', 'region',
+            // 'attachment'
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "id,value");
+
+            FlinkConnectorOptionsUtils.StartupOptions startupOptions =
+                    new FlinkConnectorOptionsUtils.StartupOptions();
+            startupOptions.startupMode = FlinkConnectorOptions.ScanStartupMode.EARLIEST;
+
+            tableSource =
+                    new FlinkTableSource(
+                            tablePath,
+                            flussConfig,
+                            tableConfig,
+                            tableOutputType,
+                            new int[] {}, // no primary key indexes
+                            new int[] {}, // bucket key indexes
+                            new int[] {}, // partition key indexes
+                            true, // streaming
+                            startupOptions,
+                            3, // lookup max retry times
+                            false, // lookup async
+                            null, // cache
+                            1000L, // scan partition discovery interval
+                            false, // is data lake enabled
+                            null // merge engine type
+                            );
+        }
+
+        @Test
+        void testFilterOnColumnWithStatistics() {
+            // Test filter on 'id' column which has statistics enabled
+            FieldReferenceExpression fieldRef =
+                    new FieldReferenceExpression("id", DataTypes.INT(), 0, 0);
+            ValueLiteralExpression literal = new ValueLiteralExpression(5);
+            CallExpression equalCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.EQUALS,
+                            Arrays.asList(fieldRef, literal),
+                            DataTypes.BOOLEAN());
+
+            List<ResolvedExpression> filters = Arrays.asList(equalCall);
+
+            FlinkTableSource.Result result = tableSource.applyFilters(filters);
+
+            // Filter on 'id' should be pushed down as record batch filter since it has statistics
+            assertThat(result.getAcceptedFilters()).hasSize(1);
+            assertThat(result.getRemainingFilters()).hasSize(1); // Filter remains for execution
+            assertThat(tableSource.getLogRecordBatchFilter()).isNotNull();
+        }
+
+        @Test
+        void testFilterOnColumnWithoutStatistics() {
+            // Test filter on 'name' column which does not have statistics enabled
+            FieldReferenceExpression fieldRef =
+                    new FieldReferenceExpression("name", DataTypes.STRING(), 0, 1);
+            ValueLiteralExpression literal = new ValueLiteralExpression("test");
+            CallExpression equalCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.EQUALS,
+                            Arrays.asList(fieldRef, literal),
+                            DataTypes.BOOLEAN());
+
+            List<ResolvedExpression> filters = Arrays.asList(equalCall);
+
+            FlinkTableSource.Result result = tableSource.applyFilters(filters);
+
+            // Filter on 'name' should not be pushed down since it doesn't have statistics
+            assertThat(result.getAcceptedFilters()).isEmpty();
+            assertThat(result.getRemainingFilters()).hasSize(1);
+            assertThat(tableSource.getLogRecordBatchFilter()).isNull();
+        }
+
+        @Test
+        void testFilterOnBinaryColumnExcludedFromStatistics() {
+            // Test filter on 'attachment' column which is binary type (excluded from statistics)
+            FieldReferenceExpression fieldRef =
+                    new FieldReferenceExpression("attachment", DataTypes.BYTES(), 0, 4);
+            ValueLiteralExpression literal =
+                    new ValueLiteralExpression(new byte[] {1, 2, 3}, DataTypes.BYTES().notNull());
+            CallExpression equalCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.EQUALS,
+                            Arrays.asList(fieldRef, literal),
+                            DataTypes.BOOLEAN());
+
+            List<ResolvedExpression> filters = Arrays.asList(equalCall);
+
+            FlinkTableSource.Result result = tableSource.applyFilters(filters);
+
+            // Binary columns should not have pushdown even if configured
+            assertThat(result.getAcceptedFilters()).isEmpty();
+            assertThat(result.getRemainingFilters()).hasSize(1);
+            assertThat(tableSource.getLogRecordBatchFilter()).isNull();
+        }
+
+        @Test
+        void testMixedFiltersWithPartialStatistics() {
+            // Test mixed filters: one on column with statistics, one without
+            FieldReferenceExpression idFieldRef =
+                    new FieldReferenceExpression("id", DataTypes.INT(), 0, 0);
+            FieldReferenceExpression nameFieldRef =
+                    new FieldReferenceExpression("name", DataTypes.STRING(), 0, 1);
+            FieldReferenceExpression valueFieldRef =
+                    new FieldReferenceExpression("value", DataTypes.BIGINT(), 0, 2);
+
+            ValueLiteralExpression idLiteral = new ValueLiteralExpression(5);
+            ValueLiteralExpression nameLiteral = new ValueLiteralExpression("test");
+            ValueLiteralExpression valueLiteral = new ValueLiteralExpression(100L);
+
+            CallExpression idEqualCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.EQUALS,
+                            Arrays.asList(idFieldRef, idLiteral),
+                            DataTypes.BOOLEAN());
+
+            CallExpression nameEqualCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.EQUALS,
+                            Arrays.asList(nameFieldRef, nameLiteral),
+                            DataTypes.BOOLEAN());
+
+            CallExpression valueGreaterCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.GREATER_THAN,
+                            Arrays.asList(valueFieldRef, valueLiteral),
+                            DataTypes.BOOLEAN());
+
+            List<ResolvedExpression> filters =
+                    Arrays.asList(idEqualCall, nameEqualCall, valueGreaterCall);
+
+            FlinkTableSource.Result result = tableSource.applyFilters(filters);
+
+            // Only filters on 'id' and 'value' should be accepted for pushdown
+            assertThat(result.getAcceptedFilters()).hasSize(2); // id and value filters
+            assertThat(result.getRemainingFilters()).hasSize(3); // all filters remain for execution
+            assertThat(tableSource.getLogRecordBatchFilter())
+                    .isNotNull(); // Should have merged predicate for id and value
+        }
+
+        @Test
+        void testRangeFilterOnColumnWithStatistics() {
+            // Test range filter on 'value' column which has statistics enabled
+            FieldReferenceExpression fieldRef =
+                    new FieldReferenceExpression("value", DataTypes.BIGINT(), 0, 2);
+            ValueLiteralExpression lowerBound = new ValueLiteralExpression(10L);
+            ValueLiteralExpression upperBound = new ValueLiteralExpression(100L);
+
+            CallExpression greaterThanCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.GREATER_THAN,
+                            Arrays.asList(fieldRef, lowerBound),
+                            DataTypes.BOOLEAN());
+
+            CallExpression lessThanCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.LESS_THAN,
+                            Arrays.asList(fieldRef, upperBound),
+                            DataTypes.BOOLEAN());
+
+            List<ResolvedExpression> filters = Arrays.asList(greaterThanCall, lessThanCall);
+
+            FlinkTableSource.Result result = tableSource.applyFilters(filters);
+
+            // Range filters on 'value' should be pushed down since it has statistics
+            assertThat(result.getAcceptedFilters()).hasSize(2);
+            assertThat(result.getRemainingFilters()).hasSize(2); // Filters remain for execution
+            assertThat(tableSource.getLogRecordBatchFilter()).isNotNull();
+        }
+
+        @Test
+        void testEmptyStatisticsConfiguration() {
+            // Test with empty statistics configuration
+            RowType tableOutputType =
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD("id", DataTypes.INT()),
+                                            DataTypes.FIELD("name", DataTypes.STRING()),
+                                            DataTypes.FIELD("value", DataTypes.BIGINT()))
+                                    .getLogicalType();
+
+            Configuration tableConfig = new Configuration();
+            // No statistics columns configured
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "");
+
+            FlinkTableSource emptyStatsTableSource =
+                    new FlinkTableSource(
+                            TablePath.of("test_db", "test_empty_stats_table"),
+                            new Configuration(),
+                            tableConfig,
+                            tableOutputType,
+                            new int[] {}, // no primary key indexes
+                            new int[] {}, // bucket key indexes
+                            new int[] {}, // partition key indexes
+                            true, // streaming
+                            new FlinkConnectorOptionsUtils.StartupOptions(),
+                            3, // lookup max retry times
+                            false, // lookup async
+                            null, // cache
+                            1000L, // scan partition discovery interval
+                            false, // is data lake enabled
+                            null // merge engine type
+                            );
+
+            FieldReferenceExpression fieldRef =
+                    new FieldReferenceExpression("id", DataTypes.INT(), 0, 0);
+            ValueLiteralExpression literal = new ValueLiteralExpression(5);
+            CallExpression equalCall =
+                    new CallExpression(
+                            BuiltInFunctionDefinitions.EQUALS,
+                            Arrays.asList(fieldRef, literal),
+                            DataTypes.BOOLEAN());
+
+            List<ResolvedExpression> filters = Arrays.asList(equalCall);
+
+            FlinkTableSource.Result result = emptyStatsTableSource.applyFilters(filters);
+
+            // No filters should be pushed down when statistics are disabled
+            assertThat(result.getAcceptedFilters()).isEmpty();
+            assertThat(result.getRemainingFilters()).hasSize(1);
+            assertThat(emptyStatsTableSource.getLogRecordBatchFilter()).isNull();
+        }
+    }
+
+    @Nested
     class BatchModePrimaryKeyPushdownTests {
         private FlinkTableSource tableSource;
 
@@ -563,6 +834,11 @@ public class FlinkTableSourceFilterPushDownTest {
             Configuration flussConfig = new Configuration();
             flussConfig.setString(FlinkConnectorOptions.BOOTSTRAP_SERVERS.key(), "localhost:9092");
 
+            // Create table config for testing
+            Configuration tableConfig = new Configuration();
+
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "*");
+
             FlinkConnectorOptionsUtils.StartupOptions startupOptions =
                     new FlinkConnectorOptionsUtils.StartupOptions();
             startupOptions.startupMode = FlinkConnectorOptions.ScanStartupMode.FULL;
@@ -571,6 +847,7 @@ public class FlinkTableSourceFilterPushDownTest {
                     new FlinkTableSource(
                             tablePath,
                             flussConfig,
+                            tableConfig,
                             tableOutputType,
                             new int[] {0}, // primary key indexes (id)
                             new int[] {}, // bucket key indexes
@@ -653,10 +930,16 @@ public class FlinkTableSourceFilterPushDownTest {
                                             DataTypes.FIELD("value", DataTypes.BIGINT()))
                                     .getLogicalType();
 
+            // Create table config for testing
+            Configuration tableConfig = new Configuration();
+
+            tableConfig.set(ConfigOptions.TABLE_STATISTICS_COLUMNS, "*");
+
             FlinkTableSource nonFullStartupTableSource =
                     new FlinkTableSource(
                             TablePath.of("test_db", "test_batch_table"),
                             new Configuration(),
+                            tableConfig,
                             nonFullStartupTableOutputType,
                             new int[] {0}, // primary key indexes
                             new int[] {}, // bucket key indexes

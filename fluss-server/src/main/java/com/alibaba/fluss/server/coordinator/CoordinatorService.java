@@ -250,6 +250,9 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         // apply system defaults if the config is not set
         tableDescriptor = applySystemDefaults(tableDescriptor);
 
+        // validate statistics configuration
+        TableStatisticsConfigValidator.validateOrThrow(tableDescriptor);
+
         if (tableDescriptor.hasPrimaryKey()) {
             throw new InvalidTableException(
                     "Currently, Primary-key table is not support in this cluster. if you want "

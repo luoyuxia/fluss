@@ -19,8 +19,10 @@ package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.exception.CorruptMessageException;
 import com.alibaba.fluss.exception.FlussRuntimeException;
-import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.utils.AbstractIterator;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -34,6 +36,8 @@ import java.util.Optional;
  * LogRecordBatch.
  */
 public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIterator<T> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(LogRecordBatchIterator.class);
 
     private LogInputStream<T> logInputStream;
 
@@ -77,22 +81,21 @@ public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIt
     }
 
     public LogRecordBatchIterator<T> filter(
-            Predicate recordBatchFilter, LogRecordBatch.ReadContext readContext) {
-        return new FilteredLogRecordBatchIterator<>(this, recordBatchFilter, readContext);
+            RecordBatchFilter recordBatchFilter, LogRecordBatch.ReadContext readContext) {
+        return new FilteredLogRecordBatchIterator(this, recordBatchFilter, readContext);
     }
 
-    private class FilteredLogRecordBatchIterator<T extends LogRecordBatch>
-            extends LogRecordBatchIterator<T> {
+    private class FilteredLogRecordBatchIterator extends LogRecordBatchIterator<T> {
 
         private final Iterator<T> innerIter;
 
-        private final Predicate recordBatchFilter;
+        private final RecordBatchFilter recordBatchFilter;
 
         private final LogRecordBatch.ReadContext readContext;
 
         private FilteredLogRecordBatchIterator(
                 LogRecordBatchIterator<T> innerIter,
-                Predicate recordBatchFilter,
+                RecordBatchFilter recordBatchFilter,
                 LogRecordBatch.ReadContext readContext) {
             super();
             this.innerIter = innerIter;
@@ -116,11 +119,20 @@ public class LogRecordBatchIterator<T extends LogRecordBatch> extends AbstractIt
                     return batch;
                 }
                 super.statistics.processedStatisticCount++;
-                if (recordBatchFilter.test(
-                        batch.getRecordCount(),
-                        statisticsOpt.get().getMinValues(),
-                        statisticsOpt.get().getMaxValues(),
-                        statisticsOpt.get().getNullCounts())) {
+                // Use the schema-aware test method if RecordBatchFilter is used
+                boolean shouldIncludeBatch;
+                try {
+                    shouldIncludeBatch =
+                            ((RecordBatchFilter) recordBatchFilter)
+                                    .test(batch.getRecordCount(), statisticsOpt.get());
+                } catch (Exception e) {
+                    // If test method throws exception, log it and allow batch to pass through
+                    LOG.warn(
+                            "Exception occurred during record batch filtering, ignore testing.", e);
+                    shouldIncludeBatch = true;
+                }
+
+                if (shouldIncludeBatch) {
                     return batch;
                 }
                 statistics.filteredOutRecordBatchCount++;

@@ -19,12 +19,14 @@ package com.alibaba.fluss.server.log;
 
 import com.alibaba.fluss.annotation.Internal;
 import com.alibaba.fluss.record.LogRecords;
+import com.alibaba.fluss.record.MemoryLogRecords;
 
 /** FetchDataInfo is used to store the data of a fetch request. */
 @Internal
 public class FetchDataInfo {
     private final LogOffsetMetadata fetchOffsetMetadata;
     private final LogRecords records;
+    private final long skipToNextFetchOffset;
 
     public LogRecords getRecords() {
         return records;
@@ -39,7 +41,28 @@ public class FetchDataInfo {
     }
 
     public FetchDataInfo(LogOffsetMetadata fetchOffsetMetadata, LogRecords records) {
+        this(fetchOffsetMetadata, records, -1L);
+    }
+
+    public FetchDataInfo(
+            LogOffsetMetadata fetchOffsetMetadata, LogRecords records, long skipToNextFetchOffset) {
         this.fetchOffsetMetadata = fetchOffsetMetadata;
         this.records = records;
+        this.skipToNextFetchOffset = skipToNextFetchOffset;
+    }
+
+    /**
+     * Create a filtered empty response with the correct next fetch offset. This is used when all
+     * batches are filtered out but we need to inform the client about the correct offset to
+     * continue fetching from.
+     */
+    public static FetchDataInfo createFilteredEmptyResponse(
+            LogOffsetMetadata fetchOffsetMetadata, long skipToNextFetchOffset) {
+        return new FetchDataInfo(
+                fetchOffsetMetadata, MemoryLogRecords.EMPTY, skipToNextFetchOffset);
+    }
+
+    public long getSkipToNextFetchOffset() {
+        return skipToNextFetchOffset;
     }
 }

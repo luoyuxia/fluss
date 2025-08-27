@@ -21,6 +21,7 @@ import com.alibaba.fluss.exception.FlussRuntimeException;
 import com.alibaba.fluss.memory.MemorySegment;
 import com.alibaba.fluss.record.bytesview.BytesView;
 import com.alibaba.fluss.record.bytesview.FileRegionBytesView;
+import com.alibaba.fluss.record.bytesview.MultiBytesView;
 import com.alibaba.fluss.types.RowType;
 import com.alibaba.fluss.utils.CloseableIterator;
 import com.alibaba.fluss.utils.FileUtils;
@@ -38,9 +39,13 @@ import java.util.Optional;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.BASE_OFFSET_OFFSET;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.HEADER_SIZE_UP_TO_MAGIC;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.LENGTH_OFFSET;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V2;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.LOG_OVERHEAD;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.MAGIC_OFFSET;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.STATISTICS_FLAG_MASK;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.attributeOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsOffsetOffset;
 
 /* This file is based on source code of Apache Kafka Project (https://kafka.apache.org/), licensed by the Apache
  * Software Foundation (ASF) under the Apache License, Version 2.0. See the NOTICE file distributed with this work for
@@ -102,8 +107,8 @@ public class FileLogInputStream
         protected final int position;
         protected final int batchSize;
 
-        private LogRecordBatch fullBatch;
-        private LogRecordBatch batchHeader;
+        private DefaultLogRecordBatch fullBatch;
+        private DefaultLogRecordBatch batchHeader;
         private LogRecordBatchStatistics statistics;
 
         // Cache for statistics to avoid repeated parsing
@@ -138,7 +143,88 @@ public class FileLogInputStream
         }
 
         public BytesView getBytesView() {
-            return new FileRegionBytesView(fileRecords.channel(), position, sizeInBytes());
+            return getBytesView(false);
+        }
+
+        /**
+         * Get the BytesView of this record batch.
+         *
+         * @param trimStatistics whether to trim statistics data from the batch
+         * @return the BytesView of this record batch, possibly without statistics
+         */
+        public BytesView getBytesView(boolean trimStatistics) {
+            if (!trimStatistics || magic < LOG_MAGIC_VALUE_V2) {
+                // No trimming needed, or statistics not supported in this version
+                return new FileRegionBytesView(fileRecords.channel(), position, sizeInBytes());
+            }
+
+            // Check if this batch has statistics
+            DefaultLogRecordBatch header = loadBatchHeader();
+            int statisticsOffset = header.getStatisticsOffset();
+
+            if (statisticsOffset == 0) {
+                // No statistics present
+                return new FileRegionBytesView(fileRecords.channel(), position, sizeInBytes());
+            }
+
+            // Create a modified header with correct length and statisticsOffset fields
+            return createTrimmedBytesView(statisticsOffset);
+        }
+
+        /**
+         * Create a BytesView with statistics trimmed by modifying the header fields.
+         *
+         * @param originalStatisticsOffset the original statistics offset in the header
+         * @return a BytesView with modified header and trimmed data
+         */
+        private BytesView createTrimmedBytesView(int originalStatisticsOffset) {
+            try {
+                int headerSize = recordBatchHeaderSize(magic);
+                int trimmedSize = originalStatisticsOffset; // Size without statistics
+
+                // Load the original header
+                ByteBuffer originalHeader =
+                        loadByteBufferWithSize(headerSize, position, "header for trimming");
+
+                // Create a copy of the header to modify
+                byte[] modifiedHeaderBytes = new byte[headerSize];
+                originalHeader.get(modifiedHeaderBytes);
+                ByteBuffer modifiedHeader = ByteBuffer.wrap(modifiedHeaderBytes);
+                modifiedHeader.order(ByteOrder.LITTLE_ENDIAN);
+
+                // Modify the length field (excluding LOG_OVERHEAD)
+                modifiedHeader.putInt(LENGTH_OFFSET, trimmedSize);
+
+                // Modify the statisticsOffset field to 0 (no statistics)
+                modifiedHeader.putInt(statisticsOffsetOffset(magic), 0);
+
+                // Clear the statistics flag in attributes
+                int attributesOffsetInHeader = attributeOffset(magic);
+                byte attributes = modifiedHeader.get(attributesOffsetInHeader);
+                attributes = (byte) (attributes & ~STATISTICS_FLAG_MASK);
+                modifiedHeader.put(attributesOffsetInHeader, attributes);
+
+                // Build the composite BytesView
+                MultiBytesView.Builder builder = MultiBytesView.builder();
+
+                // Add the modified header
+                builder.addBytes(modifiedHeaderBytes);
+
+                // Add the records data (from after header to before statistics)
+                int recordsStartPos = position + LOG_OVERHEAD;
+                int recordsSize = trimmedSize - LOG_OVERHEAD;
+                if (recordsSize > 0) {
+                    builder.addBytes(fileRecords.channel(), recordsStartPos, recordsSize);
+                }
+
+                return builder.build();
+            } catch (Exception e) {
+                LOG.warn("Failed to create trimmed BytesView, fallback to original", e);
+                // Fallback to original implementation if something goes wrong
+                int sizeWithoutStatistics = LOG_OVERHEAD + originalStatisticsOffset;
+                return new FileRegionBytesView(
+                        fileRecords.channel(), position, sizeWithoutStatistics);
+            }
         }
 
         @Override
@@ -201,7 +287,7 @@ public class FileLogInputStream
             return LOG_OVERHEAD + batchSize;
         }
 
-        private LogRecordBatch toMemoryRecordBatch(ByteBuffer buffer) {
+        private DefaultLogRecordBatch toMemoryRecordBatch(ByteBuffer buffer) {
             DefaultLogRecordBatch records = new DefaultLogRecordBatch();
             records.pointTo(MemorySegment.wrap(buffer.array()), 0);
             return records;
@@ -219,7 +305,7 @@ public class FileLogInputStream
             return fullBatch;
         }
 
-        protected LogRecordBatch loadBatchHeader() {
+        protected DefaultLogRecordBatch loadBatchHeader() {
             if (fullBatch != null) {
                 return fullBatch;
             }
@@ -245,7 +331,7 @@ public class FileLogInputStream
             }
         }
 
-        private LogRecordBatch loadBatchWithSize(int size, String description) {
+        private DefaultLogRecordBatch loadBatchWithSize(int size, String description) {
             return toMemoryRecordBatch(loadByteBufferWithSize(size, position, description));
         }
 
@@ -321,23 +407,22 @@ public class FileLogInputStream
                     return cachedStatistics;
                 }
 
-                int statisticsLength = loadBatchHeader().statisticsSizeInBytes();
+                DefaultLogRecordBatch header = loadBatchHeader();
+                int statisticsOffset = header.getStatisticsOffset();
+                int statisticsLength = header.sizeInBytes() - statisticsOffset;
 
-                if (statisticsLength <= 0) {
+                if (statisticsOffset == 0) {
                     cachedStatistics = Optional.empty();
                     return cachedStatistics;
                 }
 
-                int statisticsDataOffset = sizeInBytes() - statisticsLength;
-
                 ByteBuffer statisticsData =
                         loadByteBufferWithSize(
-                                statisticsLength, position + statisticsDataOffset, "statistics");
+                                statisticsLength, position + statisticsOffset, "statistics");
 
-                // Parse statistics directly from byte buffer without creating heap objects
                 statistics =
                         LogRecordBatchStatisticsParser.parseStatistics(
-                                statisticsData.array(), rowType);
+                                statisticsData.array(), rowType, schemaId());
                 cachedStatistics = Optional.ofNullable(statistics);
                 return cachedStatistics;
             } catch (Exception e) {
@@ -346,11 +431,6 @@ public class FileLogInputStream
                 cachedStatistics = Optional.empty();
                 return cachedStatistics;
             }
-        }
-
-        @Override
-        public int statisticsSizeInBytes() {
-            return loadBatchHeader().statisticsSizeInBytes();
         }
     }
 }
