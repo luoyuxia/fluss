@@ -42,4 +42,18 @@ public interface LogRecordBatchStatistics {
      * @return Array of null counts
      */
     Long[] getNullCounts();
+
+    /**
+     * Whether the statistics information for a specific field is available.
+     *
+     * @return true if statistics information is available
+     */
+    boolean hasColumnStatistics(int fieldIndex);
+
+    /**
+     * Get the schema id.
+     *
+     * @return The schema id
+     */
+    int getSchemaId();
 }

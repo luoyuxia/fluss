@@ -39,6 +39,15 @@ import static com.alibaba.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
  */
 public class LogRecordBatchTestUtils {
 
+    // Helper method to create stats index mapping for all columns
+    public static int[] createAllColumnsStatsMapping(RowType rowType) {
+        int[] statsIndexMapping = new int[rowType.getFieldCount()];
+        for (int i = 0; i < statsIndexMapping.length; i++) {
+            statsIndexMapping[i] = i;
+        }
+        return statsIndexMapping;
+    }
+
     /**
      * Create a reusable utility method for generating LogRecordBatch with statistics. This method
      * can be reused in other test cases.
@@ -62,7 +71,8 @@ public class LogRecordBatchTestUtils {
 
             // Create statistics collector for the writer's schema
             LogRecordBatchStatisticsCollector statisticsCollector =
-                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+                    new LogRecordBatchStatisticsCollector(
+                            writer.getSchema(), createAllColumnsStatsMapping(writer.getSchema()));
 
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
@@ -135,7 +145,8 @@ public class LogRecordBatchTestUtils {
 
             // Create statistics collector for the writer's schema
             LogRecordBatchStatisticsCollector statisticsCollector =
-                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+                    new LogRecordBatchStatisticsCollector(
+                            writer.getSchema(), createAllColumnsStatsMapping(writer.getSchema()));
 
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
@@ -194,7 +205,8 @@ public class LogRecordBatchTestUtils {
 
             // Create statistics collector for the writer's schema
             LogRecordBatchStatisticsCollector statisticsCollector =
-                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+                    new LogRecordBatchStatisticsCollector(
+                            writer.getSchema(), createAllColumnsStatsMapping(writer.getSchema()));
 
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(
@@ -257,7 +269,8 @@ public class LogRecordBatchTestUtils {
 
             // Create statistics collector for the writer's schema
             LogRecordBatchStatisticsCollector statisticsCollector =
-                    new LogRecordBatchStatisticsCollector(writer.getSchema());
+                    new LogRecordBatchStatisticsCollector(
+                            writer.getSchema(), createAllColumnsStatsMapping(writer.getSchema()));
 
             MemoryLogRecordsArrowBuilder builder =
                     MemoryLogRecordsArrowBuilder.builder(

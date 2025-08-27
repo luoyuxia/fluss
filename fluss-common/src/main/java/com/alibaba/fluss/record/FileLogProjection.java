@@ -68,7 +68,7 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.arrowChangeTypeOffse
 import static com.alibaba.fluss.record.LogRecordBatchFormat.attributeOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordsCountOffset;
-import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsOffsetOffset;
 import static com.alibaba.fluss.utils.FileUtils.readFullyOrFail;
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
 import static com.alibaba.fluss.utils.Preconditions.checkState;
@@ -253,20 +253,12 @@ public class FileLogProjection {
         long arrowBodyLength = projectedArrowBatch.bodyLength();
 
         // Check if this batch contains statistics (V2+ only)
-        int statisticsLength = 0;
-        if (magic >= LOG_MAGIC_VALUE_V2) {
-            byte attribute = logHeaderBuffer.get(attributeOffset(magic));
-            if ((attribute & STATISTICS_FLAG_MASK) != 0) {
-                statisticsLength = logHeaderBuffer.getInt(statisticsLengthOffset(magic));
-            }
-        }
 
         int newBatchSizeInBytes =
                 recordBatchHeaderSize(magic)
                         + changeTypeBytes
                         + currentProjection.arrowMetadataLength
-                        + (int) arrowBodyLength
-                        + statisticsLength; // Include statistics length
+                        + (int) arrowBodyLength;
 
         // 3. create new arrow batch metadata which already projected.
         byte[] headerMetadata =
@@ -279,6 +271,19 @@ public class FileLogProjection {
         // 4. update and copy log batch header
         logHeaderBuffer.position(LENGTH_OFFSET);
         logHeaderBuffer.putInt(newBatchSizeInBytes - LOG_OVERHEAD);
+
+        // For V2 format, clear statistics information since projection removes statistics
+        if (magic == LOG_MAGIC_VALUE_V2) {
+            // Set StatisticsOffset to 0 (no statistics)
+            logHeaderBuffer.position(statisticsOffsetOffset(magic));
+            logHeaderBuffer.putInt(0);
+
+            // Clear statistics flag from attributes
+            logHeaderBuffer.position(attributeOffset(magic));
+            byte attributes = logHeaderBuffer.get();
+            logHeaderBuffer.position(attributeOffset(magic));
+            logHeaderBuffer.put((byte) (attributes & ~STATISTICS_FLAG_MASK));
+        }
 
         logHeaderBuffer.rewind();
         // the logHeader can't be reused, as it will be sent to network
@@ -295,13 +300,6 @@ public class FileLogProjection {
         final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;
         projectedArrowBatch.buffers.forEach(
                 b -> builder.addBytes(channel, bufferOffset + b.getOffset(), (int) b.getSize()));
-
-        // 6. Add statistics data if present (V2+ only)
-        if (statisticsLength > 0) {
-            // Statistics are appended after the Arrow body
-            long statisticsOffset = position + batchSizeInBytes - statisticsLength;
-            builder.addBytes(channel, statisticsOffset, statisticsLength);
-        }
 
         return builder.build();
     }
@@ -394,21 +392,11 @@ public class FileLogProjection {
                             currentProjection.bufferCount);
             long arrowBodyLength = projectedArrowBatch.bodyLength();
 
-            // Check if this batch contains statistics (V2+ only)
-            int statisticsLength = 0;
-            if (magic >= LOG_MAGIC_VALUE_V2) {
-                byte attribute = logHeaderBuffer.get(attributeOffset(magic));
-                if ((attribute & STATISTICS_FLAG_MASK) != 0) {
-                    statisticsLength = logHeaderBuffer.getInt(statisticsLengthOffset(magic));
-                }
-            }
-
             int newBatchSizeInBytes =
                     recordBatchHeaderSize
                             + changeTypeBytes
                             + currentProjection.arrowMetadataLength
-                            + (int) arrowBodyLength
-                            + statisticsLength; // Include statistics length
+                            + (int) arrowBodyLength;
             if (newBatchSizeInBytes > maxBytes) {
                 // the remaining bytes in the file are not enough to read a full batch
                 return new BytesViewLogRecords(builder.build());
@@ -427,6 +415,20 @@ public class FileLogProjection {
             // 4. update and copy log batch header
             logHeaderBuffer.position(LENGTH_OFFSET);
             logHeaderBuffer.putInt(newBatchSizeInBytes - LOG_OVERHEAD);
+
+            // For V2 format, clear statistics information since projection removes statistics
+            if (magic == LOG_MAGIC_VALUE_V2) {
+                // Set StatisticsOffset to 0 (no statistics)
+                logHeaderBuffer.position(statisticsOffsetOffset(magic));
+                logHeaderBuffer.putInt(0);
+
+                // Clear statistics flag from attributes
+                logHeaderBuffer.position(attributeOffset(magic));
+                byte attributes = logHeaderBuffer.get();
+                logHeaderBuffer.position(attributeOffset(magic));
+                logHeaderBuffer.put((byte) (attributes & ~STATISTICS_FLAG_MASK));
+            }
+
             logHeaderBuffer.rewind();
             // the logHeader can't be reused, as it will be sent to network
             byte[] logHeader = new byte[recordBatchHeaderSize];
@@ -443,13 +445,6 @@ public class FileLogProjection {
                     b ->
                             builder.addBytes(
                                     channel, bufferOffset + b.getOffset(), (int) b.getSize()));
-
-            // 6. Add statistics data if present (V2+ only)
-            if (statisticsLength > 0) {
-                // Statistics are appended after the Arrow body
-                long statisticsOffset = position + batchSizeInBytes - statisticsLength;
-                builder.addBytes(channel, statisticsOffset, statisticsLength);
-            }
 
             maxBytes -= newBatchSizeInBytes;
             position += batchSizeInBytes;

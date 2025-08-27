@@ -36,7 +36,7 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.recordBatchHeaderSiz
 import static com.alibaba.fluss.record.LogRecordBatchFormat.recordsCountOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.schemaIdOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsDataOffset;
-import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsLengthOffset;
+import static com.alibaba.fluss.record.LogRecordBatchFormat.statisticsOffsetOffset;
 import static com.alibaba.fluss.record.LogRecordBatchFormat.writeClientIdOffset;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -95,12 +95,12 @@ public class LogRecordBatchFormatTest {
         assertThat(writeClientIdOffset(magic)).isEqualTo(36);
         assertThat(batchSequenceOffset(magic)).isEqualTo(44);
         assertThat(recordsCountOffset(magic)).isEqualTo(48);
-        assertThat(statisticsLengthOffset(magic)).isEqualTo(52);
+        assertThat(statisticsOffsetOffset(magic)).isEqualTo(52);
         assertThat(statisticsDataOffset(magic)).isEqualTo(56); // Records start offset
         assertThat(recordBatchHeaderSize(magic)).isEqualTo(56); // Header size without statistics
         assertThat(arrowChangeTypeOffset(magic)).isEqualTo(56); // Arrow change type offset
 
-        // Test with statistics length (statistics are appended after records)
+        // Test with statistics length (statistics are appended after records and statistics length)
         int statisticsLength = 100;
         assertThat(recordBatchHeaderSizeWithStats(magic, statisticsLength))
                 .isEqualTo(56); // Header size is fixed, statistics are after records

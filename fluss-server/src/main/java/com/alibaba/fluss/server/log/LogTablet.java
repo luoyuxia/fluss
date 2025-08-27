@@ -33,13 +33,13 @@ import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.metrics.MeterView;
 import com.alibaba.fluss.metrics.MetricNames;
 import com.alibaba.fluss.metrics.groups.MetricGroup;
-import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.record.DefaultLogRecordBatch;
 import com.alibaba.fluss.record.FileLogProjection;
 import com.alibaba.fluss.record.FileLogRecords;
 import com.alibaba.fluss.record.LogRecordBatch;
 import com.alibaba.fluss.record.LogRecords;
 import com.alibaba.fluss.record.MemoryLogRecords;
+import com.alibaba.fluss.record.RecordBatchFilter;
 import com.alibaba.fluss.server.log.LocalLog.SegmentDeletionReason;
 import com.alibaba.fluss.server.metrics.group.BucketMetricGroup;
 import com.alibaba.fluss.utils.FlussPaths;
@@ -370,13 +370,12 @@ public final class LogTablet {
     }
 
     public FetchDataInfo read(
-            boolean fetchDataFromClient,
             long readOffset,
             int maxLength,
             FetchIsolation fetchIsolation,
             boolean minOneMessage,
             @Nullable FileLogProjection projection,
-            @Nullable Predicate recordBatchFilter,
+            @Nullable RecordBatchFilter recordBatchFilter,
             @Nullable LogRecordBatch.ReadContext readContext)
             throws IOException {
         LogOffsetMetadata maxOffsetMetadata = null;
@@ -387,7 +386,6 @@ public final class LogTablet {
         }
 
         return localLog.read(
-                fetchDataFromClient,
                 readOffset,
                 maxLength,
                 minOneMessage,
@@ -1216,7 +1214,7 @@ public final class LogTablet {
                     }
 
                     FetchDataInfo fetchDataInfo =
-                            segment.read(false, startOffset, Integer.MAX_VALUE, maxPosition, false);
+                            segment.read(startOffset, Integer.MAX_VALUE, maxPosition, false);
                     if (fetchDataInfo != null) {
                         loadWritersFromRecords(writerStateManager, fetchDataInfo.getRecords());
                     }

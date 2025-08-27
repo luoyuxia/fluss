@@ -37,20 +37,22 @@ import com.alibaba.fluss.predicate.Or;
 import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.predicate.PredicateVisitor;
 import com.alibaba.fluss.predicate.StartsWith;
+import com.alibaba.fluss.record.RecordBatchFilter;
 import com.alibaba.fluss.row.BinaryString;
 import com.alibaba.fluss.row.Decimal;
 import com.alibaba.fluss.row.TimestampLtz;
 import com.alibaba.fluss.row.TimestampNtz;
-import com.alibaba.fluss.rpc.messages.predicate.PbCompoundFunction;
-import com.alibaba.fluss.rpc.messages.predicate.PbCompoundPredicate;
-import com.alibaba.fluss.rpc.messages.predicate.PbDataType;
-import com.alibaba.fluss.rpc.messages.predicate.PbDataTypeRoot;
-import com.alibaba.fluss.rpc.messages.predicate.PbFieldRef;
-import com.alibaba.fluss.rpc.messages.predicate.PbLeafFunction;
-import com.alibaba.fluss.rpc.messages.predicate.PbLeafPredicate;
-import com.alibaba.fluss.rpc.messages.predicate.PbLiteralValue;
-import com.alibaba.fluss.rpc.messages.predicate.PbPredicate;
-import com.alibaba.fluss.rpc.messages.predicate.PbPredicateType;
+import com.alibaba.fluss.rpc.messages.PbCompoundFunction;
+import com.alibaba.fluss.rpc.messages.PbCompoundPredicate;
+import com.alibaba.fluss.rpc.messages.PbDataType;
+import com.alibaba.fluss.rpc.messages.PbDataTypeRoot;
+import com.alibaba.fluss.rpc.messages.PbFieldRef;
+import com.alibaba.fluss.rpc.messages.PbLeafFunction;
+import com.alibaba.fluss.rpc.messages.PbLeafPredicate;
+import com.alibaba.fluss.rpc.messages.PbLiteralValue;
+import com.alibaba.fluss.rpc.messages.PbPredicate;
+import com.alibaba.fluss.rpc.messages.PbPredicateType;
+import com.alibaba.fluss.rpc.messages.PbRecordBatchFilter;
 import com.alibaba.fluss.types.BigIntType;
 import com.alibaba.fluss.types.BinaryType;
 import com.alibaba.fluss.types.BooleanType;
@@ -74,8 +76,6 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
-
-import static com.alibaba.fluss.rpc.messages.predicate.PbDataTypeRoot.BOOLEAN;
 
 /** Utils for converting Predicate to PbPredicate and vice versa. */
 public class PredicateMessageUtils {
@@ -301,7 +301,7 @@ public class PredicateMessageUtils {
         PbDataType pbDataType = new PbDataType();
         pbDataType.setNullable(dataType.isNullable());
         if (dataType instanceof BooleanType) {
-            pbDataType.setRoot(BOOLEAN);
+            pbDataType.setRoot(PbDataTypeRoot.BOOLEAN);
         } else if (dataType instanceof IntType) {
             pbDataType.setRoot(PbDataTypeRoot.INT);
         } else if (dataType instanceof TinyIntType) {
@@ -468,5 +468,19 @@ public class PredicateMessageUtils {
             return PbCompoundFunction.OR;
         }
         throw new IllegalArgumentException("Unknown compound function: " + compoundFunction);
+    }
+
+    // New methods for PbRecordBatchFilter conversion
+    public static PbRecordBatchFilter toPbRecordBatchFilter(Predicate predicate, int schemaId) {
+        PbRecordBatchFilter pbRecordBatchFilter = new PbRecordBatchFilter();
+        pbRecordBatchFilter.setPredicate(toPbPredicate(predicate));
+        pbRecordBatchFilter.setSchemaId(schemaId);
+        return pbRecordBatchFilter;
+    }
+
+    public static RecordBatchFilter toRecordBatchFilter(PbRecordBatchFilter pbRecordBatchFilter) {
+        Predicate predicate = toPredicate(pbRecordBatchFilter.getPredicate());
+        int schemaId = pbRecordBatchFilter.getSchemaId();
+        return new RecordBatchFilter(predicate, schemaId);
     }
 }

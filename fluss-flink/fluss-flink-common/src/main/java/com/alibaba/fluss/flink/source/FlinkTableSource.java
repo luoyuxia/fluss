@@ -17,6 +17,7 @@
 
 package com.alibaba.fluss.flink.source;
 
+import com.alibaba.fluss.config.ConfigOptions;
 import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.flink.FlinkConnectorOptions;
 import com.alibaba.fluss.flink.source.deserializer.RowDataDeserializationSchema;
@@ -30,7 +31,9 @@ import com.alibaba.fluss.flink.utils.PushdownUtils;
 import com.alibaba.fluss.flink.utils.PushdownUtils.FieldEqual;
 import com.alibaba.fluss.metadata.MergeEngineType;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.predicate.CompoundPredicate;
 import com.alibaba.fluss.predicate.Predicate;
+import com.alibaba.fluss.predicate.PredicateVisitor;
 import com.alibaba.fluss.types.RowType;
 
 import org.apache.flink.annotation.VisibleForTesting;
@@ -78,6 +81,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.flink.utils.PushdownUtils.ValueConversion.FLINK_INTERNAL_VALUE;
 import static com.alibaba.fluss.flink.utils.PushdownUtils.extractFieldEquals;
@@ -117,6 +122,12 @@ public class FlinkTableSource
     private final boolean isDataLakeEnabled;
     @Nullable private final MergeEngineType mergeEngineType;
 
+    // table-level configuration
+    private final Configuration tableConfig;
+
+    // pre-computed available statistics columns
+    private final Set<String> availableStatsColumns;
+
     // output type after projection pushdown
     private LogicalType producedDataType;
 
@@ -140,6 +151,7 @@ public class FlinkTableSource
     public FlinkTableSource(
             TablePath tablePath,
             Configuration flussConfig,
+            Configuration tableConfig,
             org.apache.flink.table.types.logical.RowType tableOutputType,
             int[] primaryKeyIndexes,
             int[] bucketKeyIndexes,
@@ -169,6 +181,11 @@ public class FlinkTableSource
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.isDataLakeEnabled = isDataLakeEnabled;
         this.mergeEngineType = mergeEngineType;
+        this.tableConfig = tableConfig;
+
+        // Pre-compute available statistics columns to avoid repeated calculation
+        RowType flussRowType = FlinkConversions.toFlussRowType(tableOutputType);
+        this.availableStatsColumns = computeAvailableStatsColumns(flussRowType);
     }
 
     @Override
@@ -356,6 +373,7 @@ public class FlinkTableSource
                 new FlinkTableSource(
                         tablePath,
                         flussConfig,
+                        tableConfig,
                         tableOutputType,
                         primaryKeyIndexes,
                         bucketKeyIndexes,
@@ -374,6 +392,7 @@ public class FlinkTableSource
         source.modificationScanType = modificationScanType;
         source.partitionFilters = partitionFilters;
         source.logRecordBatchFilter = logRecordBatchFilter;
+        // Note: availableStatsColumns is already computed in the constructor
         return source;
     }
 
@@ -395,14 +414,6 @@ public class FlinkTableSource
 
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
-        LOG.info("Applying filters for table {}: {} filters received", tablePath, filters.size());
-        LOG.info(
-                "Table configuration: streaming={}, startupMode={}, hasPrimaryKey={}, primaryKeyCount={}",
-                streaming,
-                startupOptions.startupMode,
-                hasPrimaryKey(),
-                primaryKeyIndexes.length);
-
         List<ResolvedExpression> acceptedFilters = new ArrayList<>();
         List<ResolvedExpression> remainingFilters = new ArrayList<>();
 
@@ -415,9 +426,6 @@ public class FlinkTableSource
                 && startupOptions.startupMode == FlinkConnectorOptions.ScanStartupMode.FULL
                 && hasPrimaryKey()
                 && filters.size() == primaryKeyIndexes.length) {
-            LOG.info(
-                    "Attempting primary key pushdown: batch mode, full startup, pk table, filter count matches pk count");
-
             Map<Integer, LogicalType> primaryKeyTypes = getPrimaryKeyTypes();
             List<FieldEqual> fieldEquals =
                     extractFieldEquals(
@@ -426,47 +434,23 @@ public class FlinkTableSource
                             acceptedFilters,
                             remainingFilters,
                             FLINK_INTERNAL_VALUE);
-
-            LOG.info("Extracted {} field equals from filters", fieldEquals.size());
-
             int[] keyRowProjection = getKeyRowProjection();
             HashSet<Integer> visitedPkFields = new HashSet<>();
             GenericRowData lookupRow = new GenericRowData(primaryKeyIndexes.length);
             for (FieldEqual fieldEqual : fieldEquals) {
                 lookupRow.setField(keyRowProjection[fieldEqual.fieldIndex], fieldEqual.equalValue);
                 visitedPkFields.add(fieldEqual.fieldIndex);
-                LOG.info(
-                        "Set primary key field[{}] = {}",
-                        fieldEqual.fieldIndex,
-                        fieldEqual.equalValue);
             }
 
             // if not all primary key fields are in condition, we skip to pushdown
             if (!visitedPkFields.equals(primaryKeyTypes.keySet())) {
-                LOG.info(
-                        "Primary key pushdown skipped: not all primary key fields are in condition. "
-                                + "Visited fields: {}, required fields: {}",
-                        visitedPkFields,
-                        primaryKeyTypes.keySet());
                 return Result.of(Collections.emptyList(), filters);
             }
-
-            LOG.info(
-                    "Primary key pushdown successful: all primary key fields covered, setting single row filter");
             singleRowFilter = lookupRow;
             return Result.of(acceptedFilters, remainingFilters);
-        } else {
-            LOG.info(
-                    "Primary key pushdown conditions not met: streaming={}, startupMode={}, hasPrimaryKey={}, filterCount={}, pkCount={}",
-                    streaming,
-                    startupOptions.startupMode,
-                    hasPrimaryKey(),
-                    filters.size(),
-                    primaryKeyIndexes.length);
         }
 
         if (isPartitioned()) {
-            LOG.info("Table is partitioned, attempting partition filter pushdown");
             // dynamic partition pushdown
             List<FieldEqual> fieldEquals =
                     extractFieldEquals(
@@ -475,122 +459,181 @@ public class FlinkTableSource
                             acceptedFilters,
                             remainingFilters,
                             FLINK_INTERNAL_VALUE);
-            LOG.info("Extracted {} partition field equals", fieldEquals.size());
-
             // partitions are filtered by string representations, convert the equals to string first
             fieldEquals = stringifyFieldEquals(fieldEquals);
-            LOG.info("Partition filters after stringification: {}", fieldEquals);
 
             this.partitionFilters = fieldEquals;
-        } else {
-            LOG.info("Table is not partitioned, skipping partition filter pushdown");
         }
 
         if (acceptedFilters.isEmpty() && remainingFilters.isEmpty()) {
-            LOG.info("No filters were processed yet, adding all filters to remaining filters");
             remainingFilters.addAll(filters);
         }
 
         if (!hasPrimaryKey()) {
-            LOG.info("Table has no primary key, attempting record batch filter pushdown");
             Result recordBatchResult = pushdownRecordBatchFilter(remainingFilters);
             acceptedFilters.addAll(recordBatchResult.getAcceptedFilters());
             remainingFilters = recordBatchResult.getRemainingFilters();
-            LOG.info(
-                    "Record batch filter pushdown result: {} accepted, {} remaining",
-                    recordBatchResult.getAcceptedFilters().size(),
-                    recordBatchResult.getRemainingFilters().size());
-        } else {
-            LOG.info("Table has primary key, skipping record batch filter pushdown");
         }
-
-        LOG.info(
-                "Filter pushdown completed for table {}: {} accepted filters, {} remaining filters",
-                tablePath,
-                acceptedFilters.size(),
-                remainingFilters.size());
         return Result.of(acceptedFilters, remainingFilters);
     }
 
     private Result pushdownRecordBatchFilter(List<ResolvedExpression> filters) {
-        LOG.info("Starting record batch filter pushdown for {} filters", filters.size());
+        // Use pre-computed available statistics columns
+        LOG.trace("Statistics available columns: {}", availableStatsColumns);
 
-        List<com.alibaba.fluss.predicate.Predicate> pushdownPredicates = new ArrayList<>();
-        com.alibaba.fluss.types.RowType flussRowType =
-                com.alibaba.fluss.flink.utils.FlinkConversions.toFlussRowType(
-                        (org.apache.flink.table.types.logical.RowType) tableOutputType);
+        // Convert to fluss row type for predicate operations
+        RowType flussRowType = FlinkConversions.toFlussRowType(tableOutputType);
 
+        List<Predicate> pushdownPredicates = new ArrayList<>();
         List<ResolvedExpression> acceptedFilters = new ArrayList<>();
         List<ResolvedExpression> remainingFilters = new ArrayList<>();
 
         for (ResolvedExpression filter : filters) {
-            java.util.Optional<com.alibaba.fluss.predicate.Predicate> predicateOpt =
-                    com.alibaba.fluss.flink.source.PredicateConverter.convert(
-                            (org.apache.flink.table.types.logical.RowType) tableOutputType, filter);
-            if (predicateOpt.isPresent()) {
-                com.alibaba.fluss.predicate.Predicate predicate = predicateOpt.get();
-                LOG.info("Converted filter to predicate: {}", predicate);
+            java.util.Optional<Predicate> predicateOpt =
+                    PredicateConverter.convert(tableOutputType, filter);
 
-                if (!containsBinaryTypeByVisitor(predicate, flussRowType)) {
-                    LOG.info("Predicate accepted for pushdown (no binary types)");
+            if (predicateOpt.isPresent()) {
+                Predicate predicate = predicateOpt.get();
+                LOG.trace("Converted filter to predicate: {}", predicate);
+                // Check if predicate can benefit from statistics
+                if (canPredicateUseStatistics(predicate, flussRowType, availableStatsColumns)) {
                     pushdownPredicates.add(predicate);
                     acceptedFilters.add(filter);
-                    remainingFilters.add(filter);
-                    continue;
-                } else {
-                    LOG.info("Predicate rejected for pushdown (contains binary types)");
                 }
-            } else {
-                LOG.info("Filter could not be converted to predicate");
             }
             remainingFilters.add(filter);
         }
 
         if (!pushdownPredicates.isEmpty()) {
-            com.alibaba.fluss.predicate.Predicate merged =
+            Predicate merged =
                     pushdownPredicates.size() == 1
                             ? pushdownPredicates.get(0)
                             : com.alibaba.fluss.predicate.PredicateBuilder.and(pushdownPredicates);
-            LOG.info("Created merged predicate for record batch filter: {}", merged);
+            LOG.info("Accept merged predicate for record batch filter: {}", merged);
             this.logRecordBatchFilter = merged;
         } else {
-            LOG.info("No predicates for record batch filter pushdown, setting to null");
             this.logRecordBatchFilter = null;
         }
-        LOG.info(
-                "Record batch filter pushdown completed: {} predicates merged",
-                pushdownPredicates.size());
         return Result.of(acceptedFilters, remainingFilters);
     }
 
-    private boolean containsBinaryTypeByVisitor(
-            com.alibaba.fluss.predicate.Predicate predicate,
-            com.alibaba.fluss.types.RowType rowType) {
-        class BinaryTypeVisitor implements com.alibaba.fluss.predicate.PredicateVisitor<Boolean> {
+    /**
+     * Checks if a data type is binary.
+     *
+     * @param dataType the data type to check
+     * @return true if it's a binary type
+     */
+    private boolean isBinaryType(com.alibaba.fluss.types.DataType dataType) {
+        switch (dataType.getTypeRoot()) {
+            case BINARY:
+            case BYTES:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Checks if a predicate can benefit from statistics based on the available statistics columns.
+     *
+     * @param predicate the predicate to check
+     * @param rowType the row type
+     * @param availableStatsColumns the columns that have statistics available
+     * @return true if the predicate can use statistics
+     */
+    private boolean canPredicateUseStatistics(
+            Predicate predicate, RowType rowType, Set<String> availableStatsColumns) {
+
+        class StatisticsUsageVisitor implements PredicateVisitor<Boolean> {
             @Override
             public Boolean visit(com.alibaba.fluss.predicate.LeafPredicate leaf) {
-                com.alibaba.fluss.types.DataType type = rowType.getTypeAt(leaf.index());
-                switch (type.getTypeRoot()) {
-                    case BINARY:
-                    case BYTES:
-                        return true;
-                    default:
-                        return false;
-                }
+                // Check if the field referenced by this predicate has statistics available
+                String fieldName = rowType.getFieldNames().get(leaf.index());
+                // Check if statistics are available for this column
+                return availableStatsColumns.contains(fieldName);
             }
 
             @Override
-            public Boolean visit(com.alibaba.fluss.predicate.CompoundPredicate compound) {
-                for (com.alibaba.fluss.predicate.Predicate child : compound.children()) {
-                    if (child.visit(this)) {
-                        return true;
+            public Boolean visit(CompoundPredicate compound) {
+                // For compound predicates, all children must be able to use statistics
+                for (Predicate child : compound.children()) {
+                    if (!child.visit(this)) {
+                        return false;
                     }
                 }
-                return false;
+                return true;
             }
         }
 
-        return predicate.visit(new BinaryTypeVisitor());
+        return predicate.visit(new StatisticsUsageVisitor());
+    }
+
+    /**
+     * Computes the available statistics columns based on table configuration. This method is called
+     * once during construction to pre-compute the result.
+     *
+     * @param flussRowType the row type
+     * @return set of column names that have statistics available
+     */
+    private Set<String> computeAvailableStatsColumns(RowType flussRowType) {
+        Set<String> availableStatsColumns = new HashSet<>();
+
+        // Get the configured statistics columns
+        String columnsConfig = tableConfig.get(ConfigOptions.TABLE_STATISTICS_COLUMNS);
+
+        // Check if statistics are enabled for the table
+        if (null == columnsConfig || columnsConfig.isEmpty()) {
+            LOG.debug("Statistics collection is disabled for the table");
+            return availableStatsColumns;
+        }
+
+        if ("*".equals(columnsConfig)) {
+            // Collect all non-binary columns
+            for (int i = 0; i < flussRowType.getFieldCount(); i++) {
+                com.alibaba.fluss.types.DataType fieldType = flussRowType.getTypeAt(i);
+                if (!isBinaryType(fieldType)) {
+                    availableStatsColumns.add(flussRowType.getFieldNames().get(i));
+                }
+            }
+        } else {
+            // Use user-specified columns (validate they exist and are non-binary)
+            List<String> configuredColumns =
+                    Arrays.stream(columnsConfig.split(","))
+                            .map(String::trim)
+                            .filter(s -> !s.isEmpty())
+                            .collect(Collectors.toList());
+
+            for (String columnName : configuredColumns) {
+                // Find the column in the row type
+                int columnIndex = flussRowType.getFieldNames().indexOf(columnName);
+                if (columnIndex >= 0) {
+                    com.alibaba.fluss.types.DataType fieldType =
+                            flussRowType.getTypeAt(columnIndex);
+                    if (!isBinaryType(fieldType)) {
+                        availableStatsColumns.add(columnName);
+                    } else {
+                        LOG.trace(
+                                "Configured statistics column '{}' is a binary type and will be ignored",
+                                columnName);
+                    }
+                } else {
+                    LOG.trace(
+                            "Configured statistics column '{}' does not exist in table schema",
+                            columnName);
+                }
+            }
+        }
+
+        return availableStatsColumns;
+    }
+
+    /**
+     * Gets the pre-computed available statistics columns.
+     *
+     * @return set of column names that have statistics available
+     */
+    private Set<String> getAvailableStatsColumns() {
+        return availableStatsColumns;
     }
 
     @Override

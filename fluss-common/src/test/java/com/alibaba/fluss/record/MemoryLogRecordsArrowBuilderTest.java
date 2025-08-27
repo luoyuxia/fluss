@@ -54,6 +54,7 @@ import java.util.stream.Collectors;
 import static com.alibaba.fluss.compression.ArrowCompressionInfo.DEFAULT_COMPRESSION;
 import static com.alibaba.fluss.compression.ArrowCompressionInfo.NO_COMPRESSION;
 import static com.alibaba.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
+import static com.alibaba.fluss.record.LogRecordBatchTestUtils.createAllColumnsStatsMapping;
 import static com.alibaba.fluss.record.TestData.DATA1;
 import static com.alibaba.fluss.record.TestData.DATA1_ROW_TYPE;
 import static com.alibaba.fluss.record.TestData.DEFAULT_SCHEMA_ID;
@@ -552,7 +553,9 @@ public class MemoryLogRecordsArrowBuilderTest {
 
         // Create statistics collector for the writer's schema
         LogRecordBatchStatisticsCollector statisticsCollector =
-                new LogRecordBatchStatisticsCollector(writer.getSchema());
+                new LogRecordBatchStatisticsCollector(
+                        writer.getSchema(),
+                        LogRecordBatchTestUtils.createAllColumnsStatsMapping(writer.getSchema()));
 
         MemoryLogRecordsArrowBuilder builder =
                 MemoryLogRecordsArrowBuilder.builder(
@@ -642,7 +645,8 @@ public class MemoryLogRecordsArrowBuilderTest {
 
         // Create statistics collector for the writer's schema
         LogRecordBatchStatisticsCollector statisticsCollector =
-                new LogRecordBatchStatisticsCollector(writer.getSchema());
+                new LogRecordBatchStatisticsCollector(
+                        writer.getSchema(), createAllColumnsStatsMapping(writer.getSchema()));
 
         return MemoryLogRecordsArrowBuilder.builder(
                 baseOffset,

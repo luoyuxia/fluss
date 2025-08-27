@@ -73,7 +73,8 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
     private boolean reCalculateSizeInBytes = false;
     private boolean resetBatchHeader = false;
     private boolean aborted = false;
-    private int statisticsLength = 0;
+    // Saved statistics size from build method
+    private int statisticsSize = 0;
 
     private MemoryLogRecordsArrowBuilder(
             long baseLogOffset,
@@ -199,20 +200,21 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             arrowOffset += changeTypeWriter.sizeInBytes();
         }
 
-        int arrowBytesWritten = arrowWriter.serializeToOutputView(pagedOutputView, arrowOffset);
+        arrowWriter.serializeToOutputView(pagedOutputView, arrowOffset);
         recordCount = arrowWriter.getRecordsCount();
 
         // For V2, append statistics after records if available
-        statisticsLength = 0;
-        if (magic >= LogRecordBatchFormat.LOG_MAGIC_VALUE_V2 && statisticsCollector != null) {
+        if (magic >= LogRecordBatchFormat.LOG_MAGIC_VALUE_V2
+                && statisticsCollector != null
+                && recordCount > 0) {
             try {
                 // Write statistics directly to the current output position
                 // This avoids the cross-segment issue by using OutputView's automatic segment
                 // management
-                statisticsLength = statisticsCollector.writeStatistics(pagedOutputView);
+                statisticsSize = statisticsCollector.writeStatistics(pagedOutputView);
             } catch (Exception e) {
-                LOG.error("Failed to serialize statistics for record batch", e);
                 // If serialization fails, continue without statistics
+                LOG.error("Failed to serialize statistics for record batch", e);
             }
         }
 
@@ -227,7 +229,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
                         .build();
         arrowWriter.recycle(writerEpoch);
 
-        // Write header with correct statistics length after all data is written
+        // Write header with correct statistics offset after all data is written
         writeBatchHeader();
 
         // Reset the flag after header is written
@@ -390,8 +392,8 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             attributes |= 0x01; // set appendOnly flag
         }
 
-        // Set statistics flag if statistics length > 0
-        if (statisticsLength > 0) {
+        // Set statistics flag if statistics size > 0
+        if (statisticsSize > 0) {
             attributes |= STATISTICS_FLAG_MASK; // set statistics flag
         }
 
@@ -409,9 +411,15 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         outputView.writeInt(batchSequence);
         outputView.writeInt(recordCount);
 
-        // For V2, write statistics length (statistics data is appended after records)
+        // For V2, write statistics offset (statistics data is appended after records)
         if (magic >= LogRecordBatchFormat.LOG_MAGIC_VALUE_V2) {
-            outputView.writeInt(statisticsLength);
+            if (statisticsSize > 0) {
+                int statisticsOffset = bytesView.getBytesLength() - statisticsSize;
+                outputView.writeInt(statisticsOffset);
+            } else {
+                // No statistics, write 0 as offset
+                outputView.writeInt(0);
+            }
         }
 
         // Update crc.

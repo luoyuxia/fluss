@@ -28,26 +28,21 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.STATISTICS_VERSION;
 
 /**
  * Parser for LogRecordBatchStatistics that reads statistics directly from memory without creating
- * intermediate heap objects.
+ * intermediate heap objects. Supports schema-aware statistics format.
  */
 public class LogRecordBatchStatisticsParser {
 
-    // Use the constant from LogRecordBatchFormat
-
     /**
-     * Parse statistics from a memory segment.
+     * Parse statistics from a memory segment in schema-aware format.
      *
      * @param segment The memory segment containing the statistics data
      * @param position The position in the segment to start reading from
-     * @param size The size of the statistics data
      * @param rowType The row type for interpreting the data
-     * @return The parsed statistics as a ByteViewLogRecordBatchStatistics, or null if parsing fails
+     * @param schemaId The schema ID for interpreting the data
+     * @return The parsed statistics as a DefaultLogRecordBatchStatistics, or null if parsing fails
      */
-    public static ByteViewLogRecordBatchStatistics parseStatistics(
-            MemorySegment segment, int position, int size, RowType rowType) {
-        if (size <= 0) {
-            return null;
-        }
+    public static DefaultLogRecordBatchStatistics parseStatistics(
+            MemorySegment segment, int position, RowType rowType, int schemaId) {
 
         try {
             MemorySegmentInputView inputView = new MemorySegmentInputView(segment, position);
@@ -57,21 +52,25 @@ public class LogRecordBatchStatisticsParser {
             byte version = inputView.readByte();
             currentPos += 1;
             if (version != STATISTICS_VERSION) {
-                return null; // Unsupported version
+                return null;
             }
 
-            // Read field count
-            int fieldCount = inputView.readShort();
+            // Read statistics column count
+            int statisticsColumnCount = inputView.readShort();
             currentPos += 2;
-            if (fieldCount != rowType.getFieldCount()) {
-                return null; // Field count mismatch
+
+            // Read statistics column indexes
+            int[] statsIndexMapping = new int[statisticsColumnCount];
+            for (int i = 0; i < statisticsColumnCount; i++) {
+                statsIndexMapping[i] = inputView.readShort();
+                currentPos += 2;
             }
 
-            // Read null counts array
-            Long[] nullCounts = new Long[fieldCount];
-            for (int i = 0; i < fieldCount; i++) {
-                nullCounts[i] = inputView.readLong();
-                currentPos += 8;
+            // Read null counts for statistics columns
+            Long[] nullCounts = new Long[statisticsColumnCount];
+            for (int i = 0; i < statisticsColumnCount; i++) {
+                nullCounts[i] = (long) inputView.readInt();
+                currentPos += 4;
             }
 
             // Read min values size
@@ -81,13 +80,12 @@ public class LogRecordBatchStatisticsParser {
             // Calculate min values offset
             int minValuesOffset = currentPos - position;
 
-            // Skip min values data
             if (minValuesSize > 0) {
-                // Skip the data by reading bytes
+                currentPos += minValuesSize;
+                // Advance the inputView position to match currentPos
                 for (int i = 0; i < minValuesSize; i++) {
                     inputView.readByte();
                 }
-                currentPos += minValuesSize;
             }
 
             // Read max values size
@@ -97,45 +95,21 @@ public class LogRecordBatchStatisticsParser {
             // Calculate max values offset
             int maxValuesOffset = currentPos - position;
 
-            // Skip max values data
-            if (maxValuesSize > 0) {
-                // Skip the data by reading bytes
-                for (int i = 0; i < maxValuesSize; i++) {
-                    inputView.readByte();
-                }
-                currentPos += maxValuesSize;
-            }
-
-            return new ByteViewLogRecordBatchStatistics(
+            return new DefaultLogRecordBatchStatistics(
                     segment,
                     position,
-                    size,
+                    maxValuesOffset + maxValuesSize,
                     rowType,
+                    schemaId,
                     nullCounts,
                     minValuesOffset,
                     maxValuesOffset,
                     minValuesSize,
-                    maxValuesSize);
-
-        } catch (IOException e) {
-            return null; // Parsing failed
-        }
-    }
-
-    /**
-     * Parse statistics from a byte array.
-     *
-     * @param data The byte array containing the statistics data
-     * @param rowType The row type for interpreting the data
-     * @return The parsed statistics as a ByteViewLogRecordBatchStatistics, or null if parsing fails
-     */
-    public static ByteViewLogRecordBatchStatistics parseStatistics(byte[] data, RowType rowType) {
-        if (data == null || data.length == 0) {
+                    maxValuesSize,
+                    statsIndexMapping);
+        } catch (Exception e) {
             return null;
         }
-
-        MemorySegment segment = MemorySegment.wrap(data);
-        return parseStatistics(segment, 0, data.length, rowType);
     }
 
     /**
@@ -143,16 +117,33 @@ public class LogRecordBatchStatisticsParser {
      *
      * @param buffer The ByteBuffer containing the statistics data
      * @param rowType The row type for interpreting the data
-     * @return The parsed statistics as a ByteViewLogRecordBatchStatistics, or null if parsing fails
+     * @return The parsed statistics as a DefaultLogRecordBatchStatistics, or null if parsing fails
      */
-    public static ByteViewLogRecordBatchStatistics parseStatistics(
-            ByteBuffer buffer, RowType rowType) {
+    public static DefaultLogRecordBatchStatistics parseStatistics(
+            ByteBuffer buffer, RowType rowType, int schemaId) {
         if (buffer == null || buffer.remaining() == 0) {
             return null;
         }
 
         MemorySegment segment = MemorySegment.wrapOffHeapMemory(buffer);
-        return parseStatistics(segment, 0, buffer.remaining(), rowType);
+        return parseStatistics(segment, 0, rowType, schemaId);
+    }
+
+    /**
+     * Parse statistics from a bytes array.
+     *
+     * @param buffer The byte[] containing the statistics data
+     * @param rowType The row type for interpreting the data
+     * @return The parsed statistics as a DefaultLogRecordBatchStatistics, or null if parsing fails
+     */
+    public static DefaultLogRecordBatchStatistics parseStatistics(
+            byte[] buffer, RowType rowType, int schemaId) {
+        if (buffer == null || buffer.length == 0) {
+            return null;
+        }
+
+        MemorySegment segment = MemorySegment.wrap(buffer);
+        return parseStatistics(segment, 0, rowType, schemaId);
     }
 
     /**
@@ -179,9 +170,9 @@ public class LogRecordBatchStatisticsParser {
                 return false;
             }
 
-            // Check field count
-            int fieldCount = inputView.readShort();
-            return fieldCount == rowType.getFieldCount();
+            // Check statistics column count
+            int statisticsColumnCount = inputView.readShort();
+            return statisticsColumnCount <= rowType.getFieldCount() && statisticsColumnCount > 0;
 
         } catch (IOException e) {
             return false;
@@ -241,12 +232,18 @@ public class LogRecordBatchStatisticsParser {
             inputView.readByte(); // version
             currentPos += 1;
 
-            // Read field count
-            int fieldCount = inputView.readShort();
+            // Read statistics column count
+            int statisticsColumnCount = inputView.readShort();
             currentPos += 2;
 
-            // Skip null counts (8 bytes per field)
-            int nullCountsSize = fieldCount * 8;
+            // Skip statistics column indexes (2 bytes each)
+            for (int i = 0; i < statisticsColumnCount; i++) {
+                inputView.readShort();
+            }
+            currentPos += statisticsColumnCount * 2;
+
+            // Skip null counts (4 bytes per statistics column)
+            int nullCountsSize = statisticsColumnCount * 4;
             for (int i = 0; i < nullCountsSize; i++) {
                 inputView.readByte();
             }

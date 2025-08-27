@@ -58,13 +58,6 @@ public interface LogRecordBatch {
      */
     Optional<LogRecordBatchStatistics> getStatistics(ReadContext context);
 
-    /**
-     * Get the size of the statistics in bytes.
-     *
-     * @return The size of the statistics in bytes
-     */
-    int statisticsSizeInBytes();
-
     /** Raise an exception if the checksum is not valid. */
     void ensureValid();
 

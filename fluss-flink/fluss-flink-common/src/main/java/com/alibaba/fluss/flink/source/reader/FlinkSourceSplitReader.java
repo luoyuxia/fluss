@@ -20,6 +20,7 @@ package com.alibaba.fluss.flink.source.reader;
 import com.alibaba.fluss.client.Connection;
 import com.alibaba.fluss.client.ConnectionFactory;
 import com.alibaba.fluss.client.table.Table;
+import com.alibaba.fluss.client.table.scanner.Scan;
 import com.alibaba.fluss.client.table.scanner.ScanRecord;
 import com.alibaba.fluss.client.table.scanner.batch.BatchScanner;
 import com.alibaba.fluss.client.table.scanner.log.LogScanner;
@@ -131,12 +132,11 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
         this.projectedFields = projectedFields;
         this.flinkSourceReaderMetrics = flinkSourceReaderMetrics;
         sanityCheck(table.getTableInfo().getRowType(), projectedFields);
+        Scan tableScan = table.newScan().project(projectedFields);
         if (logRecordBatchFilter != null) {
-            this.logScanner =
-                    table.newScan().project(projectedFields).createLogScanner(logRecordBatchFilter);
-        } else {
-            this.logScanner = table.newScan().project(projectedFields).createLogScanner();
+            tableScan = tableScan.filter(logRecordBatchFilter);
         }
+        this.logScanner = tableScan.createLogScanner();
         this.stoppingOffsets = new HashMap<>();
         this.emptyLogSplits = new HashSet<>();
     }

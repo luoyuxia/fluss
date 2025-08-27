@@ -18,11 +18,14 @@
 package com.alibaba.fluss.record;
 
 import com.alibaba.fluss.memory.OutputView;
+import com.alibaba.fluss.row.BinaryRowData;
+import com.alibaba.fluss.row.BinaryRowWriter;
 import com.alibaba.fluss.row.InternalRow;
-import com.alibaba.fluss.row.compacted.CompactedRow;
-import com.alibaba.fluss.row.compacted.CompactedRowWriter;
 import com.alibaba.fluss.types.DataType;
+import com.alibaba.fluss.types.DecimalType;
+import com.alibaba.fluss.types.LocalZonedTimestampType;
 import com.alibaba.fluss.types.RowType;
+import com.alibaba.fluss.types.TimestampType;
 
 import java.io.IOException;
 
@@ -30,30 +33,27 @@ import static com.alibaba.fluss.record.LogRecordBatchFormat.STATISTICS_VERSION;
 
 /**
  * Writer for LogRecordBatchStatistics that writes statistics directly to memory without creating
- * intermediate heap objects.
+ * intermediate heap objects. Supports schema-aware statistics format.
  */
 public class LogRecordBatchStatisticsWriter {
 
     private final RowType rowType;
-    private final int fieldCount;
-    private final DataType[] fieldTypes;
-    private final CompactedRowWriter.FieldWriter[] fieldWriters;
+    private final int[] statsIndexMapping;
+    private final RowType statsRowType;
 
-    public LogRecordBatchStatisticsWriter(RowType rowType) {
+    public LogRecordBatchStatisticsWriter(RowType rowType, int[] statsIndexMapping) {
         this.rowType = rowType;
-        this.fieldCount = rowType.getFieldCount();
-        this.fieldTypes = new DataType[fieldCount];
-        this.fieldWriters = new CompactedRowWriter.FieldWriter[fieldCount];
-
-        for (int i = 0; i < fieldCount; i++) {
-            this.fieldTypes[i] = rowType.getTypeAt(i);
-            this.fieldWriters[i] = CompactedRowWriter.createFieldWriter(fieldTypes[i]);
+        this.statsIndexMapping = statsIndexMapping;
+        RowType.Builder statsRowTypeBuilder = RowType.builder();
+        for (int fullRowIndex : statsIndexMapping) {
+            statsRowTypeBuilder.field(
+                    rowType.getFieldNames().get(fullRowIndex), rowType.getTypeAt(fullRowIndex));
         }
+        this.statsRowType = statsRowTypeBuilder.build();
     }
 
     /**
-     * Write statistics to an OutputView. This method handles cross-segment scenarios safely by
-     * using OutputView's automatic segment management.
+     * Write statistics to an OutputView in schema-aware format.
      *
      * @param minValues The minimum values as InternalRow, can be null
      * @param maxValues The maximum values as InternalRow, can be null
@@ -65,181 +65,152 @@ public class LogRecordBatchStatisticsWriter {
     public int writeStatistics(
             InternalRow minValues, InternalRow maxValues, Long[] nullCounts, OutputView outputView)
             throws IOException {
-        // Calculate the expected size of statistics data
-        int expectedSize = calculateStatisticsSize(minValues, maxValues, nullCounts);
 
-        // Write version
+        int totalBytesWritten = 0;
+
+        // Write version (1 byte)
         outputView.writeByte(STATISTICS_VERSION);
+        totalBytesWritten += 1;
 
-        // Write field count
-        outputView.writeShort(fieldCount);
+        // Write statistics column count (2 bytes)
+        outputView.writeShort(statsIndexMapping.length);
+        totalBytesWritten += 2;
 
-        // Write null counts array
-        for (int i = 0; i < fieldCount; i++) {
-            long nullCount = nullCounts != null ? nullCounts[i] : 0L;
-            outputView.writeLong(nullCount);
+        // Write statistics column indexes (2 bytes per index)
+        for (int fullRowIndex : statsIndexMapping) {
+            outputView.writeShort(fullRowIndex);
+            totalBytesWritten += 2;
+        }
+
+        // Write null counts for statistics columns only (4 bytes per count)
+        for (Long count : nullCounts) {
+            long nullCount = count != null ? count : 0;
+            outputView.writeInt((int) nullCount);
+            totalBytesWritten += 4;
         }
 
         // Write min values
-        if (minValues != null) {
-            CompactedRow minCompactedRow = convertToCompactedRow(minValues);
-            int minRowSize = minCompactedRow.getSizeInBytes();
-            outputView.writeInt(minRowSize);
-            outputView.write(
-                    minCompactedRow.getSegment().getHeapMemory(),
-                    minCompactedRow.getOffset(),
-                    minRowSize);
-        } else {
-            outputView.writeInt(0);
-        }
+        int minRowBytes = writeRowData(minValues, outputView);
+        totalBytesWritten += minRowBytes;
 
         // Write max values
-        if (maxValues != null) {
-            CompactedRow maxCompactedRow = convertToCompactedRow(maxValues);
-            int maxRowSize = maxCompactedRow.getSizeInBytes();
-            outputView.writeInt(maxRowSize);
-            outputView.write(
-                    maxCompactedRow.getSegment().getHeapMemory(),
-                    maxCompactedRow.getOffset(),
-                    maxRowSize);
+        int maxRowBytes = writeRowData(maxValues, outputView);
+        totalBytesWritten += maxRowBytes;
+
+        return totalBytesWritten;
+    }
+
+    private int writeRowData(InternalRow row, OutputView outputView) throws IOException {
+        if (row != null) {
+            int rowSize = 0;
+            // If the input is already an IndexedRow, write it directly (preferred for efficiency)
+            if (row instanceof BinaryRowData) {
+                // If the input is already a BinaryRowData, get size and data directly
+                BinaryRowData binaryRowData = (BinaryRowData) row;
+                rowSize = binaryRowData.getSizeInBytes();
+                outputView.writeInt(rowSize);
+                // Copy data using byte array since copyTo requires byte[] parameter
+                byte[] rowData = new byte[rowSize];
+                binaryRowData.copyTo(rowData, 0);
+                outputView.write(rowData);
+            } else {
+                // For other row types, convert them to BinaryRowData for backward compatibility
+                BinaryRowData binaryRowData = convertToBinaryRowData(row);
+                rowSize = binaryRowData.getSizeInBytes();
+                outputView.writeInt(rowSize);
+                // Copy data using byte array since copyTo requires byte[] parameter
+                byte[] rowData = new byte[rowSize];
+                binaryRowData.copyTo(rowData, 0);
+                outputView.write(rowData);
+            }
+            return 4 + rowSize;
         } else {
             outputView.writeInt(0);
-        }
-
-        // Return the calculated size for all OutputView implementations
-        return expectedSize;
-    }
-
-    /**
-     * Calculate the expected size of statistics data in bytes.
-     *
-     * @param minValues The minimum values
-     * @param maxValues The maximum values
-     * @param nullCounts The null counts
-     * @return The expected size in bytes
-     */
-    private int calculateStatisticsSize(
-            InternalRow minValues, InternalRow maxValues, Long[] nullCounts) {
-        int size = 0;
-
-        // Version (1 byte)
-        size += 1;
-
-        // Field count (2 bytes)
-        size += 2;
-
-        // Null counts array (8 bytes per field)
-        size += fieldCount * 8;
-
-        // Min values size (4 bytes) + min values data
-        size += 4;
-        if (minValues != null) {
-            // If it's already a CompactedRow, get size directly
-            if (minValues instanceof CompactedRow) {
-                size += ((CompactedRow) minValues).getSizeInBytes();
-            } else {
-                // Estimate size based on field count and types
-                size += estimateRowSize(minValues);
-            }
-        }
-
-        // Max values size (4 bytes) + max values data
-        size += 4;
-        if (maxValues != null) {
-            // If it's already a CompactedRow, get size directly
-            if (maxValues instanceof CompactedRow) {
-                size += ((CompactedRow) maxValues).getSizeInBytes();
-            } else {
-                // Estimate size based on field count and types
-                size += estimateRowSize(maxValues);
-            }
-        }
-
-        return size;
-    }
-
-    /**
-     * Estimate the size of a row in bytes.
-     *
-     * @param row The row to estimate
-     * @return Estimated size in bytes
-     */
-    private int estimateRowSize(InternalRow row) {
-        int size = 0;
-        for (int i = 0; i < fieldCount; i++) {
-            if (row.isNullAt(i)) {
-                size += 1; // null flag
-            } else {
-                DataType fieldType = rowType.getTypeAt(i);
-                size += estimateFieldSize(fieldType, row, i);
-            }
-        }
-        return size;
-    }
-
-    /**
-     * Estimate the size of a field in bytes.
-     *
-     * @param fieldType The field type
-     * @param row The row containing the field
-     * @param fieldIndex The field index
-     * @return Estimated size in bytes
-     */
-    private int estimateFieldSize(DataType fieldType, InternalRow row, int fieldIndex) {
-        switch (fieldType.getTypeRoot()) {
-            case BOOLEAN:
-                return 1;
-            case TINYINT:
-                return 1;
-            case SMALLINT:
-                return 2;
-            case INTEGER:
-                return 4;
-            case BIGINT:
-                return 8;
-            case FLOAT:
-                return 4;
-            case DOUBLE:
-                return 8;
-            case STRING:
-                // Estimate string size (this is approximate)
-                return 4 + row.getString(fieldIndex).getSizeInBytes();
-            case DECIMAL:
-                return 16; // Approximate size for decimal
-            default:
-                return 8; // Default estimate
+            return 4;
         }
     }
 
     /**
-     * Convert an InternalRow to CompactedRow format. If the input is already a CompactedRow, it
-     * will be returned directly. Otherwise, it will be converted to CompactedRow format.
+     * Convert an InternalRow to a BinaryRowData for consistency in handling row data. This method
+     * ensures that we always work with BinaryRowData instances.
      *
-     * @param row The row to convert
-     * @return The CompactedRow
+     * @param row The InternalRow to convert
+     * @return The converted BinaryRowData
      */
-    private CompactedRow convertToCompactedRow(InternalRow row) {
-        // If the input is already a CompactedRow, return it directly
-        if (row instanceof CompactedRow) {
-            return (CompactedRow) row;
-        }
-
-        // Otherwise, convert to CompactedRow format
-        CompactedRowWriter writer = new CompactedRowWriter(fieldCount);
+    private BinaryRowData convertToBinaryRowData(InternalRow row) {
+        int fieldCount = statsRowType.getFieldCount();
+        BinaryRowData binaryRowData = new BinaryRowData(fieldCount);
+        // Allocate sufficient space for variable-length fields
+        // 64 bytes per field should be sufficient for most cases
+        int initialSize = fieldCount * 64;
+        BinaryRowWriter writer = new BinaryRowWriter(binaryRowData, initialSize);
         writer.reset();
 
         for (int i = 0; i < fieldCount; i++) {
             if (row.isNullAt(i)) {
                 writer.setNullAt(i);
             } else {
-                fieldWriters[i].writeField(writer, i, row);
+                DataType fieldType = statsRowType.getTypeAt(i);
+                switch (fieldType.getTypeRoot()) {
+                    case BOOLEAN:
+                        writer.writeBoolean(i, row.getBoolean(i));
+                        break;
+                    case TINYINT:
+                        writer.writeByte(i, row.getByte(i));
+                        break;
+                    case SMALLINT:
+                        writer.writeShort(i, row.getShort(i));
+                        break;
+                    case INTEGER:
+                    case DATE:
+                    case TIME_WITHOUT_TIME_ZONE:
+                        writer.writeInt(i, row.getInt(i));
+                        break;
+                    case BIGINT:
+                        writer.writeLong(i, row.getLong(i));
+                        break;
+                    case FLOAT:
+                        writer.writeFloat(i, row.getFloat(i));
+                        break;
+                    case DOUBLE:
+                        writer.writeDouble(i, row.getDouble(i));
+                        break;
+                    case STRING:
+                        writer.writeString(i, row.getString(i));
+                        break;
+                    case DECIMAL:
+                        DecimalType decimalType = (DecimalType) fieldType;
+                        writer.writeDecimal(
+                                i,
+                                row.getDecimal(
+                                        i, decimalType.getPrecision(), decimalType.getScale()),
+                                decimalType.getPrecision());
+                        break;
+                    case TIMESTAMP_WITHOUT_TIME_ZONE:
+                        TimestampType timestampType = (TimestampType) fieldType;
+                        writer.writeTimestampNtz(
+                                i,
+                                row.getTimestampNtz(i, timestampType.getPrecision()),
+                                timestampType.getPrecision());
+                        break;
+                    case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                        LocalZonedTimestampType localZonedTimestampType =
+                                (LocalZonedTimestampType) fieldType;
+                        writer.writeTimestampLtz(
+                                i,
+                                row.getTimestampLtz(i, localZonedTimestampType.getPrecision()),
+                                localZonedTimestampType.getPrecision());
+                        break;
+                    default:
+                        // For unsupported types, write as null
+                        writer.setNullAt(i);
+                        break;
+                }
             }
         }
 
-        CompactedRow compactedRow =
-                new CompactedRow(fieldCount, null); // Deserializer not needed for writing
-        compactedRow.pointTo(writer.segment(), 0, writer.position());
-        return compactedRow;
+        writer.complete();
+        return binaryRowData;
     }
 
     /**
@@ -257,6 +228,6 @@ public class LogRecordBatchStatisticsWriter {
      * @return The number of fields
      */
     public int getFieldCount() {
-        return fieldCount;
+        return statsRowType.getFieldCount();
     }
 }
