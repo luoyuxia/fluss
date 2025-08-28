@@ -82,7 +82,7 @@ public class FlussSource<OUT> extends FlinkSource<OUT> {
                 scanPartitionDiscoveryIntervalMs,
                 deserializationSchema,
                 streaming,
-                Collections.emptyList(),
+                null,
                 logRecordBatchFilter);
     }
 

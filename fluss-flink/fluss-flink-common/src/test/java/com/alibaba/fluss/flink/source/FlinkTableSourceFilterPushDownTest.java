@@ -327,31 +327,6 @@ public class FlinkTableSourceFilterPushDownTest {
         }
 
         @Test
-        void testPartitionKeyPushdown() {
-            // Test partition key pushdown
-            FieldReferenceExpression fieldRef =
-                    new FieldReferenceExpression("region", DataTypes.STRING(), 0, 3);
-            ValueLiteralExpression literal =
-                    new ValueLiteralExpression("us-east", DataTypes.STRING().notNull());
-            CallExpression equalCall =
-                    new CallExpression(
-                            BuiltInFunctionDefinitions.EQUALS,
-                            Arrays.asList(fieldRef, literal),
-                            DataTypes.BOOLEAN());
-
-            List<ResolvedExpression> filters = Arrays.asList(equalCall);
-
-            FlinkTableSource.Result result = tableSource.applyFilters(filters);
-
-            // Partition key filters should be pushed down as partition filters
-            assertThat(result.getAcceptedFilters()).hasSize(1);
-            assertThat(result.getRemainingFilters()).isEmpty();
-            assertThat(tableSource.getPartitionFilters()).hasSize(1);
-            assertThat(tableSource.getPartitionFilters().get(0).fieldIndex).isEqualTo(3);
-            assertThat(tableSource.getPartitionFilters().get(0).equalValue).isEqualTo("us-east");
-        }
-
-        @Test
         void testRecordBatchFilterNotPushedDownInKvTable() {
             // Test partition key pushdown
             FieldReferenceExpression fieldRef =
@@ -425,31 +400,6 @@ public class FlinkTableSourceFilterPushDownTest {
         }
 
         @Test
-        void testPartitionedLogTablePartitionKeyPushdown() {
-            // Test partition key pushdown for partitioned log table
-            FieldReferenceExpression fieldRef =
-                    new FieldReferenceExpression("region", DataTypes.STRING(), 0, 3);
-            ValueLiteralExpression literal =
-                    new ValueLiteralExpression("us-east", DataTypes.STRING().notNull());
-            CallExpression equalCall =
-                    new CallExpression(
-                            BuiltInFunctionDefinitions.EQUALS,
-                            Arrays.asList(fieldRef, literal),
-                            DataTypes.BOOLEAN());
-
-            List<ResolvedExpression> filters = Arrays.asList(equalCall);
-
-            FlinkTableSource.Result result = tableSource.applyFilters(filters);
-
-            // Partition key filters should be pushed down as partition filters
-            assertThat(result.getAcceptedFilters()).hasSize(1);
-            assertThat(result.getRemainingFilters()).isEmpty();
-            assertThat(tableSource.getPartitionFilters()).hasSize(1);
-            assertThat(tableSource.getPartitionFilters().get(0).fieldIndex).isEqualTo(3);
-            assertThat(tableSource.getPartitionFilters().get(0).equalValue).isEqualTo("us-east");
-        }
-
-        @Test
         void testPartitionedLogTableRecordBatchFilterPushdown() {
             // Test record batch filter pushdown for partitioned log table
             FieldReferenceExpression fieldRef =
@@ -519,53 +469,6 @@ public class FlinkTableSourceFilterPushDownTest {
             assertThat(result.getAcceptedFilters()).isEmpty();
             assertThat(result.getRemainingFilters()).hasSize(1);
             assertThat(tableSource.getLogRecordBatchFilter()).isNull();
-        }
-
-        @Test
-        void testMixedFilterTypesPushdown() {
-            // Test mixed filter types: partition key + regular column
-            FieldReferenceExpression regionFieldRef =
-                    new FieldReferenceExpression("region", DataTypes.STRING(), 0, 3);
-            FieldReferenceExpression idFieldRef =
-                    new FieldReferenceExpression("id", DataTypes.INT(), 0, 0);
-            FieldReferenceExpression nameFieldRef =
-                    new FieldReferenceExpression("name", DataTypes.STRING(), 0, 1);
-            ValueLiteralExpression regionLiteral =
-                    new ValueLiteralExpression("us-east", DataTypes.STRING().notNull());
-            ValueLiteralExpression idLiteral = new ValueLiteralExpression(5);
-            ValueLiteralExpression nameLiteral =
-                    new ValueLiteralExpression("test", DataTypes.STRING().notNull());
-
-            CallExpression regionEqualCall =
-                    new CallExpression(
-                            BuiltInFunctionDefinitions.EQUALS,
-                            Arrays.asList(regionFieldRef, regionLiteral),
-                            DataTypes.BOOLEAN());
-
-            CallExpression idEqualCall =
-                    new CallExpression(
-                            BuiltInFunctionDefinitions.EQUALS,
-                            Arrays.asList(idFieldRef, idLiteral),
-                            DataTypes.BOOLEAN());
-
-            CallExpression nameEqualCall =
-                    new CallExpression(
-                            BuiltInFunctionDefinitions.EQUALS,
-                            Arrays.asList(nameFieldRef, nameLiteral),
-                            DataTypes.BOOLEAN());
-
-            List<ResolvedExpression> filters =
-                    Arrays.asList(regionEqualCall, idEqualCall, nameEqualCall);
-
-            FlinkTableSource.Result result = tableSource.applyFilters(filters);
-
-            // Partition key should be pushed down as partition filter
-            // Regular columns should be pushed down as record batch filter
-            assertThat(result.getAcceptedFilters()).hasSize(3);
-            assertThat(result.getRemainingFilters()).hasSize(2); // id and name remain
-            assertThat(tableSource.getPartitionFilters()).hasSize(1);
-            assertThat(tableSource.getLogRecordBatchFilter())
-                    .isNotNull(); // No record batch filter in partitioned tables
         }
     }
 

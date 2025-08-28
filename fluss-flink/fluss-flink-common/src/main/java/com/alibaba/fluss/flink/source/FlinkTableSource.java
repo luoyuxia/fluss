@@ -32,8 +32,8 @@ import com.alibaba.fluss.flink.utils.PushdownUtils.FieldEqual;
 import com.alibaba.fluss.metadata.MergeEngineType;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.predicate.CompoundPredicate;
-import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.predicate.PartitionPredicateVisitor;
+import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.predicate.PredicateBuilder;
 import com.alibaba.fluss.predicate.PredicateVisitor;
 import com.alibaba.fluss.types.RowType;
@@ -70,9 +70,9 @@ import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.VarCharType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.flink.table.types.logical.VarCharType;
 
 import javax.annotation.Nullable;
 
@@ -84,8 +84,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
@@ -454,8 +454,7 @@ public class FlinkTableSource
             return Result.of(acceptedFilters, remainingFilters);
         }
 
-        if (isPartitioned()
-                && !RowLevelModificationType.UPDATE.equals(modificationScanType)) {
+        if (isPartitioned() && !RowLevelModificationType.UPDATE.equals(modificationScanType)) {
             // apply partition filter pushdown
             List<Predicate> converted = new ArrayList<>();
 
@@ -782,7 +781,7 @@ public class FlinkTableSource
     }
 
     @VisibleForTesting
-    public List<FieldEqual> getPartitionFilters() {
+    public Predicate getPartitionFilters() {
         return partitionFilters;
     }
 }

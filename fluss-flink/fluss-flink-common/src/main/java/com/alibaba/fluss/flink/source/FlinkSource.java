@@ -79,7 +79,7 @@ public class FlinkSource<OUT>
             long scanPartitionDiscoveryIntervalMs,
             FlussDeserializationSchema<OUT> deserializationSchema,
             boolean streaming,
-            Predicate partitionFilters
+            Predicate partitionFilters,
             @Nullable Predicate logRecordBatchFilter) {
         this.flussConf = flussConf;
         this.tablePath = tablePath;
