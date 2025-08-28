@@ -31,6 +31,8 @@ import com.alibaba.fluss.remote.RemoteLogFetchInfo;
 import com.alibaba.fluss.remote.RemoteLogSegment;
 import com.alibaba.fluss.rpc.entity.FetchLogResultForBucket;
 import com.alibaba.fluss.rpc.messages.FetchLogRequest;
+import com.alibaba.fluss.rpc.messages.PbFetchLogReqForBucket;
+import com.alibaba.fluss.rpc.messages.PbFetchLogReqForTable;
 import com.alibaba.fluss.server.log.LogAppendInfo;
 import com.alibaba.fluss.server.log.LogTablet;
 import com.alibaba.fluss.server.log.remote.RemoteLogManager;
@@ -237,7 +239,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         if (responseData != null) {
             bucketStatusMapLock.lock();
             try {
-                handleFetchLogResponse(responseData.getFetchLogResultMap(), bucketsWithError);
+                handleFetchLogResponse(
+                        responseData.getFetchLogResultMap(), bucketsWithError, fetchLogRequest);
             } finally {
                 // release buffer handle by fetchLogResponse.
                 ByteBuf parsedByteBuf = responseData.getFetchLogResponse().getParsedByteBuf();
@@ -255,7 +258,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
 
     private void handleFetchLogResponse(
             Map<TableBucket, FetchLogResultForBucket> responseData,
-            Set<TableBucket> replicasWithError) {
+            Set<TableBucket> replicasWithError,
+            FetchLogRequest fetchLogRequest) {
         responseData.forEach(
                 (tableBucket, replicaData) -> {
                     BucketFetchStatus currentFetchStatus =
@@ -268,7 +272,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     switch (replicaData.getError().error()) {
                         case NONE:
                             handleFetchLogResponseOfSuccessBucket(
-                                    tableBucket, currentFetchStatus, replicaData);
+                                    tableBucket, currentFetchStatus, replicaData, fetchLogRequest);
                             break;
                         case LOG_OFFSET_OUT_OF_RANGE_EXCEPTION:
                             if (!handleOutOfRangeError(tableBucket, currentFetchStatus)) {
@@ -294,11 +298,14 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     private void handleFetchLogResponseOfSuccessBucket(
             TableBucket tableBucket,
             BucketFetchStatus currentFetchStatus,
-            FetchLogResultForBucket replicaData) {
+            FetchLogResultForBucket replicaData,
+            FetchLogRequest fetchLogRequest) {
         try {
             long nextFetchOffset = -1L;
             if (replicaData.fetchFromRemote()) {
-                nextFetchOffset = processFetchResultFromRemoteStorage(tableBucket, replicaData);
+                nextFetchOffset =
+                        processFetchResultFromRemoteStorage(
+                                tableBucket, replicaData, fetchLogRequest);
             } else {
                 LogAppendInfo logAppendInfo =
                         processFetchResultFromLocalStorage(
@@ -565,7 +572,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     }
 
     private long processFetchResultFromRemoteStorage(
-            TableBucket tb, FetchLogResultForBucket replicaData) {
+            TableBucket tb, FetchLogResultForBucket replicaData, FetchLogRequest fetchLogRequest) {
         RemoteLogFetchInfo rlFetchInfo = replicaData.remoteLogFetchInfo();
         checkNotNull(rlFetchInfo, "RemoteLogFetchInfo is null");
         Replica replica = replicaManager.getReplicaOrException(tb);
@@ -582,6 +589,24 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         // build writer snapshots until remoteLogSegment.endOffset() and start segment from
         // until remoteLogSegment.endOffset().
         long nextFetchOffset = remoteLogSegmentWithMaxStartOffset.remoteLogEndOffset();
+
+        long fetchOffset = -1;
+        for (PbFetchLogReqForTable pbFetchLogReqForTable : fetchLogRequest.getTablesReqsList()) {
+            if (pbFetchLogReqForTable.getTableId() == tb.getTableId()) {
+                for (PbFetchLogReqForBucket pbFetchLogReqForBucket :
+                        pbFetchLogReqForTable.getBucketsReqsList()) {
+                    if (pbFetchLogReqForBucket.getBucketId() == tb.getBucket()) {
+                        fetchOffset = pbFetchLogReqForBucket.getFetchOffset();
+                    }
+                }
+            }
+        }
+        LOG.info(
+                "Process fetch result from remote storage for {} with fetchOffset {}. nextFetchOffset: {}. Remote log fetch info: {}",
+                tb,
+                fetchOffset,
+                nextFetchOffset,
+                rlFetchInfo);
 
         try {
             // Truncate the existing local log before restoring the writer id snapshots.
@@ -604,6 +629,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
             // truncateFullyAndReloadSnapshots() here to avoid  deleting the newly downloaded
             // writerId snapshot file.
             log.writerStateManager().reloadSnapshots();
+            LOG.info("Snapshots file: {}", log.writerStateManager().getSnapshots());
             log.loadWriterSnapshot(nextFetchOffset);
             LOG.info(
                     "Build the writer snapshots from remote storage for {} with active "

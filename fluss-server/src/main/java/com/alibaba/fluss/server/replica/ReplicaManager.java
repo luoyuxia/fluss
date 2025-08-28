@@ -1141,6 +1141,11 @@ public class ReplicaManager {
             RemoteLogFetchInfo remoteLogFetchInfo =
                     fetchLogFromRemote(replica, fetchOffset, maxRemoteBytes);
             if (remoteLogFetchInfo != null) {
+                LOG.info(
+                        "Can fetch from remote log for table bucket {}, fetchOffset {}, fetchInfo {}",
+                        tb,
+                        fetchOffset,
+                        remoteLogFetchInfo);
                 return new FetchLogResultForBucket(
                         tb, remoteLogFetchInfo, replica.getLogHighWatermark());
             } else {

@@ -1204,6 +1204,11 @@ public final class LogTablet {
 
                 List<LogSegment> segmentsList =
                         segments.values(writerStateManager.mapEndOffset(), lastOffset);
+                LOG.info(
+                        "Reloading {} segments from offset {}, mapEndOffset: {}",
+                        segmentsList.size(),
+                        lastOffset,
+                        writerStateManager.mapEndOffset());
                 for (LogSegment segment : segmentsList) {
                     long startOffset =
                             Math.max(

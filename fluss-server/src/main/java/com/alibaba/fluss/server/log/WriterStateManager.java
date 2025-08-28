@@ -177,6 +177,10 @@ public class WriterStateManager {
         snapshots = loadSnapshots();
     }
 
+    public ConcurrentSkipListMap<Long, SnapshotFile> getSnapshots() {
+        return snapshots;
+    }
+
     public void truncateFullyAndReloadSnapshots() throws IOException {
         LOG.info("Reloading the writer state snapshots");
         truncateFullyAndStartAt(0L);
@@ -310,16 +314,22 @@ public class WriterStateManager {
             if (latestSnapshotFileOptional.isPresent()) {
                 SnapshotFile snapshot = latestSnapshotFileOptional.get();
                 try {
-                    LOG.info("Loading writer state from snapshot file '{}'", snapshot);
-                    Stream<WriterStateEntry> loadedWriters =
-                            readSnapshot(snapshot.file()).stream()
+                    List<WriterStateEntry> loadedWriters = readSnapshot(snapshot.file());
+                    List<WriterStateEntry> filterWriters =
+                            loadedWriters.stream()
                                     .filter(
                                             writerStateEntry ->
-                                                    !isWriterExpired(
-                                                            currentTime, writerStateEntry));
-                    loadedWriters.forEach(this::loadWriterEntry);
+                                                    !isWriterExpired(currentTime, writerStateEntry))
+                                    .collect(Collectors.toList());
+                    filterWriters.forEach(this::loadWriterEntry);
                     lastSnapOffset = snapshot.offset;
                     lastMapOffset = lastSnapOffset;
+                    LOG.info(
+                            "Loading writer state from snapshot file '{}', origin size {}, filter size {}, lastSnapOffset {}, ",
+                            snapshot,
+                            loadedWriters.size(),
+                            filterWriters.size(),
+                            lastSnapOffset);
                     return;
                 } catch (CorruptSnapshotException e) {
                     LOG.warn(

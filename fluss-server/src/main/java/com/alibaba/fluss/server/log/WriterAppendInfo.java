@@ -21,6 +21,9 @@ import com.alibaba.fluss.exception.OutOfOrderSequenceException;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.record.LogRecordBatch;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
 
 /**
@@ -28,6 +31,8 @@ import static com.alibaba.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
  * log. It's initialized with writer's state after the last successful append.
  */
 public class WriterAppendInfo {
+    private static final Logger LOG = LoggerFactory.getLogger(WriterAppendInfo.class);
+
     private final long writerId;
     private final TableBucket tableBucket;
     private final WriterStateEntry currentEntry;
@@ -60,7 +65,17 @@ public class WriterAppendInfo {
             long lastOffset,
             boolean isWriterInBatchExpired,
             long batchTimestamp) {
-        maybeValidateDataBatch(batchSequence, isWriterInBatchExpired, lastOffset);
+        try {
+            maybeValidateDataBatch(batchSequence, isWriterInBatchExpired, lastOffset);
+        } catch (OutOfOrderSequenceException e) {
+            LOG.error(
+                    "Out of order batch sequence for writer {} at offset {} in table-bucket {}. batchTimestamp {}.",
+                    writerId,
+                    lastOffset,
+                    tableBucket,
+                    batchTimestamp);
+            throw e;
+        }
         updatedEntry.addBath(
                 batchSequence,
                 lastOffset,
@@ -76,6 +91,16 @@ public class WriterAppendInfo {
                         : currentEntry.lastBatchSequence();
         // must be in sequence, even for the first batch should start from 0
         if (!inSequence(currentLastSeq, appendFirstSeq, isWriterInBatchExpired)) {
+            LOG.error(
+                    "Out of order batch sequence for writer {} at offset {} in table-bucket {} : {} (incoming batch seq.), {} (current batch seq.). isWriterInBatchExpired {}. currentEntry is empty {}. updateEntry is empty {}.",
+                    writerId,
+                    lastOffset,
+                    tableBucket,
+                    appendFirstSeq,
+                    currentLastSeq,
+                    isWriterInBatchExpired,
+                    currentEntry.isEmpty(),
+                    updatedEntry.isEmpty());
             throw new OutOfOrderSequenceException(
                     String.format(
                             "Out of order batch sequence for writer %s at offset %s in "
