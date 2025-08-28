@@ -27,6 +27,7 @@ import com.alibaba.fluss.utils.TypeUtils;
 
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.expressions.CallExpression;
+import com.alibaba.fluss.predicate.UnsupportedExpression;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.ExpressionVisitor;
 import org.apache.flink.table.expressions.FieldReferenceExpression;

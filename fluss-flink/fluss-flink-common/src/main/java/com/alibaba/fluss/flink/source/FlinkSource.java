@@ -30,7 +30,6 @@ import com.alibaba.fluss.flink.source.split.SourceSplitBase;
 import com.alibaba.fluss.flink.source.split.SourceSplitSerializer;
 import com.alibaba.fluss.flink.source.state.FlussSourceEnumeratorStateSerializer;
 import com.alibaba.fluss.flink.source.state.SourceEnumeratorState;
-import com.alibaba.fluss.flink.utils.PushdownUtils.FieldEqual;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.predicate.Predicate;
 import com.alibaba.fluss.types.RowType;
@@ -49,10 +48,6 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 
 import javax.annotation.Nullable;
 
-import java.util.List;
-
-import static com.alibaba.fluss.utils.Preconditions.checkNotNull;
-
 /** Flink source for Fluss. */
 public class FlinkSource<OUT>
         implements Source<OUT, SourceSplitBase, SourceEnumeratorState>, ResultTypeQueryable {
@@ -69,7 +64,7 @@ public class FlinkSource<OUT>
     private final boolean streaming;
     private final FlussDeserializationSchema<OUT> deserializationSchema;
 
-    private final List<FieldEqual> partitionFilters;
+    private Predicate partitionFilters;
 
     @Nullable private final Predicate logRecordBatchFilter;
 
@@ -84,7 +79,7 @@ public class FlinkSource<OUT>
             long scanPartitionDiscoveryIntervalMs,
             FlussDeserializationSchema<OUT> deserializationSchema,
             boolean streaming,
-            List<FieldEqual> partitionFilters,
+            Predicate partitionFilters
             @Nullable Predicate logRecordBatchFilter) {
         this.flussConf = flussConf;
         this.tablePath = tablePath;
@@ -96,7 +91,7 @@ public class FlinkSource<OUT>
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.deserializationSchema = deserializationSchema;
         this.streaming = streaming;
-        this.partitionFilters = checkNotNull(partitionFilters);
+        this.partitionFilters = partitionFilters;
         this.logRecordBatchFilter = logRecordBatchFilter;
     }
 

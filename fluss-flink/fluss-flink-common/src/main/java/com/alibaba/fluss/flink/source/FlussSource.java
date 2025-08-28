@@ -27,8 +27,6 @@ import com.alibaba.fluss.types.RowType;
 
 import javax.annotation.Nullable;
 
-import java.util.Collections;
-
 /**
  * A Flink DataStream source implementation for reading data from Fluss tables.
  *

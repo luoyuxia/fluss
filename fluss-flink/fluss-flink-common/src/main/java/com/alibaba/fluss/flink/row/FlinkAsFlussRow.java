@@ -28,6 +28,7 @@ import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.types.DataType;
 
 /** Wraps a Flink {@link RowData} as a Fluss {@link InternalRow}. */
 public class FlinkAsFlussRow implements InternalRow {
@@ -135,7 +136,7 @@ public class FlinkAsFlussRow implements InternalRow {
         return flinkRow.getBinary(pos);
     }
 
-    public static Object fromFlinkObject(Object o, org.apache.flink.table.types.DataType type) {
+    public static Object fromFlinkObject(Object o, DataType type) {
         if (o == null) {
             return null;
         }
