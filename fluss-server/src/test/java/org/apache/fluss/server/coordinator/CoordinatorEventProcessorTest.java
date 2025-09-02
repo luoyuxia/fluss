@@ -820,6 +820,9 @@ class CoordinatorEventProcessorTest {
         assertThat(resultForBucketMap.values()).allMatch(AdjustIsrResultForBucket::succeeded);
     }
 
+    @Test
+    void testAlterTableOrPartitionBucket() throws Exception {}
+
     private CoordinatorEventProcessor buildCoordinatorEventProcessor() {
         return new CoordinatorEventProcessor(
                 zookeeperClient,
