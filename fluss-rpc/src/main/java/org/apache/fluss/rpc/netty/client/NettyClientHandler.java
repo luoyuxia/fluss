@@ -17,11 +17,13 @@
 
 package org.apache.fluss.rpc.netty.client;
 
+import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.exception.CorruptMessageException;
 import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.messages.ErrorResponse;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
+import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.ApiMethod;
 import org.apache.fluss.rpc.protocol.ResponseType;
 import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBuf;
@@ -55,9 +57,13 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
      */
     private final boolean isInnerClient;
 
-    public NettyClientHandler(ClientHandlerCallback callback, boolean isInnerClient) {
+    private final ServerNode serverNode;
+
+    public NettyClientHandler(
+            ClientHandlerCallback callback, boolean isInnerClient, ServerNode serverNode) {
         this.callback = callback;
         this.isInnerClient = isInnerClient;
+        this.serverNode = serverNode;
     }
 
     @Override
@@ -88,6 +94,13 @@ public final class NettyClientHandler extends ChannelInboundHandlerAdapter {
                                             + " request has been timeout."));
                     return;
                 }
+
+                if (apiMethod.getApiKey() == ApiKeys.GET_METADATA
+                        || apiMethod.getApiKey() == ApiKeys.AUTHENTICATE
+                        || apiMethod.getApiKey() == ApiKeys.API_VERSIONS) {
+                    LOG.info("Received {} for serverNode {}.", apiMethod.getApiKey(), serverNode);
+                }
+
                 ApiMessage response = apiMethod.getResponseConstructor().get();
                 if (response.isLazilyParsed()) {
                     if (isInnerClient && response instanceof FetchLogResponse) {

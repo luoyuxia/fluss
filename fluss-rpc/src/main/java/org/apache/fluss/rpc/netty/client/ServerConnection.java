@@ -269,7 +269,8 @@ final class ServerConnection {
                 channel.pipeline()
                         .addLast(
                                 "handler",
-                                new NettyClientHandler(new ResponseCallback(), isInnerClient));
+                                new NettyClientHandler(
+                                        new ResponseCallback(), isInnerClient, getServerNode()));
                 // start checking api versions
                 switchState(ConnectionState.CHECKING_API_VERSIONS);
                 // TODO: set correct client software name and version, used for metrics in server
@@ -292,6 +293,7 @@ final class ServerConnection {
             CompletableFuture<ApiMessage> responseFuture,
             boolean isInternalRequest) {
         synchronized (lock) {
+            boolean isMetadataRequest = (apiKey == ApiKeys.GET_METADATA);
             if (state.isDisconnected()) {
                 Exception exception =
                         new NetworkException(
@@ -306,6 +308,14 @@ final class ServerConnection {
             // 2. connection is established but not ready: internal requests are processed, other
             // requests are queued
             if (!state.isEstablished() || (!state.isReady() && !isInternalRequest)) {
+                if (isMetadataRequest) {
+                    LOG.info(
+                            "MetadataRequest is adding to pending because: state est: {}, state is ready: {}, is internal request: {}",
+                            state.isEstablished(),
+                            state.isReady(),
+                            isInternalRequest);
+                }
+
                 pendingRequests.add(
                         new PendingRequest(apiKey, rawRequest, isInternalRequest, responseFuture));
                 return responseFuture;
@@ -345,6 +355,12 @@ final class ServerConnection {
             }
 
             connectionMetricGroup.updateMetricsBeforeSendRequest(apiKey, rawRequest.totalSize());
+
+            if (apiKey == ApiKeys.GET_METADATA
+                    || apiKey == ApiKeys.AUTHENTICATE
+                    || apiKey == ApiKeys.API_VERSIONS) {
+                LOG.info("Send {} for serverNode {}.", apiKey, getServerNode());
+            }
 
             channel.writeAndFlush(byteBuf)
                     .addListener(
@@ -464,9 +480,14 @@ final class ServerConnection {
     }
 
     private void switchState(ConnectionState targetState) {
-        LOG.debug("switch state form {} to {}", state, targetState);
+        LOG.info(
+                "switch state form {} to {} for serverNode: {}",
+                state,
+                targetState,
+                getServerNode());
         state = targetState;
         if (targetState == ConnectionState.READY) {
+            LOG.info("connection is ready for serverNode: {}", getServerNode());
             // process pending requests
             PendingRequest pending;
             while ((pending = pendingRequests.pollFirst()) != null) {
