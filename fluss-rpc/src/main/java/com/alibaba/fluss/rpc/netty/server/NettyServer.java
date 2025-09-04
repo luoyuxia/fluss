@@ -35,6 +35,7 @@ import com.alibaba.fluss.shaded.netty4.io.netty.channel.Channel;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelHandler;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.ChannelOption;
 import com.alibaba.fluss.shaded.netty4.io.netty.channel.EventLoopGroup;
+import com.alibaba.fluss.shaded.netty4.io.netty.util.ResourceLeakDetector;
 import com.alibaba.fluss.utils.concurrent.FutureUtils;
 
 import org.slf4j.Logger;
@@ -86,6 +87,8 @@ public final class NettyServer implements RpcServer {
             RpcGatewayService service,
             MetricGroup serverMetricGroup,
             RequestsMetrics requestsMetrics) {
+        ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.PARANOID);
+
         this.conf = checkNotNull(conf, "conf");
         this.serverMetricGroup = checkNotNull(serverMetricGroup, "serverMetricGroup");
         this.endpoints = checkNotNull(endpoints, "endpoints");
