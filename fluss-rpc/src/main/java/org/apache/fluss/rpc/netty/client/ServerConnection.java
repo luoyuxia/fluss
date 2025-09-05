@@ -327,6 +327,9 @@ final class ServerConnection {
                     new InflightRequest(
                             apiKey.id, version, requestCount++, rawRequest, responseFuture);
             inflightRequests.put(inflight.requestId, inflight);
+            if (inflightRequests.size() % 100 == 0) {
+                LOG.info("Inflight requests to server {} is {}", node, inflightRequests.size());
+            }
 
             // TODO: maybe we need to add timeout for the inflight requests
             ByteBuf byteBuf;
