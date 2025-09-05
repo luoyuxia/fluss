@@ -228,11 +228,13 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     leader.leaderServerId());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            LOG.info(
-                    "Sending fetch log request to leader {}, requestId {}",
-                    leader.leaderServerId(),
-                    requestId);
             responseData = leader.fetchLog(fetchLogContext).get(timeoutSeconds, TimeUnit.SECONDS);
+            if (responseData != null) {
+                LOG.info(
+                        "Sending fetch log request to leader {}, requestId {}",
+                        leader.leaderServerId(),
+                        requestId);
+            }
         } catch (Throwable t) {
             if (isRunning()) {
                 LOG.warn(
@@ -257,6 +259,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     parsedByteBuf.release();
                     LOG.info(
                             "Release buffer to leader {}, requestId {}",
+                            leader.leaderServerId(),
+                            requestId);
+                } else {
+                    LOG.info(
+                            "Release null buffer to leader {}, requestId {}",
                             leader.leaderServerId(),
                             requestId);
                 }
