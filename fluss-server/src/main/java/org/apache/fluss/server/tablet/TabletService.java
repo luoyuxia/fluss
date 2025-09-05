@@ -76,6 +76,9 @@ import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Collection;
@@ -118,6 +121,8 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPrefixLookup
 
 /** An RPC Gateway service for tablet server. */
 public final class TabletService extends RpcServiceBase implements TabletServerGateway {
+
+    private static final Logger LOG = LoggerFactory.getLogger(TabletService.class);
 
     private final String serviceName;
     private final ReplicaManager replicaManager;
@@ -282,6 +287,10 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
 
     @Override
     public CompletableFuture<MetadataResponse> metadata(MetadataRequest request) {
+        if (request.hasClientAddress()) {
+            String clientAddress = request.getClientAddress();
+            LOG.info("Received metadata request from client {}", clientAddress);
+        }
         return CompletableFuture.completedFuture(
                 makeMetadataResponse(
                         request,

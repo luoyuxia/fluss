@@ -25,10 +25,15 @@ import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.RPC;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelHandlerContext;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.concurrent.CompletableFuture;
 
 /** Rpc gateway interface which has to be implemented by Rpc gateways. */
 public interface RpcGateway {
+
+    Logger LOG = LoggerFactory.getLogger(RpcGateway.class);
 
     /** Returns the APIs and Versions of the RPC Gateway supported. */
     @RPC(api = ApiKeys.API_VERSIONS)
@@ -52,6 +57,10 @@ public interface RpcGateway {
      */
     @RPC(api = ApiKeys.AUTHENTICATE)
     default CompletableFuture<AuthenticateResponse> authenticate(AuthenticateRequest request) {
+        if (request.hasClientAddress()) {
+            String clientAddress = request.getClientAddress();
+            LOG.info("Authenticate request from client {}.", clientAddress);
+        }
         throw new UnsupportedOperationException("This method should not be called directly.");
     }
 }

@@ -27,6 +27,7 @@ import org.apache.fluss.rpc.messages.ApiVersionsRequest;
 import org.apache.fluss.rpc.messages.ApiVersionsResponse;
 import org.apache.fluss.rpc.messages.AuthenticateRequest;
 import org.apache.fluss.rpc.messages.AuthenticateResponse;
+import org.apache.fluss.rpc.messages.MetadataRequest;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.metrics.ConnectionMetricGroup;
 import org.apache.fluss.rpc.protocol.ApiKeys;
@@ -277,7 +278,8 @@ final class ServerConnection {
                 ApiVersionsRequest request =
                         new ApiVersionsRequest()
                                 .setClientSoftwareName("fluss")
-                                .setClientSoftwareVersion("0.1.0");
+                                .setClientSoftwareVersion("0.1.0")
+                                .setClientAddress(channel.localAddress().toString());
                 doSend(ApiKeys.API_VERSIONS, request, new CompletableFuture<>(), true)
                         .whenComplete(this::handleApiVersionsResponse);
             } else {
@@ -359,7 +361,19 @@ final class ServerConnection {
             if (apiKey == ApiKeys.GET_METADATA
                     || apiKey == ApiKeys.AUTHENTICATE
                     || apiKey == ApiKeys.API_VERSIONS) {
-                LOG.info("Send {} for serverNode {}.", apiKey, getServerNode());
+                if (apiKey == ApiKeys.GET_METADATA) {
+                    MetadataRequest rawRequest1 = (MetadataRequest) rawRequest;
+                    rawRequest1.setClientAddress(channel.localAddress().toString());
+                } else if (apiKey == ApiKeys.AUTHENTICATE) {
+                    AuthenticateRequest rawRequest1 = (AuthenticateRequest) rawRequest;
+                    rawRequest1.setClientAddress(channel.localAddress().toString());
+                }
+
+                LOG.info(
+                        "Send {} for serverNode {} from {}.",
+                        apiKey,
+                        getServerNode(),
+                        channel.localAddress());
             }
 
             channel.writeAndFlush(byteBuf)

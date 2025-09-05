@@ -173,6 +173,12 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                             .setMinVersion(api.lowestSupportedVersion)
                             .setMaxVersion(api.highestSupportedVersion));
         }
+
+        if (request.hasClientAddress()) {
+            String clientAddress = request.getClientAddress();
+            LOG.info("Received ApiVersionsRequest from " + clientAddress);
+        }
+
         ApiVersionsResponse response = new ApiVersionsResponse();
         response.addAllApiVersions(apiVersions);
         return CompletableFuture.completedFuture(response);
