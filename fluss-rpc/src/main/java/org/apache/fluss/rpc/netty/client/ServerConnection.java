@@ -340,6 +340,11 @@ final class ServerConnection {
                             apiKey.id, version, requestCount++, rawRequest, responseFuture);
             inflightRequests.put(inflight.requestId, inflight);
 
+            if (apiKey == ApiKeys.GET_METADATA) {
+                MetadataRequest rawRequest1 = (MetadataRequest) rawRequest;
+                rawRequest1.setClientAddress(channel.localAddress().toString());
+            }
+
             // TODO: maybe we need to add timeout for the inflight requests
             ByteBuf byteBuf;
             try {
@@ -361,14 +366,6 @@ final class ServerConnection {
             if (apiKey == ApiKeys.GET_METADATA
                     || apiKey == ApiKeys.AUTHENTICATE
                     || apiKey == ApiKeys.API_VERSIONS) {
-                if (apiKey == ApiKeys.GET_METADATA) {
-                    MetadataRequest rawRequest1 = (MetadataRequest) rawRequest;
-                    rawRequest1.setClientAddress(channel.localAddress().toString());
-                } else if (apiKey == ApiKeys.AUTHENTICATE) {
-                    AuthenticateRequest rawRequest1 = (AuthenticateRequest) rawRequest;
-                    rawRequest1.setClientAddress(channel.localAddress().toString());
-                }
-
                 LOG.info(
                         "Send {} for serverNode {} from {}.",
                         apiKey,
@@ -442,7 +439,8 @@ final class ServerConnection {
                     AuthenticateRequest request =
                             new AuthenticateRequest()
                                     .setToken(token)
-                                    .setProtocol(authenticator.protocol());
+                                    .setProtocol(authenticator.protocol())
+                                    .setClientAddress(channel.localAddress().toString());
                     doSend(ApiKeys.AUTHENTICATE, request, new CompletableFuture<>(), true)
                             .whenComplete(this::handleAuthenticateResponse);
                     return;
