@@ -61,6 +61,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -101,6 +102,8 @@ final class ReplicaFetcherThread extends ShutdownableThread {
     private final Condition bucketStatusMapCondition = bucketStatusMapLock.newCondition();
 
     private final TabletServerMetricGroup serverMetricGroup;
+
+    private final AtomicLong requestId = new AtomicLong(0L);
 
     public ReplicaFetcherThread(
             String name, ReplicaManager replicaManager, LeaderEndpoint leader, int fetchBackOffMs) {
@@ -217,6 +220,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
         Set<TableBucket> bucketsWithError = new HashSet<>();
         FetchData responseData = null;
         FetchLogRequest fetchLogRequest = fetchLogContext.getFetchLogRequest();
+        Long requestId = this.requestId.getAndIncrement();
         try {
             LOG.trace(
                     "Sending fetch log request {} to leader {}",
@@ -224,7 +228,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     leader.leaderServerId());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
-            LOG.info("Sending fetch log request to leader {}", leader.leaderServerId());
+            LOG.info(
+                    "Sending fetch log request to leader {}, requestId {}",
+                    leader.leaderServerId(),
+                    requestId);
             responseData = leader.fetchLog(fetchLogContext).get(timeoutSeconds, TimeUnit.SECONDS);
         } catch (Throwable t) {
             if (isRunning()) {
@@ -248,7 +255,10 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                 ByteBuf parsedByteBuf = responseData.getFetchLogResponse().getParsedByteBuf();
                 if (parsedByteBuf != null) {
                     parsedByteBuf.release();
-                    LOG.info("Release buffer to leader {}", leader.leaderServerId());
+                    LOG.info(
+                            "Release buffer to leader {}, requestId {}",
+                            leader.leaderServerId(),
+                            requestId);
                 }
                 bucketStatusMapLock.unlock();
             }
