@@ -248,6 +248,7 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                 ByteBuf parsedByteBuf = responseData.getFetchLogResponse().getParsedByteBuf();
                 if (parsedByteBuf != null) {
                     parsedByteBuf.release();
+                    LOG.info("Release buffer to leader {}", leader.leaderServerId());
                 }
                 bucketStatusMapLock.unlock();
             }
