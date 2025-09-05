@@ -224,10 +224,11 @@ final class ReplicaFetcherThread extends ShutdownableThread {
                     leader.leaderServerId());
             // TODO this need not blocking to wait fetch log complete, change to async, see
             // FLUSS-56115172.
+            LOG.info("Sending fetch log request to leader {}", leader.leaderServerId());
             responseData = leader.fetchLog(fetchLogContext).get(timeoutSeconds, TimeUnit.SECONDS);
         } catch (Throwable t) {
             if (isRunning()) {
-                LOG.warn("Error in response for fetch log request {}", fetchLogRequest, t);
+                LOG.warn("Error in response for fetch log request {}, response data {}", fetchLogRequest, responseData, t);
                 inLock(
                         bucketStatusMapLock,
                         () -> bucketsWithError.addAll(fairBucketStatusMap.bucketSet()));

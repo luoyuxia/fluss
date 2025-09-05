@@ -327,7 +327,7 @@ final class ServerConnection {
                     new InflightRequest(
                             apiKey.id, version, requestCount++, rawRequest, responseFuture);
             inflightRequests.put(inflight.requestId, inflight);
-            if (inflightRequests.size() % 100 == 0) {
+            if (inflightRequests.size() % 10 == 0) {
                 LOG.info("Inflight requests to server {} is {}", node, inflightRequests.size());
             }
 
