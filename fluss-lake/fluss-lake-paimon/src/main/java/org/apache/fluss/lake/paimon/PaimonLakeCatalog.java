@@ -96,7 +96,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
                 CatalogContext.create(
                         AlakeOptionsBuilder.create(catalogOptions).build(userPrincipalArn));
         LOG.info("create catalog context: via AlakeOptionsBuilder...");
-        LOG.info(catalogContext.options().keySet().toString());
+        LOG.info(catalogContext.options().toMap().toString());
         this.paimonCatalog =
                 com.alibaba.alake.rest.catalog.AlakeRestCatalog.createAlakeRestCatalog(
                         catalogContext);
