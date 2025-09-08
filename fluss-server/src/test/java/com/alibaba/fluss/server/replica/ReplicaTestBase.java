@@ -32,6 +32,8 @@ import com.alibaba.fluss.record.MemoryLogRecords;
 import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
 import com.alibaba.fluss.rpc.metrics.TestingClientMetricGroup;
+import com.alibaba.fluss.server.DynamicServerConfig;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.coordinator.TestCoordinatorGateway;
 import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrData;
@@ -185,7 +187,13 @@ public class ReplicaTestBase {
         kvManager.startup();
 
         serverMetadataCache =
-                new TabletServerMetadataCache(new MetadataManager(zkClient, conf), zkClient);
+                new TabletServerMetadataCache(
+                        new MetadataManager(
+                                zkClient,
+                                conf,
+                                new LakeCatalogDynamicLoader(
+                                        new DynamicServerConfig(new Configuration()), null, true)),
+                        zkClient);
         initMetadataCache(serverMetadataCache);
 
         rpcClient = RpcClient.create(conf, TestingClientMetricGroup.newInstance(), false);

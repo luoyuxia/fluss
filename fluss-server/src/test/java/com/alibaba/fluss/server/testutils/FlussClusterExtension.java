@@ -41,10 +41,12 @@ import com.alibaba.fluss.rpc.messages.StopReplicaRequest;
 import com.alibaba.fluss.rpc.metrics.ClientMetricGroup;
 import com.alibaba.fluss.security.acl.AccessControlEntry;
 import com.alibaba.fluss.security.acl.AclBinding;
+import com.alibaba.fluss.server.DynamicServerConfig;
 import com.alibaba.fluss.server.ServerBase;
 import com.alibaba.fluss.server.authorizer.Authorizer;
 import com.alibaba.fluss.server.authorizer.DefaultAuthorizer;
 import com.alibaba.fluss.server.coordinator.CoordinatorServer;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.entity.NotifyLeaderAndIsrData;
 import com.alibaba.fluss.server.kv.snapshot.CompletedSnapshot;
@@ -201,7 +203,12 @@ public final class FlussClusterExtension
         zooKeeperServer = ZooKeeperTestUtils.createAndStartZookeeperTestingServer();
         zooKeeperClient =
                 createZooKeeperClient(zooKeeperServer.getConnectString(), NOPErrorHandler.INSTANCE);
-        metadataManager = new MetadataManager(zooKeeperClient, clusterConf);
+        metadataManager =
+                new MetadataManager(
+                        zooKeeperClient,
+                        clusterConf,
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(clusterConf), null, true));
         Configuration conf = new Configuration();
         rpcClient =
                 RpcClient.create(

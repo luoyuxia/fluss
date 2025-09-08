@@ -137,6 +137,8 @@ public class CoordinatorServer extends ServerBase {
     @GuardedBy("lock")
     private DynamicConfigManager dynamicConfigManager;
 
+    private MetadataManager metadataManager;
+
     public CoordinatorServer(Configuration conf) {
         super(conf);
         validateConfigs(conf);
@@ -182,7 +184,9 @@ public class CoordinatorServer extends ServerBase {
 
             this.lakeTableTieringManager = new LakeTableTieringManager();
 
-            MetadataManager metadataManager = new MetadataManager(zkClient, conf);
+            LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
+                    new LakeCatalogDynamicLoader(dynamicServerConfig, pluginManager, true);
+            this.metadataManager = new MetadataManager(zkClient, conf, lakeCatalogDynamicLoader);
             this.coordinatorService =
                     new CoordinatorService(
                             conf,
@@ -192,7 +196,7 @@ public class CoordinatorServer extends ServerBase {
                             metadataCache,
                             metadataManager,
                             authorizer,
-                            new LakeCatalogDynamicLoader(dynamicServerConfig, pluginManager),
+                            lakeCatalogDynamicLoader,
                             lakeTableTieringManager,
                             dynamicConfigManager);
 
@@ -240,7 +244,8 @@ public class CoordinatorServer extends ServerBase {
                             lakeTableTieringManager,
                             serverMetricGroup,
                             conf,
-                            ioExecutor);
+                            ioExecutor,
+                            metadataManager);
             coordinatorEventProcessor.startup();
 
             createDefaultDatabase();
@@ -306,7 +311,6 @@ public class CoordinatorServer extends ServerBase {
     }
 
     private void createDefaultDatabase() {
-        MetadataManager metadataManager = new MetadataManager(zkClient, conf);
         List<String> databases = metadataManager.listDatabases();
         if (databases.isEmpty()) {
             metadataManager.createDatabase(DEFAULT_DATABASE, DatabaseDescriptor.EMPTY, true);

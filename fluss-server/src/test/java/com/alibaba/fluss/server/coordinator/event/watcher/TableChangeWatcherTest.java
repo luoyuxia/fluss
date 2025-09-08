@@ -26,6 +26,8 @@ import com.alibaba.fluss.metadata.SchemaInfo;
 import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.server.DynamicServerConfig;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.coordinator.event.CoordinatorEvent;
 import com.alibaba.fluss.server.coordinator.event.CreatePartitionEvent;
@@ -82,7 +84,12 @@ class TableChangeWatcherTest {
                 ZOO_KEEPER_EXTENSION_WRAPPER
                         .getCustomExtension()
                         .getZooKeeperClient(NOPErrorHandler.INSTANCE);
-        metadataManager = new MetadataManager(zookeeperClient, new Configuration());
+        metadataManager =
+                new MetadataManager(
+                        zookeeperClient,
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(new Configuration()), null, true));
         metadataManager.createDatabase(DEFAULT_DB, DatabaseDescriptor.builder().build(), false);
     }
 

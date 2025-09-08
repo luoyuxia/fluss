@@ -28,6 +28,7 @@ import com.alibaba.fluss.lake.lakestorage.LakeStoragePluginSetUp;
 import com.alibaba.fluss.metadata.DataLakeFormat;
 import com.alibaba.fluss.plugin.PluginManager;
 import com.alibaba.fluss.server.DynamicServerConfig;
+import com.alibaba.fluss.server.utils.LakeStorageUtils;
 import com.alibaba.fluss.utils.IOUtils;
 
 import javax.annotation.Nullable;
@@ -44,15 +45,22 @@ public class LakeCatalogDynamicLoader implements ServerReconfigurable, AutoClose
     // null if the cluster hasn't configured datalake format
     private @Nullable DataLakeFormat dataLakeFormat;
     private @Nullable LakeCatalog lakeCatalog;
+    private @Nullable Map<String, String> defaultTableLakeOptions;
     private Configuration currentConfiguration;
     private final PluginManager pluginManager;
+    private final boolean isCoordinator;
 
     public LakeCatalogDynamicLoader(
-            DynamicServerConfig dynamicServerConfig, PluginManager pluginManager) {
+            DynamicServerConfig dynamicServerConfig,
+            PluginManager pluginManager,
+            boolean isCoordinator) {
         Configuration currentConfig = dynamicServerConfig.getCurrentConfig();
+        this.isCoordinator = isCoordinator;
         this.currentConfiguration = currentConfig;
         this.dataLakeFormat = currentConfig.getOptional(DATALAKE_FORMAT).orElse(null);
         this.lakeCatalog = createLakeCatalog(currentConfig, pluginManager);
+        this.defaultTableLakeOptions =
+                LakeStorageUtils.generateDefaultTableLakeOptions(currentConfig);
         this.pluginManager = pluginManager;
         checkState(
                 (dataLakeFormat == null) == (lakeCatalog == null),
@@ -106,7 +114,11 @@ public class LakeCatalogDynamicLoader implements ServerReconfigurable, AutoClose
         if (newLakeFormat != dataLakeFormat) {
             IOUtils.closeQuietly(lakeCatalog, "Lake catalog because config changes");
             this.dataLakeFormat = newLakeFormat;
-            this.lakeCatalog = createLakeCatalog(newConfig, pluginManager);
+            if (isCoordinator) {
+                this.lakeCatalog = createLakeCatalog(newConfig, pluginManager);
+            }
+            this.defaultTableLakeOptions =
+                    LakeStorageUtils.generateDefaultTableLakeOptions(newConfig);
             this.currentConfiguration = newConfig;
         }
     }
@@ -132,6 +144,10 @@ public class LakeCatalogDynamicLoader implements ServerReconfigurable, AutoClose
 
     public @Nullable LakeCatalog getLakeCatalog() {
         return lakeCatalog;
+    }
+
+    public Map<String, String> getDefaultLakeProperties() {
+        return defaultTableLakeOptions;
     }
 
     @Override

@@ -22,6 +22,7 @@ import com.alibaba.fluss.config.Configuration;
 import com.alibaba.fluss.metadata.TableBucket;
 import com.alibaba.fluss.metadata.TableBucketReplica;
 import com.alibaba.fluss.metadata.TableInfo;
+import com.alibaba.fluss.server.DynamicServerConfig;
 import com.alibaba.fluss.server.coordinator.event.CoordinatorEvent;
 import com.alibaba.fluss.server.coordinator.event.DeleteReplicaResponseReceivedEvent;
 import com.alibaba.fluss.server.coordinator.event.TestingEventManager;
@@ -122,7 +123,12 @@ class TableManagerTest {
         TableBucketStateMachine tableBucketStateMachine =
                 new TableBucketStateMachine(
                         coordinatorContext, coordinatorRequestBatch, zookeeperClient);
-        MetadataManager metadataManager = new MetadataManager(zookeeperClient, new Configuration());
+        MetadataManager metadataManager =
+                new MetadataManager(
+                        zookeeperClient,
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(new Configuration()), null, true));
         tableManager =
                 new TableManager(
                         metadataManager,

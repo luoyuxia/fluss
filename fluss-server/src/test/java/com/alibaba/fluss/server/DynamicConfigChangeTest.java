@@ -85,7 +85,7 @@ public class DynamicConfigChangeTest {
                 new DynamicConfigManager(zookeeperClient, dynamicServerConfig, true);
         dynamicConfigManager.startup();
         try (LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
-                new LakeCatalogDynamicLoader(dynamicServerConfig, null)) {
+                new LakeCatalogDynamicLoader(dynamicServerConfig, null, true)) {
             assertThatThrownBy(
                             () ->
                                     dynamicConfigManager.alterConfigs(
@@ -120,7 +120,7 @@ public class DynamicConfigChangeTest {
                 new DynamicConfigManager(zookeeperClient, dynamicServerConfig, true);
         dynamicConfigManager.startup();
         try (LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
-                new LakeCatalogDynamicLoader(dynamicServerConfig, null)) {
+                new LakeCatalogDynamicLoader(dynamicServerConfig, null, true)) {
             assertThat(lakeCatalogDynamicLoader.getDataLakeFormat()).isEqualTo(PAIMON);
             dynamicConfigManager.alterConfigs(
                     Collections.singletonList(
@@ -143,7 +143,7 @@ public class DynamicConfigChangeTest {
                 new DynamicConfigManager(zookeeperClient, dynamicServerConfig, true);
         dynamicConfigManager.startup();
         try (LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
-                new LakeCatalogDynamicLoader(dynamicServerConfig, null)) {
+                new LakeCatalogDynamicLoader(dynamicServerConfig, null, true)) {
             assertThatThrownBy(
                             () ->
                                     dynamicConfigManager.alterConfigs(
@@ -167,7 +167,7 @@ public class DynamicConfigChangeTest {
                 new DynamicConfigManager(zookeeperClient, dynamicServerConfig, true);
         dynamicConfigManager.startup();
         try (LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
-                new LakeCatalogDynamicLoader(dynamicServerConfig, null)) {
+                new LakeCatalogDynamicLoader(dynamicServerConfig, null, true)) {
             assertThatThrownBy(
                             () ->
                                     dynamicConfigManager.alterConfigs(
@@ -194,7 +194,7 @@ public class DynamicConfigChangeTest {
                 new DynamicConfigManager(zookeeperClient, dynamicServerConfig, false);
         dynamicConfigManager.startup();
         try (LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
-                new LakeCatalogDynamicLoader(dynamicServerConfig, null)) {
+                new LakeCatalogDynamicLoader(dynamicServerConfig, null, true)) {
             assertThat(lakeCatalogDynamicLoader.getDataLakeFormat()).isEqualTo(null);
             Map<String, String> config = new HashMap<>();
             config.put(DATALAKE_FORMAT.key(), "paimon");
@@ -223,7 +223,7 @@ public class DynamicConfigChangeTest {
         dynamicConfigManager.startup();
 
         try (LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
-                new LakeCatalogDynamicLoader(dynamicServerConfig, null)) {
+                new LakeCatalogDynamicLoader(dynamicServerConfig, null, true)) {
             assertThat(lakeCatalogDynamicLoader.getDataLakeFormat()).isEqualTo(PAIMON);
         }
     }

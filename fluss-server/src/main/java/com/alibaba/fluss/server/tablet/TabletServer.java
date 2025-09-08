@@ -35,6 +35,7 @@ import com.alibaba.fluss.server.DynamicConfigManager;
 import com.alibaba.fluss.server.ServerBase;
 import com.alibaba.fluss.server.authorizer.Authorizer;
 import com.alibaba.fluss.server.authorizer.AuthorizerLoader;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.kv.KvManager;
 import com.alibaba.fluss.server.kv.snapshot.DefaultCompletedKvSnapshotCommitter;
@@ -185,7 +186,11 @@ public class TabletServer extends ServerBase {
                             serverId);
 
             this.zkClient = ZooKeeperUtils.startZookeeperClient(conf, this);
-            MetadataManager metadataManager = new MetadataManager(zkClient, conf);
+            // todo: close
+            LakeCatalogDynamicLoader lakeCatalogDynamicLoader =
+                    new LakeCatalogDynamicLoader(dynamicServerConfig, pluginManager, true);
+            MetadataManager metadataManager =
+                    new MetadataManager(zkClient, conf, lakeCatalogDynamicLoader);
             this.metadataCache = new TabletServerMetadataCache(metadataManager, zkClient);
 
             this.scheduler = new FlussScheduler(conf.get(BACKGROUND_THREADS));

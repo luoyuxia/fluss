@@ -25,6 +25,8 @@ import com.alibaba.fluss.exception.TableNotExistException;
 import com.alibaba.fluss.metadata.PhysicalTablePath;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
+import com.alibaba.fluss.server.DynamicServerConfig;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -279,7 +281,11 @@ public class TabletServerMetadataCacheTest {
         private final Map<TablePath, TableInfo> tableInfoMap = new HashMap<>();
 
         public TestingMetadataManager(List<TableInfo> tableInfos) {
-            super(null, new Configuration());
+            super(
+                    null,
+                    new Configuration(),
+                    new LakeCatalogDynamicLoader(
+                            new DynamicServerConfig(new Configuration()), null, true));
             tableInfos.forEach(tableInfo -> tableInfoMap.put(tableInfo.getTablePath(), tableInfo));
         }
 

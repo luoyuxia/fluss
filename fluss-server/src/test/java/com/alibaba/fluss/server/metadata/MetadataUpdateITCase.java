@@ -29,6 +29,8 @@ import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.gateway.CoordinatorGateway;
+import com.alibaba.fluss.server.DynamicServerConfig;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.tablet.TabletServer;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
@@ -84,7 +86,10 @@ class MetadataUpdateITCase {
         zkClient = FLUSS_CLUSTER_EXTENSION.getZooKeeperClient();
         metadataManager =
                 new MetadataManager(
-                        FLUSS_CLUSTER_EXTENSION.getZooKeeperClient(), new Configuration());
+                        FLUSS_CLUSTER_EXTENSION.getZooKeeperClient(),
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(new Configuration()), null, true));
     }
 
     @Test

@@ -35,6 +35,8 @@ import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.row.InternalRow;
+import com.alibaba.fluss.server.DynamicServerConfig;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.testutils.FlussClusterExtension;
 import com.alibaba.fluss.server.zk.ZooKeeperClient;
@@ -234,7 +236,12 @@ public class FlinkTestBase extends AbstractTestBase {
     public static Map<Long, String> createPartitions(
             ZooKeeperClient zkClient, TablePath tablePath, List<String> partitionsToCreate)
             throws Exception {
-        MetadataManager metadataManager = new MetadataManager(zkClient, new Configuration());
+        MetadataManager metadataManager =
+                new MetadataManager(
+                        zkClient,
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(new Configuration()), null, false));
         TableInfo tableInfo = metadataManager.getTable(tablePath);
         Map<Long, String> newPartitionIds = new HashMap<>();
         for (String partition : partitionsToCreate) {

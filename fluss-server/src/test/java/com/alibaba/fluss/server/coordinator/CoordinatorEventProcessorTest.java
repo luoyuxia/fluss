@@ -35,6 +35,7 @@ import com.alibaba.fluss.rpc.messages.CommitKvSnapshotResponse;
 import com.alibaba.fluss.rpc.messages.CommitRemoteLogManifestResponse;
 import com.alibaba.fluss.rpc.messages.NotifyKvSnapshotOffsetRequest;
 import com.alibaba.fluss.rpc.messages.NotifyRemoteLogOffsetsRequest;
+import com.alibaba.fluss.server.DynamicServerConfig;
 import com.alibaba.fluss.server.coordinator.event.AccessContextEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import com.alibaba.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
@@ -143,7 +144,12 @@ class CoordinatorEventProcessorTest {
                 ZOO_KEEPER_EXTENSION_WRAPPER
                         .getCustomExtension()
                         .getZooKeeperClient(NOPErrorHandler.INSTANCE);
-        metadataManager = new MetadataManager(zookeeperClient, new Configuration());
+        metadataManager =
+                new MetadataManager(
+                        zookeeperClient,
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(new Configuration()), null, true));
 
         // register coordinator server
         zookeeperClient.registerCoordinatorLeader(
@@ -327,7 +333,12 @@ class CoordinatorEventProcessorTest {
         // we try to assign a replica to this newly server, every thing will
         // be fine
         // t1: {bucket0: [0, 3, 2], bucket1: [3, 2, 0]}, t2: {bucket0: [3]}
-        MetadataManager metadataManager = new MetadataManager(zookeeperClient, new Configuration());
+        MetadataManager metadataManager =
+                new MetadataManager(
+                        zookeeperClient,
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(new Configuration()), null, true));
         TableAssignment table1Assignment =
                 TableAssignment.builder()
                         .add(0, BucketAssignment.of(0, 3, 2))
@@ -434,7 +445,12 @@ class CoordinatorEventProcessorTest {
     void testRestartTriggerReplicaToOffline() throws Exception {
         // case1: coordinator server restart, and first set the replica to online
         // but the request to the replica server fail which will then cause it offline
-        MetadataManager metadataManager = new MetadataManager(zookeeperClient, new Configuration());
+        MetadataManager metadataManager =
+                new MetadataManager(
+                        zookeeperClient,
+                        new Configuration(),
+                        new LakeCatalogDynamicLoader(
+                                new DynamicServerConfig(new Configuration()), null, true));
         TableAssignment tableAssignment =
                 TableAssignment.builder()
                         .add(0, BucketAssignment.of(0, 1, 2))
@@ -771,7 +787,8 @@ class CoordinatorEventProcessorTest {
                 lakeTableTieringManager,
                 TestingMetricGroups.COORDINATOR_METRICS,
                 new Configuration(),
-                Executors.newFixedThreadPool(1, new ExecutorThreadFactory("test-coordinator-io")));
+                Executors.newFixedThreadPool(1, new ExecutorThreadFactory("test-coordinator-io")),
+                metadataManager);
     }
 
     private void initCoordinatorChannel() throws Exception {

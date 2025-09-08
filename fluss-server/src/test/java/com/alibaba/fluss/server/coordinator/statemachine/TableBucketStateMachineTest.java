@@ -24,12 +24,14 @@ import com.alibaba.fluss.metadata.TableInfo;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.rpc.RpcClient;
 import com.alibaba.fluss.rpc.metrics.TestingClientMetricGroup;
+import com.alibaba.fluss.server.DynamicServerConfig;
 import com.alibaba.fluss.server.coordinator.AutoPartitionManager;
 import com.alibaba.fluss.server.coordinator.CoordinatorChannelManager;
 import com.alibaba.fluss.server.coordinator.CoordinatorContext;
 import com.alibaba.fluss.server.coordinator.CoordinatorEventProcessor;
 import com.alibaba.fluss.server.coordinator.CoordinatorRequestBatch;
 import com.alibaba.fluss.server.coordinator.CoordinatorTestUtils;
+import com.alibaba.fluss.server.coordinator.LakeCatalogDynamicLoader;
 import com.alibaba.fluss.server.coordinator.LakeTableTieringManager;
 import com.alibaba.fluss.server.coordinator.MetadataManager;
 import com.alibaba.fluss.server.coordinator.TestCoordinatorChannelManager;
@@ -105,7 +107,11 @@ class TableBucketStateMachineTest {
         autoPartitionManager =
                 new AutoPartitionManager(
                         serverMetadataCache,
-                        new MetadataManager(zookeeperClient, new Configuration()),
+                        new MetadataManager(
+                                zookeeperClient,
+                                new Configuration(),
+                                new LakeCatalogDynamicLoader(
+                                        new DynamicServerConfig(new Configuration()), null, true)),
                         new Configuration());
         lakeTableTieringManager = new LakeTableTieringManager();
     }
@@ -254,7 +260,12 @@ class TableBucketStateMachineTest {
                         TestingMetricGroups.COORDINATOR_METRICS,
                         new Configuration(),
                         Executors.newFixedThreadPool(
-                                1, new ExecutorThreadFactory("test-coordinator-io")));
+                                1, new ExecutorThreadFactory("test-coordinator-io")),
+                        new MetadataManager(
+                                zookeeperClient,
+                                new Configuration(),
+                                new LakeCatalogDynamicLoader(
+                                        new DynamicServerConfig(new Configuration()), null, true)));
         CoordinatorEventManager eventManager =
                 new CoordinatorEventManager(
                         coordinatorEventProcessor, TestingMetricGroups.COORDINATOR_METRICS);
