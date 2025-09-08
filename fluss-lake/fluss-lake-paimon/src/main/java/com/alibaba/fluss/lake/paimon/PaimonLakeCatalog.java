@@ -26,6 +26,7 @@ import com.alibaba.fluss.metadata.TableDescriptor;
 import com.alibaba.fluss.metadata.TablePath;
 import com.alibaba.fluss.utils.IOUtils;
 
+import com.alibaba.alake.auth.AlakePrincipal;
 import com.alibaba.alake.common.options.AlakeOptionsBuilder;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
@@ -79,7 +80,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
         catalogOptions.set("dlf.catalog.region", "cn-zhangjiakou");
 
         catalogOptions.set("warehouse", "alake");
-        catalogOptions.set("dlf.deploy.env", "prod");
+        catalogOptions.set("dlf.deploy.env", "pre");
         // 引擎类型，不同引擎使用不同的值
         // 具体枚举参考com.alibaba.alake.core.buidler.check.trace.model.EngineType
         catalogOptions.set("dlf.request.engine", "fluss");
@@ -89,10 +90,11 @@ public class PaimonLakeCatalog implements LakeCatalog {
 
         LOG.info("catalog options: {}", catalogOptions);
 
+        AlakePrincipal principal = AlakePrincipal.fromEmpId("263086");
+        String userPrincipalArn = principal.getPrincipalArn();
         CatalogContext catalogContext =
                 CatalogContext.create(
-                        AlakeOptionsBuilder.create(catalogOptions)
-                                .build("cn-zhangjiakou@AY@1936820957388754"));
+                        AlakeOptionsBuilder.create(catalogOptions).build(userPrincipalArn));
         LOG.info("create catalog context: via AlakeOptionsBuilder...");
         this.paimonCatalog =
                 com.alibaba.alake.rest.catalog.AlakeRestCatalog.createAlakeRestCatalog(
