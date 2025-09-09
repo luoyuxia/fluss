@@ -111,6 +111,8 @@ public class PaimonLakeCatalog implements LakeCatalog {
         try {
             createTable(paimonPath, paimonSchema);
         } catch (Catalog.DatabaseNotExistException e) {
+            LOG.info(e.getMessage());
+
             // create database
             createDatabase(tablePath.getDatabaseName());
             try {
