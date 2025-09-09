@@ -384,6 +384,26 @@ public class LogFetcher implements Closeable {
         Map<Integer, List<PbFetchLogReqForBucket>> fetchLogReqForBuckets = new HashMap<>();
         int readyForFetchCount = 0;
         Long tableId = null;
+        List<Long> partitionIds = isPartitioned ? new ArrayList<>() : null;
+        boolean needUpdate = false;
+        for (TableBucket tb : fetchableBuckets()) {
+            Integer leader = getTableBucketLeader(tb);
+            if (leader == null) {
+                if (!isPartitioned) {
+                    needUpdate = true;
+                    break;
+                } else {
+                    partitionIds.add(tb.getPartitionId());
+                }
+            }
+        }
+
+        if (isPartitioned && !partitionIds.isEmpty()) {
+            metadataUpdater.updateMetadata(Collections.singleton(tablePath), null, partitionIds);
+        } else if (needUpdate) {
+            metadataUpdater.updateTableOrPartitionMetadata(tablePath, null);
+        }
+
         for (TableBucket tb : fetchableBuckets()) {
             if (tableId == null) {
                 tableId = tb.getTableId();
@@ -404,9 +424,6 @@ public class LogFetcher implements Closeable {
                 LOG.trace(
                         "Skipping fetch request for bucket {} because leader is not available.",
                         tb);
-                // try to get the latest metadata info of this table because the leader for this
-                // bucket is unknown.
-                metadataUpdater.updateTableOrPartitionMetadata(tablePath, tb.getPartitionId());
             } else if (nodesWithPendingFetchRequests.contains(leader)) {
                 LOG.trace(
                         "Skipping fetch request for bucket {} because previous request "

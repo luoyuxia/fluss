@@ -737,7 +737,7 @@ public class ConfigOptions {
                             "Close idle connections after the given time specified by this config.");
 
     public static final ConfigOption<Integer> NETTY_CLIENT_NUM_NETWORK_THREADS =
-            key("netty.client.num-network-threads")
+            key("client.netty.client.num-network-threads")
                     .intType()
                     .defaultValue(3)
                     .withDescription(

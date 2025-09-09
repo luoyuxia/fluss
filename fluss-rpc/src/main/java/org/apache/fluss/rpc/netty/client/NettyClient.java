@@ -84,6 +84,8 @@ public final class NettyClient implements RpcClient {
 
     private volatile boolean isClosed = false;
 
+    private final int connectionMaxIdle;
+
     public NettyClient(
             Configuration conf, ClientMetricGroup clientMetricGroup, boolean isInnerClient) {
         this.connections = MapUtils.newConcurrentHashMap();
@@ -93,8 +95,11 @@ public final class NettyClient implements RpcClient {
                 NettyUtils.newEventLoopGroup(
                         conf.getInt(ConfigOptions.NETTY_CLIENT_NUM_NETWORK_THREADS),
                         "fluss-netty-client");
+        LOG.info(
+                "Netty client event group created, NUM: {}",
+                conf.getInt(ConfigOptions.NETTY_CLIENT_NUM_NETWORK_THREADS));
         int connectTimeoutMs = (int) conf.get(ConfigOptions.CLIENT_CONNECT_TIMEOUT).toMillis();
-        int connectionMaxIdle =
+        this.connectionMaxIdle =
                 (int) conf.get(ConfigOptions.NETTY_CONNECTION_MAX_IDLE_TIME).getSeconds();
         PooledByteBufAllocator pooledAllocator = PooledByteBufAllocator.DEFAULT;
         this.bootstrap =
@@ -202,7 +207,8 @@ public final class NettyClient implements RpcClient {
                                         node,
                                         clientMetricGroup,
                                         authenticatorSupplier.get(),
-                                        isInnerClient);
+                                        isInnerClient,
+                                        connectionMaxIdle);
                         connection.whenClose(ignore -> connections.remove(serverId, connection));
                         return connection;
                     });

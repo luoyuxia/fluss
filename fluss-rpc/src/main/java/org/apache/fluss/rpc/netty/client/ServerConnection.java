@@ -41,6 +41,7 @@ import org.apache.fluss.shaded.netty4.io.netty.buffer.ByteBufAllocator;
 import org.apache.fluss.shaded.netty4.io.netty.channel.Channel;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelFuture;
 import org.apache.fluss.shaded.netty4.io.netty.channel.ChannelFutureListener;
+import org.apache.fluss.shaded.netty4.io.netty.util.ReferenceCountUtil;
 import org.apache.fluss.utils.ExponentialBackoff;
 import org.apache.fluss.utils.MapUtils;
 
@@ -104,13 +105,17 @@ final class ServerConnection {
             ServerNode node,
             ClientMetricGroup clientMetricGroup,
             ClientAuthenticator authenticator,
-            boolean isInnerClient) {
+            boolean isInnerClient,
+            int connectionMaxIdle) {
         this.node = node;
         this.state = ConnectionState.CONNECTING;
         this.connectionMetricGroup = clientMetricGroup.createConnectionMetricGroup(node.uid());
         bootstrap
                 .connect(node.host(), node.port())
-                .addListener(future -> establishConnection((ChannelFuture) future, isInnerClient));
+                .addListener(
+                        future ->
+                                establishConnection(
+                                        (ChannelFuture) future, isInnerClient, connectionMaxIdle));
         this.authenticator = authenticator;
         this.backoff = new ExponentialBackoff(100L, 2, 5000L, 0.2);
     }
@@ -196,9 +201,11 @@ final class ServerConnection {
                                             }
                                         });
             } else {
+                LOG.info("Channel is null when closing connection");
                 // TODO all return completeExceptionally will let some test cases blocked, so we
                 // need to find why the test cases are blocked and remove the if statement.
-                if (cause.getCause() instanceof ConnectException) {
+                if (cause.getCause() instanceof ConnectException
+                        || cause.getCause() instanceof ClosedChannelException) {
                     // the ConnectException is expected
                     closeFuture.complete(null);
                 } else {
@@ -262,12 +269,17 @@ final class ServerConnection {
 
     // ------------------------------------------------------------------------------------------
 
-    private void establishConnection(ChannelFuture future, boolean isInnerClient) {
+    private void establishConnection(
+            ChannelFuture future, boolean isInnerClient, int connectionMaxIdle) {
         synchronized (lock) {
             if (future.isSuccess()) {
                 LOG.debug("Established connection to server {}.", node);
                 channel = future.channel();
                 channel.pipeline()
+                        .addLast(
+                                "frameDecoder",
+                                new MyLengthFieldBasedFrameDecoder(
+                                        Integer.MAX_VALUE, 0, 4, 0, 0, getServerNode()))
                         .addLast(
                                 "handler",
                                 new NettyClientHandler(
@@ -378,6 +390,8 @@ final class ServerConnection {
                             (ChannelFutureListener)
                                     future -> {
                                         if (!future.isSuccess()) {
+                                            ReferenceCountUtil.safeRelease(byteBuf);
+                                            LOG.info("buffer released when failed request.");
                                             connectionMetricGroup.updateMetricsAfterGetResponse(
                                                     apiKey, inflight.requestStartTime, 0);
                                             Throwable cause = future.cause();

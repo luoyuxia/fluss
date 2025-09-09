@@ -35,7 +35,7 @@ final class ClientChannelInitializer extends NettyChannelInitializer {
     protected void initChannel(SocketChannel ch) throws Exception {
         // NettyClientHandler will be added dynamically when connection is built
         super.initChannel(ch);
-        addFrameDecoder(ch, Integer.MAX_VALUE, 0);
-        addIdleStateHandler(ch);
+        // addFrameDecoder(ch, Integer.MAX_VALUE, 0);
+        // addIdleStateHandler(ch);
     }
 }
