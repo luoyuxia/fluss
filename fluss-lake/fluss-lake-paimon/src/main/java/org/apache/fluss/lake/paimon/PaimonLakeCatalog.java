@@ -61,7 +61,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
         // for consistent behavior
         SYSTEM_COLUMNS.put(BUCKET_COLUMN_NAME, DataTypes.INT());
         SYSTEM_COLUMNS.put(OFFSET_COLUMN_NAME, DataTypes.BIGINT());
-        SYSTEM_COLUMNS.put(TIMESTAMP_COLUMN_NAME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE());
+        SYSTEM_COLUMNS.put(TIMESTAMP_COLUMN_NAME, DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(9));
     }
 
     private final Catalog paimonCatalog;
