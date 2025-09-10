@@ -84,9 +84,9 @@ public class PaimonLakeCatalog implements LakeCatalog {
         // 具体枚举参考com.alibaba.alake.core.buidler.check.trace.model.EngineType
         catalogOptions.set("dlf.request.engine", "fluss");
 
-        catalogOptions.set("dlf.catalog.endpoint", "metastore-pre.aliyuncs.com");
+        catalogOptions.set("dlf.catalog.endpoint", "metastore-inner.aliyuncs.com");
 
-        catalogOptions.set("uri", "dlf-jindo-bennett.alibaba-inc.com");
+        catalogOptions.set("uri", "dlf-jindo-bennett-pre.alibaba-inc.com");
 
         LOG.info("catalog options: {}", catalogOptions);
 
