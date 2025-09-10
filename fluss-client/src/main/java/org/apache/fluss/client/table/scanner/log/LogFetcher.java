@@ -162,19 +162,14 @@ public class LogFetcher implements Closeable {
      * Set up a fetch request for any node that we have assigned buckets for which doesn't already
      * have an in-flight fetch or pending fetch data.
      */
-    public void sendFetches() {
-        checkAndUpdateMetadata(fetchableBuckets());
-        synchronized (this) {
-            // NOTE: Don't perform heavy I/O operations or synchronous waits inside this lock to
-            // avoid blocking the future complete of FetchLogResponse.
-            Map<Integer, FetchLogRequest> fetchRequestMap = prepareFetchLogRequests();
-            fetchRequestMap.forEach(
-                    (nodeId, fetchLogRequest) -> {
-                        LOG.debug("Adding pending request for node id {}", nodeId);
-                        nodesWithPendingFetchRequests.add(nodeId);
-                        sendFetchRequest(nodeId, fetchLogRequest);
-                    });
-        }
+    public synchronized void sendFetches() {
+        Map<Integer, FetchLogRequest> fetchRequestMap = prepareFetchLogRequests();
+        fetchRequestMap.forEach(
+                (nodeId, fetchLogRequest) -> {
+                    LOG.debug("Adding pending request for node id {}", nodeId);
+                    nodesWithPendingFetchRequests.add(nodeId);
+                    sendFetchRequest(nodeId, fetchLogRequest);
+                });
     }
 
     /**
@@ -193,31 +188,6 @@ public class LogFetcher implements Closeable {
 
     public void wakeup() {
         logFetchBuffer.wakeup();
-    }
-
-    private void checkAndUpdateMetadata(List<TableBucket> tableBuckets) {
-        // If the table is partitioned table, check if we need update partition metadata.
-        List<Long> partitionIds = isPartitioned ? new ArrayList<>() : null;
-        // If the table is none-partitioned table, check if we need update table metadata.
-        boolean needUpdate = false;
-        for (TableBucket tb : tableBuckets) {
-            if (getTableBucketLeader(tb) != null) {
-                continue;
-            }
-
-            if (isPartitioned) {
-                partitionIds.add(tb.getPartitionId());
-            } else {
-                needUpdate = true;
-                break;
-            }
-        }
-
-        if (isPartitioned && !partitionIds.isEmpty()) {
-            metadataUpdater.updateMetadata(Collections.singleton(tablePath), null, partitionIds);
-        } else if (needUpdate) {
-            metadataUpdater.updateTableOrPartitionMetadata(tablePath, null);
-        }
     }
 
     private void sendFetchRequest(int destination, FetchLogRequest fetchLogRequest) {
@@ -301,15 +271,12 @@ public class LogFetcher implements Closeable {
             LOG.error("Failed to fetch log from node {}", destination, e);
             // if is invalid metadata exception, we need to clear table bucket meta
             // to enable another round of log fetch to request new medata
-            LOG.info("fetch to here 1-1");
             if (e instanceof InvalidMetadataException) {
                 LOG.warn(
                         "Invalid metadata error in fetch log request. "
                                 + "Going to request metadata update.",
                         e);
-                LOG.info("fetch to here 1-2");
                 invalidTableOrPartitions(tableOrPartitionsInFetchRequest);
-                LOG.info("fetch to here 1-3");
             }
         } finally {
             LOG.debug("Removing pending request for node: {}", destination);
@@ -325,7 +292,6 @@ public class LogFetcher implements Closeable {
                 return;
             }
 
-            LOG.info("fetch to here 1-4");
             // update fetch metrics only when request success
             scannerMetricGroup.updateFetchLatency(System.currentTimeMillis() - requestStartTime);
             scannerMetricGroup.bytesPerRequest().update(fetchLogResponse.totalSize());

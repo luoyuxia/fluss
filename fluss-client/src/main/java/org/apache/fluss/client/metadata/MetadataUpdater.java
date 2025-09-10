@@ -254,7 +254,7 @@ public class MetadataUpdater {
     }
 
     @VisibleForTesting
-    public void updateMetadata(
+    protected void updateMetadata(
             @Nullable Set<TablePath> tablePaths,
             @Nullable Collection<PhysicalTablePath> tablePartitionNames,
             @Nullable Collection<Long> tablePartitionIds)
