@@ -90,7 +90,8 @@ public class CompletedSnapshotStoreManager {
             Executor ioExecutor,
             ZooKeeperClient zooKeeperClient,
             Function<ZooKeeperClient, CompletedSnapshotHandleStore>
-                    makeZookeeperCompletedSnapshotHandleStore) {
+                    makeZookeeperCompletedSnapshotHandleStore,
+            CoordinatorMetricGroup coordinatorMetricGroup) {
         checkArgument(
                 maxNumberOfSnapshotsToRetain > 0, "maxNumberOfSnapshotsToRetain must be positive");
         this.maxNumberOfSnapshotsToRetain = maxNumberOfSnapshotsToRetain;
@@ -98,6 +99,7 @@ public class CompletedSnapshotStoreManager {
         this.bucketCompletedSnapshotStores = MapUtils.newConcurrentHashMap();
         this.ioExecutor = ioExecutor;
         this.makeZookeeperCompletedSnapshotHandleStore = makeZookeeperCompletedSnapshotHandleStore;
+        this.coordinatorMetricGroup = coordinatorMetricGroup;
     }
 
     private void registerMetrics() {

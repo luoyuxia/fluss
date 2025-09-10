@@ -210,11 +210,13 @@ class CompletedSnapshotStoreManagerTest {
                         10,
                         ioExecutor,
                         zookeeperClient,
-                        zooKeeperClient -> completedSnapshotHandleStore);
+                        zooKeeperClient -> completedSnapshotHandleStore,
+                        TestingMetricGroups.COORDINATOR_METRICS);
 
         // Verify that only the valid snapshot remains
         CompletedSnapshotStore completedSnapshotStore =
-                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(tableBucket);
+                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(
+                        DATA1_TABLE_PATH, tableBucket);
         assertThat(completedSnapshotStore.getAllSnapshots()).hasSize(1);
         assertThat(completedSnapshotStore.getAllSnapshots().get(0).getSnapshotID()).isEqualTo(1L);
     }

@@ -983,7 +983,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 event.getAddCompletedSnapshotData().getCompletedSnapshot();
                         // add completed snapshot
                         CompletedSnapshotStore completedSnapshotStore =
-                                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(tb);
+                                completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(
+                                        coordinatorContext.getTablePathById(tb.getTableId()), tb);
                         // this involves IO operation (ZK), so we do it in ioExecutor
                         completedSnapshotStore.add(completedSnapshot);
                         coordinatorEventManager.put(
