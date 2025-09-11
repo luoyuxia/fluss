@@ -199,9 +199,8 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
         // now, start to read the log table to write to a fluss result table
         // may read fluss or not, depends on the log offset of paimon snapshot
         createFullTypeLogTable(resultTable, DEFAULT_BUCKET_NUM, isPartitioned, false);
-        TableResult insertResult =
-                streamTEnv.executeSql(
-                        "insert into " + resultTableName + " select * from " + tableName1);
+        String insertSql = "insert into " + resultTableName + " select * from " + tableName1;
+        TableResult insertResult = streamTEnv.executeSql(insertSql);
 
         CloseableIterator<Row> actual =
                 streamTEnv.executeSql("select * from " + resultTableName).collect();
@@ -220,9 +219,7 @@ class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
 
         // re buildSteamTEnv
         streamTEnv = buildSteamTEnv(savepointPath);
-        insertResult =
-                streamTEnv.executeSql(
-                        "insert into " + resultTableName + " select * from " + tableName1);
+        insertResult = streamTEnv.executeSql(insertSql);
 
         // write some log data again
         List<Row> rows = writeRows(table1, 3, isPartitioned);

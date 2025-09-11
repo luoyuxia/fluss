@@ -605,12 +605,12 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
         // first of all, start tiering
         JobClient jobClient = buildTieringJob(execEnv);
 
-        String tableName1 =
+        String sourceTableName =
                 "restore_pk_table_" + (isPartitioned ? "partitioned" : "non_partitioned");
         String resultTableName =
                 "result_pk_table_" + (isPartitioned ? "partitioned" : "non_partitioned");
 
-        TablePath table1 = TablePath.of(DEFAULT_DB, tableName1);
+        TablePath table1 = TablePath.of(DEFAULT_DB, sourceTableName);
         TablePath resultTable = TablePath.of(DEFAULT_DB, resultTableName);
 
         // create table and write data
@@ -634,9 +634,8 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
         createSimplePkTable(resultTable, DEFAULT_BUCKET_NUM, isPartitioned, false);
         // union read lake data
         StreamTableEnvironment streamTEnv = buildSteamTEnv(null);
-        TableResult insertResult =
-                streamTEnv.executeSql(
-                        "insert into " + resultTableName + " select * from " + tableName1);
+        String insertQuery = "insert into " + resultTableName + " select * from " + sourceTableName;
+        TableResult insertResult = streamTEnv.executeSql(insertQuery);
 
         // will read paimon snapshot, should only +I since no change log
         List<Row> expectedRows = new ArrayList<>();
@@ -672,9 +671,7 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
 
         // re buildSteamTEnv
         streamTEnv = buildSteamTEnv(savepointPath);
-        insertResult =
-                streamTEnv.executeSql(
-                        "insert into " + resultTableName + " select * from " + tableName1);
+        insertResult = streamTEnv.executeSql(insertQuery);
 
         // write some log data again
         // write a row again
