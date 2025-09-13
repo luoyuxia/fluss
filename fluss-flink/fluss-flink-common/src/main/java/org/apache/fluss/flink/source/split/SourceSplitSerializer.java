@@ -17,10 +17,13 @@
 
 package org.apache.fluss.flink.source.split;
 
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.flink.lake.LakeSplitSerializer;
+import org.apache.fluss.flink.lake.split.CountRtSplit;
 import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TablePath;
 
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
@@ -29,7 +32,10 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
+import static org.apache.fluss.flink.lake.split.CountRtSplit.COUNT_RT_SPLIT_KIND;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /** A serializer for the {@link SourceSplitBase}. */
@@ -64,30 +70,45 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
         // write common part
         serializeSourceSplitBase(out, split);
 
-        if (!split.isLakeSplit()) {
-            if (split.isHybridSnapshotLogSplit()) {
-                HybridSnapshotLogSplit hybridSnapshotLogSplit = split.asHybridSnapshotLogSplit();
-                // write snapshot id
-                out.writeLong(hybridSnapshotLogSplit.getSnapshotId());
-                // write records to skip
-                out.writeLong(hybridSnapshotLogSplit.recordsToSkip());
-                // write is snapshot finished
-                out.writeBoolean(hybridSnapshotLogSplit.isSnapshotFinished());
-                // write log starting offset
-                out.writeLong(hybridSnapshotLogSplit.getLogStartingOffset());
-            } else {
-                LogSplit logSplit = split.asLogSplit();
-                // write starting offset
-                out.writeLong(logSplit.getStartingOffset());
-                // write stopping offset
-                out.writeLong(logSplit.getStoppingOffset().orElse(LogSplit.NO_STOPPING_OFFSET));
+        if (split instanceof CountRtSplit) {
+            CountRtSplit countRtSplit = (CountRtSplit) split;
+            TablePath tablePath = countRtSplit.getTablePath();
+            Configuration flussConf = countRtSplit.getConf();
+            out.writeUTF(tablePath.getDatabaseName());
+            out.writeUTF(tablePath.getTableName());
+
+            Map<String, String> properties = flussConf.toMap();
+            out.writeInt(properties.size());
+            for (Map.Entry<String, String> entry : properties.entrySet()) {
+                out.writeUTF(entry.getKey());
+                out.writeUTF(entry.getValue());
             }
         } else {
-            LakeSplitSerializer lakeSplitSerializer =
-                    new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());
-            lakeSplitSerializer.serialize(out, split);
+            if (!split.isLakeSplit()) {
+                if (split.isHybridSnapshotLogSplit()) {
+                    HybridSnapshotLogSplit hybridSnapshotLogSplit =
+                            split.asHybridSnapshotLogSplit();
+                    // write snapshot id
+                    out.writeLong(hybridSnapshotLogSplit.getSnapshotId());
+                    // write records to skip
+                    out.writeLong(hybridSnapshotLogSplit.recordsToSkip());
+                    // write is snapshot finished
+                    out.writeBoolean(hybridSnapshotLogSplit.isSnapshotFinished());
+                    // write log starting offset
+                    out.writeLong(hybridSnapshotLogSplit.getLogStartingOffset());
+                } else {
+                    LogSplit logSplit = split.asLogSplit();
+                    // write starting offset
+                    out.writeLong(logSplit.getStartingOffset());
+                    // write stopping offset
+                    out.writeLong(logSplit.getStoppingOffset().orElse(LogSplit.NO_STOPPING_OFFSET));
+                }
+            } else {
+                LakeSplitSerializer lakeSplitSerializer =
+                        new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());
+                lakeSplitSerializer.serialize(out, split);
+            }
         }
-
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -128,26 +149,38 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
         int bucketId = in.readInt();
         TableBucket tableBucket = new TableBucket(tableId, partitionId, bucketId);
 
-        if (splitKind == HYBRID_SNAPSHOT_SPLIT_FLAG) {
-            long snapshotId = in.readLong();
-            long recordsToSkip = in.readLong();
-            boolean isSnapshotFinished = in.readBoolean();
-            long logStartingOffset = in.readLong();
-            return new HybridSnapshotLogSplit(
-                    tableBucket,
-                    partitionName,
-                    snapshotId,
-                    recordsToSkip,
-                    isSnapshotFinished,
-                    logStartingOffset);
-        } else if (splitKind == LOG_SPLIT_FLAG) {
-            long startingOffset = in.readLong();
-            long stoppingOffset = in.readLong();
-            return new LogSplit(tableBucket, partitionName, startingOffset, stoppingOffset);
+        if (splitKind == COUNT_RT_SPLIT_KIND) {
+            String databaseName = in.readUTF();
+            String tableName = in.readUTF();
+            int propertiesCount = in.readInt();
+            Map<String, String> properties = new HashMap<>(propertiesCount);
+            for (int i = 0; i < propertiesCount; i++) {
+                properties.put(in.readUTF(), in.readUTF());
+            }
+            return new CountRtSplit(
+                    TablePath.of(databaseName, tableName), Configuration.fromMap(properties));
         } else {
-            LakeSplitSerializer lakeSplitSerializer =
-                    new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());
-            return lakeSplitSerializer.deserialize(splitKind, tableBucket, partitionName, in);
+            if (splitKind == HYBRID_SNAPSHOT_SPLIT_FLAG) {
+                long snapshotId = in.readLong();
+                long recordsToSkip = in.readLong();
+                boolean isSnapshotFinished = in.readBoolean();
+                long logStartingOffset = in.readLong();
+                return new HybridSnapshotLogSplit(
+                        tableBucket,
+                        partitionName,
+                        snapshotId,
+                        recordsToSkip,
+                        isSnapshotFinished,
+                        logStartingOffset);
+            } else if (splitKind == LOG_SPLIT_FLAG) {
+                long startingOffset = in.readLong();
+                long stoppingOffset = in.readLong();
+                return new LogSplit(tableBucket, partitionName, startingOffset, stoppingOffset);
+            } else {
+                LakeSplitSerializer lakeSplitSerializer =
+                        new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());
+                return lakeSplitSerializer.deserialize(splitKind, tableBucket, partitionName, in);
+            }
         }
     }
 }

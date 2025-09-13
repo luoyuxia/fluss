@@ -19,7 +19,9 @@ package org.apache.fluss.flink.lake;
 
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
+import org.apache.fluss.flink.lake.split.CountRtSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotSplit;
 import org.apache.fluss.flink.source.enumerator.initializer.OffsetsInitializer;
@@ -76,6 +78,10 @@ public class LakeSplitGenerator {
         this.stoppingOffsetInitializer = stoppingOffsetInitializer;
         this.bucketCount = bucketCount;
         this.listPartitionSupplier = listPartitionSupplier;
+    }
+
+    public CountRtSplit generateCountRtSplit(Configuration flussConf) {
+        return new CountRtSplit(tableInfo.getTablePath(), flussConf);
     }
 
     /**

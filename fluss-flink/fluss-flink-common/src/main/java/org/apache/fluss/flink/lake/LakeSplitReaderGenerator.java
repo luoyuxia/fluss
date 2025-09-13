@@ -19,9 +19,11 @@ package org.apache.fluss.flink.lake;
 
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.scanner.batch.BatchScanner;
+import org.apache.fluss.flink.lake.reader.CoutRtBatchScanner;
 import org.apache.fluss.flink.lake.reader.LakeSnapshotAndLogSplitScanner;
 import org.apache.fluss.flink.lake.reader.LakeSnapshotScanner;
 import org.apache.fluss.flink.lake.reader.SeekableLakeSnapshotSplitScanner;
+import org.apache.fluss.flink.lake.split.CountRtSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotSplit;
 import org.apache.fluss.flink.source.reader.BoundedSplitReader;
@@ -75,6 +77,9 @@ public class LakeSplitReaderGenerator {
         } else if (split instanceof LakeSnapshotAndFlussLogSplit) {
             LakeSnapshotAndFlussLogSplit lakeSplit = (LakeSnapshotAndFlussLogSplit) split;
             return new BoundedSplitReader(getBatchScanner(lakeSplit), lakeSplit.getRecordsToSkip());
+        } else if (split instanceof CountRtSplit) {
+            CountRtSplit countRtSplit = (CountRtSplit) split;
+            return new BoundedSplitReader(new CoutRtBatchScanner(countRtSplit), 0);
         } else {
             throw new UnsupportedOperationException(
                     String.format("The split type of %s is not supported.", split.getClass()));
