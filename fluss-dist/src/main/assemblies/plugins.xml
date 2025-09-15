@@ -132,12 +132,12 @@
         </file>
 
         <!-- lake formats -->
-        <file>
-            <source>../fluss-lake/fluss-lake-paimon/target/fluss-lake-paimon-${project.version}.jar</source>
-            <outputDirectory>plugins/paimon/</outputDirectory>
-            <destName>fluss-lake-paimon-${project.version}.jar</destName>
-            <fileMode>0644</fileMode>
-        </file>
+<!--        <file>-->
+<!--            <source>../fluss-lake/fluss-lake-paimon/target/fluss-lake-paimon-${project.version}.jar</source>-->
+<!--            <outputDirectory>plugins/paimon/</outputDirectory>-->
+<!--            <destName>fluss-lake-paimon-${project.version}.jar</destName>-->
+<!--            <fileMode>0644</fileMode>-->
+<!--        </file>-->
         <file>
             <source>../docker-inner/fluss-ali-lake-paimon-${project.version}.jar</source>
             <outputDirectory>plugins/paimon/</outputDirectory>
