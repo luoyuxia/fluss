@@ -20,6 +20,9 @@ package org.apache.fluss.lake.lakestorage;
 import org.apache.fluss.plugin.PluginManager;
 import org.apache.fluss.shaded.guava32.com.google.common.collect.Iterators;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.Iterator;
@@ -31,6 +34,7 @@ import java.util.ServiceLoader;
  * LakeStoragePlugin}.
  */
 public class LakeStoragePluginSetUp {
+    private static final Logger LOG = LoggerFactory.getLogger(LakeStoragePluginSetUp.class);
 
     public static LakeStoragePlugin fromDataLakeFormat(
             final String dataLakeFormat, @Nullable final PluginManager pluginManager) {
@@ -40,7 +44,11 @@ public class LakeStoragePluginSetUp {
 
         while (lakeStoragePluginIterator.hasNext()) {
             LakeStoragePlugin lakeStoragePlugin = lakeStoragePluginIterator.next();
+
+            LOG.info("Loading lake plugins" + lakeStoragePlugin.identifier());
             if (Objects.equals(lakeStoragePlugin.identifier(), dataLakeFormat)) {
+                LOG.info("Loading lake plugins success, choose:" + lakeStoragePlugin.identifier());
+
                 return PluginLakeStorageWrapper.of(lakeStoragePlugin);
             }
         }
