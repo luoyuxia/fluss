@@ -116,6 +116,14 @@
             <fileMode>0644</fileMode>
         </file>
 
+        <!-- 弹内的paimon plugin实现-->
+        <file>
+            <source>../docker-inner/fluss-ali-lake-paimon-${project.version}.jar</source>
+            <outputDirectory>plugins/paimon/</outputDirectory>
+            <destName>fluss-ali-lake-paimon-${project.version}.jar</destName>
+            <fileMode>0644</fileMode>
+        </file>
+
         <!-- metrics -->
         <file>
             <source>../fluss-metrics/fluss-metrics-prometheus/target/fluss-metrics-prometheus-${project.version}.jar</source>
