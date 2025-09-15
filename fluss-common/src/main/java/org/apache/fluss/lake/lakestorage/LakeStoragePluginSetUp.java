@@ -42,15 +42,18 @@ public class LakeStoragePluginSetUp {
         Iterator<LakeStoragePlugin> lakeStoragePluginIterator =
                 getAllLakeStoragePlugins(pluginManager);
 
+        LakeStoragePlugin choose = null;
         while (lakeStoragePluginIterator.hasNext()) {
             LakeStoragePlugin lakeStoragePlugin = lakeStoragePluginIterator.next();
 
             LOG.info("Loading lake plugins" + lakeStoragePlugin.identifier());
             if (Objects.equals(lakeStoragePlugin.identifier(), dataLakeFormat)) {
                 LOG.info("Loading lake plugins success, choose:" + lakeStoragePlugin.identifier());
-
-                return PluginLakeStorageWrapper.of(lakeStoragePlugin);
+                choose = lakeStoragePlugin;
             }
+        }
+        if (choose != null) {
+            return PluginLakeStorageWrapper.of(choose);
         }
 
         // if come here, means we haven't found LakeStoragePlugin match the configured
