@@ -49,4 +49,9 @@ class BucketScanStatus {
     public void setHighWatermark(Long highWatermark) {
         this.highWatermark = highWatermark;
     }
+
+    @Override
+    public String toString() {
+        return "BucketScanStatus{" + "offset=" + offset + ", highWatermark=" + highWatermark + '}';
+    }
 }

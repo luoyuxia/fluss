@@ -198,8 +198,10 @@ public class LogFetchCollector {
 
         try {
             if (error.isSuccess()) {
+                LOG.info("Successfully initialized completed fetch for table {}", tb);
                 return handleInitializeSuccess(completedFetch);
             } else {
+                LOG.info("Failed to initialized completed fetch for table {}", tb);
                 handleInitializeErrors(completedFetch, error.error(), error.messageWithFallback());
                 return null;
             }

@@ -179,6 +179,11 @@ public class LogScannerImpl implements LogScanner {
         try {
             TableBucket tableBucket = new TableBucket(tableId, bucket);
             this.metadataUpdater.checkAndUpdateTableMetadata(Collections.singleton(tablePath));
+            LOG.info(
+                    "Subscribing to table {}, bucket {} with offset {}.",
+                    tablePath,
+                    tableBucket,
+                    offset);
             this.logScannerStatus.assignScanBuckets(Collections.singletonMap(tableBucket, offset));
         } finally {
             release();

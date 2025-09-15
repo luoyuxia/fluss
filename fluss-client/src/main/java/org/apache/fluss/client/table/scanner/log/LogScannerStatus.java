@@ -21,6 +21,9 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.utils.log.FairBucketStatusMap;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -33,6 +36,8 @@ import java.util.function.Predicate;
 @ThreadSafe
 @Internal
 public class LogScannerStatus {
+
+    private static final Logger LOG = LoggerFactory.getLogger(LogScannerStatus.class);
     private final FairBucketStatusMap<BucketScanStatus> bucketStatusMap;
 
     public LogScannerStatus() {
@@ -75,6 +80,7 @@ public class LogScannerStatus {
             } else {
                 bucketScanStatus.setOffset(offset);
             }
+            LOG.info("Assigning bucketScanStatus {}.", bucketScanStatus);
             bucketStatusMap.update(scanBucket, bucketScanStatus);
         }
     }

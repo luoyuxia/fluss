@@ -205,6 +205,17 @@ public class LogFetcher implements Closeable {
             final long requestStartTime = System.currentTimeMillis();
             scannerMetricGroup.fetchRequestCount().inc();
 
+            for (PbFetchLogReqForTable fetchLogReqForTable : fetchLogRequest.getTablesReqsList()) {
+                for (PbFetchLogReqForBucket fetchLogReqForBucket :
+                        fetchLogReqForTable.getBucketsReqsList()) {
+                    LOG.info(
+                            "start send fetch log request for table id {}, bucket {} with offset {}.",
+                            fetchLogReqForTable.getTableId(),
+                            fetchLogReqForBucket.getBucketId(),
+                            fetchLogReqForBucket.getFetchOffset());
+                }
+            }
+
             gateway.fetchLog(fetchLogRequest)
                     .whenComplete(
                             (fetchLogResponse, e) -> {
@@ -426,6 +437,7 @@ public class LogFetcher implements Closeable {
                         .computeIfAbsent(leader, key -> new ArrayList<>())
                         .add(fetchLogReqForBucket);
                 readyForFetchCount++;
+                LOG.info("Try to send fetch request for bucket {} with offset {}", tb, offset);
             }
         }
 
