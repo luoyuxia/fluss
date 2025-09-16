@@ -29,17 +29,15 @@ import org.apache.fluss.utils.crc.Crc32C;
 
 import java.io.IOException;
 
+import static org.apache.fluss.record.DefaultLogRecordBatch.ARROW_CHANGETYPE_OFFSET;
+import static org.apache.fluss.record.DefaultLogRecordBatch.BASE_OFFSET_LENGTH;
+import static org.apache.fluss.record.DefaultLogRecordBatch.CRC_OFFSET;
+import static org.apache.fluss.record.DefaultLogRecordBatch.LENGTH_LENGTH;
+import static org.apache.fluss.record.DefaultLogRecordBatch.RECORD_BATCH_HEADER_SIZE;
+import static org.apache.fluss.record.DefaultLogRecordBatch.SCHEMA_ID_OFFSET;
 import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
-import static org.apache.fluss.record.LogRecordBatchFormat.BASE_OFFSET_LENGTH;
-import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_LENGTH;
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_LEADER_EPOCH;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
-import static org.apache.fluss.record.LogRecordBatchFormat.arrowChangeTypeOffset;
-import static org.apache.fluss.record.LogRecordBatchFormat.crcOffset;
-import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
-import static org.apache.fluss.record.LogRecordBatchFormat.schemaIdOffset;
+import static org.apache.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
+import static org.apache.fluss.record.LogRecordBatch.NO_WRITER_ID;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -91,26 +89,24 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
 
         this.pagedOutputView = pagedOutputView;
         this.firstSegment = pagedOutputView.getCurrentSegment();
-        int arrowChangeTypeOffset = arrowChangeTypeOffset(magic);
         checkArgument(
-                firstSegment.size() >= arrowChangeTypeOffset,
+                firstSegment.size() >= ARROW_CHANGETYPE_OFFSET,
                 "The size of first segment of pagedOutputView is too small, need at least "
-                        + arrowChangeTypeOffset
+                        + ARROW_CHANGETYPE_OFFSET
                         + " bytes.");
-        this.changeTypeWriter = new ChangeTypeVectorWriter(firstSegment, arrowChangeTypeOffset);
-        this.estimatedSizeInBytes = recordBatchHeaderSize(magic);
+        this.changeTypeWriter = new ChangeTypeVectorWriter(firstSegment, ARROW_CHANGETYPE_OFFSET);
+        this.estimatedSizeInBytes = RECORD_BATCH_HEADER_SIZE;
         this.recordCount = 0;
     }
 
     @VisibleForTesting
     public static MemoryLogRecordsArrowBuilder builder(
             long baseLogOffset,
-            byte magic,
             int schemaId,
             ArrowWriter arrowWriter,
             AbstractPagedOutputView outputView) {
         return new MemoryLogRecordsArrowBuilder(
-                baseLogOffset, schemaId, magic, arrowWriter, outputView, false);
+                baseLogOffset, schemaId, CURRENT_LOG_MAGIC_VALUE, arrowWriter, outputView, false);
     }
 
     /** Builder with limited write size and the memory segment used to serialize records. */
@@ -143,7 +139,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
 
         // serialize the arrow batch to dynamically allocated memory segments
         arrowWriter.serializeToOutputView(
-                pagedOutputView, arrowChangeTypeOffset(magic) + changeTypeWriter.sizeInBytes());
+                pagedOutputView, ARROW_CHANGETYPE_OFFSET + changeTypeWriter.sizeInBytes());
         recordCount = arrowWriter.getRecordsCount();
         bytesView =
                 MultiBytesView.builder()
@@ -241,7 +237,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         if (reCalculateSizeInBytes) {
             // make size in bytes up-to-date
             estimatedSizeInBytes =
-                    arrowChangeTypeOffset(magic)
+                    ARROW_CHANGETYPE_OFFSET
                             + changeTypeWriter.sizeInBytes()
                             + arrowWriter.estimatedSizeInBytes();
         }
@@ -263,12 +259,6 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
 
         // write empty timestamp which will be overridden on server side
         outputView.writeLong(0);
-
-        // write empty leaderEpoch which will be overridden on server side
-        if (magic >= LOG_MAGIC_VALUE_V1) {
-            outputView.writeInt(NO_LEADER_EPOCH);
-        }
-
         // write empty crc first.
         outputView.writeUnsignedInt(0);
         // write schema id
@@ -288,8 +278,8 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         outputView.writeInt(recordCount);
 
         // Update crc.
-        long crc = Crc32C.compute(pagedOutputView.getWrittenSegments(), schemaIdOffset(magic));
-        outputView.setPosition(crcOffset(magic));
+        long crc = Crc32C.compute(pagedOutputView.getWrittenSegments(), SCHEMA_ID_OFFSET);
+        outputView.setPosition(CRC_OFFSET);
         outputView.writeUnsignedInt(crc);
     }
 

@@ -56,7 +56,6 @@ import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.utils.FlussPaths.WRITER_SNAPSHOT_FILE_SUFFIX;
 import static org.apache.fluss.utils.FlussPaths.writerSnapshotFile;
 
@@ -233,7 +232,7 @@ public class WriterStateManager {
     /** Update the mapping with the given append information. */
     public void update(WriterAppendInfo appendInfo) {
         long writerId = appendInfo.writerId();
-        if (writerId == NO_WRITER_ID) {
+        if (writerId == LogRecordBatch.NO_WRITER_ID) {
             throw new IllegalArgumentException(
                     "Invalid writer id "
                             + writerId

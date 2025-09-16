@@ -62,8 +62,6 @@ import org.apache.fluss.utils.types.Tuple2;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.annotation.Nullable;
 
@@ -79,8 +77,6 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.TestData.ANOTHER_DATA1;
 import static org.apache.fluss.record.TestData.DATA1;
 import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
@@ -122,9 +118,8 @@ public class TabletServiceITCase {
     public static final FlussClusterExtension FLUSS_CLUSTER_EXTENSION =
             FlussClusterExtension.builder().setNumOfTabletServers(3).build();
 
-    @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
-    void testProduceLog(byte recordBatchMagic) throws Exception {
+    @Test
+    void testProduceLog() throws Exception {
         long tableId =
                 createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR);
         TableBucket tb = new TableBucket(tableId, 0);
@@ -139,10 +134,7 @@ public class TabletServiceITCase {
                 leaderGateWay
                         .produceLog(
                                 newProduceLogRequest(
-                                        tableId,
-                                        0,
-                                        1,
-                                        genMemoryLogRecordsByObject(recordBatchMagic, DATA1)))
+                                        tableId, 0, 1, genMemoryLogRecordsByObject(DATA1)))
                         .get(),
                 0,
                 0L);
@@ -213,9 +205,8 @@ public class TabletServiceITCase {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
-    void testFetchLog(byte recordBatchMagic) throws Exception {
+    @Test
+    void testFetchLog() throws Exception {
         long tableId =
                 createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH, DATA1_TABLE_DESCRIPTOR);
         TableBucket tb = new TableBucket(tableId, 0);
@@ -231,10 +222,7 @@ public class TabletServiceITCase {
                 leaderGateWay
                         .produceLog(
                                 newProduceLogRequest(
-                                        tableId,
-                                        0,
-                                        1,
-                                        genMemoryLogRecordsByObject(recordBatchMagic, DATA1)))
+                                        tableId, 0, 1, genMemoryLogRecordsByObject(DATA1)))
                         .get(),
                 0,
                 0L);
@@ -260,11 +248,7 @@ public class TabletServiceITCase {
                 leaderGateWay
                         .produceLog(
                                 newProduceLogRequest(
-                                        tableId,
-                                        0,
-                                        1,
-                                        genMemoryLogRecordsByObject(
-                                                recordBatchMagic, ANOTHER_DATA1)))
+                                        tableId, 0, 1, genMemoryLogRecordsByObject(ANOTHER_DATA1)))
                         .get(),
                 0,
                 10L);

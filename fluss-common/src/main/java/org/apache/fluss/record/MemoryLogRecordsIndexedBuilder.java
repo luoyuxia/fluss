@@ -29,17 +29,15 @@ import org.apache.fluss.utils.crc.Crc32C;
 
 import java.io.IOException;
 
+import static org.apache.fluss.record.DefaultLogRecordBatch.BASE_OFFSET_LENGTH;
+import static org.apache.fluss.record.DefaultLogRecordBatch.CRC_OFFSET;
+import static org.apache.fluss.record.DefaultLogRecordBatch.LAST_OFFSET_DELTA_OFFSET;
+import static org.apache.fluss.record.DefaultLogRecordBatch.LENGTH_LENGTH;
+import static org.apache.fluss.record.DefaultLogRecordBatch.RECORD_BATCH_HEADER_SIZE;
+import static org.apache.fluss.record.DefaultLogRecordBatch.SCHEMA_ID_OFFSET;
 import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
-import static org.apache.fluss.record.LogRecordBatchFormat.BASE_OFFSET_LENGTH;
-import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_LENGTH;
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_LEADER_EPOCH;
-import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
-import static org.apache.fluss.record.LogRecordBatchFormat.crcOffset;
-import static org.apache.fluss.record.LogRecordBatchFormat.lastOffsetDeltaOffset;
-import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
-import static org.apache.fluss.record.LogRecordBatchFormat.schemaIdOffset;
+import static org.apache.fluss.record.LogRecordBatch.NO_BATCH_SEQUENCE;
+import static org.apache.fluss.record.LogRecordBatch.NO_WRITER_ID;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
@@ -89,8 +87,8 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
 
         // We don't need to write header information while the builder creating,
         // we'll skip it first.
-        this.pagedOutputView.setPosition(recordBatchHeaderSize(magic));
-        this.sizeInBytes = recordBatchHeaderSize(magic);
+        this.pagedOutputView.setPosition(RECORD_BATCH_HEADER_SIZE);
+        this.sizeInBytes = RECORD_BATCH_HEADER_SIZE;
     }
 
     public static MemoryLogRecordsIndexedBuilder builder(
@@ -221,12 +219,6 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
 
         // write empty timestamp which will be overridden on server side
         outputView.writeLong(0);
-
-        // write empty leaderEpoch which will be overridden on server side
-        if (magic >= LOG_MAGIC_VALUE_V1) {
-            outputView.writeInt(NO_LEADER_EPOCH);
-        }
-
         // write empty crc first.
         outputView.writeUnsignedInt(0);
 
@@ -234,7 +226,7 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
         // write attributes (currently only appendOnly flag)
         outputView.writeBoolean(appendOnly);
         // skip write attribute byte for now.
-        outputView.setPosition(lastOffsetDeltaOffset(magic));
+        outputView.setPosition(LAST_OFFSET_DELTA_OFFSET);
         if (currentRecordNumber > 0) {
             outputView.writeInt(currentRecordNumber - 1);
         } else {
@@ -247,8 +239,8 @@ public class MemoryLogRecordsIndexedBuilder implements AutoCloseable {
         outputView.writeInt(currentRecordNumber);
 
         // Update crc.
-        long crc = Crc32C.compute(pagedOutputView.getWrittenSegments(), schemaIdOffset(magic));
-        outputView.setPosition(crcOffset(magic));
+        long crc = Crc32C.compute(pagedOutputView.getWrittenSegments(), SCHEMA_ID_OFFSET);
+        outputView.setPosition(CRC_OFFSET);
         outputView.writeUnsignedInt(crc);
     }
 }

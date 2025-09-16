@@ -39,22 +39,16 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.apache.fluss.compression.ArrowCompressionInfo.DEFAULT_COMPRESSION;
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
-import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
 import static org.apache.fluss.record.TestData.DATA2;
 import static org.apache.fluss.record.TestData.DATA2_ROW_TYPE;
 import static org.apache.fluss.record.TestData.DATA2_TABLE_ID;
@@ -84,15 +78,14 @@ public class DefaultCompletedFetchTest {
         logScannerStatus.assignScanBuckets(scanBuckets);
     }
 
-    @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
-    void testSimple(byte recordBatchMagic) throws Exception {
+    @Test
+    void testSimple() throws Exception {
         long fetchOffset = 0L;
         int bucketId = 0; // records for 0-10.
         TableBucket tb = new TableBucket(DATA2_TABLE_ID, bucketId);
         FetchLogResultForBucket resultForBucket0 =
                 new FetchLogResultForBucket(
-                        tb, createMemoryLogRecords(DATA2, LogFormat.ARROW, recordBatchMagic), 10L);
+                        tb, createMemoryLogRecords(DATA2, LogFormat.ARROW), 10L);
         DefaultCompletedFetch defaultCompletedFetch =
                 makeCompletedFetch(tb, resultForBucket0, fetchOffset);
         List<ScanRecord> scanRecords = defaultCompletedFetch.fetchRecords(8);
@@ -107,15 +100,14 @@ public class DefaultCompletedFetchTest {
         assertThat(scanRecords.size()).isEqualTo(0);
     }
 
-    @ParameterizedTest
-    @ValueSource(bytes = {LOG_MAGIC_VALUE_V0, LOG_MAGIC_VALUE_V1})
-    void testNegativeFetchCount(byte recordBatchMagic) throws Exception {
+    @Test
+    void testNegativeFetchCount() throws Exception {
         long fetchOffset = 0L;
         int bucketId = 0; // records for 0-10.
         TableBucket tb = new TableBucket(DATA2_TABLE_ID, bucketId);
         FetchLogResultForBucket resultForBucket0 =
                 new FetchLogResultForBucket(
-                        tb, createMemoryLogRecords(DATA2, LogFormat.ARROW, recordBatchMagic), 10L);
+                        tb, createMemoryLogRecords(DATA2, LogFormat.ARROW), 10L);
         DefaultCompletedFetch defaultCompletedFetch =
                 makeCompletedFetch(tb, resultForBucket0, fetchOffset);
         List<ScanRecord> scanRecords = defaultCompletedFetch.fetchRecords(-10);
@@ -136,8 +128,9 @@ public class DefaultCompletedFetchTest {
     }
 
     @ParameterizedTest
-    @MethodSource("typeAndMagic")
-    void testProjection(LogFormat logFormat, byte magic) throws Exception {
+    @ValueSource(strings = {"INDEXED", "ARROW"})
+    void testProjection(String format) throws Exception {
+        LogFormat logFormat = LogFormat.fromString(format);
         Schema schema =
                 Schema.newBuilder()
                         .column("a", DataTypes.INT())
@@ -165,9 +158,9 @@ public class DefaultCompletedFetchTest {
         Projection projection = Projection.of(new int[] {0, 2});
         MemoryLogRecords memoryLogRecords;
         if (logFormat == LogFormat.ARROW) {
-            memoryLogRecords = genRecordsWithProjection(DATA2, projection, magic);
+            memoryLogRecords = genRecordsWithProjection(DATA2, projection);
         } else {
-            memoryLogRecords = createMemoryLogRecords(DATA2, LogFormat.INDEXED, magic);
+            memoryLogRecords = createMemoryLogRecords(DATA2, LogFormat.INDEXED);
         }
         FetchLogResultForBucket resultForBucket0 =
                 new FetchLogResultForBucket(tb, memoryLogRecords, 10L);
@@ -231,28 +224,19 @@ public class DefaultCompletedFetchTest {
                 offset);
     }
 
-    private static Collection<Arguments> typeAndMagic() {
-        List<Arguments> params = new ArrayList<>();
-        params.add(Arguments.arguments(LogFormat.ARROW, LOG_MAGIC_VALUE_V1));
-        params.add(Arguments.arguments(LogFormat.INDEXED, LOG_MAGIC_VALUE_V1));
-        params.add(Arguments.arguments(LogFormat.ARROW, LOG_MAGIC_VALUE_V0));
-        params.add(Arguments.arguments(LogFormat.INDEXED, LOG_MAGIC_VALUE_V0));
-        return params;
-    }
-
-    private MemoryLogRecords createMemoryLogRecords(
-            List<Object[]> objects, LogFormat logFormat, byte magic) throws Exception {
+    private MemoryLogRecords createMemoryLogRecords(List<Object[]> objects, LogFormat logFormat)
+            throws Exception {
         return createRecordsWithoutBaseLogOffset(
-                rowType, DEFAULT_SCHEMA_ID, 0L, 1000L, magic, objects, logFormat);
+                rowType, DEFAULT_SCHEMA_ID, 0L, 1000L, objects, logFormat);
     }
 
-    private MemoryLogRecords genRecordsWithProjection(
-            List<Object[]> objects, Projection projection, byte magic) throws Exception {
+    private MemoryLogRecords genRecordsWithProjection(List<Object[]> objects, Projection projection)
+            throws Exception {
         File logFile = FlussPaths.logFile(tempDir, 0L);
         FileLogRecords fileLogRecords = FileLogRecords.open(logFile, false, 1024 * 1024, false);
         fileLogRecords.append(
                 createRecordsWithoutBaseLogOffset(
-                        rowType, DEFAULT_SCHEMA_ID, 0L, 1000L, magic, objects, LogFormat.ARROW));
+                        rowType, DEFAULT_SCHEMA_ID, 0L, 1000L, objects, LogFormat.ARROW));
         fileLogRecords.flush();
 
         FileLogProjection fileLogProjection = new FileLogProjection();
