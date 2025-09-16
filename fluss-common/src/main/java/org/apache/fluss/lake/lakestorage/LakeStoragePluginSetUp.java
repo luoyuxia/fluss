@@ -49,7 +49,9 @@ public class LakeStoragePluginSetUp {
             LOG.info("Loading lake plugins" + lakeStoragePlugin.identifier());
             if (Objects.equals(lakeStoragePlugin.identifier(), dataLakeFormat)) {
                 LOG.info("Loading lake plugins success, choose:" + lakeStoragePlugin.identifier());
-                choose = lakeStoragePlugin;
+                if (choose == null) {
+                    choose = lakeStoragePlugin;
+                }
             }
         }
         if (choose != null) {
