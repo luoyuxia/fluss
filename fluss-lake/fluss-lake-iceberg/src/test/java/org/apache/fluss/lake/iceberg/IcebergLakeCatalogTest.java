@@ -79,7 +79,7 @@ class IcebergLakeCatalogTest {
                         .build();
 
         TablePath tablePath = TablePath.of(database, tableName);
-        flussIcebergCatalog.createTable(tablePath, tableDescriptor);
+        flussIcebergCatalog.createTable(tablePath, tableDescriptor, null);
 
         Table created =
                 flussIcebergCatalog
@@ -111,7 +111,7 @@ class IcebergLakeCatalogTest {
 
         TablePath tablePath = TablePath.of(database, tableName);
 
-        flussIcebergCatalog.createTable(tablePath, tableDescriptor);
+        flussIcebergCatalog.createTable(tablePath, tableDescriptor, null);
 
         TableIdentifier tableId = TableIdentifier.of(database, tableName);
         Table createdTable = flussIcebergCatalog.getIcebergCatalog().loadTable(tableId);
@@ -167,7 +167,7 @@ class IcebergLakeCatalogTest {
 
         TablePath tablePath = TablePath.of(database, tableName);
 
-        flussIcebergCatalog.createTable(tablePath, tableDescriptor);
+        flussIcebergCatalog.createTable(tablePath, tableDescriptor, null);
 
         TableIdentifier tableId = TableIdentifier.of(database, tableName);
         Table createdTable = flussIcebergCatalog.getIcebergCatalog().loadTable(tableId);
@@ -245,7 +245,7 @@ class IcebergLakeCatalogTest {
 
         TablePath tablePath = TablePath.of(database, tableName);
 
-        assertThatThrownBy(() -> flussIcebergCatalog.createTable(tablePath, tableDescriptor))
+        assertThatThrownBy(() -> flussIcebergCatalog.createTable(tablePath, tableDescriptor, null))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("Only one bucket key is supported for Iceberg");
     }
@@ -270,7 +270,7 @@ class IcebergLakeCatalogTest {
                         .build();
 
         TablePath tablePath = TablePath.of(database, tableName);
-        flussIcebergCatalog.createTable(tablePath, td);
+        flussIcebergCatalog.createTable(tablePath, td, null);
 
         TableIdentifier tableId = TableIdentifier.of(database, tableName);
         Table createdTable = flussIcebergCatalog.getIcebergCatalog().loadTable(tableId);
@@ -327,7 +327,7 @@ class IcebergLakeCatalogTest {
                         .build();
 
         TablePath path = TablePath.of(database, tableName);
-        flussIcebergCatalog.createTable(path, td);
+        flussIcebergCatalog.createTable(path, td, null);
 
         Table createdTable =
                 flussIcebergCatalog
@@ -392,7 +392,7 @@ class IcebergLakeCatalogTest {
         TablePath tablePath = TablePath.of(database, tableName);
 
         // Do not allow multiple bucket keys for log table
-        assertThatThrownBy(() -> flussIcebergCatalog.createTable(tablePath, tableDescriptor))
+        assertThatThrownBy(() -> flussIcebergCatalog.createTable(tablePath, tableDescriptor, null))
                 .isInstanceOf(UnsupportedOperationException.class)
                 .hasMessageContaining("Only one bucket key is supported for Iceberg");
     }

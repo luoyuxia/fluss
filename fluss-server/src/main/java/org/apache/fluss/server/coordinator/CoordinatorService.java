@@ -279,7 +279,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         if (isDataLakeEnabled(tableDescriptor)) {
             try {
                 checkNotNull(lakeCatalogDynamicLoader.getLakeCatalog())
-                        .createTable(tablePath, tableDescriptor);
+                        .createTable(tablePath, tableDescriptor, currentSession().getPrincipal());
             } catch (TableAlreadyExistException e) {
                 throw new LakeTableAlreadyExistException(
                         String.format(

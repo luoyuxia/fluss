@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.security.acl.FlussPrincipal;
 
 /**
  * A catalog interface to modify metadata in external datalake.
@@ -37,7 +38,7 @@ public interface LakeCatalog extends AutoCloseable {
      * @param tableDescriptor The descriptor of the table to be created
      * @throws TableAlreadyExistException if the table already exists
      */
-    void createTable(TablePath tablePath, TableDescriptor tableDescriptor)
+    void createTable(TablePath tablePath, TableDescriptor tableDescriptor, FlussPrincipal principal)
             throws TableAlreadyExistException;
 
     @Override

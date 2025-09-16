@@ -23,6 +23,7 @@ import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.lake.lakestorage.LakeCatalog;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.security.acl.FlussPrincipal;
 import org.apache.fluss.utils.IOUtils;
 
 import org.apache.paimon.CoreOptions;
@@ -73,7 +74,8 @@ public class PaimonLakeCatalog implements LakeCatalog {
     }
 
     @Override
-    public void createTable(TablePath tablePath, TableDescriptor tableDescriptor)
+    public void createTable(
+            TablePath tablePath, TableDescriptor tableDescriptor, FlussPrincipal principal)
             throws TableAlreadyExistException {
         // then, create the table
         Identifier paimonPath = toPaimonIdentifier(tablePath);

@@ -24,6 +24,7 @@ import org.apache.fluss.lake.lance.utils.LanceArrowUtils;
 import org.apache.fluss.lake.lance.utils.LanceDatasetAdapter;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.security.acl.FlussPrincipal;
 
 import com.lancedb.lance.WriteParams;
 import org.apache.arrow.vector.types.pojo.Field;
@@ -41,7 +42,8 @@ public class LanceLakeCatalog implements LakeCatalog {
     }
 
     @Override
-    public void createTable(TablePath tablePath, TableDescriptor tableDescriptor) {
+    public void createTable(
+            TablePath tablePath, TableDescriptor tableDescriptor, FlussPrincipal principal) {
         // currently, we don't support primary key table for lance
         if (tableDescriptor.hasPrimaryKey()) {
             throw new InvalidTableException(
