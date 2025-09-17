@@ -42,6 +42,14 @@ public class RequestChannel {
      * request.
      */
     public void putRequest(RpcRequest request) throws Exception {
+        if (request instanceof FlussRequest) {
+            FlussRequest flussRequest = (FlussRequest) request;
+            LOG.debug(
+                    "request id {}, in queue, current queue size: {}, queue id: {}",
+                    flussRequest.getRequestId(),
+                    requestsCount(),
+                    requestQueue.hashCode());
+        }
         requestQueue.put(request);
     }
 
@@ -61,7 +69,16 @@ public class RequestChannel {
      */
     public RpcRequest pollRequest(long timeoutMs) {
         try {
-            return requestQueue.poll(timeoutMs, TimeUnit.MILLISECONDS);
+            RpcRequest rpcRequest = requestQueue.poll(timeoutMs, TimeUnit.MILLISECONDS);
+            if (rpcRequest instanceof FlussRequest) {
+                FlussRequest flussRequest = (FlussRequest) rpcRequest;
+                LOG.debug(
+                        "request id {}, out queue, current queue size: {}, queue id: {}",
+                        flussRequest.getRequestId(),
+                        requestsCount(),
+                        requestQueue.hashCode());
+            }
+            return rpcRequest;
         } catch (InterruptedException e) {
             LOG.warn("Interrupted while polling requests from channel queue.", e);
             return null;

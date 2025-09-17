@@ -119,6 +119,11 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
                 needRelease = true;
             }
 
+            LOG.debug(
+                    "Received request id: {}, request type: {} from {}.",
+                    requestId,
+                    api.getApiKey().toString(),
+                    remoteAddress);
             FlussRequest request =
                     new FlussRequest(
                             apiKey,
@@ -236,9 +241,15 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
         // TODO: use a memory managed allocator
         ByteBufAllocator alloc = ctx.alloc();
         try {
+            LOG.debug(
+                    "request complete: request id: {}, inQueueTime: {}, processTime: {}",
+                    request.getRequestId(),
+                    request.getRequestDequeTimeMs() - request.getStartTimeMs(),
+                    request.getRequestCompletedTimeMs() - request.getRequestDequeTimeMs());
             Send send = encodeSuccessResponse(alloc, request.getRequestId(), responseMessage);
             send.writeTo(ctx);
             ctx.flush();
+            LOG.debug("request complete send to client: request id: {}", request.getRequestId());
             long requestEndTimeMs = System.currentTimeMillis();
             updateRequestMetrics(request, requestEndTimeMs);
         } catch (Throwable t) {
