@@ -94,7 +94,7 @@ public class FlinkConnectorOptions {
     public static final ConfigOption<Duration> SCAN_PARTITION_DISCOVERY_INTERVAL =
             ConfigOptions.key("scan.partition.discovery.interval")
                     .durationType()
-                    .defaultValue(Duration.ofSeconds(10))
+                    .defaultValue(Duration.ofMinutes(5))
                     .withDescription(
                             "The time interval for the Fluss source to discover "
                                     + "the new partitions for partitioned table while scanning."

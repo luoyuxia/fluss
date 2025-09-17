@@ -25,6 +25,9 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -46,6 +49,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Internal
 public final class Cluster {
+    private static final Logger LOG = LoggerFactory.getLogger(Cluster.class);
     private static final AtomicLong RANDOM_SEED = new AtomicLong(System.nanoTime());
 
     @Nullable private final ServerNode coordinatorServer;
@@ -218,7 +222,9 @@ public final class Cluster {
 
         long seedMix = RANDOM_SEED.get() ^ ThreadLocalRandom.current().nextLong();
         int index = (int) (Math.abs(seedMix) % serverNodes.size());
-        return serverNodes.get(index);
+        ServerNode serverNode = serverNodes.get(index);
+        LOG.info("Get a random tablet server: {}", serverNode);
+        return serverNode;
     }
 
     /** Get the list of available buckets for this table/partition. */
