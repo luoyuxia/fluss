@@ -22,9 +22,7 @@ import org.apache.fluss.cluster.TabletServerInfo;
 
 import javax.annotation.Nullable;
 
-import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -68,14 +66,11 @@ public interface ServerMetadataCache {
     /** Get ids of all alive tablet server nodes. */
     default TabletServerInfo[] getLiveServers() {
         Set<TabletServerInfo> aliveTabletServerInfos = getAliveTabletServerInfos();
-        List<TabletServerInfo> server = new ArrayList<>();
+        TabletServerInfo[] server = new TabletServerInfo[aliveTabletServerInfos.size()];
         Iterator<TabletServerInfo> iterator = aliveTabletServerInfos.iterator();
         for (int i = 0; i < aliveTabletServerInfos.size(); i++) {
-            TabletServerInfo serverInfo = iterator.next();
-            if (serverInfo != null && serverInfo.getId() != 0) {
-                server.add(serverInfo);
-            }
+            server[i] = iterator.next();
         }
-        return server.toArray(new TabletServerInfo[0]);
+        return server;
     }
 }
