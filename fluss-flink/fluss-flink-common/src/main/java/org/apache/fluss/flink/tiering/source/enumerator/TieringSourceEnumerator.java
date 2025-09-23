@@ -189,6 +189,7 @@ public class TieringSourceEnumerator
         if (sourceEvent instanceof FinishedTieringEvent) {
             FinishedTieringEvent finishedTieringEvent = (FinishedTieringEvent) sourceEvent;
             long finishedTableId = finishedTieringEvent.getTableId();
+            LOG.info("Finish tiering table:, tiering epochs {}", tieringTableEpochs);
             Long tieringEpoch = tieringTableEpochs.remove(finishedTableId);
             if (tieringEpoch == null) {
                 // shouldn't happen, warn it
@@ -334,6 +335,7 @@ public class TieringSourceEnumerator
                 finishedTableEpochs.put(tieringTable.f0, tieringTable.f1);
             } else {
                 tieringTableEpochs.put(tieringTable.f0, tieringTable.f1);
+                LOG.info("generateTieringSplits,  tieringTableEpochs: {}", tieringTableEpochs);
                 pendingSplits.addAll(tieringSplits);
             }
         } catch (Exception e) {
