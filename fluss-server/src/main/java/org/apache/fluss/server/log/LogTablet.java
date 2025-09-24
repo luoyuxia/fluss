@@ -306,6 +306,7 @@ public final class LogTablet {
                 new LogLoader(
                                 tabletDir,
                                 conf,
+                                scheduler,
                                 segments,
                                 recoveryPoint,
                                 logFormat,
@@ -1255,7 +1256,7 @@ public final class LogTablet {
         loadedWriters.values().forEach(writerStateManager::update);
     }
 
-    private static void deleteWriterSnapshots(
+    public static void deleteWriterSnapshots(
             List<LogSegment> segments, WriterStateManager writerStateManager) throws IOException {
         for (LogSegment segment : segments) {
             writerStateManager.removeAndDeleteSnapshot(segment.getBaseOffset());

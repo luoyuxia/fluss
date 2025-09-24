@@ -98,6 +98,10 @@ public class WriterStateManager {
         this.snapshots = loadSnapshots();
     }
 
+    public int writerExpirationMs() {
+        return writerExpirationMs;
+    }
+
     public int writerIdCount() {
         return writerIdCount;
     }
