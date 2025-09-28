@@ -401,6 +401,8 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
             ListPartitionInfosRequest request) {
         TablePath tablePath = toTablePath(request.getTablePath());
         Map<String, Long> partitionNameAndIds;
+
+        long listPartitionsStart = System.currentTimeMillis();
         if (request.hasPartialPartitionSpec()) {
             ResolvedPartitionSpec partitionSpecFromRequest =
                     toResolvedPartitionSpec(request.getPartialPartitionSpec());
@@ -409,7 +411,14 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
         } else {
             partitionNameAndIds = metadataManager.listPartitions(tablePath);
         }
+        long listPartitionsEnd = System.currentTimeMillis();
+        LOG.info("listPartitions cost: {}ms", listPartitionsEnd - listPartitionsStart);
+
+        long getTableStart = System.currentTimeMillis();
         TableInfo tableInfo = metadataManager.getTable(tablePath);
+        long getTableEnd = System.currentTimeMillis();
+        LOG.info("getTable cost: {}ms", getTableEnd - getTableStart);
+
         List<String> partitionKeys = tableInfo.getPartitionKeys();
         return CompletableFuture.completedFuture(
                 toListPartitionInfosResponse(partitionKeys, partitionNameAndIds));

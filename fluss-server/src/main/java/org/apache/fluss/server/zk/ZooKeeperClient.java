@@ -599,7 +599,14 @@ public class ZooKeeperClient implements AutoCloseable {
     public Map<String, Long> getPartitionNameAndIds(TablePath tablePath) throws Exception {
         Map<String, Long> partitions = new HashMap<>();
         for (String partitionName : getPartitions(tablePath)) {
+            long getPartitionStart = System.currentTimeMillis();
             Optional<TablePartition> optPartition = getPartition(tablePath, partitionName);
+            long getPartitionEnd = System.currentTimeMillis();
+            LOG.info(
+                    "Get partition {} cost {}ms",
+                    partitionName,
+                    getPartitionEnd - getPartitionStart);
+
             optPartition.ifPresent(
                     partition -> partitions.put(partitionName, partition.getPartitionId()));
         }
