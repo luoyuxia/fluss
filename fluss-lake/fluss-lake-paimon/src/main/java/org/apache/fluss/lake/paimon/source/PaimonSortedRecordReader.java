@@ -45,9 +45,8 @@ public class PaimonSortedRecordReader extends PaimonRecordReader implements Sort
         super(fileStoreTable, split, project, predicate);
         RowType pkKeyType =
                 new RowType(
-                        PrimaryKeyTableUtils.PrimaryKeyFieldsExtractor.EXTRACTOR.keyFields(
-                                fileStoreTable.schema()));
-
+                        PrimaryKeyTableUtils.addKeyNamePrefix(
+                                fileStoreTable.schema().primaryKeysFields()));
         this.comparator =
                 toFlussRowComparator(paimonRowType, new KeyComparatorSupplier(pkKeyType).get());
     }

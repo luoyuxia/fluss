@@ -26,7 +26,6 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.flink.metrics.FlinkMetricRegistry;
 import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
 import org.apache.fluss.flink.tiering.event.FinishedTieringEvent;
-import org.apache.fluss.flink.tiering.event.TieringFailOverEvent;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import org.apache.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
@@ -97,6 +96,9 @@ public class TieringSourceEnumerator
     private final Map<Long, Long> failedTableEpochs;
     private final Map<Long, Long> finishedTableEpochs;
 
+    private final Map<Integer, Integer> registeredReadersAttempts;
+    private int currentMaxAttempts = 0;
+
     // lazily instantiated
     private RpcClient rpcClient;
     private CoordinatorGateway coordinatorGateway;
@@ -120,6 +122,7 @@ public class TieringSourceEnumerator
         this.tieringTableEpochs = MapUtils.newConcurrentHashMap();
         this.finishedTableEpochs = MapUtils.newConcurrentHashMap();
         this.failedTableEpochs = MapUtils.newConcurrentHashMap();
+        this.registeredReadersAttempts = new HashMap<>();
     }
 
     @Override
@@ -179,6 +182,18 @@ public class TieringSourceEnumerator
     @Override
     public void addReader(int subtaskId) {
         LOG.info("Adding reader: {} to Tiering Source enumerator.", subtaskId);
+
+        // compute the subtask and the attempts of the subtask
+        int attempt =
+                registeredReadersAttempts.compute(
+                        subtaskId, (_subtaskId, attempts) -> attempts == null ? 1 : attempts + 1);
+        if (attempt > currentMaxAttempts) {
+            currentMaxAttempts = attempt;
+            // current max attempts > 1, must be failover
+            if (currentMaxAttempts > 1) {
+                handleSourceReaderFailOver();
+            }
+        }
         if (context.registeredReaders().containsKey(subtaskId)) {
             readersAwaitingSplit.add(subtaskId);
         }
@@ -218,18 +233,23 @@ public class TieringSourceEnumerator
             }
         }
 
-        if (sourceEvent instanceof TieringFailOverEvent) {
-            LOG.info(
-                    "Receiving tiering failover event, mark current tiering table epoch {} as failed.",
-                    tieringTableEpochs);
-            // we need to make all as failed
-            failedTableEpochs.putAll(new HashMap<>(tieringTableEpochs));
-            tieringTableEpochs.clear();
-            // also clean all pending splits since we mark all as failed
-            pendingSplits.clear();
-        }
-
         if (!finishedTableEpochs.isEmpty() || !failedTableEpochs.isEmpty()) {
+            // call one round of heartbeat to notify table has been finished or failed
+            this.context.callAsync(
+                    this::requestTieringTableSplitsViaHeartBeat, this::generateAndAssignSplits);
+        }
+    }
+
+    private void handleSourceReaderFailOver() {
+        LOG.info(
+                "Handling source reader fail over, mark current tiering table epoch {} as failed.",
+                tieringTableEpochs);
+        // we need to make all as failed
+        failedTableEpochs.putAll(new HashMap<>(tieringTableEpochs));
+        tieringTableEpochs.clear();
+        // also clean all pending splits since we mark all as failed
+        pendingSplits.clear();
+        if (!failedTableEpochs.isEmpty()) {
             // call one round of heartbeat to notify table has been finished or failed
             this.context.callAsync(
                     this::requestTieringTableSplitsViaHeartBeat, this::generateAndAssignSplits);

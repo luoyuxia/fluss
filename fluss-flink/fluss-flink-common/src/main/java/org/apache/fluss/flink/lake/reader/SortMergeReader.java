@@ -22,9 +22,6 @@ import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.ProjectedRow;
 import org.apache.fluss.utils.CloseableIterator;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -38,8 +35,6 @@ import java.util.function.Function;
 
 /** A sort merge reader to merge lakehouse snapshot record and fluss change log. */
 class SortMergeReader {
-
-    private static final Logger LOG = LoggerFactory.getLogger(SortMergeReader.class);
 
     private final ProjectedRow snapshotProjectedPkRow;
     private final CloseableIterator<LogRecord> lakeRecordIterator;
@@ -149,7 +144,8 @@ class SortMergeReader {
             if (!hasNext()) {
                 throw new NoSuchElementException();
             }
-            return priorityQueue.peek().next();
+            LogRecord logRecord = priorityQueue.peek().next();
+            return logRecord;
         }
     }
 
@@ -160,17 +156,12 @@ class SortMergeReader {
     private SortMergeRows sortMergeWithChangeLog(InternalRow lakeSnapshotRow) {
         // no log record, we return the snapshot record
         if (!changeLogIterator.hasNext()) {
-            LOG.info("return lakeSnapshotRow: {}", lakeSnapshotRow);
             return new SortMergeRows(lakeSnapshotRow);
         }
         KeyValueRow logKeyValueRow = changeLogIterator.next();
         // now, let's compare with the snapshot row with log row
-        int compareResult =
-                userKeyComparator.compare(
-                        snapshotProjectedPkRow.replaceRow(lakeSnapshotRow),
-                        logKeyValueRow.keyRow());
-        LOG.info("Compare result: {}", compareResult);
-        LOG.info("logKeyValueRow: {}", toString(logKeyValueRow.valueRow()));
+        ProjectedRow projectedRow1 = snapshotProjectedPkRow.replaceRow(lakeSnapshotRow);
+        int compareResult = userKeyComparator.compare(projectedRow1, logKeyValueRow.keyRow());
 
         if (compareResult == 0) {
             // record of snapshot is equal to log, but the log record is delete,
@@ -389,11 +380,6 @@ class SortMergeReader {
             if (currentMergedRows != null && !currentMergedRows.hasNext()) {
                 currentMergedRows = null;
             }
-
-            if (returnedRow != null) {
-                LOG.info("ReturnedRow: {}, key: {}", returnedRow, returnedRow.getString(0));
-            }
-
             return returnedRow;
         }
     }

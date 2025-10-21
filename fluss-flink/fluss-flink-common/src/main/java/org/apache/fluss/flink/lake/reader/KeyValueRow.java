@@ -45,9 +45,4 @@ public class KeyValueRow {
     public InternalRow valueRow() {
         return valueRow;
     }
-
-    @Override
-    public String toString() {
-        return pkRow + "=" + valueRow + "_" + isDelete;
-    }
 }
