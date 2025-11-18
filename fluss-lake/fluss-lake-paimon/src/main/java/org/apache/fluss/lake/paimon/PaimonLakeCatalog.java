@@ -118,9 +118,10 @@ public class PaimonLakeCatalog implements LakeCatalog {
             throws Catalog.DatabaseNotExistException {
         try {
             // not ignore if table exists
-            paimonCatalog.createTable(tablePath, schema, false);
+            paimonCatalog.createTable(tablePath, schema, true);
         } catch (Catalog.TableAlreadyExistException e) {
-            throw new TableAlreadyExistException("Table " + tablePath + " already exists.");
+            // pass
+//            throw new TableAlreadyExistException("Table " + tablePath + " already exists.");
         }
     }
 

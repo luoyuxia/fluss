@@ -289,13 +289,14 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 checkNotNull(lakeCatalogContainer.getLakeCatalog())
                         .createTable(tablePath, tableDescriptor);
             } catch (TableAlreadyExistException e) {
-                throw new LakeTableAlreadyExistException(
-                        String.format(
-                                "The table %s already exists in %s catalog, please "
-                                        + "first drop the table in %s catalog or use a new table name.",
-                                tablePath,
-                                lakeCatalogContainer.getDataLakeFormat(),
-                                lakeCatalogContainer.getDataLakeFormat()));
+                // ignore
+//                throw new LakeTableAlreadyExistException(
+//                        String.format(
+//                                "The table %s already exists in %s catalog, please "
+//                                        + "first drop the table in %s catalog or use a new table name.",
+//                                tablePath,
+//                                lakeCatalogContainer.getDataLakeFormat(),
+//                                lakeCatalogContainer.getDataLakeFormat()));
             }
         }
 

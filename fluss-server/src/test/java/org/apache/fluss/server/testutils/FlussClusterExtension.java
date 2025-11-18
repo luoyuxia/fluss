@@ -124,7 +124,7 @@ public final class FlussClusterExtension
     private RpcClient rpcClient;
     private MetadataManager metadataManager;
 
-    private File tempDir;
+    public File tempDir;
 
     private final Map<Integer, TabletServer> tabletServers;
     private final Map<Integer, ServerInfo> tabletServerInfos;
@@ -196,6 +196,7 @@ public final class FlussClusterExtension
             tabletServer.getMetadataCache().clearTableMetadata();
         }
     }
+
 
     public void start() throws Exception {
         tempDir = Files.createTempDirectory("fluss-testing-cluster").toFile();
