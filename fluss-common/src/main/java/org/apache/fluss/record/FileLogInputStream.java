@@ -170,6 +170,11 @@ public class FileLogInputStream
         }
 
         @Override
+        public FlussArrowRecordBatch recordsBatch(ReadContext context) {
+            throw new UnsupportedOperationException("not implemented");
+        }
+
+        @Override
         public boolean isValid() {
             return loadFullBatch().isValid();
         }

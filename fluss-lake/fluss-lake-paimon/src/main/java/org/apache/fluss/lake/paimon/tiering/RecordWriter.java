@@ -17,6 +17,7 @@
 
 package org.apache.fluss.lake.paimon.tiering;
 
+import org.apache.fluss.lake.batch.ArrowRecordBatch;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.record.LogRecord;
 
@@ -60,6 +61,8 @@ public abstract class RecordWriter<T> implements AutoCloseable {
     }
 
     public abstract void write(LogRecord record) throws Exception;
+
+    public abstract void writeBatch(ArrowRecordBatch batch) throws Exception;
 
     CommitMessage complete() throws Exception {
         List<CommitMessage> commitMessages = tableWrite.prepareCommit();

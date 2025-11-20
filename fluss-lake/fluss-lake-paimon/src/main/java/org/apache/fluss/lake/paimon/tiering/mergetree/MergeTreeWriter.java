@@ -17,6 +17,7 @@
 
 package org.apache.fluss.lake.paimon.tiering.mergetree;
 
+import org.apache.fluss.lake.batch.ArrowRecordBatch;
 import org.apache.fluss.lake.paimon.tiering.RecordWriter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.record.LogRecord;
@@ -29,6 +30,7 @@ import org.apache.paimon.table.sink.TableWriteImpl;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
@@ -94,4 +96,7 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
         // which may be costly
         tableWrite.getWrite().write(partition, bucket, keyValue);
     }
+
+    @Override
+    public void writeBatch(ArrowRecordBatch batch) throws IOException {}
 }

@@ -197,7 +197,6 @@ public final class FlussClusterExtension
         }
     }
 
-
     public void start() throws Exception {
         tempDir = Files.createTempDirectory("fluss-testing-cluster").toFile();
         zooKeeperServer = ZooKeeperTestUtils.createAndStartZookeeperTestingServer();

@@ -22,6 +22,7 @@ import org.apache.fluss.client.table.scanner.ScanRecord;
 import org.apache.fluss.exception.CorruptRecordException;
 import org.apache.fluss.exception.FetchException;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.record.FlussArrowRecordBatch;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.record.LogRecordBatch;
 import org.apache.fluss.record.LogRecordReadContext;
@@ -195,7 +196,62 @@ abstract class CompletedFetch {
         return scanRecords;
     }
 
-    private LogRecord nextFetchedRecord() throws Exception {
+    /**
+     * The {@link LogRecordBatch batch} of {@link LogRecord records} is converted to a {@link List
+     * list} of {@link ScanRecord scan records} and returned.
+     *
+     * @param maxRecords The number of records to return; the number returned may be {@code 0 <=
+     *     maxRecords}
+     * @return {@link ScanRecord scan records}
+     */
+    public List<FlussArrowRecordBatch> fetchBatchRecords(int maxRecords) {
+        if (corruptLastRecord) {
+            throw new FetchException(
+                    "Received exception when fetching the next record from "
+                            + tableBucket
+                            + ". If needed, please back to past the record to continue scanning.",
+                    cachedRecordException);
+        }
+
+        if (isConsumed) {
+            return Collections.emptyList();
+        }
+
+        List<FlussArrowRecordBatch> scanRecords = new ArrayList<>();
+        int recordsRead = 0;
+        try {
+            while (recordsRead <= maxRecords) {
+                FlussArrowRecordBatch flussArrowRecordBatch = null;
+                // Only move to next record if there was no exception in the last fetch.
+                if (cachedRecordException == null) {
+                    corruptLastRecord = true;
+                    flussArrowRecordBatch = nextFetchedArrowRecordBatch();
+                    corruptLastRecord = false;
+                }
+
+                if (flussArrowRecordBatch == null) {
+                    break;
+                }
+                scanRecords.add(flussArrowRecordBatch);
+                recordsRead += flussArrowRecordBatch.recordCount();
+                nextFetchOffset = flussArrowRecordBatch.endOffset();
+                cachedRecordException = null;
+            }
+        } catch (Exception e) {
+            cachedRecordException = e;
+            if (scanRecords.isEmpty()) {
+                throw new FetchException(
+                        "Received exception when fetching the next record from "
+                                + tableBucket
+                                + ". If needed, please back to past the record to continue scanning.",
+                        e);
+            }
+        }
+
+        return scanRecords;
+    }
+
+    private LogRecord nextFetchedRecord() {
         while (true) {
             if (records == null || !records.hasNext()) {
                 maybeCloseRecordStream();
@@ -226,6 +282,27 @@ abstract class CompletedFetch {
                 }
             }
         }
+    }
+
+    private FlussArrowRecordBatch nextFetchedArrowRecordBatch() throws Exception {
+        if (!batches.hasNext()) {
+            // In batch, we preserve the last offset in a batch. By using the next offset
+            // computed from the last offset in the batch, we ensure that the offset of the
+            // next fetch will point to the next batch, which avoids unnecessary re-fetching
+            // of the same batch (in the worst case, the scanner could get stuck fetching
+            // the same batch repeatedly).
+            if (currentBatch != null) {
+                nextFetchOffset = currentBatch.nextLogOffset();
+            }
+            drain();
+            return null;
+        }
+
+        currentBatch = batches.next();
+        // TODO get last epoch.
+        maybeEnsureValid(currentBatch);
+
+        return currentBatch.recordsBatch(readContext);
     }
 
     private void maybeEnsureValid(LogRecordBatch batch) {

@@ -34,6 +34,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePartition;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.FlussArrowRecordBatch;
 import org.apache.fluss.record.LogRecordReadContext;
 import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
@@ -157,6 +158,10 @@ public class LogFetcher implements Closeable {
 
     public Map<TableBucket, List<ScanRecord>> collectFetch() {
         return logFetchCollector.collectFetch(logFetchBuffer);
+    }
+
+    public Map<TableBucket, List<FlussArrowRecordBatch>> collectBatchFetch() {
+        return logFetchCollector.collectBatchFetch(logFetchBuffer);
     }
 
     /**

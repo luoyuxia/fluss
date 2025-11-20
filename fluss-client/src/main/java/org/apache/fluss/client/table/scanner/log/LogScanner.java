@@ -50,6 +50,8 @@ public interface LogScanner extends AutoCloseable {
      */
     ScanRecords poll(Duration timeout);
 
+    ScanRecordBatches pollScanRecordsBatches(Duration timeout);
+
     /**
      * Subscribe to the given table bucket in given offset dynamically. If the table bucket is
      * already subscribed, the offset will be updated.

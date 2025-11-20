@@ -21,17 +21,20 @@ import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.scanner.ScanRecord;
 import org.apache.fluss.client.table.scanner.log.LogScanner;
-import org.apache.fluss.client.table.scanner.log.ScanRecords;
+import org.apache.fluss.client.table.scanner.log.ScanRecordBatches;
 import org.apache.fluss.flink.source.reader.BoundedSplitReader;
 import org.apache.fluss.flink.source.reader.RecordAndPos;
 import org.apache.fluss.flink.tiering.source.split.TieringLogSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSnapshotSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
+import org.apache.fluss.lake.batch.ArrowRecordBatch;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
+import org.apache.fluss.lake.writer.SupportsRecordBatchWrite;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.FlussArrowRecordBatch;
 import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
@@ -134,8 +137,9 @@ public class TieringSplitReader<WriteResult>
             }
         } else {
             if (currentLogScanner != null) {
-                ScanRecords scanRecords = currentLogScanner.poll(POLL_TIMEOUT);
-                return forLogRecords(scanRecords);
+                ScanRecordBatches scanRecordBatches =
+                        currentLogScanner.pollScanRecordsBatches(POLL_TIMEOUT);
+                return forLogRecords(scanRecordBatches);
             } else {
                 return emptyTableBucketWriteResultWithSplitIds();
             }
@@ -249,11 +253,11 @@ public class TieringSplitReader<WriteResult>
     }
 
     private RecordsWithSplitIds<TableBucketWriteResult<WriteResult>> forLogRecords(
-            ScanRecords scanRecords) throws IOException {
+            ScanRecordBatches scanRecordBatches) throws IOException {
         Map<TableBucket, TableBucketWriteResult<WriteResult>> writeResults = new HashMap<>();
         Map<TableBucket, String> finishedSplitIds = new HashMap<>();
-        for (TableBucket bucket : scanRecords.buckets()) {
-            List<ScanRecord> bucketScanRecords = scanRecords.records(bucket);
+        for (TableBucket bucket : scanRecordBatches.buckets()) {
+            List<FlussArrowRecordBatch> bucketScanRecords = scanRecordBatches.records(bucket);
             if (bucketScanRecords.isEmpty()) {
                 continue;
             }
@@ -265,15 +269,21 @@ public class TieringSplitReader<WriteResult>
             LakeWriter<WriteResult> lakeWriter =
                     getOrCreateLakeWriter(
                             bucket, currentTableSplitsByBucket.get(bucket).getPartitionName());
-            for (ScanRecord record : bucketScanRecords) {
+            for (FlussArrowRecordBatch batchRecord : bucketScanRecords) {
                 // if record is less than stopping offset
-                if (record.logOffset() < stoppingOffset) {
-                    lakeWriter.write(record);
+                try {
+                    if (batchRecord.getBaseOffset() < stoppingOffset) {
+                        ((SupportsRecordBatchWrite) lakeWriter)
+                                .write(new ArrowRecordBatch(batchRecord));
+                    }
+                } catch (Exception e) {
+                    throw new IOException("Failed to write records.", e);
                 }
             }
-            ScanRecord lastRecord = bucketScanRecords.get(bucketScanRecords.size() - 1);
+            FlussArrowRecordBatch lastRecordBatch =
+                    bucketScanRecords.get(bucketScanRecords.size() - 1);
             // has arrived into the end of the split,
-            if (lastRecord.logOffset() >= stoppingOffset - 1) {
+            if (lastRecordBatch.endOffset() >= stoppingOffset) {
                 currentTableStoppingOffsets.remove(bucket);
                 if (bucket.getPartitionId() != null) {
                     currentLogScanner.unsubscribe(bucket.getPartitionId(), bucket.getBucket());
@@ -290,7 +300,7 @@ public class TieringSplitReader<WriteResult>
                                 bucket,
                                 currentTieringSplit.getPartitionName(),
                                 stoppingOffset,
-                                lastRecord.timestamp()));
+                                lastRecordBatch.getTimestamp()));
                 // put split of the bucket
                 finishedSplitIds.put(bucket, currentSplitId);
                 LOG.info("Split {} has been finished.", currentSplitId);

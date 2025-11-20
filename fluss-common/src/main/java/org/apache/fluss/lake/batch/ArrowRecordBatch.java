@@ -18,6 +18,9 @@
 package org.apache.fluss.lake.batch;
 
 import org.apache.fluss.annotation.PublicEvolving;
+import org.apache.fluss.record.FlussArrowRecordBatch;
+
+import org.apache.arrow.vector.VectorSchemaRoot;
 
 /**
  * The Arrow implementation of the RecordBatch interface.
@@ -25,4 +28,19 @@ import org.apache.fluss.annotation.PublicEvolving;
  * @since 0.7
  */
 @PublicEvolving
-public class ArrowRecordBatch implements RecordBatch {}
+public class ArrowRecordBatch implements RecordBatch {
+
+    private final FlussArrowRecordBatch flussArrowRecordBatch;
+
+    public ArrowRecordBatch(FlussArrowRecordBatch flussArrowRecordBatch) {
+        this.flussArrowRecordBatch = flussArrowRecordBatch;
+    }
+
+    public VectorSchemaRoot getVectorSchemaRoot() {
+        return flussArrowRecordBatch.getSchemaRoot();
+    }
+
+    public FlussArrowRecordBatch getFlussArrowRecordBatch() {
+        return flussArrowRecordBatch;
+    }
+}

@@ -27,6 +27,7 @@ import org.apache.fluss.exception.WakeupException;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.FlussArrowRecordBatch;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.Projection;
@@ -168,6 +169,47 @@ public class LogScannerImpl implements LogScanner {
     }
 
     @Override
+    public ScanRecordBatches pollScanRecordsBatches(Duration timeout) {
+        acquireAndEnsureOpen();
+        try {
+            if (!logScannerStatus.prepareToPoll()) {
+                throw new IllegalStateException("LogScanner is not subscribed any buckets.");
+            }
+
+            scannerMetricGroup.recordPollStart(System.currentTimeMillis());
+            long timeoutNanos = timeout.toNanos();
+            long startNanos = System.nanoTime();
+            do {
+                Map<TableBucket, List<FlussArrowRecordBatch>> fetchRecords = pollForBatchFetches();
+                if (fetchRecords.isEmpty()) {
+                    try {
+                        if (!logFetcher.awaitNotEmpty(startNanos + timeoutNanos)) {
+                            // logFetcher waits for the timeout and no data in buffer,
+                            // so we return empty
+                            return new ScanRecordBatches(fetchRecords);
+                        }
+                    } catch (WakeupException e) {
+                        // wakeup() is called, we need to return empty
+                        return new ScanRecordBatches(fetchRecords);
+                    }
+                } else {
+                    // before returning the fetched records, we can send off the next round of
+                    // fetches and avoid block waiting for their responses to enable pipelining
+                    // while the user is handling the fetched records.
+                    logFetcher.sendFetches();
+
+                    return new ScanRecordBatches(fetchRecords);
+                }
+            } while (System.nanoTime() - startNanos < timeoutNanos);
+
+            return ScanRecordBatches.EMPTY;
+        } finally {
+            release();
+            scannerMetricGroup.recordPollEnd(System.currentTimeMillis());
+        }
+    }
+
+    @Override
     public void subscribe(int bucket, long offset) {
         if (isPartitionedTable) {
             throw new IllegalStateException(
@@ -237,6 +279,19 @@ public class LogScannerImpl implements LogScanner {
         logFetcher.sendFetches();
 
         return logFetcher.collectFetch();
+    }
+
+    private Map<TableBucket, List<FlussArrowRecordBatch>> pollForBatchFetches() {
+        Map<TableBucket, List<FlussArrowRecordBatch>> fetchedRecords =
+                logFetcher.collectBatchFetch();
+        if (!fetchedRecords.isEmpty()) {
+            return fetchedRecords;
+        }
+
+        // send any new fetches (won't resend pending fetches).
+        logFetcher.sendFetches();
+
+        return logFetcher.collectBatchFetch();
     }
 
     /**

@@ -22,6 +22,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
@@ -40,7 +41,6 @@ class FlussPaimonLakeUpgradeITCase {
         return configuration;
     }
 
-
     @Test
     void t1() throws Exception {
         System.out.println(FLUSS_CLUSTER_EXTENSION.getBootstrapServers());
@@ -48,6 +48,4 @@ class FlussPaimonLakeUpgradeITCase {
 
         Thread.sleep(1_000_000_000);
     }
-
-
 }

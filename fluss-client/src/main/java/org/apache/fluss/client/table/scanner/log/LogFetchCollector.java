@@ -27,6 +27,7 @@ import org.apache.fluss.exception.FetchException;
 import org.apache.fluss.exception.LogOffsetOutOfRangeException;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.FlussArrowRecordBatch;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.record.LogRecordBatch;
 import org.apache.fluss.rpc.protocol.ApiError;
@@ -146,6 +147,73 @@ public class LogFetchCollector {
         return fetched;
     }
 
+    public Map<TableBucket, List<FlussArrowRecordBatch>> collectBatchFetch(
+            final LogFetchBuffer logFetchBuffer) {
+        Map<TableBucket, List<FlussArrowRecordBatch>> fetched = new HashMap<>();
+        int recordsRemaining = maxPollRecords;
+
+        try {
+            while (recordsRemaining > 0) {
+                CompletedFetch nextInLineFetch = logFetchBuffer.nextInLineFetch();
+                if (nextInLineFetch == null || nextInLineFetch.isConsumed()) {
+                    CompletedFetch completedFetch = logFetchBuffer.peek();
+                    if (completedFetch == null) {
+                        break;
+                    }
+
+                    if (!completedFetch.isInitialized()) {
+                        try {
+                            logFetchBuffer.setNextInLineFetch(initialize(completedFetch));
+                        } catch (Exception e) {
+                            // Remove a completedFetch upon a parse with exception if
+                            // (1) it contains no records, and
+                            // (2) there are no fetched records with actual content preceding this
+                            // exception.
+                            if (fetched.isEmpty() && completedFetch.sizeInBytes == 0) {
+                                logFetchBuffer.poll();
+                            }
+                            throw e;
+                        }
+                    } else {
+                        logFetchBuffer.setNextInLineFetch(completedFetch);
+                    }
+
+                    logFetchBuffer.poll();
+                } else {
+                    List<FlussArrowRecordBatch> records =
+                            fetchBatchRecords(nextInLineFetch, recordsRemaining);
+                    if (!records.isEmpty()) {
+                        TableBucket tableBucket = nextInLineFetch.tableBucket;
+                        List<FlussArrowRecordBatch> currentRecords = fetched.get(tableBucket);
+                        if (currentRecords == null) {
+                            fetched.put(tableBucket, records);
+                        } else {
+                            // this case shouldn't usually happen because we only send one fetch at
+                            // a time per bucket, but it might conceivably happen in some rare
+                            // cases (such as bucket leader changes). we have to copy to a new list
+                            // because the old one may be immutable
+                            List<FlussArrowRecordBatch> newScanRecords =
+                                    new ArrayList<>(records.size() + currentRecords.size());
+                            newScanRecords.addAll(currentRecords);
+                            newScanRecords.addAll(records);
+                            fetched.put(tableBucket, newScanRecords);
+                        }
+
+                        recordsRemaining -=
+                                (records.stream().map(FlussArrowRecordBatch::recordCount))
+                                        .reduce(0, Integer::sum);
+                    }
+                }
+            }
+        } catch (FetchException e) {
+            if (fetched.isEmpty()) {
+                throw e;
+            }
+        }
+
+        return fetched;
+    }
+
     private List<ScanRecord> fetchRecords(CompletedFetch nextInLineFetch, int maxRecords) {
         TableBucket tb = nextInLineFetch.tableBucket;
         Long offset = logScannerStatus.getBucketOffset(tb);
@@ -158,6 +226,52 @@ public class LogFetchCollector {
         } else {
             if (nextInLineFetch.nextFetchOffset() == offset) {
                 List<ScanRecord> records = nextInLineFetch.fetchRecords(maxRecords);
+                LOG.trace(
+                        "Returning {} fetched records at offset {} for assigned bucket {}.",
+                        records.size(),
+                        offset,
+                        tb);
+
+                if (nextInLineFetch.nextFetchOffset() > offset) {
+                    LOG.trace(
+                            "Updating fetch offset from {} to {} for bucket {} and returning {} records from poll()",
+                            offset,
+                            nextInLineFetch.nextFetchOffset(),
+                            tb,
+                            records.size());
+                    logScannerStatus.updateOffset(tb, nextInLineFetch.nextFetchOffset());
+                }
+                return records;
+            } else {
+                // these records aren't next in line based on the last consumed offset, ignore them
+                // they must be from an obsolete request
+                LOG.warn(
+                        "Ignoring fetched records for {} at offset {} since the current offset is {}",
+                        nextInLineFetch.tableBucket,
+                        nextInLineFetch.nextFetchOffset(),
+                        offset);
+            }
+        }
+
+        LOG.trace("Draining fetched records for bucket {}", nextInLineFetch.tableBucket);
+        nextInLineFetch.drain();
+
+        return Collections.emptyList();
+    }
+
+    private List<FlussArrowRecordBatch> fetchBatchRecords(
+            CompletedFetch nextInLineFetch, int maxRecords) {
+        TableBucket tb = nextInLineFetch.tableBucket;
+        Long offset = logScannerStatus.getBucketOffset(tb);
+        if (offset == null) {
+            LOG.debug(
+                    "Ignoring fetched records for {} at offset {} since the current offset is null which means the "
+                            + "bucket has been unsubscribe.",
+                    tb,
+                    nextInLineFetch.nextFetchOffset());
+        } else {
+            if (nextInLineFetch.nextFetchOffset() == offset) {
+                List<FlussArrowRecordBatch> records = nextInLineFetch.fetchBatchRecords(maxRecords);
                 LOG.trace(
                         "Returning {} fetched records at offset {} for assigned bucket {}.",
                         records.size(),

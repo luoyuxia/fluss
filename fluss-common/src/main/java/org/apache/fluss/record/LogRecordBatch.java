@@ -162,6 +162,8 @@ public interface LogRecordBatch {
      */
     CloseableIterator<LogRecord> records(ReadContext context);
 
+    FlussArrowRecordBatch recordsBatch(ReadContext context);
+
     /** The read context of a {@link LogRecordBatch} to read records. */
     interface ReadContext {
 
@@ -192,6 +194,10 @@ public interface LogRecordBatch {
          * @return The (maybe projected) schema root of the record batch.
          */
         VectorSchemaRoot getVectorSchemaRoot(int schemaId);
+
+        org.apache.arrow.vector.VectorSchemaRoot getUnshadedVectorSchemaRoot(int schemaId);
+
+        org.apache.arrow.memory.BufferAllocator getUnshadedAllocator();
 
         /** Gets the buffer allocator. */
         BufferAllocator getBufferAllocator();

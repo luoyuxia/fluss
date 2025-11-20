@@ -28,6 +28,7 @@ import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.ArrowUtils;
+import org.apache.fluss.utils.NativeArrowUtils;
 import org.apache.fluss.utils.Projection;
 
 import javax.annotation.Nullable;
@@ -49,8 +50,12 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
     private final int schemaId;
     // the Arrow vector schema root of the table, should be null if not ARROW log format
     @Nullable private final VectorSchemaRoot vectorSchemaRoot;
+
+    @Nullable private final org.apache.arrow.vector.VectorSchemaRoot unShadeVectorSchemaRoot;
     // the Arrow memory buffer allocator for the table, should be null if not ARROW log format
     @Nullable private final BufferAllocator bufferAllocator;
+
+    @Nullable private final org.apache.arrow.memory.BufferAllocator unShadeRootAllocator;
     // the final selected fields of the read data
     private final FieldGetter[] selectedFieldGetters;
     // whether the projection is push downed to the server side and the returned data is pruned.
@@ -99,13 +104,20 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
         BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
         VectorSchemaRoot vectorRoot =
                 VectorSchemaRoot.create(ArrowUtils.toArrowSchema(dataRowType), allocator);
+        org.apache.arrow.memory.BufferAllocator unShadeRootAllocator =
+                new org.apache.arrow.memory.RootAllocator(Long.MAX_VALUE);
+        org.apache.arrow.vector.VectorSchemaRoot unShadeVectorRoot =
+                org.apache.arrow.vector.VectorSchemaRoot.create(
+                        NativeArrowUtils.toArrowSchema(dataRowType), unShadeRootAllocator);
         FieldGetter[] fieldGetters = buildProjectedFieldGetters(dataRowType, selectedFields);
         return new LogRecordReadContext(
                 LogFormat.ARROW,
                 dataRowType,
                 schemaId,
                 vectorRoot,
+                unShadeVectorRoot,
                 allocator,
+                unShadeRootAllocator,
                 fieldGetters,
                 projectionPushDowned);
     }
@@ -146,7 +158,7 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
         FieldGetter[] fieldGetters = buildProjectedFieldGetters(rowType, selectedFields);
         // for INDEXED log format, the projection is NEVER push downed to the server side
         return new LogRecordReadContext(
-                LogFormat.INDEXED, rowType, schemaId, null, null, fieldGetters, false);
+                LogFormat.INDEXED, rowType, schemaId, null, null, null, null, fieldGetters, false);
     }
 
     private LogRecordReadContext(
@@ -154,14 +166,18 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
             RowType dataRowType,
             int schemaId,
             VectorSchemaRoot vectorSchemaRoot,
+            org.apache.arrow.vector.VectorSchemaRoot unShadeVectorSchemaRoot,
             BufferAllocator bufferAllocator,
+            org.apache.arrow.memory.BufferAllocator unShadeAllocator,
             FieldGetter[] selectedFieldGetters,
             boolean projectionPushDowned) {
         this.logFormat = logFormat;
         this.dataRowType = dataRowType;
         this.schemaId = schemaId;
         this.vectorSchemaRoot = vectorSchemaRoot;
+        this.unShadeVectorSchemaRoot = unShadeVectorSchemaRoot;
         this.bufferAllocator = bufferAllocator;
+        this.unShadeRootAllocator = unShadeAllocator;
         this.selectedFieldGetters = selectedFieldGetters;
         this.projectionPushDowned = projectionPushDowned;
     }
@@ -204,6 +220,16 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
         }
         checkNotNull(vectorSchemaRoot, "The vector schema root is not available.");
         return vectorSchemaRoot;
+    }
+
+    @Override
+    public org.apache.arrow.vector.VectorSchemaRoot getUnshadedVectorSchemaRoot(int schemaId) {
+        return unShadeVectorSchemaRoot;
+    }
+
+    @Override
+    public org.apache.arrow.memory.BufferAllocator getUnshadedAllocator() {
+        return unShadeRootAllocator;
     }
 
     @Override

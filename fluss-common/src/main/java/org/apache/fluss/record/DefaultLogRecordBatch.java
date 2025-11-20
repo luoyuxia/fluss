@@ -27,13 +27,21 @@ import org.apache.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.ArrowUtils;
+import org.apache.fluss.utils.ByteBufferReadableChannel;
 import org.apache.fluss.utils.CloseableIterator;
 import org.apache.fluss.utils.MurmurHashUtils;
+import org.apache.fluss.utils.arrownative.ArrowCompressionFactory;
 import org.apache.fluss.utils.crc.Crc32C;
 
+import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
+
+import javax.annotation.Nullable;
+
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.NoSuchElementException;
 
+import static org.apache.arrow.vector.ipc.message.MessageSerializer.deserializeRecordBatch;
 import static org.apache.fluss.record.LogRecordBatchFormat.BASE_OFFSET_OFFSET;
 import static org.apache.fluss.record.LogRecordBatchFormat.COMMIT_TIMESTAMP_OFFSET;
 import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_OFFSET;
@@ -232,6 +240,19 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     @Override
+    @Nullable
+    public FlussArrowRecordBatch recordsBatch(ReadContext context) {
+        if (getRecordCount() == 0) {
+            return null;
+        }
+        return columnBatchRecord(
+                context.getUnshadedVectorSchemaRoot(schemaId()),
+                context.getUnshadedAllocator(),
+                commitTimestamp(),
+                baseLogOffset());
+    }
+
+    @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
@@ -314,6 +335,35 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
                     return changeTypeVector.getChangeType(rowId);
                 }
             };
+        }
+    }
+
+    private FlussArrowRecordBatch columnBatchRecord(
+            org.apache.arrow.vector.VectorSchemaRoot root,
+            org.apache.arrow.memory.BufferAllocator allocator,
+            long timestamp,
+            long offset) {
+        boolean isAppendOnly = (attributes() & APPEND_ONLY_FLAG_MASK) > 0;
+        if (isAppendOnly) {
+            int recordBatchHeaderSize = recordBatchHeaderSize(magic);
+            int arrowOffset = position + recordBatchHeaderSize;
+            int arrowLength = sizeInBytes() - recordBatchHeaderSize;
+            ByteBuffer arrowBatchBuffer = segment.wrap(arrowOffset, arrowLength);
+            try (org.apache.arrow.vector.ipc.ReadChannel channel =
+                            new org.apache.arrow.vector.ipc.ReadChannel(
+                                    new ByteBufferReadableChannel(arrowBatchBuffer));
+                    ArrowRecordBatch batch = deserializeRecordBatch(channel, allocator)) {
+
+                org.apache.arrow.vector.VectorLoader vectorLoader =
+                        new org.apache.arrow.vector.VectorLoader(
+                                root, ArrowCompressionFactory.INSTANCE);
+                vectorLoader.load(batch);
+                return new FlussArrowRecordBatch(root, timestamp, offset);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to deserialize ArrowRecordBatch.", e);
+            }
+        } else {
+            throw new UnsupportedOperationException("Only AppendOnly is not supported");
         }
     }
 

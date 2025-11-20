@@ -37,5 +37,5 @@ public interface SupportsRecordBatchWrite {
      * @param recordBatch the batch of records to write
      * @throws IOException if an I/O error occurs
      */
-    void write(RecordBatch recordBatch) throws IOException;
+    void write(RecordBatch recordBatch) throws Exception;
 }
