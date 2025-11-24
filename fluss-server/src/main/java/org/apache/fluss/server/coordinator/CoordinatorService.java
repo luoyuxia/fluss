@@ -28,7 +28,6 @@ import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidCoordinatorException;
 import org.apache.fluss.exception.InvalidDatabaseException;
 import org.apache.fluss.exception.InvalidTableException;
-import org.apache.fluss.exception.LakeTableAlreadyExistException;
 import org.apache.fluss.exception.SecurityDisabledException;
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.exception.TableNotPartitionedException;
@@ -290,13 +289,15 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         .createTable(tablePath, tableDescriptor);
             } catch (TableAlreadyExistException e) {
                 // ignore
-//                throw new LakeTableAlreadyExistException(
-//                        String.format(
-//                                "The table %s already exists in %s catalog, please "
-//                                        + "first drop the table in %s catalog or use a new table name.",
-//                                tablePath,
-//                                lakeCatalogContainer.getDataLakeFormat(),
-//                                lakeCatalogContainer.getDataLakeFormat()));
+                //                throw new LakeTableAlreadyExistException(
+                //                        String.format(
+                //                                "The table %s already exists in %s catalog, please
+                // "
+                //                                        + "first drop the table in %s catalog or
+                // use a new table name.",
+                //                                tablePath,
+                //                                lakeCatalogContainer.getDataLakeFormat(),
+                //                                lakeCatalogContainer.getDataLakeFormat()));
             }
         }
 

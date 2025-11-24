@@ -31,6 +31,7 @@ import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.manifest.IndexManifestEntry;
 import org.apache.paimon.manifest.ManifestCommittable;
 import org.apache.paimon.manifest.ManifestEntry;
+import org.apache.paimon.manifest.SimpleFileEntry;
 import org.apache.paimon.operation.FileStoreCommit;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.CommitCallback;
@@ -224,7 +225,10 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
 
         @Override
         public void call(
-                List<ManifestEntry> list, List<IndexManifestEntry> indexFiles, Snapshot snapshot) {
+                List<SimpleFileEntry> list,
+                List<ManifestEntry> list1,
+                List<IndexManifestEntry> list2,
+                Snapshot snapshot) {
             currentCommitSnapshotId.set(snapshot.id());
         }
 

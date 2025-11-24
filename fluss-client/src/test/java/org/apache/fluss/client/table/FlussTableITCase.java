@@ -1141,7 +1141,7 @@ class FlussTableITCase extends ClientToServerITCaseBase {
 
             Scan scan = table.newScan();
             if (doProjection) {
-                scan = scan.project(new int[] {0}); // do projection.
+                scan = scan.project(new int[] {}); // do projection.
             }
             LogScanner logScanner = scan.createLogScanner();
             logScanner.subscribeFromBeginning(0);

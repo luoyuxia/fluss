@@ -366,7 +366,8 @@ public abstract class FlinkPaimonTieringTestBase {
                                         .build())
                         .distributedBy(bucketNum)
                         .property(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true")
-                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500));
+                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500))
+                        .customProperty("paimon.file.format", "lance");
         tableDescriptor.customProperties(tableCustomProperties);
         tableDescriptor.properties(tableProperties);
         return createTable(tablePath, tableDescriptor.build());

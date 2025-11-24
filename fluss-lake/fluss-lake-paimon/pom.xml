@@ -33,7 +33,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <paimon.version>1.2.0</paimon.version>
+        <paimon.version>1.3.1</paimon.version>
     </properties>
 
     <dependencies>
@@ -47,6 +47,18 @@
             <groupId>org.apache.paimon</groupId>
             <artifactId>paimon-bundle</artifactId>
             <version>${paimon.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.paimon</groupId>
+            <artifactId>paimon-lance</artifactId>
+            <version>${paimon.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.lancedb</groupId>
+            <artifactId>lance-core</artifactId>
+            <version>0.31.0-arm-1</version>
         </dependency>
 
         <dependency>
@@ -225,7 +237,7 @@
                         <configuration>
                             <artifactSet>
                                 <includes>
-                                    <include>org.apache.paimon:paimon-bundle</include>
+                                    <include>*:*</include>
                                 </includes>
                             </artifactSet>
                         </configuration>
