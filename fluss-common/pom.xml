@@ -74,6 +74,18 @@
             <version>19.0.0-SNAPSHOT</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>arrow-dataset</artifactId>
+            <version>19.0.0-SNAPSHOT-vvp</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>arrow-memory-netty</artifactId>
+            <version>19.0.0-SNAPSHOT</version>
+        </dependency>
+
         <!-- TODO: these two dependencies need to be shaded. -->
         <dependency>
             <groupId>org.lz4</groupId>

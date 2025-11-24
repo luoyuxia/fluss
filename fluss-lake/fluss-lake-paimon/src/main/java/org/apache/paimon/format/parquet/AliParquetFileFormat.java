@@ -158,13 +158,13 @@ public class AliParquetFileFormat extends ParquetFileFormat {
         @Override
         public Boolean visit(TimestampType timestampType) {
             int precision = DataTypeChecks.getPrecision(timestampType);
-            return precision <= 6;
+            return precision <= 9;
         }
 
         @Override
         public Boolean visit(LocalZonedTimestampType localZonedTimestampType) {
             int precision = DataTypeChecks.getPrecision(localZonedTimestampType);
-            return precision <= 6;
+            return precision <= 9;
         }
 
         @Override

@@ -113,6 +113,16 @@
                                     <include>*:*</include>
                                 </includes>
                             </artifactSet>
+                            <relocations>
+                                <relocation>
+                                    <pattern>com.google.flatbuffers</pattern>
+                                    <shadedPattern>org.apache.fluss.client.shaded.com.google.flatbuffers</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.apache.arrow.vector.ipc.message</pattern>
+                                    <shadedPattern>org.apache.fluss.client.shaded.org.apache.arrow.vector.ipc.message</shadedPattern>
+                                </relocation>
+                            </relocations>
                         </configuration>
                     </execution>
                 </executions>
