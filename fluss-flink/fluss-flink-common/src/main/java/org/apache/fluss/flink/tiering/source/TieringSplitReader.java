@@ -327,8 +327,12 @@ public class TieringSplitReader<WriteResult>
             long maxTimestamp)
             throws IOException {
         LakeWriter<WriteResult> lakeWriter = lakeWriters.remove(bucket);
+        LOG.info("Starting complete lake writer for {}.", bucket);
         WriteResult writeResult = lakeWriter.complete();
+        LOG.info("Complete lake writer for {}.", bucket);
+        LOG.info("Starting close lake writer for {}.", bucket);
         lakeWriter.close();
+        LOG.info("Close lake writer for {}.", bucket);
         return toTableBucketWriteResult(
                 currentTablePath,
                 bucket,

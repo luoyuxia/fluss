@@ -30,6 +30,9 @@ import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.ArrowUtils;
 import org.apache.fluss.utils.Projection;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.List;
@@ -40,6 +43,8 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /** A simple implementation for {@link LogRecordBatch.ReadContext}. */
 public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoCloseable {
+
+    private static final Logger LOG = LoggerFactory.getLogger(LogRecordReadContext.class);
 
     // the log format of the table
     private final LogFormat logFormat;
@@ -95,8 +100,11 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
 
     private static LogRecordReadContext createArrowReadContext(
             RowType dataRowType, int schemaId, int[] selectedFields, boolean projectionPushDowned) {
+        LOG.info("Creating arrow read context for {}", schemaId);
         // TODO: use a more reasonable memory limit
-        BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        BufferAllocator allocator = new RootAllocator(1024 * 1026 * 16);
+        LOG.info("Using bufferAllocator");
+
         VectorSchemaRoot vectorRoot =
                 VectorSchemaRoot.create(ArrowUtils.toArrowSchema(dataRowType), allocator);
         FieldGetter[] fieldGetters = buildProjectedFieldGetters(dataRowType, selectedFields);
