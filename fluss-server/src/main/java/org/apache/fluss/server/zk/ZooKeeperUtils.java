@@ -104,12 +104,13 @@ public class ZooKeeperUtils {
                     new SessionConnectionStateErrorPolicy());
         }
 
+        // Configure ZKClientConfig with jute.maxbuffer
+        ZKClientConfig zkClientConfig;
         Optional<String> configPath =
                 configuration.getOptional(ConfigOptions.ZOOKEEPER_CONFIG_PATH);
         if (configPath.isPresent()) {
             try {
-                ZKClientConfig zkClientConfig = new ZKClientConfig(configPath.get());
-                curatorFrameworkBuilder.zkClientConfig(zkClientConfig);
+                zkClientConfig = new ZKClientConfig(configPath.get());
             } catch (QuorumPeerConfig.ConfigException e) {
                 LOG.warn("Fail to load zookeeper client config from path {}", configPath.get(), e);
                 throw new RuntimeException(
@@ -118,7 +119,15 @@ public class ZooKeeperUtils {
                                 configPath.get()),
                         e);
             }
+        } else {
+            zkClientConfig = new ZKClientConfig();
         }
+
+        // Set jute.maxbuffer to match RPC frame length limit
+        int maxBufferSize = configuration.getInt(ConfigOptions.ZOOKEEPER_MAX_BUFFER_SIZE);
+        zkClientConfig.setProperty("jute.maxbuffer", String.valueOf(maxBufferSize));
+        LOG.debug("Set ZooKeeper jute.maxbuffer to {} bytes", maxBufferSize);
+        curatorFrameworkBuilder.zkClientConfig(zkClientConfig);
         return new ZooKeeperClient(
                 startZookeeperClient(curatorFrameworkBuilder, fatalErrorHandler), configuration);
     }
