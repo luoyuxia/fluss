@@ -19,14 +19,22 @@
 package org.apache.fluss.lake.paimon.source;
 
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.lake.committer.BucketOffset;
 import org.apache.fluss.lake.paimon.utils.FlussToPaimonPredicateConverter;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.source.Planner;
 import org.apache.fluss.lake.source.RecordReader;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.predicate.Predicate;
+import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
+import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.fluss.utils.json.BucketOffsetJsonSerde;
+import org.apache.fluss.utils.types.Tuple2;
 
+import org.apache.paimon.CoreOptions;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
@@ -34,14 +42,20 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.predicate.PredicateBuilder;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.types.RowType;
+import org.apache.paimon.utils.SnapshotManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
+import static org.apache.fluss.lake.committer.BucketOffset.FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 
 /**
@@ -49,6 +63,7 @@ import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
  * paimon table.
  */
 public class PaimonLakeSource implements LakeSource<PaimonSplit> {
+    private static final Logger LOG = LoggerFactory.getLogger(PaimonLakeSource.class);
     private static final long serialVersionUID = 1L;
 
     private final Configuration paimonConfig;
@@ -56,6 +71,7 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
 
     private @Nullable int[][] project;
     private @Nullable org.apache.paimon.predicate.Predicate predicate;
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     public PaimonLakeSource(Configuration paimonConfig, TablePath tablePath) {
         this.paimonConfig = paimonConfig;
@@ -98,6 +114,97 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
     public Planner<PaimonSplit> createPlanner(PlannerContext plannerContext) {
         return new PaimonSplitPlanner(
                 paimonConfig, tablePath, predicate, plannerContext.snapshotId());
+    }
+
+    @Override
+    public Optional<Tuple2<Long, Map<TableBucket, Long>>> preferSnapshot(
+            long tableId, long snapshotId) throws Exception {
+        try (Catalog catalog = getCatalog()) {
+            FileStoreTable fileStoreTable = getTable(catalog, tablePath);
+            if (Options.fromMap(fileStoreTable.options())
+                    .get(CoreOptions.DELETION_VECTORS_ENABLED)) {
+                long currentId = snapshotId + 1;
+                long lastCompactSnapshotId = -1;
+                SnapshotManager snapshotManager = fileStoreTable.snapshotManager();
+                while (true) {
+                    if (!snapshotManager.snapshotExists(currentId)) {
+                        // 快照不存在，停止
+                        break;
+                    }
+
+                    Snapshot snapshot = snapshotManager.snapshot(currentId);
+                    if (snapshot.commitKind() == Snapshot.CommitKind.COMPACT) {
+                        // 是 COMPACT 快照，记录并继续
+                        lastCompactSnapshotId = currentId;
+                        currentId++;
+                    } else {
+                        // 遇到非 COMPACT 快照，停止（要求连续）
+                        break;
+                    }
+                }
+
+                if (lastCompactSnapshotId != -1) {
+                    LOG.info(
+                            "Found the last consecutive compaction snapshot: {}, use this as prefer snapshot.",
+                            lastCompactSnapshotId);
+                    return Optional.of(Tuple2.of(lastCompactSnapshotId, null));
+                } else {
+                    LOG.info(
+                            "Can't find the next compacted snapshot for tiered snapshot {}, try to find by previous",
+                            snapshotId);
+                    Long earliestSnapshotId = snapshotManager.earliestSnapshotId();
+                    if (earliestSnapshotId == null) {
+                        return Optional.empty();
+                    } else {
+                        for (long previousSnapshotId = snapshotId - 1;
+                                previousSnapshotId >= earliestSnapshotId;
+                                previousSnapshotId--) {
+                            Snapshot previousSnapshot =
+                                    snapshotManager.snapshot(previousSnapshotId);
+                            Snapshot nextSnapshot =
+                                    snapshotManager.snapshot(previousSnapshotId + 1);
+                            if (previousSnapshot.commitKind() == Snapshot.CommitKind.APPEND
+                                    && nextSnapshot.commitKind() == Snapshot.CommitKind.COMPACT) {
+                                Map<TableBucket, Long> logEndOffsets = new HashMap<>();
+                                Map<String, String> lakeSnapshotProperties =
+                                        previousSnapshot.properties();
+                                String flussOffsetProperties =
+                                        lakeSnapshotProperties.get(
+                                                FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY);
+
+                                for (JsonNode node :
+                                        OBJECT_MAPPER.readTree(flussOffsetProperties)) {
+                                    BucketOffset bucketOffset =
+                                            BucketOffsetJsonSerde.INSTANCE.deserialize(node);
+                                    if (bucketOffset.getPartitionId() != null) {
+                                        logEndOffsets.put(
+                                                new TableBucket(
+                                                        tableId,
+                                                        bucketOffset.getPartitionId(),
+                                                        bucketOffset.getBucket()),
+                                                bucketOffset.getLogOffset());
+                                    } else {
+                                        logEndOffsets.put(
+                                                new TableBucket(tableId, bucketOffset.getBucket()),
+                                                bucketOffset.getLogOffset());
+                                    }
+                                }
+                                LOG.info(
+                                        "Find the nearest compacted snapshot {} for tiered snapshot {}, use the compacted snapshot, the offsets are {}.",
+                                        nextSnapshot.id(),
+                                        snapshotId,
+                                        logEndOffsets);
+                                return Optional.of(Tuple2.of(nextSnapshot.id(), logEndOffsets));
+                            }
+                        }
+                        // can't find any valid snapshot, return empty
+                        return Optional.empty();
+                    }
+                }
+            } else {
+                return Optional.of(Tuple2.of(snapshotId, null));
+            }
+        }
     }
 
     @Override

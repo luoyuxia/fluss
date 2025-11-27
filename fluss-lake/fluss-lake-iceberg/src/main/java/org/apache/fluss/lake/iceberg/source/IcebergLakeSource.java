@@ -25,8 +25,10 @@ import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.source.Planner;
 import org.apache.fluss.lake.source.RecordReader;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.predicate.Predicate;
+import org.apache.fluss.utils.types.Tuple2;
 
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
@@ -38,7 +40,9 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.apache.fluss.lake.iceberg.utils.IcebergConversions.toIceberg;
@@ -91,6 +95,12 @@ public class IcebergLakeSource implements LakeSource<IcebergSplit> {
     @Override
     public Planner<IcebergSplit> createPlanner(PlannerContext context) throws IOException {
         return new IcebergSplitPlanner(icebergConfig, tablePath, context.snapshotId(), filter);
+    }
+
+    @Override
+    public Optional<Tuple2<Long, Map<TableBucket, Long>>> preferSnapshot(
+            long tableId, long snapshotId) {
+        return Optional.of(Tuple2.of(snapshotId, Collections.emptyMap()));
     }
 
     @Override

@@ -31,6 +31,7 @@ import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.utils.ExceptionUtils;
+import org.apache.fluss.utils.types.Tuple2;
 
 import javax.annotation.Nullable;
 
@@ -40,6 +41,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -96,17 +98,31 @@ public class LakeSplitGenerator {
             throw exception;
         }
 
+        Optional<Tuple2<Long, Map<TableBucket, Long>>> optSnapshotIdAndOffsets =
+                lakeSource.preferSnapshot(tableInfo.getTableId(), lakeSnapshotInfo.getSnapshotId());
+        if (!optSnapshotIdAndOffsets.isPresent()) {
+            return null;
+        }
+
+        Map<TableBucket, Long> tableBucketsOffset = lakeSnapshotInfo.getTableBucketsOffset();
+
+        long preferSnapshotId = optSnapshotIdAndOffsets.get().f0;
+        if (preferSnapshotId != lakeSnapshotInfo.getSnapshotId()
+                && optSnapshotIdAndOffsets.get().f1 != null) {
+            tableBucketsOffset = optSnapshotIdAndOffsets.get().f1;
+        }
+
+        long snapshotId = preferSnapshotId;
+
         boolean isLogTable = !tableInfo.hasPrimaryKey();
         boolean isPartitioned = tableInfo.isPartitioned();
 
         Map<String, Map<Integer, List<LakeSplit>>> lakeSplits =
                 groupLakeSplits(
                         lakeSource
-                                .createPlanner(
-                                        (LakeSource.PlannerContext) lakeSnapshotInfo::getSnapshotId)
+                                .createPlanner((LakeSource.PlannerContext) () -> snapshotId)
                                 .plan());
 
-        Map<TableBucket, Long> tableBucketsOffset = lakeSnapshotInfo.getTableBucketsOffset();
         if (isPartitioned) {
             Set<PartitionInfo> partitionInfos = listPartitionSupplier.get();
             Map<Long, String> partitionNameById =

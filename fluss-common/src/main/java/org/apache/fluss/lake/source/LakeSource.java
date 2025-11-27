@@ -19,11 +19,15 @@ package org.apache.fluss.lake.source;
 
 import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.predicate.Predicate;
+import org.apache.fluss.utils.types.Tuple2;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * A generic interface for lake data sources that defines how to plan splits and read data. Any data
@@ -64,6 +68,9 @@ public interface LakeSource<Split extends LakeSplit> extends Serializable {
      * @throws IOException if an error occurs during planner creation
      */
     Planner<Split> createPlanner(PlannerContext context) throws IOException;
+
+    Optional<Tuple2<Long, Map<TableBucket, Long>>> preferSnapshot(long tableId, long snapshotId)
+            throws Exception;
 
     /**
      * Creates a record reader for reading data from the lake source for the specified split.

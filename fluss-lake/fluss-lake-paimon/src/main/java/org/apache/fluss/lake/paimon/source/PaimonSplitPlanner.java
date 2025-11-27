@@ -33,6 +33,8 @@ import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.source.DataSplit;
 import org.apache.paimon.table.source.InnerTableScan;
 import org.apache.paimon.table.source.Split;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -44,6 +46,8 @@ import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 
 /** Split panner for paimon table. */
 public class PaimonSplitPlanner implements Planner<PaimonSplit> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(PaimonSplitPlanner.class);
 
     private final Configuration paimonConfig;
     private final TablePath tablePath;
@@ -66,6 +70,7 @@ public class PaimonSplitPlanner implements Planner<PaimonSplit> {
         try {
             List<PaimonSplit> splits = new ArrayList<>();
             try (Catalog catalog = getCatalog()) {
+                LOG.info("Using snapshot {} to get table", snapshotId);
                 FileStoreTable fileStoreTable = getTable(catalog, tablePath, snapshotId);
                 InnerTableScan tableScan = fileStoreTable.newScan();
                 boolean isBucketUnAware = fileStoreTable.bucketMode() == BucketMode.BUCKET_UNAWARE;
@@ -73,7 +78,11 @@ public class PaimonSplitPlanner implements Planner<PaimonSplit> {
                 if (predicate != null) {
                     tableScan = tableScan.withFilter(predicate);
                 }
-                for (Split split : tableScan.plan().splits()) {
+
+                List<Split> paimonSplits = tableScan.plan().splits();
+
+                LOG.info("Found paimon splits {}", paimonSplits);
+                for (Split split : paimonSplits) {
                     DataSplit dataSplit = (DataSplit) split;
                     splits.add(new PaimonSplit(dataSplit, isBucketUnAware));
                 }
