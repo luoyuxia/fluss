@@ -35,7 +35,6 @@ import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.utils.CloseableIterator;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -109,7 +108,9 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                                                 "StoppingOffset is null for split: "
                                                         + lakeSnapshotAndFlussLogSplit));
 
-        this.logScanFinished = lakeSnapshotAndFlussLogSplit.getStartingOffset() >= stoppingOffset;
+        this.logScanFinished =
+                lakeSnapshotAndFlussLogSplit.getStartingOffset() >= stoppingOffset
+                        || stoppingOffset <= 0;
     }
 
     private int[] getNeedProjectFields(Table flussTable, @Nullable int[] projectedFields) {
