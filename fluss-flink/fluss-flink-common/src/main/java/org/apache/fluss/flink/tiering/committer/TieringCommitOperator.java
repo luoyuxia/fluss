@@ -225,7 +225,7 @@ public class TieringCommitOperator<WriteResult, Committable>
                     flussCurrentLakeSnapshot == null
                             ? null
                             : flussCurrentLakeSnapshot.getSnapshotId());
-            long committedSnapshotId = lakeCommitter.commit(committable, logOffsetsProperty);
+            long committedSnapshotId = lakeCommitter.commit(committable, new HashMap<>());
             // commit to fluss
             FlussTableLakeSnapshot flussTableLakeSnapshot =
                     new FlussTableLakeSnapshot(tableId, committedSnapshotId);

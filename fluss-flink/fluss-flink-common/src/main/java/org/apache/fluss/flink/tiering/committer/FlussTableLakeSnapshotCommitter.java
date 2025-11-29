@@ -134,11 +134,11 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                 pbLakeTableOffsetForBucket.setPartitionId(tableBucket.getPartitionId());
             }
             if (partitionName != null) {
-                pbLakeTableOffsetForBucket.setPartitionName(partitionName);
+                //                pbLakeTableOffsetForBucket.setPartitionName(partitionName);
             }
             pbLakeTableOffsetForBucket.setBucketId(tableBucket.getBucket());
             pbLakeTableOffsetForBucket.setLogEndOffset(endOffset);
-            pbLakeTableOffsetForBucket.setMaxTimestamp(maxTimestamp);
+            //            pbLakeTableOffsetForBucket.setMaxTimestamp(maxTimestamp);
         }
         return commitLakeTableSnapshotRequest;
     }
