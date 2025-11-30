@@ -759,13 +759,6 @@ public class FlinkSourceEnumerator
             LOG.info("Assigning splits to readers {}", incrementalAssignment);
             context.assignSplits(new SplitsAssignment<>(incrementalAssignment));
         }
-
-        if (noMoreNewSplits) {
-            LOG.info(
-                    "No more FlussSplits to assign. Sending NoMoreSplitsEvent to reader {}",
-                    pendingReaders);
-            pendingReaders.forEach(context::signalNoMoreSplits);
-        }
     }
 
     /**
@@ -815,7 +808,21 @@ public class FlinkSourceEnumerator
 
     @Override
     public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
+        if (!context.registeredReaders().containsKey(subtaskId)) {
+            // reader failed between sending the request and now. skip this request.
+            return;
+        }
         // the fluss source pushes splits eagerly, rather than act upon split requests
+        if (noMoreNewSplits) {
+            List<SourceSplitBase> assignment = pendingSplitAssignment.get(subtaskId);
+            if (assignment == null || assignment.isEmpty()) {
+                LOG.info(
+                        "No more FlussSplits to assign to {}. Sending NoMoreSplitsEvent to reader {}",
+                        subtaskId,
+                        subtaskId);
+                context.signalNoMoreSplits(subtaskId);
+            }
+        }
     }
 
     @Override

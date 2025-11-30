@@ -79,7 +79,7 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     public long commit(PaimonCommittable committable, Map<String, String> snapshotProperties)
             throws IOException {
         ManifestCommittable manifestCommittable = committable.manifestCommittable();
-        snapshotProperties.forEach(manifestCommittable::addProperty);
+        //        snapshotProperties.forEach(manifestCommittable::addProperty);
 
         try {
             fileStoreCommit =

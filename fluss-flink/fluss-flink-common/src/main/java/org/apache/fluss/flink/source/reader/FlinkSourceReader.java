@@ -81,7 +81,9 @@ public class FlinkSourceReader<OUT>
 
     @Override
     protected void onSplitFinished(Map<String, SourceSplitState> map) {
-        // do nothing
+        if (getNumberOfCurrentlyAssignedSplits() == 0) {
+            context.sendSplitRequest();
+        }
     }
 
     @Override
