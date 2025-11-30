@@ -38,7 +38,7 @@ public class PaimonSortedRecordReader extends PaimonRecordReader implements Sort
 
     public PaimonSortedRecordReader(
             FileStoreTable fileStoreTable,
-            PaimonSplit split,
+            @Nullable PaimonSplit split,
             @Nullable int[][] project,
             @Nullable Predicate predicate)
             throws IOException {

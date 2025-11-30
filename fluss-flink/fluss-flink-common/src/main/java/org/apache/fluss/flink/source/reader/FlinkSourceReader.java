@@ -80,6 +80,14 @@ public class FlinkSourceReader<OUT>
     }
 
     @Override
+    public void start() {
+        // we request a split only if we did not get splits during the checkpoint restore
+        if (getNumberOfCurrentlyAssignedSplits() == 0) {
+            context.sendSplitRequest();
+        }
+    }
+
+    @Override
     protected void onSplitFinished(Map<String, SourceSplitState> map) {
         if (getNumberOfCurrentlyAssignedSplits() == 0) {
             context.sendSplitRequest();

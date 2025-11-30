@@ -22,6 +22,9 @@ import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.ProjectedRow;
 import org.apache.fluss.utils.CloseableIterator;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
@@ -35,6 +38,8 @@ import java.util.function.Function;
 
 /** A sort merge reader to merge lakehouse snapshot record and fluss change log. */
 class SortMergeReader {
+
+    private static final Logger LOG = LoggerFactory.getLogger(SortMergeReader.class);
 
     private final ProjectedRow snapshotProjectedPkRow;
     private final CloseableIterator<LogRecord> lakeRecordIterator;
@@ -148,9 +153,14 @@ class SortMergeReader {
         }
     }
 
+    private String toString(InternalRow row) {
+        return row.getString(0) + ", " + row.getInt(6);
+    }
+
     private SortMergeRows sortMergeWithChangeLog(InternalRow lakeSnapshotRow) {
         // no log record, we return the snapshot record
         if (!changeLogIterator.hasNext()) {
+            LOG.info("return lakeSnapshotRow: {}", lakeSnapshotRow);
             return new SortMergeRows(lakeSnapshotRow);
         }
         KeyValueRow logKeyValueRow = changeLogIterator.next();
@@ -159,6 +169,9 @@ class SortMergeReader {
                 userKeyComparator.compare(
                         snapshotProjectedPkRow.replaceRow(lakeSnapshotRow),
                         logKeyValueRow.keyRow());
+        LOG.info("Compare result: {}", compareResult);
+        LOG.info("logKeyValueRow: {}", toString(logKeyValueRow.valueRow()));
+
         if (compareResult == 0) {
             // record of snapshot is equal to log, but the log record is delete,
             // we shouldn't emit record
@@ -183,7 +196,10 @@ class SortMergeReader {
             // we should emit the log record firsts; and still need to iterator changelog to find
             // the first change log greater than the snapshot record
             List<InternalRow> emitRows = new ArrayList<>();
-            emitRows.add(logKeyValueRow.valueRow());
+            // only emit the log record if it's not a delete operation
+            if (!logKeyValueRow.isDelete()) {
+                emitRows.add(logKeyValueRow.valueRow());
+            }
             boolean shouldEmitSnapshotRecord = true;
             while (changeLogIterator.hasNext()) {
                 // get the next log record
@@ -202,8 +218,10 @@ class SortMergeReader {
                     break;
                 } else if (compareResult > 0) {
                     // snapshot record > the log record
-                    // the log record should be emitted
-                    emitRows.add(logKeyValueRow.valueRow());
+                    // the log record should be emitted only if it's not a delete operation
+                    if (!logKeyValueRow.isDelete()) {
+                        emitRows.add(logKeyValueRow.valueRow());
+                    }
                 } else {
                     // log record == snapshot record
                     // the log record should be emitted if is not delete, but the snapshot record
@@ -371,6 +389,11 @@ class SortMergeReader {
             if (currentMergedRows != null && !currentMergedRows.hasNext()) {
                 currentMergedRows = null;
             }
+
+            if (returnedRow != null) {
+                LOG.info("ReturnedRow: {}, key: {}", returnedRow, returnedRow.getString(0));
+            }
+
             return returnedRow;
         }
     }

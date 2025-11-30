@@ -34,6 +34,9 @@ import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.utils.CloseableIterator;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.annotation.Nullable;
 
 import java.io.IOException;
@@ -42,7 +45,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -51,6 +53,8 @@ import java.util.stream.IntStream;
 
 /** A scanner to merge the lakehouse's snapshot and change log. */
 public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
+
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSnapshotAndLogSplitScanner.class);
 
     private final LakeSnapshotAndFlussLogSplit lakeSnapshotSplitAndFlussLogSplit;
     private Comparator<InternalRow> rowComparator;
@@ -73,6 +77,8 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
 
     private SortMergeReader currentSortMergeReader;
 
+    private final TableBucket tableBucket;
+
     public LakeSnapshotAndLogSplitScanner(
             Table table,
             LakeSource<LakeSplit> lakeSource,
@@ -89,7 +95,7 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                         .mapToObj(field -> new int[] {field})
                         .toArray(int[][]::new));
 
-        TableBucket tableBucket = lakeSnapshotAndFlussLogSplit.getTableBucket();
+        tableBucket = lakeSnapshotAndFlussLogSplit.getTableBucket();
         if (tableBucket.getPartitionId() != null) {
             this.logScanner.subscribe(
                     tableBucket.getPartitionId(),
@@ -180,6 +186,15 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                 }
             }
             if (currentSortMergeReader == null) {
+                if (logRows != null) {
+                    LOG.info("Current logRows is {} for bucket {}", logRows.size(), tableBucket);
+                    for (Map.Entry<InternalRow, KeyValueRow> entry : logRows.entrySet()) {
+                        LOG.info(
+                                "Key: {}, Value: {}, is",
+                                entry.getKey().getString(0) + "," + entry.getKey().getString(1),
+                                entry.getValue().valueRow().getInt(6));
+                    }
+                }
                 currentSortMergeReader =
                         new SortMergeReader(
                                 adjustProjectedFields,
@@ -197,7 +212,9 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                 if (lakeSnapshotSplitAndFlussLogSplit.getLakeSplits() == null
                         || lakeSnapshotSplitAndFlussLogSplit.getLakeSplits().isEmpty()) {
                     lakeRecordIterators = Collections.emptyList();
-                    logRows = new LinkedHashMap<>();
+                    rowComparator =
+                            ((SortedRecordReader) lakeSource.createRecordReader(() -> null))
+                                    .order();
                 } else {
                     for (LakeSplit lakeSplit : lakeSnapshotSplitAndFlussLogSplit.getLakeSplits()) {
                         RecordReader reader = lakeSource.createRecordReader(() -> lakeSplit);
@@ -209,8 +226,8 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                         }
                         lakeRecordIterators.add(reader.read());
                     }
-                    logRows = new TreeMap<>(rowComparator);
                 }
+                logRows = new TreeMap<>(rowComparator);
             }
             pollLogRecords(timeout);
             return CloseableIterator.wrap(Collections.emptyIterator());
@@ -227,6 +244,8 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                     new KeyValueRow(keyIndexesInRow, scanRecord.getRow(), isDelete);
             InternalRow keyRow = keyValueRow.keyRow();
             // upsert the key value row
+            // Since scanRecords are already ordered by offset, later records will correctly
+            // override earlier ones
             logRows.put(keyRow, keyValueRow);
             if (scanRecord.logOffset() >= stoppingOffset - 1) {
                 // has reached to the end
