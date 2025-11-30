@@ -19,7 +19,6 @@
 package org.apache.fluss.lake.paimon.source;
 
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.lake.committer.BucketOffset;
 import org.apache.fluss.lake.paimon.utils.FlussToPaimonPredicateConverter;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.source.LakeSource;
@@ -28,9 +27,7 @@ import org.apache.fluss.lake.source.RecordReader;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.predicate.Predicate;
-import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.fluss.utils.json.BucketOffsetJsonSerde;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.apache.paimon.CoreOptions;
@@ -50,12 +47,10 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static org.apache.fluss.lake.committer.BucketOffset.FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 
 /**
@@ -156,49 +151,71 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
                     if (earliestSnapshotId == null) {
                         return Optional.empty();
                     } else {
-                        for (long previousSnapshotId = snapshotId - 1;
-                                previousSnapshotId >= earliestSnapshotId;
-                                previousSnapshotId--) {
-                            Snapshot previousSnapshot =
-                                    snapshotManager.snapshot(previousSnapshotId);
-                            Snapshot nextSnapshot =
-                                    snapshotManager.snapshot(previousSnapshotId + 1);
-                            if (previousSnapshot.commitKind() == Snapshot.CommitKind.APPEND
-                                    && nextSnapshot.commitKind() == Snapshot.CommitKind.COMPACT) {
-                                Map<TableBucket, Long> logEndOffsets = new HashMap<>();
-                                Map<String, String> lakeSnapshotProperties =
-                                        previousSnapshot.properties();
-                                String flussOffsetProperties =
-                                        lakeSnapshotProperties.get(
-                                                FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY);
-
-                                for (JsonNode node :
-                                        OBJECT_MAPPER.readTree(flussOffsetProperties)) {
-                                    BucketOffset bucketOffset =
-                                            BucketOffsetJsonSerde.INSTANCE.deserialize(node);
-                                    if (bucketOffset.getPartitionId() != null) {
-                                        logEndOffsets.put(
-                                                new TableBucket(
-                                                        tableId,
-                                                        bucketOffset.getPartitionId(),
-                                                        bucketOffset.getBucket()),
-                                                bucketOffset.getLogOffset());
-                                    } else {
-                                        logEndOffsets.put(
-                                                new TableBucket(tableId, bucketOffset.getBucket()),
-                                                bucketOffset.getLogOffset());
-                                    }
-                                }
-                                LOG.info(
-                                        "Find the nearest compacted snapshot {} for tiered snapshot {}, use the compacted snapshot, the offsets are {}.",
-                                        nextSnapshot.id(),
-                                        snapshotId,
-                                        logEndOffsets);
-                                return Optional.of(Tuple2.of(nextSnapshot.id(), logEndOffsets));
-                            }
-                        }
-                        // can't find any valid snapshot, return empty
+                        LOG.warn(
+                                "No any next compacted snapshot for tiered snapshot {}, try to fall back to not read lake.",
+                                snapshotId);
                         return Optional.empty();
+                        //                        for (long previousSnapshotId = snapshotId - 1;
+                        //                                previousSnapshotId >= earliestSnapshotId;
+                        //                                previousSnapshotId--) {
+                        //                            Snapshot previousSnapshot =
+                        //
+                        // snapshotManager.snapshot(previousSnapshotId);
+                        //                            Snapshot nextSnapshot =
+                        //
+                        // snapshotManager.snapshot(previousSnapshotId + 1);
+                        //                            if (previousSnapshot.commitKind() ==
+                        // Snapshot.CommitKind.APPEND
+                        //                                    && nextSnapshot.commitKind() ==
+                        // Snapshot.CommitKind.COMPACT) {
+                        //                                Map<TableBucket, Long> logEndOffsets = new
+                        // HashMap<>();
+                        //                                Map<String, String> lakeSnapshotProperties
+                        // =
+                        //                                        previousSnapshot.properties();
+                        //                                String flussOffsetProperties =
+                        //                                        lakeSnapshotProperties.get(
+                        //
+                        // FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY);
+                        //
+                        //                                for (JsonNode node :
+                        //
+                        // OBJECT_MAPPER.readTree(flussOffsetProperties)) {
+                        //                                    BucketOffset bucketOffset =
+                        //
+                        // BucketOffsetJsonSerde.INSTANCE.deserialize(node);
+                        //                                    if (bucketOffset.getPartitionId() !=
+                        // null) {
+                        //                                        logEndOffsets.put(
+                        //                                                new TableBucket(
+                        //                                                        tableId,
+                        //
+                        // bucketOffset.getPartitionId(),
+                        //
+                        // bucketOffset.getBucket()),
+                        //
+                        // bucketOffset.getLogOffset());
+                        //                                    } else {
+                        //                                        logEndOffsets.put(
+                        //                                                new TableBucket(tableId,
+                        // bucketOffset.getBucket()),
+                        //
+                        // bucketOffset.getLogOffset());
+                        //                                    }
+                        //                                }
+                        //                                LOG.info(
+                        //                                        "Find the nearest compacted
+                        // snapshot {} for tiered snapshot {}, use the compacted snapshot, the
+                        // offsets are {}.",
+                        //                                        nextSnapshot.id(),
+                        //                                        snapshotId,
+                        //                                        logEndOffsets);
+                        //                                return
+                        // Optional.of(Tuple2.of(nextSnapshot.id(), logEndOffsets));
+                        //                            }
+                        //                        }
+                        //                        // can't find any valid snapshot, return empty
+                        //                        return Optional.empty();
                     }
                 }
             } else {
