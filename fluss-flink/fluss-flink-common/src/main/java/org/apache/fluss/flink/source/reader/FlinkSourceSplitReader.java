@@ -172,7 +172,6 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
                 if (subscribedBuckets.isEmpty()) {
                     return FlinkRecordsWithSplitIds.emptyRecords(flinkSourceReaderMetrics);
                 }
-                LOG.info("logScanner poll..");
                 ScanRecords scanRecords = logScanner.poll(POLL_TIMEOUT);
                 return forLogRecords(scanRecords);
             }

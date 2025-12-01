@@ -238,23 +238,6 @@ public class LogFetcher implements Closeable {
         } else {
             final long requestStartTime = System.currentTimeMillis();
             scannerMetricGroup.fetchRequestCount().inc();
-
-            LOG.info("Fetching request for node id {}", destination);
-            Map<TableBucket, Long> fetchOffsets = new HashMap<>();
-            for (PbFetchLogReqForTable fetchLogReqForTable : fetchLogRequest.getTablesReqsList()) {
-                long tableId = fetchLogReqForTable.getTableId();
-                for (PbFetchLogReqForBucket pbFetchLogReqForBucket :
-                        fetchLogReqForTable.getBucketsReqsList()) {
-                    TableBucket tableBucket =
-                            new TableBucket(
-                                    tableId,
-                                    pbFetchLogReqForBucket.hasPartitionId()
-                                            ? pbFetchLogReqForBucket.getPartitionId()
-                                            : null,
-                                    pbFetchLogReqForBucket.getBucketId());
-                    fetchOffsets.put(tableBucket, pbFetchLogReqForBucket.getFetchOffset());
-                }
-            }
             gateway.fetchLog(fetchLogRequest)
                     .whenComplete(
                             (fetchLogResponse, e) -> {
@@ -266,10 +249,6 @@ public class LogFetcher implements Closeable {
                                             destination, requestStartTime, fetchLogResponse);
                                 }
                             });
-            LOG.info(
-                    "Finish send fetching request for node id {} for fetch requests: {}",
-                    destination,
-                    fetchOffsets);
         }
     }
 
@@ -352,10 +331,6 @@ public class LogFetcher implements Closeable {
             // update fetch metrics only when request success
             scannerMetricGroup.updateFetchLatency(System.currentTimeMillis() - requestStartTime);
             scannerMetricGroup.bytesPerRequest().update(fetchLogResponse.totalSize());
-
-            Map<TableBucket, Long> highWaterMarks = new HashMap<>();
-            Map<TableBucket, Long> fetchOffsets = new HashMap<>();
-
             for (PbFetchLogRespForTable respForTable : fetchLogResponse.getTablesRespsList()) {
                 long tableId = respForTable.getTableId();
                 for (PbFetchLogRespForBucket respForBucket : respForTable.getBucketsRespsList()) {
@@ -401,12 +376,6 @@ public class LogFetcher implements Closeable {
                                 logFetchBuffer.add(completedFetch);
                             }
                         }
-                        highWaterMarks.put(tb, fetchResultForBucket.getHighWatermark());
-                        fetchOffsets.put(tb, fetchOffset);
-                        LOG.info(
-                                "handleFetchLogResponse: high watermark {}, fetch offset {}.",
-                                highWaterMarks,
-                                fetchOffsets);
                     }
                 }
             }

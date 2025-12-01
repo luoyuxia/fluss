@@ -193,9 +193,10 @@ public class TieringCommitOperator<WriteResult, Committable>
                             .collect(Collectors.toList());
 
             LakeSnapshot flussCurrentLakeSnapshot = getLatestLakeSnapshot(tablePath);
-            Map<String, String> logOffsetsProperty =
-                    toBucketOffsetsProperty(
-                            tablePath, flussCurrentLakeSnapshot, committableWriteResults);
+            //            Map<String, String> logOffsetsProperty =
+            //                    toBucketOffsetsProperty(
+            //                            tablePath, flussCurrentLakeSnapshot,
+            // committableWriteResults);
             // to committable
             Committable committable = lakeCommitter.toCommittable(writeResults);
             // before commit to lake, check fluss not missing any lake snapshot committed by fluss
