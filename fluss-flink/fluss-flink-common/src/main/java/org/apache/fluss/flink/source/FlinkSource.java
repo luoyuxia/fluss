@@ -47,12 +47,16 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.synchronization.FutureCompletingBlockingQueue;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 /** Flink source for Fluss. */
 public class FlinkSource<OUT>
         implements Source<OUT, SourceSplitBase, SourceEnumeratorState>, ResultTypeQueryable {
+
+    private static final Logger LOG = LoggerFactory.getLogger(FlinkSource.class);
     private static final long serialVersionUID = 1L;
 
     private final Configuration flussConf;
@@ -147,6 +151,7 @@ public class FlinkSource<OUT>
     public SplitEnumerator<SourceSplitBase, SourceEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<SourceSplitBase> splitEnumeratorContext,
             SourceEnumeratorState sourceEnumeratorState) {
+        LOG.info("Restore Enumerator {}", sourceEnumeratorState);
         return new FlinkSourceEnumerator(
                 tablePath,
                 flussConf,

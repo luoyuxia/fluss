@@ -116,6 +116,7 @@ public class FlinkSourceEnumerator
     /** buckets that have been assigned to readers. */
     private final Set<TableBucket> assignedTableBuckets;
 
+    // will be null when the table is not lake table
     @Nullable private List<SourceSplitBase> pendingHybridLakeFlussSplits;
 
     private final long scanPartitionDiscoveryIntervalMs;
@@ -615,6 +616,7 @@ public class FlinkSourceEnumerator
         // still have pending lake fluss splits,
         // should be restored from checkpoint, shouldn't
         // list splits again
+        LOG.info("pendingHybridLakeFlussSplits: {}", pendingHybridLakeFlussSplits);
         if (pendingHybridLakeFlussSplits != null) {
             return pendingHybridLakeFlussSplits;
         }
@@ -628,8 +630,17 @@ public class FlinkSourceEnumerator
                             stoppingOffsetsInitializer,
                             tableInfo.getNumBuckets(),
                             this::listPartitions);
-            pendingHybridLakeFlussSplits = lakeSplitGenerator.generateHybridLakeFlussSplits();
-            return pendingHybridLakeFlussSplits;
+            List<SourceSplitBase> generatedSplits =
+                    lakeSplitGenerator.generateHybridLakeFlussSplits();
+            LOG.info("generatedHybridLakeFlussSplits: {}", generatedSplits);
+            if (generatedSplits == null) {
+                // no hybrid lake splits, set the pending splits to empty list
+                pendingHybridLakeFlussSplits = Collections.emptyList();
+                return null;
+            } else {
+                pendingHybridLakeFlussSplits = generatedSplits;
+                return generatedSplits;
+            }
         } catch (Exception e) {
             throw new FlinkRuntimeException("Failed to generate hybrid lake fluss splits", e);
         }
