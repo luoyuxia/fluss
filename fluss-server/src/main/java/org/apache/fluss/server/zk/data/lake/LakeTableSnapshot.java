@@ -27,10 +27,10 @@ import java.util.Optional;
 /** The snapshot info for a table. */
 public class LakeTableSnapshot {
 
-    // the last committed snapshot id in lake
+    // the last committed snapshot id in lake (tiered snapshot)
     private final long snapshotId;
 
-    // the log offset of the bucket
+    // the log offset of the bucket (tiered offsets)
     // mapping from bucket id to log end offset or max timestamp,
     // will be null if log offset is unknown such as reading the snapshot of primary key table
     private final Map<TableBucket, Long> bucketLogEndOffset;

@@ -26,9 +26,13 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.utils.FlussPaths;
 
+import javax.annotation.Nullable;
+
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.apache.fluss.metrics.registry.MetricRegistry.LOG;
 
@@ -47,61 +51,145 @@ public class LakeTableHelper {
      * Upserts a lake table snapshot for the given table.
      *
      * <p>This method merges the new snapshot with the existing one (if any) and stores it (data in
-     * remote file, the remote file path in ZK).
+     * remote file, the remote file path in ZK). It appends the new snapshot to the existing list of
+     * snapshots. If tableReadableTableSnapshot is provided, it will update the readable offsets for
+     * the corresponding snapshot and delete all snapshots before that snapshot.
      *
      * @param tableId the table ID
      * @param tablePath the table path
      * @param lakeTableSnapshot the new snapshot to upsert
+     * @param tableReadableTableSnapshot the readable snapshot to update (nullable)
+     * @param minSnapshotIdToKeep the minimum snapshot ID to keep, snapshots before this ID will be
+     *     deleted (nullable)
      * @throws Exception if the operation fails
      */
     public void upsertLakeTable(
-            long tableId, TablePath tablePath, LakeTableSnapshot lakeTableSnapshot)
+            long tableId,
+            TablePath tablePath,
+            LakeTableSnapshot lakeTableSnapshot,
+            @Nullable LakeTableSnapshot tableReadableTableSnapshot,
+            @Nullable Long minSnapshotIdToKeep)
             throws Exception {
-        Optional<LakeTable> optPreviousLakeTable = zkClient.getLakeTable(tableId);
-        // Merge with previous snapshot if exists
-        if (optPreviousLakeTable.isPresent()) {
-            lakeTableSnapshot =
-                    mergeLakeTable(
-                            optPreviousLakeTable.get().getLatestTableSnapshot(), lakeTableSnapshot);
+        LakeTable previousLakeTable = zkClient.getLakeTable(tableId).orElse(null);
+        if (previousLakeTable != null) {
+            LakeTableSnapshot previousLatestLakeSnapshot =
+                    previousLakeTable.getLatestTableSnapshot();
+            LakeTableSnapshot previousLatestLakeReadableSnapshot =
+                    previousLakeTable.getLatestReadableTableSnapshot();
+
+            // lake latest tiered snapshot
+            lakeTableSnapshot = mergeLakeTable(previousLatestLakeSnapshot, lakeTableSnapshot);
+
+            // if readable snapshot id equals to tiered snapshot id,
+            // set readable table snapshot to tiered snapshot
+            if (tableReadableTableSnapshot != null) {
+                if (tableReadableTableSnapshot.getSnapshotId()
+                        == lakeTableSnapshot.getSnapshotId()) {
+                    tableReadableTableSnapshot = lakeTableSnapshot;
+                } else {
+                    if (previousLatestLakeReadableSnapshot != null) {
+                        // Merge with previous readable snapshot to preserve offsets for buckets
+                        // that might not be in the new readable offsets
+                        tableReadableTableSnapshot =
+                                mergeLakeTable(
+                                        previousLatestLakeReadableSnapshot,
+                                        tableReadableTableSnapshot);
+                    }
+                }
+            }
         }
 
-        // store the lake table snapshot into a file
+        // store the lake table snapshot into a file (tiered offsets)
         FsPath lakeTableSnapshotFsPath =
                 storeLakeTableSnapshot(tableId, tablePath, lakeTableSnapshot);
 
-        LakeTable.LakeSnapshotMetadata lakeSnapshotMetadata =
-                new LakeTable.LakeSnapshotMetadata(
-                        lakeTableSnapshot.getSnapshotId(),
-                        // use the lake table snapshot file as the tiered offsets file since
-                        // the table snapshot file will contain the tiered log end offsets
-                        lakeTableSnapshotFsPath,
-                        // currently, readableOffsetsFilePath is always same with
-                        // tieredOffsetsFilePath, but in the future we'll commit a readable offsets
-                        // separately to mark what the readable offsets are for a snapshot since
-                        // in paimon dv table, tiered log end offsets is not same with readable
-                        // offsets
-                        lakeTableSnapshotFsPath);
+        LakeTable.LakeSnapshotMetadata newLakeSnapshotMetadata;
+        if (tableReadableTableSnapshot == lakeTableSnapshot) {
+            newLakeSnapshotMetadata =
+                    new LakeTable.LakeSnapshotMetadata(
+                            lakeTableSnapshot.getSnapshotId(),
+                            lakeTableSnapshotFsPath,
+                            lakeTableSnapshotFsPath);
+        } else {
+            newLakeSnapshotMetadata =
+                    new LakeTable.LakeSnapshotMetadata(
+                            lakeTableSnapshot.getSnapshotId(), lakeTableSnapshotFsPath, null);
+        }
 
-        // currently, we keep only one lake snapshot metadata in zk,
-        // todo: in solve paimon dv union read issue #2121, we'll keep multiple lake snapshot
-        // metadata
-        LakeTable lakeTable = new LakeTable(lakeSnapshotMetadata);
+        // Get existing snapshot metadata list or create a new one
+        List<LakeTable.LakeSnapshotMetadata> snapshotMetadataList =
+                previousLakeTable == null || previousLakeTable.getLakeSnapshotMetadata() == null
+                        ? new ArrayList<>()
+                        : new ArrayList<>(previousLakeTable.getLakeSnapshotMetadata());
+
+        // Append the new snapshot metadata
+        snapshotMetadataList.add(newLakeSnapshotMetadata);
+
+        // If tableReadableTableSnapshot is provided, update the corresponding snapshot's
+        // readableOffsetsFilePath and delete older snapshots
+        if (tableReadableTableSnapshot != null) {
+            long readableSnapshotId = tableReadableTableSnapshot.getSnapshotId();
+            // Store the readable snapshot to a file
+            FsPath readableOffsetsFilePath =
+                    storeLakeTableSnapshot(tableId, tablePath, tableReadableTableSnapshot);
+
+            // Find the snapshot with matching snapshotId and update its readableOffsetsFilePath
+            boolean found = false;
+            for (int i = 0; i < snapshotMetadataList.size(); i++) {
+                LakeTable.LakeSnapshotMetadata metadata = snapshotMetadataList.get(i);
+                if (metadata.getSnapshotId() == readableSnapshotId) {
+                    // Create a new metadata with updated readableOffsetsFilePath
+                    LakeTable.LakeSnapshotMetadata updatedMetadata =
+                            new LakeTable.LakeSnapshotMetadata(
+                                    metadata.getSnapshotId(),
+                                    metadata.getTieredOffsetsFilePath(),
+                                    readableOffsetsFilePath);
+                    snapshotMetadataList.set(i, updatedMetadata);
+                    found = true;
+                }
+            }
+            if (!found) {
+                // shouldn't happened
+                LOG.warn(
+                        "Readable snapshot {} not found in existing snapshots for table {}",
+                        readableSnapshotId,
+                        tableId);
+            }
+        }
+
+        // Delete snapshots before minSnapshotIdToKeep if provided
+        if (minSnapshotIdToKeep != null) {
+            // Use iterator to safely remove elements while iterating
+            Iterator<LakeTable.LakeSnapshotMetadata> iterator = snapshotMetadataList.iterator();
+            while (iterator.hasNext()) {
+                LakeTable.LakeSnapshotMetadata metadata = iterator.next();
+                if (metadata.getSnapshotId() >= minSnapshotIdToKeep) {
+                    // All subsequent snapshots will have larger IDs, so we can stop here
+                    break;
+                }
+                // This snapshot should be deleted
+                LOG.info(
+                        "Deleting snapshot {} for table {} (minSnapshotIdToKeep: {})",
+                        metadata.getSnapshotId(),
+                        tableId,
+                        minSnapshotIdToKeep);
+                // Discard the snapshot files
+                metadata.discard();
+                // Remove from the list using iterator (safe removal)
+                iterator.remove();
+            }
+        }
+
+        // Create new LakeTable with updated snapshot metadata list
+        LakeTable lakeTable = new LakeTable(snapshotMetadataList);
         try {
-            zkClient.upsertLakeTable(tableId, lakeTable, optPreviousLakeTable.isPresent());
+            zkClient.upsertLakeTable(tableId, lakeTable, previousLakeTable != null);
         } catch (Exception e) {
             LOG.warn("Failed to upsert lake table snapshot to zk.", e);
             // discard the new lake snapshot metadata
-            lakeSnapshotMetadata.discard();
+            newLakeSnapshotMetadata.discard();
+            // todo: discard new readable metadata
             throw e;
-        }
-
-        if (optPreviousLakeTable.isPresent()) {
-            // discard previous latest lake snapshot
-            LakeTable.LakeSnapshotMetadata previousLakeSnapshotMetadata =
-                    optPreviousLakeTable.get().getLakeTableLatestSnapshot();
-            if (previousLakeSnapshotMetadata != null) {
-                previousLakeSnapshotMetadata.discard();
-            }
         }
     }
 

@@ -364,13 +364,14 @@ message GetKvSnapshotMetadataResponse {
   repeated PbRemotePathAndLocalFile snapshot_files = 2;
 }
 
-message GetLatestLakeSnapshotRequest {
+message GetLakeSnapshotRequest {
   required PbTablePath table_path = 1;
+  optional int64 snapshot_id = 2; // If not set, returns the latest snapshot
 }
 
-message GetLatestLakeSnapshotResponse {
+message GetLakeSnapshotResponse {
   required int64 table_id = 1;
-  required int64 snapshotId = 2;
+  required int64 snapshot_id = 2;
   repeated PbLakeSnapshotForBucket bucket_snapshots = 3;
 }
 
@@ -455,8 +456,16 @@ message CommitLakeTableSnapshotRequest {
 
 message PbLakeTableSnapshotInfo {
   optional int64 table_id = 1;
+
   required int64 snapshot_id = 2;
   repeated PbLakeTableOffsetForBucket buckets_req = 3;
+
+  // readable snapshot id (for DV tables, the snapshot where L0 data has been compacted)
+  optional int64 readable_snapshot_id = 4;
+  // readable offsets for buckets (for DV tables)
+  repeated PbLakeTableOffsetForBucket readable_buckets_req = 5;
+
+  optional int64 min_snapshot_id_to_keep = 6;
 }
 
 message PbLakeTableOffsetForBucket {

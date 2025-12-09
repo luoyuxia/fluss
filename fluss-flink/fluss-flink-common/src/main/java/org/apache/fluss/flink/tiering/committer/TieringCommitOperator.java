@@ -30,6 +30,7 @@ import org.apache.fluss.flink.tiering.source.TableBucketWriteResult;
 import org.apache.fluss.flink.tiering.source.TieringSource;
 import org.apache.fluss.lake.committer.BucketOffset;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
+import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
@@ -204,7 +205,7 @@ public class TieringCommitOperator<WriteResult, Committable>
         }
         try (LakeCommitter<WriteResult, Committable> lakeCommitter =
                 lakeTieringFactory.createLakeCommitter(
-                        new TieringCommitterInitContext(tablePath))) {
+                        new TieringCommitterInitContext(tablePath, tableId, flussConfig))) {
             List<WriteResult> writeResults =
                     committableWriteResults.stream()
                             .map(TableBucketWriteResult::writeResult)
@@ -223,7 +224,10 @@ public class TieringCommitOperator<WriteResult, Committable>
                     flussCurrentLakeSnapshot == null
                             ? null
                             : flussCurrentLakeSnapshot.getSnapshotId());
-            long committedSnapshotId = lakeCommitter.commit(committable, logOffsetsProperty);
+
+            LakeCommitResult commitResult = lakeCommitter.commit(committable, logOffsetsProperty);
+            long committedSnapshotId = commitResult.getCommittedSnapshotId();
+
             // commit to fluss
             FlussTableLakeSnapshot flussTableLakeSnapshot =
                     new FlussTableLakeSnapshot(tableId, committedSnapshotId);
@@ -236,6 +240,44 @@ public class TieringCommitOperator<WriteResult, Committable>
                             tableBucket, writeResult.logEndOffset());
                 }
             }
+
+            // Use readable snapshot and offsets from commit result if available
+            Long readableSnapshotId = commitResult.getReadableSnapshotId();
+            Map<TableBucket, Long> readableOffsets = commitResult.getReadableLogEndOffsets();
+            if (readableSnapshotId != null || readableOffsets != null) {
+                // If readable offsets are not provided, use tiered offsets
+                if (readableOffsets == null) {
+                    readableOffsets = new HashMap<>();
+                    for (TableBucket tableBucket : flussTableLakeSnapshot.tableBuckets()) {
+                        readableOffsets.put(
+                                tableBucket, flussTableLakeSnapshot.getLogEndOffset(tableBucket));
+                    }
+                }
+                // If readable snapshot ID is not provided, use committed snapshot ID
+                if (readableSnapshotId == null) {
+                    readableSnapshotId = committedSnapshotId;
+                }
+                // Create a new FlussTableLakeSnapshot with readable offsets
+                Long minSnapshotIdToKeep = commitResult.getMinSnapshotIdToKeep();
+                flussTableLakeSnapshot =
+                        new FlussTableLakeSnapshot(
+                                tableId,
+                                committedSnapshotId,
+                                flussTableLakeSnapshot.getLogEndOffsets(),
+                                readableSnapshotId,
+                                readableOffsets,
+                                minSnapshotIdToKeep);
+            } else {
+                flussTableLakeSnapshot =
+                        new FlussTableLakeSnapshot(
+                                tableId,
+                                committedSnapshotId,
+                                flussTableLakeSnapshot.getLogEndOffsets(),
+                                null,
+                                null,
+                                null);
+            }
+
             flussTableLakeSnapshotCommitter.commit(flussTableLakeSnapshot);
             return committable;
         }

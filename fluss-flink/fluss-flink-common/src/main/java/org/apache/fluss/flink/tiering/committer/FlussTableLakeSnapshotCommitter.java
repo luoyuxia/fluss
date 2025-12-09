@@ -61,7 +61,7 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
     }
 
-    void commit(FlussTableLakeSnapshot flussTableLakeSnapshot) throws IOException {
+    public void commit(FlussTableLakeSnapshot flussTableLakeSnapshot) throws IOException {
         try {
             CommitLakeTableSnapshotRequest request =
                     toCommitLakeTableSnapshotRequest(flussTableLakeSnapshot);
@@ -115,6 +115,32 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             pbLakeTableOffsetForBucket.setBucketId(tableBucket.getBucket());
             pbLakeTableOffsetForBucket.setLogEndOffset(endOffset);
         }
+
+        // Add readable snapshot ID and offsets if available
+        if (flussTableLakeSnapshot.getReadableSnapshotId() != null) {
+            pbLakeTableSnapshotInfo.setReadableSnapshotId(
+                    flussTableLakeSnapshot.getReadableSnapshotId());
+        }
+        if (flussTableLakeSnapshot.getReadableLogEndOffsets() != null) {
+            for (Map.Entry<TableBucket, Long> entry :
+                    flussTableLakeSnapshot.getReadableLogEndOffsets().entrySet()) {
+                TableBucket tableBucket = entry.getKey();
+                PbLakeTableOffsetForBucket pbReadableOffsetForBucket =
+                        pbLakeTableSnapshotInfo.addReadableBucketsReq();
+                if (tableBucket.getPartitionId() != null) {
+                    pbReadableOffsetForBucket.setPartitionId(tableBucket.getPartitionId());
+                }
+                pbReadableOffsetForBucket.setBucketId(tableBucket.getBucket());
+                pbReadableOffsetForBucket.setLogEndOffset(entry.getValue());
+            }
+        }
+
+        // Add min_snapshot_id_to_keep if available
+        if (flussTableLakeSnapshot.getMinSnapshotIdToKeep() != null) {
+            pbLakeTableSnapshotInfo.setMinSnapshotIdToKeep(
+                    flussTableLakeSnapshot.getMinSnapshotIdToKeep());
+        }
+
         return commitLakeTableSnapshotRequest;
     }
 

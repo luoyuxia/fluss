@@ -52,10 +52,10 @@ import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenRequest;
 import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenResponse;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataRequest;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataResponse;
+import org.apache.fluss.rpc.messages.GetLakeSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsRequest;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsResponse;
-import org.apache.fluss.rpc.messages.GetLatestLakeSnapshotRequest;
-import org.apache.fluss.rpc.messages.GetLatestLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetTableInfoRequest;
 import org.apache.fluss.rpc.messages.GetTableInfoResponse;
 import org.apache.fluss.rpc.messages.GetTableSchemaRequest;
@@ -115,8 +115,8 @@ import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toAclFilter;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toResolvedPartitionSpec;
 import static org.apache.fluss.security.acl.Resource.TABLE_SPLITTER;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.buildMetadataResponse;
+import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeGetLakeSnapshotResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeGetLatestKvSnapshotsResponse;
-import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeGetLatestLakeSnapshotResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeKvSnapshotMetadataResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeListAclsResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toGetFileSystemSecurityTokenResponse;
@@ -428,30 +428,49 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
     }
 
     @Override
-    public CompletableFuture<GetLatestLakeSnapshotResponse> getLatestLakeSnapshot(
-            GetLatestLakeSnapshotRequest request) {
+    public CompletableFuture<GetLakeSnapshotResponse> getLakeSnapshot(
+            GetLakeSnapshotRequest request) {
         // get table info
         TablePath tablePath = toTablePath(request.getTablePath());
         TableInfo tableInfo = metadataManager.getTable(tablePath);
         // get table id
         long tableId = tableInfo.getTableId();
-        CompletableFuture<GetLatestLakeSnapshotResponse> resultFuture = new CompletableFuture<>();
+        CompletableFuture<GetLakeSnapshotResponse> resultFuture = new CompletableFuture<>();
         ioExecutor.execute(
                 () -> {
                     Optional<LakeTableSnapshot> optLakeTableSnapshot;
                     try {
-                        optLakeTableSnapshot = zkClient.getLakeTableSnapshot(tableId);
-                        if (!optLakeTableSnapshot.isPresent()) {
-                            resultFuture.completeExceptionally(
-                                    new LakeTableSnapshotNotExistException(
-                                            String.format(
-                                                    "Lake table snapshot not exist for table: %s, table id: %d",
-                                                    tablePath, tableId)));
+                        // If snapshot_id is set, get that specific snapshot; otherwise get the
+                        // latest
+                        if (request.hasSnapshotId()) {
+                            long snapshotId = request.getSnapshotId();
+                            optLakeTableSnapshot =
+                                    zkClient.getLakeTableSnapshot(tableId, snapshotId);
+                            if (!optLakeTableSnapshot.isPresent()) {
+                                resultFuture.completeExceptionally(
+                                        new LakeTableSnapshotNotExistException(
+                                                String.format(
+                                                        "Lake table snapshot with id %d not exist for table: %s, table id: %d",
+                                                        snapshotId, tablePath, tableId)));
+                                return;
+                            }
                         } else {
-                            LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
-                            resultFuture.complete(
-                                    makeGetLatestLakeSnapshotResponse(tableId, lakeTableSnapshot));
+                            optLakeTableSnapshot = zkClient.getLakeTableSnapshot(tableId);
+                            if (!optLakeTableSnapshot.isPresent()) {
+                                resultFuture.completeExceptionally(
+                                        new LakeTableSnapshotNotExistException(
+                                                String.format(
+                                                        "Lake table snapshot not exist for table: %s, table id: %d",
+                                                        tablePath, tableId)));
+                                return;
+                            }
                         }
+                        LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
+                        resultFuture.complete(
+                                makeGetLakeSnapshotResponse(
+                                        tableId,
+                                        lakeTableSnapshot.getSnapshotId(),
+                                        lakeTableSnapshot));
                     } catch (Exception e) {
                         resultFuture.completeExceptionally(
                                 new FlussRuntimeException(

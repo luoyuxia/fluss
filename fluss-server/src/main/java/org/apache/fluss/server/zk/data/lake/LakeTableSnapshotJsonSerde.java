@@ -284,6 +284,9 @@ public class LakeTableSnapshotJsonSerde
             for (TableBucket tableBucket : lakeTableSnapshot.getBucketLogEndOffset().keySet()) {
                 generator.writeStartObject();
                 generator.writeNumberField(BUCKET_ID, tableBucket.getBucket());
+                if (tableBucket.getPartitionId() != null) {
+                    generator.writeNumberField(PARTITION_ID, tableBucket.getPartitionId());
+                }
                 if (lakeTableSnapshot.getLogEndOffset(tableBucket).isPresent()) {
                     generator.writeNumberField(
                             LOG_END_OFFSET, lakeTableSnapshot.getLogEndOffset(tableBucket).get());

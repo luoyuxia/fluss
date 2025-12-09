@@ -93,7 +93,7 @@ public class LakeTable {
     @Nullable
     public LakeSnapshotMetadata getLakeTableLatestSnapshot() {
         if (lakeSnapshotMetadata != null && !lakeSnapshotMetadata.isEmpty()) {
-            return lakeSnapshotMetadata.get(0);
+            return lakeSnapshotMetadata.get(lakeSnapshotMetadata.size() - 1);
         }
         return null;
     }
@@ -111,18 +111,34 @@ public class LakeTable {
      *
      * @return the LakeTableSnapshot
      */
-    public LakeTableSnapshot getLatestTableSnapshot() throws Exception {
+    public LakeTableSnapshot getLatestTableSnapshot() throws IOException {
         if (lakeTableSnapshot != null) {
             return lakeTableSnapshot;
         }
-        FsPath tieredOffsetsFilePath =
-                checkNotNull(getLakeTableLatestSnapshot()).tieredOffsetsFilePath;
-        FSDataInputStream inputStream =
-                tieredOffsetsFilePath.getFileSystem().open(tieredOffsetsFilePath);
+        LakeSnapshotMetadata latestSnapshotMetadata = checkNotNull(getLakeTableLatestSnapshot());
+        return toLakeTableSnapshot(latestSnapshotMetadata.tieredOffsetsFilePath);
+    }
+
+    private LakeTableSnapshot toLakeTableSnapshot(FsPath lakeSnapshotPath) throws IOException {
+        FSDataInputStream inputStream = lakeSnapshotPath.getFileSystem().open(lakeSnapshotPath);
         try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
             IOUtils.copyBytes(inputStream, outputStream, true);
             return LakeTableSnapshotJsonSerde.fromJson(outputStream.toByteArray());
         }
+    }
+
+    @Nullable
+    public LakeTableSnapshot getLatestReadableTableSnapshot() throws IOException {
+        if (lakeTableSnapshot != null) {
+            return lakeTableSnapshot;
+        }
+        for (int i = checkNotNull(lakeSnapshotMetadata).size() - 1; i >= 0; i--) {
+            LakeSnapshotMetadata snapshotMetadata = lakeSnapshotMetadata.get(i);
+            if (snapshotMetadata.readableOffsetsFilePath != null) {
+                return toLakeTableSnapshot(snapshotMetadata.readableOffsetsFilePath);
+            }
+        }
+        return null;
     }
 
     /** The lake snapshot metadata entry stored in zk lake table. */
@@ -131,11 +147,11 @@ public class LakeTable {
 
         // the file path to file storing the tiered offsets,
         // it points a file storing LakeTableSnapshot which includes tiered offsets
-        private final FsPath tieredOffsetsFilePath;
+        public final FsPath tieredOffsetsFilePath;
 
         // the file path to file storing the readable offsets,
         // will be null if we don't now the readable offsets for this snapshot
-        @Nullable private final FsPath readableOffsetsFilePath;
+        @Nullable public FsPath readableOffsetsFilePath;
 
         public LakeSnapshotMetadata(
                 long snapshotId,

@@ -57,8 +57,8 @@ import org.apache.fluss.rpc.messages.DropDatabaseRequest;
 import org.apache.fluss.rpc.messages.DropTableRequest;
 import org.apache.fluss.rpc.messages.GetDatabaseInfoRequest;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataRequest;
+import org.apache.fluss.rpc.messages.GetLakeSnapshotRequest;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsRequest;
-import org.apache.fluss.rpc.messages.GetLatestLakeSnapshotRequest;
 import org.apache.fluss.rpc.messages.GetTableInfoRequest;
 import org.apache.fluss.rpc.messages.GetTableSchemaRequest;
 import org.apache.fluss.rpc.messages.ListAclsRequest;
@@ -379,13 +379,27 @@ public class FlussAdmin implements Admin {
 
     @Override
     public CompletableFuture<LakeSnapshot> getLatestLakeSnapshot(TablePath tablePath) {
-        GetLatestLakeSnapshotRequest request = new GetLatestLakeSnapshotRequest();
+        GetLakeSnapshotRequest request = new GetLakeSnapshotRequest();
         request.setTablePath()
                 .setDatabaseName(tablePath.getDatabaseName())
                 .setTableName(tablePath.getTableName());
+        // Don't set snapshot_id, so RPC will return the latest snapshot
 
         return readOnlyGateway
-                .getLatestLakeSnapshot(request)
+                .getLakeSnapshot(request)
+                .thenApply(ClientRpcMessageUtils::toLakeTableSnapshotInfo);
+    }
+
+    @Override
+    public CompletableFuture<LakeSnapshot> getLakeSnapshot(TablePath tablePath, long snapshotId) {
+        GetLakeSnapshotRequest request = new GetLakeSnapshotRequest();
+        request.setTablePath()
+                .setDatabaseName(tablePath.getDatabaseName())
+                .setTableName(tablePath.getTableName());
+        request.setSnapshotId(snapshotId);
+
+        return readOnlyGateway
+                .getLakeSnapshot(request)
                 .thenApply(ClientRpcMessageUtils::toLakeTableSnapshotInfo);
     }
 

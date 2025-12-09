@@ -50,10 +50,11 @@ public interface LakeCommitter<WriteResult, CommittableT> extends AutoCloseable 
      *
      * @param committable the committable object
      * @param snapshotProperties the properties that lake supported to store in snapshot
-     * @return the committed snapshot ID
+     * @return the commit result containing the committed snapshot ID and readable snapshot
+     *     information
      * @throws IOException if an I/O error occurs
      */
-    long commit(CommittableT committable, Map<String, String> snapshotProperties)
+    LakeCommitResult commit(CommittableT committable, Map<String, String> snapshotProperties)
             throws IOException;
 
     /**

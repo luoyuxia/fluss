@@ -106,13 +106,15 @@ public class LakeTableJsonSerde implements JsonSerializer<LakeTable>, JsonDeseri
                 JsonNode snapshotNode = elements.next();
                 long snapshotId = snapshotNode.get(SNAPSHOT_ID_KEY).asLong();
                 String tieredOffsetsPath = snapshotNode.get(TIERED_OFFSETS_KEY).asText();
-                String readableOffsetsPath = snapshotNode.get(READABLE_OFFSETS_KEY).asText();
+                JsonNode readableOffsetsPathNode = snapshotNode.get(READABLE_OFFSETS_KEY);
+                FsPath readableOffsetsPath =
+                        readableOffsetsPathNode != null && !readableOffsetsPathNode.isNull()
+                                ? new FsPath(readableOffsetsPathNode.asText())
+                                : null;
 
                 LakeTable.LakeSnapshotMetadata metadata =
                         new LakeTable.LakeSnapshotMetadata(
-                                snapshotId,
-                                new FsPath(tieredOffsetsPath),
-                                new FsPath(readableOffsetsPath));
+                                snapshotId, new FsPath(tieredOffsetsPath), readableOffsetsPath);
                 lakeSnapshotMetadata.add(metadata);
             }
             return new LakeTable(lakeSnapshotMetadata);

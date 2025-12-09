@@ -19,6 +19,7 @@ package org.apache.fluss.lake.iceberg.tiering;
 
 import org.apache.fluss.lake.committer.BucketOffset;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
+import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.iceberg.maintenance.RewriteDataFileResult;
 import org.apache.fluss.metadata.TablePath;
@@ -105,7 +106,8 @@ public class IcebergLakeCommitter implements LakeCommitter<IcebergWriteResult, I
     }
 
     @Override
-    public long commit(IcebergCommittable committable, Map<String, String> snapshotProperties)
+    public LakeCommitResult commit(
+            IcebergCommittable committable, Map<String, String> snapshotProperties)
             throws IOException {
         try {
             // Refresh table to get latest metadata
@@ -151,7 +153,9 @@ public class IcebergLakeCommitter implements LakeCommitter<IcebergWriteResult, I
                     snapshotId = rewriteCommitSnapshotId;
                 }
             }
-            return checkNotNull(snapshotId, "Iceberg committed snapshot id must be non-null.");
+            return new LakeCommitResult(
+                    checkNotNull(snapshotId, "Iceberg committed snapshot id must be non-null."),
+                    snapshotId);
         } catch (Exception e) {
             throw new IOException("Failed to commit to Iceberg table.", e);
         }

@@ -19,24 +19,65 @@ package org.apache.fluss.flink.tiering.committer;
 
 import org.apache.fluss.metadata.TableBucket;
 
+import javax.annotation.Nullable;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
 /** A lake snapshot for a Fluss table. */
-class FlussTableLakeSnapshot {
+public class FlussTableLakeSnapshot {
 
     private final long tableId;
 
     private final long lakeSnapshotId;
 
-    // table_bucket -> log end offsets,
+    // table_bucket -> log end offsets (tiered offsets),
     private final Map<TableBucket, Long> logEndOffsets;
 
-    FlussTableLakeSnapshot(long tableId, long lakeSnapshotId) {
+    // readable snapshot id
+    @Nullable private final Long readableSnapshotId;
+    // table_bucket -> readable log end offsets
+    @Nullable private final Map<TableBucket, Long> readableLogEndOffsets;
+
+    @Nullable private final Long minSnapshotIdToKeep;
+
+    public FlussTableLakeSnapshot(long tableId, long lakeSnapshotId) {
         this.tableId = tableId;
         this.lakeSnapshotId = lakeSnapshotId;
         this.logEndOffsets = new HashMap<>();
+        this.readableSnapshotId = null;
+        this.readableLogEndOffsets = null;
+        this.minSnapshotIdToKeep = lakeSnapshotId;
+    }
+
+    public FlussTableLakeSnapshot(
+            long tableId, long lakeSnapshotId, Map<TableBucket, Long> logEndOffsets) {
+        this.tableId = tableId;
+        this.lakeSnapshotId = lakeSnapshotId;
+        this.logEndOffsets = logEndOffsets;
+        this.readableSnapshotId = null;
+        this.readableLogEndOffsets = null;
+        this.minSnapshotIdToKeep = lakeSnapshotId;
+    }
+
+    public FlussTableLakeSnapshot(
+            long tableId,
+            long lakeSnapshotId,
+            Map<TableBucket, Long> logEndOffsets,
+            @Nullable Long readableSnapshotId,
+            @Nullable Map<TableBucket, Long> readableLogEndOffsets,
+            @Nullable Long minSnapshotIdToKeep) {
+        this.tableId = tableId;
+        this.lakeSnapshotId = lakeSnapshotId;
+        this.logEndOffsets = logEndOffsets;
+        this.readableSnapshotId = readableSnapshotId;
+        this.readableLogEndOffsets = readableLogEndOffsets;
+        this.minSnapshotIdToKeep = minSnapshotIdToKeep;
+    }
+
+    public Map<TableBucket, Long> getLogEndOffsets() {
+        return logEndOffsets;
     }
 
     public long tableId() {
@@ -63,6 +104,21 @@ class FlussTableLakeSnapshot {
         return logEndOffsets.get(bucket);
     }
 
+    @Nullable
+    public Long getReadableSnapshotId() {
+        return readableSnapshotId;
+    }
+
+    @Nullable
+    public Map<TableBucket, Long> getReadableLogEndOffsets() {
+        return readableLogEndOffsets;
+    }
+
+    @Nullable
+    public Long getMinSnapshotIdToKeep() {
+        return minSnapshotIdToKeep;
+    }
+
     @Override
     public String toString() {
         return "FlussTableLakeSnapshot{"
@@ -72,6 +128,10 @@ class FlussTableLakeSnapshot {
                 + lakeSnapshotId
                 + ", logEndOffsets="
                 + logEndOffsets
+                + ", readableSnapshotId="
+                + readableSnapshotId
+                + ", readableLogEndOffsets="
+                + readableLogEndOffsets
                 + '}';
     }
 }

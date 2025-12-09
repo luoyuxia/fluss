@@ -20,6 +20,7 @@ package org.apache.fluss.lake.lance.tiering;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.committer.BucketOffset;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
+import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.lance.LanceConfig;
 import org.apache.fluss.lake.lance.utils.LanceDatasetAdapter;
@@ -76,11 +77,14 @@ public class LanceLakeCommitter implements LakeCommitter<LanceWriteResult, Lance
     }
 
     @Override
-    public long commit(LanceCommittable committable, Map<String, String> snapshotProperties)
+    public LakeCommitResult commit(
+            LanceCommittable committable, Map<String, String> snapshotProperties)
             throws IOException {
         Map<String, String> properties = new HashMap<>(snapshotProperties);
         properties.put(committerName, FLUSS_LAKE_TIERING_COMMIT_USER);
-        return LanceDatasetAdapter.commitAppend(config, committable.committable(), properties);
+        long committedSnapshotId =
+                LanceDatasetAdapter.commitAppend(config, committable.committable(), properties);
+        return new LakeCommitResult(committedSnapshotId, committedSnapshotId);
     }
 
     @Override

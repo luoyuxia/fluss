@@ -29,12 +29,18 @@ public class CommitLakeTableSnapshotData {
 
     private final Map<Long, LakeTableSnapshot> lakeTableSnapshots;
     private final Map<TableBucket, Long> tableBucketsMaxTieredTimestamp;
+    private final Map<Long, LakeTableSnapshot> readableLakeTableSnapshots;
+    private final Map<Long, Long> minSnapshotIdToKeepByTableId;
 
     public CommitLakeTableSnapshotData(
             Map<Long, LakeTableSnapshot> lakeTableSnapshots,
-            Map<TableBucket, Long> tableBucketsMaxTieredTimestamp) {
+            Map<TableBucket, Long> tableBucketsMaxTieredTimestamp,
+            Map<Long, LakeTableSnapshot> readableLakeTableSnapshots,
+            Map<Long, Long> minSnapshotIdToKeepByTableId) {
         this.lakeTableSnapshots = lakeTableSnapshots;
         this.tableBucketsMaxTieredTimestamp = tableBucketsMaxTieredTimestamp;
+        this.readableLakeTableSnapshots = readableLakeTableSnapshots;
+        this.minSnapshotIdToKeepByTableId = minSnapshotIdToKeepByTableId;
     }
 
     public Map<Long, LakeTableSnapshot> getLakeTableSnapshot() {
@@ -43,6 +49,14 @@ public class CommitLakeTableSnapshotData {
 
     public Map<TableBucket, Long> getTableBucketsMaxTieredTimestamp() {
         return tableBucketsMaxTieredTimestamp;
+    }
+
+    public Map<Long, LakeTableSnapshot> getReadableLakeTableSnapshots() {
+        return readableLakeTableSnapshots;
+    }
+
+    public Map<Long, Long> getMinSnapshotIdToKeepByTableId() {
+        return minSnapshotIdToKeepByTableId;
     }
 
     @Override
@@ -56,12 +70,18 @@ public class CommitLakeTableSnapshotData {
         CommitLakeTableSnapshotData that = (CommitLakeTableSnapshotData) o;
         return Objects.equals(lakeTableSnapshots, that.lakeTableSnapshots)
                 && Objects.equals(
-                        tableBucketsMaxTieredTimestamp, that.tableBucketsMaxTieredTimestamp);
+                        tableBucketsMaxTieredTimestamp, that.tableBucketsMaxTieredTimestamp)
+                && Objects.equals(readableLakeTableSnapshots, that.readableLakeTableSnapshots)
+                && Objects.equals(minSnapshotIdToKeepByTableId, that.minSnapshotIdToKeepByTableId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(lakeTableSnapshots, tableBucketsMaxTieredTimestamp);
+        return Objects.hash(
+                lakeTableSnapshots,
+                tableBucketsMaxTieredTimestamp,
+                readableLakeTableSnapshots,
+                minSnapshotIdToKeepByTableId);
     }
 
     @Override

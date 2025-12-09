@@ -17,6 +17,7 @@
 
 package org.apache.fluss.flink.tiering.committer;
 
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.committer.CommitterInitContext;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.metadata.TablePath;
@@ -25,13 +26,28 @@ import org.apache.fluss.metadata.TablePath;
 public class TieringCommitterInitContext implements CommitterInitContext {
 
     private final TablePath tablePath;
+    private final long tableId;
+    private final Configuration flussConfig;
 
-    public TieringCommitterInitContext(TablePath tablePath) {
+    public TieringCommitterInitContext(
+            TablePath tablePath, long tableId, Configuration flussConfig) {
         this.tablePath = tablePath;
+        this.tableId = tableId;
+        this.flussConfig = flussConfig;
     }
 
     @Override
     public TablePath tablePath() {
         return tablePath;
+    }
+
+    @Override
+    public Configuration flussConfig() {
+        return flussConfig;
+    }
+
+    @Override
+    public long tableId() {
+        return tableId;
     }
 }

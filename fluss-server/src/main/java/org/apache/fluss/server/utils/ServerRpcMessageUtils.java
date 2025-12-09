@@ -63,8 +63,8 @@ import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenResponse;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataResponse;
+import org.apache.fluss.rpc.messages.GetLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsResponse;
-import org.apache.fluss.rpc.messages.GetLatestLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
 import org.apache.fluss.rpc.messages.LakeTieringHeartbeatResponse;
 import org.apache.fluss.rpc.messages.LimitScanResponse;
@@ -1546,6 +1546,8 @@ public class ServerRpcMessageUtils {
             CommitLakeTableSnapshotRequest request) {
         Map<Long, LakeTableSnapshot> lakeTableInfoByTableId = new HashMap<>();
         Map<TableBucket, Long> tableBucketsMaxTimestamp = new HashMap<>();
+        Map<Long, LakeTableSnapshot> lakeTableReadableSnapshotByTableId = new HashMap<>();
+        Map<Long, Long> minSnapshotIdToKeepByTableId = new HashMap<>();
         for (PbLakeTableSnapshotInfo pdLakeTableSnapshotInfo : request.getTablesReqsList()) {
             long tableId = pdLakeTableSnapshotInfo.getTableId();
             long snapshotId = pdLakeTableSnapshotInfo.getSnapshotId();
@@ -1571,10 +1573,55 @@ public class ServerRpcMessageUtils {
                             tableBucket, lakeTableOffsetForBucket.getMaxTimestamp());
                 }
             }
+
+            // Parse readable snapshot ID and offsets if available
+            Long readableSnapshotId = null;
+            Map<TableBucket, Long> readableBucketLogEndOffset = null;
+            if (pdLakeTableSnapshotInfo.hasReadableSnapshotId()) {
+                readableSnapshotId = pdLakeTableSnapshotInfo.getReadableSnapshotId();
+                readableBucketLogEndOffset = new HashMap<>();
+                for (PbLakeTableOffsetForBucket readableOffsetForBucket :
+                        pdLakeTableSnapshotInfo.getReadableBucketsReqsList()) {
+                    Long partitionId =
+                            readableOffsetForBucket.hasPartitionId()
+                                    ? readableOffsetForBucket.getPartitionId()
+                                    : null;
+                    int bucketId = readableOffsetForBucket.getBucketId();
+                    TableBucket tableBucket = new TableBucket(tableId, partitionId, bucketId);
+                    Long readableLogEndOffset =
+                            readableOffsetForBucket.hasLogEndOffset()
+                                    ? readableOffsetForBucket.getLogEndOffset()
+                                    : null;
+                    if (readableLogEndOffset != null) {
+                        readableBucketLogEndOffset.put(tableBucket, readableLogEndOffset);
+                    }
+                }
+            }
+
+            if (readableSnapshotId != null) {
+                if (readableSnapshotId == snapshotId) {
+                    lakeTableReadableSnapshotByTableId.put(
+                            tableId, new LakeTableSnapshot(snapshotId, bucketLogEndOffset));
+                } else {
+                    lakeTableReadableSnapshotByTableId.put(
+                            tableId, new LakeTableSnapshot(snapshotId, readableBucketLogEndOffset));
+                }
+            }
+
             lakeTableInfoByTableId.put(
                     tableId, new LakeTableSnapshot(snapshotId, bucketLogEndOffset));
+
+            // Parse min_snapshot_id_to_keep if available
+            if (pdLakeTableSnapshotInfo.hasMinSnapshotIdToKeep()) {
+                minSnapshotIdToKeepByTableId.put(
+                        tableId, pdLakeTableSnapshotInfo.getMinSnapshotIdToKeep());
+            }
         }
-        return new CommitLakeTableSnapshotData(lakeTableInfoByTableId, tableBucketsMaxTimestamp);
+        return new CommitLakeTableSnapshotData(
+                lakeTableInfoByTableId,
+                tableBucketsMaxTimestamp,
+                lakeTableReadableSnapshotByTableId,
+                minSnapshotIdToKeepByTableId);
     }
 
     public static PbNotifyLakeTableOffsetReqForBucket makeNotifyLakeTableOffsetForBucket(
@@ -1627,18 +1674,17 @@ public class ServerRpcMessageUtils {
                 notifyLakeTableOffsetRequest.getCoordinatorEpoch(), lakeBucketOffsetMap);
     }
 
-    public static GetLatestLakeSnapshotResponse makeGetLatestLakeSnapshotResponse(
-            long tableId, LakeTableSnapshot lakeTableSnapshot) {
-        GetLatestLakeSnapshotResponse getLakeTableSnapshotResponse =
-                new GetLatestLakeSnapshotResponse();
+    public static GetLakeSnapshotResponse makeGetLakeSnapshotResponse(
+            long tableId, long snapshotId, LakeTableSnapshot lakeTableSnapshot) {
+        GetLakeSnapshotResponse getLakeSnapshotResponse = new GetLakeSnapshotResponse();
 
-        getLakeTableSnapshotResponse.setTableId(tableId);
-        getLakeTableSnapshotResponse.setSnapshotId(lakeTableSnapshot.getSnapshotId());
+        Map<TableBucket, Long> bucketOffsets = lakeTableSnapshot.getBucketLogEndOffset();
+        getLakeSnapshotResponse.setTableId(tableId);
+        getLakeSnapshotResponse.setSnapshotId(snapshotId);
 
-        for (Map.Entry<TableBucket, Long> logEndLogOffsetEntry :
-                lakeTableSnapshot.getBucketLogEndOffset().entrySet()) {
+        for (Map.Entry<TableBucket, Long> logEndLogOffsetEntry : bucketOffsets.entrySet()) {
             PbLakeSnapshotForBucket pbLakeSnapshotForBucket =
-                    getLakeTableSnapshotResponse.addBucketSnapshot();
+                    getLakeSnapshotResponse.addBucketSnapshot();
             TableBucket tableBucket = logEndLogOffsetEntry.getKey();
             pbLakeSnapshotForBucket
                     .setBucketId(tableBucket.getBucket())
@@ -1648,7 +1694,7 @@ public class ServerRpcMessageUtils {
             }
         }
 
-        return getLakeTableSnapshotResponse;
+        return getLakeSnapshotResponse;
     }
 
     public static PartitionSpec getPartitionSpec(PbPartitionSpec pbPartitionSpec) {

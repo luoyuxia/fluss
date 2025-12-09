@@ -134,7 +134,7 @@ class LakeTableHelperTest {
 
             long snapshot2Id = 2L;
             LakeTableSnapshot snapshot2 = new LakeTableSnapshot(snapshot2Id, newBucketLogEndOffset);
-            lakeTableHelper.upsertLakeTable(tableId, tablePath, snapshot2);
+            lakeTableHelper.upsertLakeTable(tableId, tablePath, snapshot2, null, null);
 
             // Verify: New version 2 data can be read
             Optional<LakeTable> optLakeTableAfter = zooKeeperClient.getLakeTable(tableId);
@@ -164,7 +164,7 @@ class LakeTableHelperTest {
             // add a new snapshot 3 again, verify snapshot
             long snapshot3Id = 3L;
             LakeTableSnapshot snapshot3 = new LakeTableSnapshot(snapshot3Id, newBucketLogEndOffset);
-            lakeTableHelper.upsertLakeTable(tableId, tablePath, snapshot3);
+            lakeTableHelper.upsertLakeTable(tableId, tablePath, snapshot3, null, null);
             // verify snapshot 3 is discarded
             assertThat(fileSystem.exists(snapshot2FileHandle)).isFalse();
         }

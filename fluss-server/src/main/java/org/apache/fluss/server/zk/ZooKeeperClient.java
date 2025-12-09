@@ -20,6 +20,8 @@ package org.apache.fluss.server.zk;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.fs.FSDataInputStream;
+import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.Schema;
@@ -75,6 +77,7 @@ import org.apache.fluss.server.zk.data.ZkData.TablesZNode;
 import org.apache.fluss.server.zk.data.ZkData.WriterIdZNode;
 import org.apache.fluss.server.zk.data.lake.LakeTable;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
+import org.apache.fluss.server.zk.data.lake.LakeTableSnapshotJsonSerde;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.CuratorFramework;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.BackgroundCallback;
 import org.apache.fluss.shaded.curator5.org.apache.curator.framework.api.CuratorEvent;
@@ -83,6 +86,7 @@ import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.CreateMode;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.data.Stat;
 import org.apache.fluss.utils.ExceptionUtils;
+import org.apache.fluss.utils.IOUtils;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
@@ -91,6 +95,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -1064,6 +1069,61 @@ public class ZooKeeperClient implements AutoCloseable {
             return Optional.of(optLakeTable.get().getLatestTableSnapshot());
         } else {
             return Optional.empty();
+        }
+    }
+
+    /**
+     * Gets the {@link LakeTableSnapshot} for the given table ID and snapshot ID.
+     *
+     * @param tableId the table ID
+     * @param snapshotId the snapshot ID to find
+     * @return an Optional containing the LakeTableSnapshot if found, empty otherwise
+     * @throws Exception if the operation fails
+     */
+    public Optional<LakeTableSnapshot> getLakeTableSnapshot(long tableId, long snapshotId)
+            throws Exception {
+        Optional<LakeTable> optLakeTable = getLakeTable(tableId);
+        if (!optLakeTable.isPresent()) {
+            return Optional.empty();
+        }
+
+        LakeTable lakeTable = optLakeTable.get();
+        List<LakeTable.LakeSnapshotMetadata> snapshotMetadataList =
+                lakeTable.getLakeSnapshotMetadata();
+        if (snapshotMetadataList != null) {
+            // Search for the snapshot with matching ID
+            for (LakeTable.LakeSnapshotMetadata metadata : snapshotMetadataList) {
+                if (metadata.getSnapshotId() == snapshotId) {
+                    // Read the snapshot from file
+                    return Optional.of(readLakeTableSnapshotFromMetadata(metadata));
+                }
+            }
+        } else if (lakeTable.getLatestTableSnapshot() != null) {
+            // Version 1 format: check if snapshot ID matches
+            LakeTableSnapshot snapshot = lakeTable.getLatestTableSnapshot();
+            if (snapshot.getSnapshotId() == snapshotId) {
+                return Optional.of(snapshot);
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    /**
+     * Read LakeTableSnapshot from LakeSnapshotMetadata.
+     *
+     * @param metadata the snapshot metadata
+     * @return the LakeTableSnapshot
+     * @throws Exception if the operation fails
+     */
+    private LakeTableSnapshot readLakeTableSnapshotFromMetadata(
+            LakeTable.LakeSnapshotMetadata metadata) throws Exception {
+        FsPath tieredOffsetsFilePath = metadata.tieredOffsetsFilePath;
+        FSDataInputStream tieredInputStream =
+                tieredOffsetsFilePath.getFileSystem().open(tieredOffsetsFilePath);
+        try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            IOUtils.copyBytes(tieredInputStream, outputStream, true);
+            return LakeTableSnapshotJsonSerde.fromJson(outputStream.toByteArray());
         }
     }
 

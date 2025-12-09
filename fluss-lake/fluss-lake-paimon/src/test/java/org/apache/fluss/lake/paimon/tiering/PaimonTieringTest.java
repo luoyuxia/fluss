@@ -19,6 +19,7 @@ package org.apache.fluss.lake.paimon.tiering;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.flink.tiering.committer.TieringCommitterInitContext;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
@@ -194,8 +195,9 @@ class PaimonTieringTest {
                     committableSerializer.deserialize(
                             committableSerializer.getVersion(), serialized);
             long snapshot =
-                    lakeCommitter.commit(
-                            paimonCommittable, toBucketOffsetsProperty(tableBucketOffsets));
+                    lakeCommitter
+                            .commit(paimonCommittable, toBucketOffsetsProperty(tableBucketOffsets))
+                            .getCommittedSnapshotId();
             assertThat(snapshot).isEqualTo(1);
         }
 
@@ -295,7 +297,9 @@ class PaimonTieringTest {
                 createLakeCommitter(tablePath)) {
             PaimonCommittable committable = lakeCommitter.toCommittable(paimonWriteResults);
             long snapshot =
-                    lakeCommitter.commit(committable, toBucketOffsetsProperty(tableBucketOffsets));
+                    lakeCommitter
+                            .commit(committable, toBucketOffsetsProperty(tableBucketOffsets))
+                            .getCommittedSnapshotId();
             assertThat(snapshot).isEqualTo(1);
         }
 
@@ -367,7 +371,9 @@ class PaimonTieringTest {
                 createLakeCommitter(tablePath)) {
             PaimonCommittable committable = lakeCommitter.toCommittable(paimonWriteResults);
             snapshot =
-                    lakeCommitter.commit(committable, toBucketOffsetsProperty(tableBucketOffsets));
+                    lakeCommitter
+                            .commit(committable, toBucketOffsetsProperty(tableBucketOffsets))
+                            .getCommittedSnapshotId();
             assertThat(snapshot).isEqualTo(1);
         }
 
@@ -705,7 +711,8 @@ class PaimonTieringTest {
 
     private LakeCommitter<PaimonWriteResult, PaimonCommittable> createLakeCommitter(
             TablePath tablePath) throws IOException {
-        return paimonLakeTieringFactory.createLakeCommitter(() -> tablePath);
+        return paimonLakeTieringFactory.createLakeCommitter(
+                new TieringCommitterInitContext(tablePath, -1, new Configuration()));
     }
 
     private void createTable(

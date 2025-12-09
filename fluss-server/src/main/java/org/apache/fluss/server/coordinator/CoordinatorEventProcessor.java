@@ -1231,6 +1231,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 commitLakeTableSnapshotEvent.getCommitLakeTableSnapshotData();
         Map<Long, LakeTableSnapshot> lakeTableSnapshots =
                 commitLakeTableSnapshotData.getLakeTableSnapshot();
+        Map<Long, LakeTableSnapshot> readableLakeSnapshots =
+                commitLakeTableSnapshotData.getReadableLakeTableSnapshots();
         Map<Long, TablePath> tablePathById = new HashMap<>();
         for (Map.Entry<Long, LakeTableSnapshot> lakeTableSnapshotEntry :
                 lakeTableSnapshots.entrySet()) {
@@ -1265,7 +1267,13 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
                                 // this involves IO operation (ZK), so we do it in ioExecutor
                                 lakeTableHelper.upsertLakeTable(
-                                        tableId, tablePath, lakeTableSnapshotEntry.getValue());
+                                        tableId,
+                                        tablePath,
+                                        lakeTableSnapshotEntry.getValue(),
+                                        readableLakeSnapshots.get(tableId),
+                                        commitLakeTableSnapshotData
+                                                .getMinSnapshotIdToKeepByTableId()
+                                                .get(tableId));
                             } catch (Exception e) {
                                 ApiError error = ApiError.fromThrowable(e);
                                 tableResp.setError(error.error().code(), error.message());
