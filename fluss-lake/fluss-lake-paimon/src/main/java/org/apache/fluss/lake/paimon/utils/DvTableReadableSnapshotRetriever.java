@@ -28,7 +28,6 @@ import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.types.Tuple2;
-
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.data.BinaryRow;
@@ -43,7 +42,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -188,6 +186,11 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
     @Nullable
     public ReadableSnapshotResult getReadableSnapshotAndOffsets(long tieredSnapshotId)
             throws IOException {
+        // a short cut, if this tiered is first tiered snapshot,
+        if (tieredSnapshotId == 1) {
+            return new ReadableSnapshotResult(1, new HashMap<>(), null);
+        }
+
         // Find the latest compacted snapshot
         Snapshot latestCompactedSnapshot =
                 findPreviousSnapshot(tieredSnapshotId, Snapshot.CommitKind.COMPACT);

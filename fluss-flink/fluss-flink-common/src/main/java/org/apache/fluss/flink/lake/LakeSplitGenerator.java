@@ -33,7 +33,6 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -87,7 +86,7 @@ public class LakeSplitGenerator {
     public List<SourceSplitBase> generateHybridLakeFlussSplits() throws Exception {
         LakeSnapshot lakeSnapshotInfo;
         try {
-            lakeSnapshotInfo = flussAdmin.getLatestLakeSnapshot(tableInfo.getTablePath()).get();
+            lakeSnapshotInfo = flussAdmin.getReadableLakeSnapshot(tableInfo.getTablePath()).get();
         } catch (Exception exception) {
             if (ExceptionUtils.stripExecutionException(exception)
                     instanceof LakeTableSnapshotNotExistException) {
@@ -119,7 +118,7 @@ public class LakeSplitGenerator {
                     lakeSplits, isLogTable, tableBucketsOffset, partitionNameById);
         } else {
             Map<Integer, List<LakeSplit>> nonPartitionLakeSplits =
-                    lakeSplits.values().iterator().next();
+                    lakeSplits.isEmpty() ? null : lakeSplits.values().iterator().next();
             // non-partitioned table
             return generateNoPartitionedTableSplit(
                     nonPartitionLakeSplits, isLogTable, tableBucketsOffset);

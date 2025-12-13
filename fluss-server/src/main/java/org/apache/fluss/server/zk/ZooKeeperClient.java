@@ -1080,6 +1080,25 @@ public class ZooKeeperClient implements AutoCloseable {
      * @return an Optional containing the LakeTableSnapshot if found, empty otherwise
      * @throws Exception if the operation fails
      */
+    /**
+     * Gets the latest readable {@link LakeTableSnapshot} for the given table ID.
+     *
+     * @param tableId the table ID
+     * @return an Optional containing the latest readable LakeTableSnapshot if found, empty otherwise
+     * @throws Exception if the operation fails
+     */
+    public Optional<LakeTableSnapshot> getLatestReadableLakeTableSnapshot(long tableId)
+            throws Exception {
+        Optional<LakeTable> optLakeTable = getLakeTable(tableId);
+        if (optLakeTable.isPresent()) {
+            LakeTableSnapshot readableSnapshot =
+                    optLakeTable.get().getLatestReadableTableSnapshot();
+            return Optional.ofNullable(readableSnapshot);
+        } else {
+            return Optional.empty();
+        }
+    }
+
     public Optional<LakeTableSnapshot> getLakeTableSnapshot(long tableId, long snapshotId)
             throws Exception {
         Optional<LakeTable> optLakeTable = getLakeTable(tableId);

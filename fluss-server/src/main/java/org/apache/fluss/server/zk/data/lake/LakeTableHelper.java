@@ -27,7 +27,6 @@ import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.utils.FlussPaths;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -83,8 +82,10 @@ public class LakeTableHelper {
             // if readable snapshot id equals to tiered snapshot id,
             // set readable table snapshot to tiered snapshot
             if (tableReadableTableSnapshot != null) {
-                if (tableReadableTableSnapshot.getSnapshotId()
-                        == lakeTableSnapshot.getSnapshotId()) {
+                if (tableReadableTableSnapshot.getSnapshotId() == lakeTableSnapshot.getSnapshotId()
+                        && lakeTableSnapshot
+                                .getBucketLogEndOffset()
+                                .equals(tableReadableTableSnapshot.getBucketLogEndOffset())) {
                     tableReadableTableSnapshot = lakeTableSnapshot;
                 } else {
                     if (previousLatestLakeReadableSnapshot != null) {
@@ -146,12 +147,31 @@ public class LakeTableHelper {
                                     readableOffsetsFilePath);
                     snapshotMetadataList.set(i, updatedMetadata);
                     found = true;
+                    break;
                 }
             }
+
+            // If readable snapshot not found in existing snapshots, insert a new one
+            // This can happen when readable snapshot is determined but hasn't been committed as
+            // tiered snapshot yet
             if (!found) {
-                // shouldn't happened
-                LOG.warn(
-                        "Readable snapshot {} not found in existing snapshots for table {}",
+                // Insert the readable snapshot metadata
+                // Both tieredOffsetsFilePath and readableOffsetsFilePath point to the same file
+                // since this snapshot only has readable offsets
+                LakeTable.LakeSnapshotMetadata readableSnapshotMetadata =
+                        new LakeTable.LakeSnapshotMetadata(
+                                readableSnapshotId, readableOffsetsFilePath, readableOffsetsFilePath);
+                // Insert in sorted order by snapshotId
+                int insertIndex = snapshotMetadataList.size();
+                for (int i = 0; i < snapshotMetadataList.size(); i++) {
+                    if (snapshotMetadataList.get(i).getSnapshotId() > readableSnapshotId) {
+                        insertIndex = i;
+                        break;
+                    }
+                }
+                snapshotMetadataList.add(insertIndex, readableSnapshotMetadata);
+                LOG.info(
+                        "Inserted readable snapshot {} for table {} (not found in existing snapshots)",
                         readableSnapshotId,
                         tableId);
             }

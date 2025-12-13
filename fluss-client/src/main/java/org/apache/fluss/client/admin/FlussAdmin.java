@@ -404,6 +404,19 @@ public class FlussAdmin implements Admin {
     }
 
     @Override
+    public CompletableFuture<LakeSnapshot> getReadableLakeSnapshot(TablePath tablePath) {
+        GetLakeSnapshotRequest request = new GetLakeSnapshotRequest();
+        request.setTablePath()
+                .setDatabaseName(tablePath.getDatabaseName())
+                .setTableName(tablePath.getTableName());
+        request.setReadableSnapshot(true);
+
+        return readOnlyGateway
+                .getLakeSnapshot(request)
+                .thenApply(ClientRpcMessageUtils::toLakeTableSnapshotInfo);
+    }
+
+    @Override
     public ListOffsetsResult listOffsets(
             TablePath tablePath, Collection<Integer> buckets, OffsetSpec offsetSpec) {
         return listOffsets(PhysicalTablePath.of(tablePath), buckets, offsetSpec);

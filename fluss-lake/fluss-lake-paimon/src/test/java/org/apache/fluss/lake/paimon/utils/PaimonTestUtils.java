@@ -69,7 +69,7 @@ public class PaimonTestUtils {
         return fileStoreTable.snapshotManager().latestSnapshot().id();
     }
 
-    static class CompactHelper {
+    public static class CompactHelper {
         private final FileStoreTable fileStoreTable;
         private final File compactionTempDir;
 
@@ -78,7 +78,7 @@ public class PaimonTestUtils {
             this.compactionTempDir = compactionTempDir;
         }
 
-        CompactCommitter compactBucket(BinaryRow partition, int bucket) throws Exception {
+        public CompactCommitter compactBucket(BinaryRow partition, int bucket) throws Exception {
             Map<String, String> options = new HashMap<>();
             options.put(CoreOptions.WRITE_ONLY.key(), String.valueOf(false));
             FileStoreTable compactTable = fileStoreTable.copy(options);
@@ -97,7 +97,7 @@ public class PaimonTestUtils {
             }
         }
 
-        CompactCommitter compactBucket(int bucket) throws Exception {
+        public CompactCommitter compactBucket(int bucket) throws Exception {
             return compactBucket(BinaryRow.EMPTY_ROW, bucket);
         }
     }
@@ -109,7 +109,7 @@ public class PaimonTestUtils {
      * test, which is useful for testing scenarios where multiple compactions are prepared but
      * committed in a specific order.
      */
-    static class CompactCommitter {
+    public static class CompactCommitter {
         private final BatchTableCommit tableCommit;
         private final List<CommitMessage> messages;
 

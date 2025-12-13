@@ -367,6 +367,7 @@ message GetKvSnapshotMetadataResponse {
 message GetLakeSnapshotRequest {
   required PbTablePath table_path = 1;
   optional int64 snapshot_id = 2; // If not set, returns the latest snapshot
+  optional bool readable_snapshot = 3; // If true, returns the latest readable snapshot
 }
 
 message GetLakeSnapshotResponse {

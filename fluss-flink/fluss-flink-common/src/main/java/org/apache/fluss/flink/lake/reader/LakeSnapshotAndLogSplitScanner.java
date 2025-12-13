@@ -196,7 +196,12 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                 if (lakeSnapshotSplitAndFlussLogSplit.getLakeSplits() == null
                         || lakeSnapshotSplitAndFlussLogSplit.getLakeSplits().isEmpty()) {
                     lakeRecordIterators = Collections.emptyList();
-                    logRows = new LinkedHashMap<>();
+                    logRows = new TreeMap<>(new Comparator<InternalRow>() {
+                        @Override
+                        public int compare(InternalRow o1, InternalRow o2) {
+                            return 1;
+                        }
+                    });
                 } else {
                     for (LakeSplit lakeSplit : lakeSnapshotSplitAndFlussLogSplit.getLakeSplits()) {
                         RecordReader reader = lakeSource.createRecordReader(() -> lakeSplit);

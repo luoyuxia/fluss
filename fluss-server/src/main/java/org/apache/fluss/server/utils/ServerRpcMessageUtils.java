@@ -170,7 +170,6 @@ import org.apache.fluss.utils.json.DataTypeJsonSerde;
 import org.apache.fluss.utils.json.JsonSerdeUtils;
 
 import javax.annotation.Nullable;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1599,13 +1598,8 @@ public class ServerRpcMessageUtils {
             }
 
             if (readableSnapshotId != null) {
-                if (readableSnapshotId == snapshotId) {
-                    lakeTableReadableSnapshotByTableId.put(
-                            tableId, new LakeTableSnapshot(snapshotId, bucketLogEndOffset));
-                } else {
-                    lakeTableReadableSnapshotByTableId.put(
-                            tableId, new LakeTableSnapshot(snapshotId, readableBucketLogEndOffset));
-                }
+                lakeTableReadableSnapshotByTableId.put(
+                        tableId, new LakeTableSnapshot(readableSnapshotId, readableBucketLogEndOffset));
             }
 
             lakeTableInfoByTableId.put(

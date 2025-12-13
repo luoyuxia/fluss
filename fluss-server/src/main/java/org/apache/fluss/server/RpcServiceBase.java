@@ -94,12 +94,10 @@ import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.BucketSnapshot;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -440,9 +438,20 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                 () -> {
                     Optional<LakeTableSnapshot> optLakeTableSnapshot;
                     try {
-                        // If snapshot_id is set, get that specific snapshot; otherwise get the
-                        // latest
-                        if (request.hasSnapshotId()) {
+                        // If readable_snapshot is set to true, get the latest readable snapshot
+                        if (request.hasReadableSnapshot() && request.isReadableSnapshot()) {
+                            optLakeTableSnapshot =
+                                    zkClient.getLatestReadableLakeTableSnapshot(tableId);
+                            if (!optLakeTableSnapshot.isPresent()) {
+                                resultFuture.completeExceptionally(
+                                        new LakeTableSnapshotNotExistException(
+                                                String.format(
+                                                        "Lake table readable snapshot not exist for table: %s, table id: %d",
+                                                        tablePath, tableId)));
+                                return;
+                            }
+                        } else if (request.hasSnapshotId()) {
+                            // If snapshot_id is set, get that specific snapshot
                             long snapshotId = request.getSnapshotId();
                             optLakeTableSnapshot =
                                     zkClient.getLakeTableSnapshot(tableId, snapshotId);
@@ -455,6 +464,7 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                                 return;
                             }
                         } else {
+                            // Otherwise get the latest snapshot
                             optLakeTableSnapshot = zkClient.getLakeTableSnapshot(tableId);
                             if (!optLakeTableSnapshot.isPresent()) {
                                 resultFuture.completeExceptionally(
