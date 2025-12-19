@@ -74,7 +74,8 @@ public enum ApiKeys {
     CONTROLLED_SHUTDOWN(1043, 0, 0, PRIVATE),
     ALTER_TABLE(1044, 0, 0, PUBLIC),
     DESCRIBE_CLUSTER_CONFIGS(1045, 0, 0, PUBLIC),
-    ALTER_CLUSTER_CONFIGS(1046, 0, 0, PUBLIC);
+    ALTER_CLUSTER_CONFIGS(1046, 0, 0, PUBLIC),
+    PRECOMMIT_LAKE_TABLE_SNAPSHOT(1047, 0, 0, PRIVATE);
 
     private static final Map<Integer, ApiKeys> ID_TO_TYPE =
             Arrays.stream(ApiKeys.values())
