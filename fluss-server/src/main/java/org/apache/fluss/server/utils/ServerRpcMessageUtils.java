@@ -63,8 +63,8 @@ import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenResponse;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataResponse;
+import org.apache.fluss.rpc.messages.GetLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsResponse;
-import org.apache.fluss.rpc.messages.GetLatestLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
 import org.apache.fluss.rpc.messages.LakeTieringHeartbeatResponse;
 import org.apache.fluss.rpc.messages.LimitScanResponse;
@@ -1671,10 +1671,10 @@ public class ServerRpcMessageUtils {
                 notifyLakeTableOffsetRequest.getCoordinatorEpoch(), lakeBucketOffsetMap);
     }
 
-    public static GetLatestLakeSnapshotResponse makeGetLatestLakeSnapshotResponse(
+    public static GetLakeSnapshotResponse makeGetLakeSnapshotResponse(
             long tableId, LakeTableSnapshot lakeTableSnapshot) {
-        GetLatestLakeSnapshotResponse getLakeTableSnapshotResponse =
-                new GetLatestLakeSnapshotResponse();
+        GetLakeSnapshotResponse getLakeTableSnapshotResponse =
+                new GetLakeSnapshotResponse();
 
         getLakeTableSnapshotResponse.setTableId(tableId);
         getLakeTableSnapshotResponse.setSnapshotId(lakeTableSnapshot.getSnapshotId());

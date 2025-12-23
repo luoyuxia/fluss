@@ -84,13 +84,11 @@ import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.data.Stat;
 import org.apache.fluss.utils.ExceptionUtils;
 import org.apache.fluss.utils.types.Tuple2;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -1062,6 +1060,28 @@ public class ZooKeeperClient implements AutoCloseable {
         if (optLakeTable.isPresent()) {
             // always get the latest snapshot
             return Optional.of(optLakeTable.get().getLatestTableSnapshot());
+        } else {
+            return Optional.empty();
+        }
+    }
+
+
+    /**
+     * Gets the {@link LakeTableSnapshot} for the given table ID and snapshot id.
+     *
+     * @param tableId the table ID
+     * @return an Optional containing the LakeTableSnapshot if the table exists, empty otherwise
+     * @throws Exception if the operation fails
+     */
+    public Optional<LakeTableSnapshot> getLakeTableSnapshot(long tableId, @Nullable Long snapshotId)
+            throws Exception {
+        Optional<LakeTable> optLakeTable = getLakeTable(tableId);
+        if (optLakeTable.isPresent()) {
+            if (snapshotId == null) {
+                return Optional.of(optLakeTable.get().getLatestTableSnapshot());
+            } else {
+                return Optional.ofNullable(optLakeTable.get().getTableSnapshot(snapshotId));
+            }
         } else {
             return Optional.empty();
         }

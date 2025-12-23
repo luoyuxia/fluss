@@ -364,11 +364,12 @@ message GetKvSnapshotMetadataResponse {
   repeated PbRemotePathAndLocalFile snapshot_files = 2;
 }
 
-message GetLatestLakeSnapshotRequest {
+message GetLakeSnapshotRequest {
   required PbTablePath table_path = 1;
+  optional int64 snapshot_id = 2; // If not set, returns the latest snapshot
 }
 
-message GetLatestLakeSnapshotResponse {
+message GetLakeSnapshotResponse {
   required int64 table_id = 1;
   required int64 snapshotId = 2;
   repeated PbLakeSnapshotForBucket bucket_snapshots = 3;
@@ -451,6 +452,7 @@ message NotifyRemoteLogOffsetsResponse {
 
 message PrepareCommitLakeTableSnapshotRequest {
   repeated PbLakeTableSnapshotInfo tables_req = 1;
+  optional bool overwrite = 2;
 }
 
 message PrepareCommitLakeTableSnapshotResponse {
@@ -482,7 +484,8 @@ message PbLakeTableSnapshotMetadata {
   required int64 table_id = 1;
   required int64 snapshot_id = 2;
   required string tiered_snapshot_file_path = 3;
-  optional string readable_snapshot_file_path = 4;
+  optional int64 readable_snapshot_id = 4;
+  optional string readable_snapshot_file_path = 5;
 }
 
 message PbLakeTableSnapshotInfo {

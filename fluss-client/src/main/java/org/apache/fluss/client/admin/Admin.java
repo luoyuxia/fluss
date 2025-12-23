@@ -417,6 +417,25 @@ public interface Admin extends AutoCloseable {
     CompletableFuture<LakeSnapshot> getLatestLakeSnapshot(TablePath tablePath);
 
     /**
+     * Get lake snapshot info for the given table and snapshot ID asynchronously.
+     *
+     * <p>It'll get the snapshot offsets for all the buckets of the table for the specified
+     * snapshot.
+     *
+     * <p>The following exceptions can be anticipated when calling {@code get()} on returned future.
+     *
+     * <ul>
+     *   <li>{@link TableNotExistException} if the table does not exist.
+     *   <li>{@link LakeTableSnapshotNotExistException} if the specified snapshot does not exist.
+     * </ul>
+     *
+     * @param tablePath the table path of the table.
+     * @param snapshotId the snapshot ID to get snapshot for.
+     * @return a future returns the lake snapshot.
+     */
+    CompletableFuture<LakeSnapshot> getLakeSnapshot(TablePath tablePath, long snapshotId);
+
+    /**
      * List offset for the specified buckets. This operation enables to find the beginning offset,
      * end offset as well as the offset matching a timestamp in buckets.
      *

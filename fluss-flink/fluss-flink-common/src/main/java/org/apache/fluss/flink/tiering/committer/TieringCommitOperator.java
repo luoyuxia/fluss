@@ -17,6 +17,15 @@
 
 package org.apache.fluss.flink.tiering.committer;
 
+import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
+import org.apache.flink.runtime.source.event.SourceEventWrapper;
+import org.apache.flink.streaming.api.graph.StreamConfig;
+import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
+import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
+import org.apache.flink.streaming.api.operators.Output;
+import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
 import org.apache.fluss.client.admin.Admin;
@@ -29,6 +38,7 @@ import org.apache.fluss.flink.tiering.event.TieringFailOverEvent;
 import org.apache.fluss.flink.tiering.source.TableBucketWriteResult;
 import org.apache.fluss.flink.tiering.source.TieringSource;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
+import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
@@ -36,18 +46,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.ExceptionUtils;
 
-import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
-import org.apache.flink.runtime.source.event.SourceEventWrapper;
-import org.apache.flink.streaming.api.graph.StreamConfig;
-import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.Output;
-import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.tasks.StreamTask;
-
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -203,7 +202,8 @@ public class TieringCommitOperator<WriteResult, Committable>
                         new TieringCommitterInitContext(
                                 tablePath,
                                 admin.getTableInfo(tablePath).get(),
-                                lakeTieringConfig))) {
+                                lakeTieringConfig,
+                                flussConfig))) {
             List<WriteResult> writeResults =
                     committableWriteResults.stream()
                             .map(TableBucketWriteResult::writeResult)
@@ -233,19 +233,44 @@ public class TieringCommitOperator<WriteResult, Committable>
             // get the lake snapshot file storing the log end offsets
             String lakeSnapshotMetadataFile =
                     flussTableLakeSnapshotCommitter.prepareCommit(
-                            tableId, tablePath, logEndOffsets);
+                            tableId, tablePath, logEndOffsets, false);
 
             // record the lake snapshot metadata file to snapshot property
-            long committedSnapshotId =
+            LakeCommitResult lakeCommitResult =
                     lakeCommitter.commit(
                             committable,
                             Collections.singletonMap(
                                     FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY,
                                     lakeSnapshotMetadataFile));
+
+            long committedSnapshotId = lakeCommitResult.getCommittedSnapshotId();
+
+            String readableSnapshotPath = null;
+            Long readableSnapshotId = null;
+
+            if (lakeCommitResult.getReadableLogEndOffsets() != null) {
+                // need to write a new readable snapshot file
+                readableSnapshotId = lakeCommitResult.getReadableSnapshotId();
+                readableSnapshotPath =
+                        flussTableLakeSnapshotCommitter.prepareCommit(
+                                tableId,
+                                tablePath,
+                                lakeCommitResult.getReadableLogEndOffsets(),
+                                true);
+            } else {
+                if (lakeCommitResult.getReadableSnapshotId() != null
+                        && lakeCommitResult.getReadableSnapshotId() == committedSnapshotId) {
+                    readableSnapshotPath = lakeSnapshotMetadataFile;
+                    readableSnapshotId = lakeCommitResult.getReadableSnapshotId();
+                }
+            }
+
             flussTableLakeSnapshotCommitter.commit(
                     tableId,
                     committedSnapshotId,
                     lakeSnapshotMetadataFile,
+                    readableSnapshotId,
+                    readableSnapshotPath,
                     logEndOffsets,
                     logMaxTieredTimestamps);
             return committable;
@@ -319,6 +344,8 @@ public class TieringCommitOperator<WriteResult, Committable>
                     tableId,
                     missingCommittedSnapshot.getLakeSnapshotId(),
                     lakeSnapshotOffsetPath,
+                    null,
+                    null,
                     // use empty log offsets, log max timestamp, since we can't know that
                     // in last tiering, it doesn't matter for they are just used to
                     // report metrics

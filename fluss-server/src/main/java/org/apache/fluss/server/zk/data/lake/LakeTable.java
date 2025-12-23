@@ -26,7 +26,6 @@ import org.apache.fluss.server.zk.data.ZkData;
 import org.apache.fluss.utils.IOUtils;
 
 import javax.annotation.Nullable;
-
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Collections;
@@ -118,10 +117,15 @@ public class LakeTable {
         if (lakeTableSnapshot != null) {
             return lakeTableSnapshot;
         }
-        LakeSnapshotMetadata lakeSnapshotMetadata = getLatestLakeSnapshotMetadata();
-        FsPath tieredOffsetsFilePath = checkNotNull(lakeSnapshotMetadata).tieredOffsetsFilePath;
+        LakeSnapshotMetadata lakeSnapshotMetadata = checkNotNull(getLatestLakeSnapshotMetadata());
+        return toLakeTableSnapshot(lakeSnapshotMetadata);
+    }
+
+    private LakeTableSnapshot toLakeTableSnapshot(LakeSnapshotMetadata lakeSnapshotMetadata)
+            throws Exception {
+        FsPath snapshotMetadataFile = lakeSnapshotMetadata.getTieredOffsetsFilePath();
         FSDataInputStream inputStream =
-                tieredOffsetsFilePath.getFileSystem().open(tieredOffsetsFilePath);
+                snapshotMetadataFile.getFileSystem().open(snapshotMetadataFile);
         try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
             IOUtils.copyBytes(inputStream, outputStream, true);
             Map<TableBucket, Long> logOffsets =
@@ -129,6 +133,25 @@ public class LakeTable {
                             .getBucketLogEndOffset();
             return new LakeTableSnapshot(lakeSnapshotMetadata.snapshotId, logOffsets);
         }
+    }
+
+    public LakeTableSnapshot getTableSnapshot(Long snapshotId) throws Exception {
+        if (lakeTableSnapshot != null) {
+            if (lakeTableSnapshot.getSnapshotId() != snapshotId) {
+                return lakeTableSnapshot;
+            }
+        }
+
+        List<LakeSnapshotMetadata> lakeSnapshotMetadatas = getLakeSnapshotMetadatas();
+        if (lakeSnapshotMetadatas != null) {
+            for (LakeSnapshotMetadata lakeSnapshotMetadata : lakeSnapshotMetadatas) {
+                if (lakeSnapshotMetadata.getSnapshotId() == snapshotId) {
+                    return toLakeTableSnapshot(lakeSnapshotMetadata);
+                }
+            }
+        }
+
+        return null;
     }
 
     /** The lake snapshot metadata entry stored in zk lake table. */

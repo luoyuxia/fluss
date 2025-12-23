@@ -18,9 +18,12 @@
 package org.apache.fluss.lake.paimon.tiering;
 
 import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.CommitterInitContext;
+import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
+import org.apache.fluss.lake.paimon.utils.DvTableReadableSnapshotRetriever;
 import org.apache.fluss.metadata.TablePath;
 
 import org.apache.paimon.CoreOptions;
@@ -52,6 +55,9 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
 
     private final Catalog paimonCatalog;
     private final FileStoreTable fileStoreTable;
+    private final TablePath tablePath;
+    private final long tableId;
+    private final Configuration flussConfig;
     private TableCommitImpl tableCommit;
 
     private static final ThreadLocal<Long> currentCommitSnapshotId = new ThreadLocal<>();
@@ -60,6 +66,9 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
             PaimonCatalogProvider paimonCatalogProvider, CommitterInitContext committerInitContext)
             throws IOException {
         this.paimonCatalog = paimonCatalogProvider.get();
+        this.tablePath = committerInitContext.tablePath();
+        this.tableId = committerInitContext.tableInfo().getTableId();
+        this.flussConfig = committerInitContext.flussConfig();
         this.fileStoreTable =
                 getTable(
                         committerInitContext.tablePath(),
@@ -83,7 +92,8 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     }
 
     @Override
-    public long commit(PaimonCommittable committable, Map<String, String> snapshotProperties)
+    public LakeCommitResult commit(
+            PaimonCommittable committable, Map<String, String> snapshotProperties)
             throws IOException {
         ManifestCommittable manifestCommittable = committable.manifestCommittable();
         snapshotProperties.forEach(manifestCommittable::addProperty);
@@ -93,15 +103,38 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
             tableCommit.commit(manifestCommittable);
 
             Long commitSnapshotId = currentCommitSnapshotId.get();
+            checkNotNull(commitSnapshotId, "Paimon committed snapshot id must be non-null.");
             currentCommitSnapshotId.remove();
 
-            return checkNotNull(commitSnapshotId, "Paimon committed snapshot id must be non-null.");
+            if (!fileStoreTable.coreOptions().deletionVectorsEnabled()) {
+                return LakeCommitResult.committableIsReadable(commitSnapshotId);
+            } else {
+                return dvTableCommitResult(commitSnapshotId);
+            }
         } catch (Throwable t) {
             if (tableCommit != null) {
                 // if any error happen while commit, abort the commit to clean committable
                 tableCommit.abort(manifestCommittable.fileCommittables());
             }
             throw new IOException(t);
+        }
+    }
+
+    private LakeCommitResult dvTableCommitResult(long committedSnapshotId) throws Exception {
+        try (DvTableReadableSnapshotRetriever retriever =
+                new DvTableReadableSnapshotRetriever(
+                        tablePath, tableId, fileStoreTable, flussConfig)) {
+            DvTableReadableSnapshotRetriever.ReadableSnapshotResult readableSnapshotResult =
+                    retriever.getReadableSnapshotAndOffsets(committedSnapshotId);
+
+            if (readableSnapshotResult == null) {
+                return LakeCommitResult.unknownReadableSnapshot(committedSnapshotId);
+            } else {
+                return LakeCommitResult.withReadableSnapshot(
+                        committedSnapshotId,
+                        readableSnapshotResult.getReadableSnapshotId(),
+                        readableSnapshotResult.getReadableOffsets());
+            }
         }
     }
 

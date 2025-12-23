@@ -106,6 +106,12 @@ public class LakeTableHelper {
         }
     }
 
+
+    public void addLakeTableSnapshotMetadata() {
+
+    }
+
+
     public void addLakeTableSnapshotMetadata(
             long tableId, LakeTable.LakeSnapshotMetadata lakeSnapshotMetadata) throws Exception {
         Optional<LakeTable> optPreviousLakeTable = zkClient.getLakeTable(tableId);

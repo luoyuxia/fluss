@@ -55,10 +55,10 @@ import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenRequest;
 import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenResponse;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataRequest;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataResponse;
+import org.apache.fluss.rpc.messages.GetLakeSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsRequest;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsResponse;
-import org.apache.fluss.rpc.messages.GetLatestLakeSnapshotRequest;
-import org.apache.fluss.rpc.messages.GetLatestLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetTableInfoRequest;
 import org.apache.fluss.rpc.messages.GetTableInfoResponse;
 import org.apache.fluss.rpc.messages.GetTableSchemaRequest;
@@ -104,12 +104,10 @@ import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.BucketSnapshot;
 import org.apache.fluss.server.zk.data.lake.LakeTableHelper;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -125,8 +123,8 @@ import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toAclFilter;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toResolvedPartitionSpec;
 import static org.apache.fluss.security.acl.Resource.TABLE_SPLITTER;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.buildMetadataResponse;
+import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeGetLakeSnapshotResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeGetLatestKvSnapshotsResponse;
-import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeGetLatestLakeSnapshotResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeKvSnapshotMetadataResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeListAclsResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toGetFileSystemSecurityTokenResponse;
@@ -443,19 +441,22 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
     }
 
     @Override
-    public CompletableFuture<GetLatestLakeSnapshotResponse> getLatestLakeSnapshot(
-            GetLatestLakeSnapshotRequest request) {
+    public CompletableFuture<GetLakeSnapshotResponse> getLakeSnapshot(
+            GetLakeSnapshotRequest request) {
         // get table info
         TablePath tablePath = toTablePath(request.getTablePath());
         TableInfo tableInfo = metadataManager.getTable(tablePath);
         // get table id
         long tableId = tableInfo.getTableId();
-        CompletableFuture<GetLatestLakeSnapshotResponse> resultFuture = new CompletableFuture<>();
+        CompletableFuture<GetLakeSnapshotResponse> resultFuture = new CompletableFuture<>();
         ioExecutor.execute(
                 () -> {
                     Optional<LakeTableSnapshot> optLakeTableSnapshot;
                     try {
-                        optLakeTableSnapshot = zkClient.getLakeTableSnapshot(tableId);
+                        optLakeTableSnapshot =
+                                zkClient.getLakeTableSnapshot(
+                                        tableId,
+                                        request.hasSnapshotId() ? null : request.getSnapshotId());
                         if (!optLakeTableSnapshot.isPresent()) {
                             resultFuture.completeExceptionally(
                                     new LakeTableSnapshotNotExistException(
@@ -465,7 +466,7 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                         } else {
                             LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
                             resultFuture.complete(
-                                    makeGetLatestLakeSnapshotResponse(tableId, lakeTableSnapshot));
+                                    makeGetLakeSnapshotResponse(tableId, lakeTableSnapshot));
                         }
                     } catch (Exception e) {
                         resultFuture.completeExceptionally(
@@ -624,12 +625,13 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
                                             response.addPrepareCommitLakeTableResp();
                             try {
                                 // upsert lake table snapshot, need to merge the snapshot with
-                                // previous
-                                // latest snapshot
+                                // previous latest snapshot
                                 LakeTableSnapshot lakeTableSnapshot =
-                                        lakeTableHelper.upsertLakeTableSnapshot(
-                                                pbLakeTableSnapshotInfo.getTableId(),
-                                                toLakeSnapshot(pbLakeTableSnapshotInfo));
+                                        request.hasOverwrite() && request.isOverwrite()
+                                                ? toLakeSnapshot(pbLakeTableSnapshotInfo)
+                                                : lakeTableHelper.upsertLakeTableSnapshot(
+                                                        pbLakeTableSnapshotInfo.getTableId(),
+                                                        toLakeSnapshot(pbLakeTableSnapshotInfo));
                                 TablePath tablePath =
                                         toTablePath(pbLakeTableSnapshotInfo.getTablePath());
                                 FsPath fsPath =

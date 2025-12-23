@@ -38,6 +38,7 @@ import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.utils.ExceptionUtils;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
@@ -84,13 +85,18 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
     }
 
-    String prepareCommit(long tableId, TablePath tablePath, Map<TableBucket, Long> logEndOffsets)
+    String prepareCommit(
+            long tableId,
+            TablePath tablePath,
+            Map<TableBucket, Long> logEndOffsets,
+            boolean overwrite)
             throws IOException {
         PbPrepareCommitLakeTableRespForTable prepareCommitResp = null;
         Exception exception = null;
         try {
             PrepareCommitLakeTableSnapshotRequest prepareCommitLakeTableSnapshotRequest =
-                    toPrepareCommitLakeTableSnapshotRequest(tableId, tablePath, logEndOffsets);
+                    toPrepareCommitLakeTableSnapshotRequest(
+                            tableId, tablePath, logEndOffsets, overwrite);
             PrepareCommitLakeTableSnapshotResponse prepareCommitLakeTableSnapshotResponse =
                     coordinatorGateway
                             .prepareCommitLakeTableSnapshot(prepareCommitLakeTableSnapshotRequest)
@@ -120,6 +126,8 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             long tableId,
             long lakeSnapshotId,
             String lakeSnapshotPath,
+            @Nullable Long readableSnapshotId,
+            @Nullable String readableSnapshotPath,
             Map<TableBucket, Long> logEndOffsets,
             Map<TableBucket, Long> logMaxTieredTimestamps)
             throws IOException {
@@ -130,6 +138,8 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                             tableId,
                             lakeSnapshotId,
                             lakeSnapshotPath,
+                            readableSnapshotId,
+                            readableSnapshotPath,
                             logEndOffsets,
                             logMaxTieredTimestamps);
             List<PbCommitLakeTableSnapshotRespForTable> commitLakeTableSnapshotRespForTables =
@@ -162,9 +172,13 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
      * @return the prepared commit request
      */
     private PrepareCommitLakeTableSnapshotRequest toPrepareCommitLakeTableSnapshotRequest(
-            long tableId, TablePath tablePath, Map<TableBucket, Long> logEndOffsets) {
+            long tableId,
+            TablePath tablePath,
+            Map<TableBucket, Long> logEndOffsets,
+            boolean overwrite) {
         PrepareCommitLakeTableSnapshotRequest prepareCommitLakeTableSnapshotRequest =
                 new PrepareCommitLakeTableSnapshotRequest();
+        prepareCommitLakeTableSnapshotRequest.setOverwrite(overwrite);
         PbLakeTableSnapshotInfo pbLakeTableSnapshotInfo =
                 prepareCommitLakeTableSnapshotRequest.addTablesReq();
         pbLakeTableSnapshotInfo.setTableId(tableId);
@@ -211,6 +225,8 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             long tableId,
             long snapshotId,
             String lakeSnapshotPath,
+            @Nullable Long readableSnapshotId,
+            @Nullable String readableSnapshotPath,
             Map<TableBucket, Long> logEndOffsets,
             Map<TableBucket, Long> logMaxTieredTimestamps) {
         CommitLakeTableSnapshotRequest commitLakeTableSnapshotRequest =
@@ -223,7 +239,14 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
         pbLakeTableSnapshotMetadata.setTableId(tableId);
         // tiered snapshot file path is equal to readable snapshot currently
         pbLakeTableSnapshotMetadata.setTieredSnapshotFilePath(lakeSnapshotPath);
-        pbLakeTableSnapshotMetadata.setReadableSnapshotFilePath(lakeSnapshotPath);
+
+        if (readableSnapshotId != null) {
+            pbLakeTableSnapshotMetadata.setReadableSnapshotId(readableSnapshotId);
+        }
+
+        if (readableSnapshotPath != null) {
+            pbLakeTableSnapshotMetadata.setReadableSnapshotFilePath(readableSnapshotPath);
+        }
 
         // Add PbLakeTableSnapshotInfo for metrics reporting (to notify tablet servers about
         // synchronized log end offsets and max timestamps)

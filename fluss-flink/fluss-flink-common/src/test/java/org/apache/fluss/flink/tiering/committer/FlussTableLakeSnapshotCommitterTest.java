@@ -21,7 +21,6 @@ import org.apache.fluss.client.metadata.LakeSnapshot;
 import org.apache.fluss.flink.utils.FlinkTestBase;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
-
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -95,13 +94,16 @@ class FlussTableLakeSnapshotCommitterTest extends FlinkTestBase {
         long lakeSnapshotId = 3;
 
         String lakeSnapshotFilePath =
-                flussTableLakeSnapshotCommitter.prepareCommit(tableId, tablePath, expectedOffsets);
+                flussTableLakeSnapshotCommitter.prepareCommit(
+                        tableId, tablePath, expectedOffsets, false);
 
         // commit offsets
         flussTableLakeSnapshotCommitter.commit(
                 tableId,
                 lakeSnapshotId,
                 lakeSnapshotFilePath,
+                null,
+                null,
                 // don't care end offsets, maxTieredTimestamps
                 Collections.emptyMap(),
                 Collections.emptyMap());

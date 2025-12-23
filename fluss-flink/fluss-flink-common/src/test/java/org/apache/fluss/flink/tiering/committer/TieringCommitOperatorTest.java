@@ -17,18 +17,6 @@
 
 package org.apache.fluss.flink.tiering.committer;
 
-import org.apache.fluss.client.metadata.LakeSnapshot;
-import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
-import org.apache.fluss.flink.tiering.TestingLakeTieringFactory;
-import org.apache.fluss.flink.tiering.TestingWriteResult;
-import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
-import org.apache.fluss.flink.tiering.event.FinishedTieringEvent;
-import org.apache.fluss.flink.tiering.source.TableBucketWriteResult;
-import org.apache.fluss.flink.utils.FlinkTestBase;
-import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
-import org.apache.fluss.metadata.TableBucket;
-import org.apache.fluss.metadata.TablePath;
-
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.MockOperatorEventGateway;
@@ -43,12 +31,22 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.SourceOperatorStreamTask;
 import org.apache.flink.streaming.util.MockOutput;
 import org.apache.flink.streaming.util.MockStreamConfig;
+import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
+import org.apache.fluss.flink.tiering.TestingLakeTieringFactory;
+import org.apache.fluss.flink.tiering.TestingWriteResult;
+import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
+import org.apache.fluss.flink.tiering.event.FinishedTieringEvent;
+import org.apache.fluss.flink.tiering.source.TableBucketWriteResult;
+import org.apache.fluss.flink.utils.FlinkTestBase;
+import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
+import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TablePath;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -467,7 +465,7 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                 new FlussTableLakeSnapshotCommitter(FLUSS_CLUSTER_EXTENSION.getClientConfig())) {
             lakeSnapshotCommitter.open();
             String lakeSnapshotFile =
-                    lakeSnapshotCommitter.prepareCommit(tableId, tablePath, logEndOffsets);
+                    lakeSnapshotCommitter.prepareCommit(tableId, tablePath, logEndOffsets, false);
             return new CommittedLakeSnapshot(
                     snapshotId,
                     Collections.singletonMap(
