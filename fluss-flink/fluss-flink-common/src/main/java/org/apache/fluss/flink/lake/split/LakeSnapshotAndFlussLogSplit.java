@@ -157,6 +157,8 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
                 + recordToSkip
                 + ", currentLakeSplitIndex="
                 + currentLakeSplitIndex
+                + ", isLakeSplitFinished="
+                + isLakeSplitFinished
                 + ", startingOffset="
                 + startingOffset
                 + ", stoppingOffset="

@@ -26,6 +26,8 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -40,6 +42,9 @@ import java.util.Set;
 /** A serializer for {@link SourceEnumeratorState}. */
 public class FlussSourceEnumeratorStateSerializer
         implements SimpleVersionedSerializer<SourceEnumeratorState> {
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(FlussSourceEnumeratorStateSerializer.class);
 
     @Nullable private final LakeSource<LakeSplit> lakeSource;
 
@@ -124,10 +129,15 @@ public class FlussSourceEnumeratorStateSerializer
         }
 
         List<SourceSplitBase> remainingHybridLakeFlussSplits = null;
+        LOG.info(
+                "Start to deserialize remainingHybridLakeFlussSplits, lakeSource = {}", lakeSource);
         if (lakeSource != null) {
             // todo: add a ut for serialize remaining hybrid lake fluss splits
             remainingHybridLakeFlussSplits = deserializeRemainingHybridLakeFlussSplits(in);
         }
+        LOG.info(
+                "Finish deserialize remainingHybridLakeFlussSplits, splits = {}",
+                remainingHybridLakeFlussSplits);
 
         return new SourceEnumeratorState(
                 assignedBuckets, assignedPartitions, remainingHybridLakeFlussSplits);
@@ -158,6 +168,7 @@ public class FlussSourceEnumeratorStateSerializer
     private List<SourceSplitBase> deserializeRemainingHybridLakeFlussSplits(
             final DataInputDeserializer in) throws IOException {
         if (in.readBoolean()) {
+            LOG.info("read remainingHybridLakeFlussSplits....");
             int numSplits = in.readInt();
             List<SourceSplitBase> splits = new ArrayList<>(numSplits);
             SourceSplitSerializer sourceSplitSerializer = new SourceSplitSerializer(lakeSource);
@@ -170,6 +181,7 @@ public class FlussSourceEnumeratorStateSerializer
             }
             return splits;
         } else {
+            LOG.info("don't read remainingHybridLakeFlussSplits....");
             return null;
         }
     }

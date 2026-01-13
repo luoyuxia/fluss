@@ -612,6 +612,9 @@ public class FlinkSourceEnumerator
     /** Return the hybrid lake and fluss splits. Return null if no lake snapshot. */
     @Nullable
     private List<SourceSplitBase> generateHybridLakeFlussSplits() {
+        LOG.info(
+                "call method generateHybridLakeFlussSplits, pendingHybridLakeFlussSplits {}",
+                pendingHybridLakeFlussSplits);
         // still have pending lake fluss splits,
         // should be restored from checkpoint, shouldn't
         // list splits again
