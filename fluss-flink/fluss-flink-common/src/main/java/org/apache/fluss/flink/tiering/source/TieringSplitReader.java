@@ -29,6 +29,7 @@ import org.apache.fluss.flink.tiering.source.split.TieringSnapshotSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
+import org.apache.fluss.metadata.MergeEngineType;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -57,6 +58,7 @@ import java.util.Set;
 
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
+import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** The {@link SplitReader} implementation which will read Fluss and write to lake. */
 public class TieringSplitReader<WriteResult>
@@ -93,6 +95,8 @@ public class TieringSplitReader<WriteResult>
     private final Map<TableBucket, TieringSplit> currentTableSplitsByBucket;
     private final Map<TableBucket, Long> currentTableStoppingOffsets;
     private final Set<TieringLogSplit> currentTableEmptyLogSplits;
+    private final Map<TableBucket, Long> currentTableTieredLogOffsets;
+    private final Map<TableBucket, Long> currentTableTieredTimestamps;
 
     public TieringSplitReader(
             Connection connection, LakeTieringFactory<WriteResult, ?> lakeTieringFactory) {
@@ -104,6 +108,8 @@ public class TieringSplitReader<WriteResult>
         this.currentTableStoppingOffsets = new HashMap<>();
         this.currentTableEmptyLogSplits = new HashSet<>();
         this.currentTableSplitsByBucket = new HashMap<>();
+        this.currentTableTieredLogOffsets = new HashMap<>();
+        this.currentTableTieredTimestamps = new HashMap<>();
         this.lakeWriters = new HashMap<>();
         this.currentPendingSnapshotSplits = new ArrayDeque<>();
     }
@@ -135,6 +141,24 @@ public class TieringSplitReader<WriteResult>
         } else {
             if (currentLogScanner != null) {
                 ScanRecords scanRecords = currentLogScanner.poll(POLL_TIMEOUT);
+                if (scanRecords.count() == 0) {
+                    if (currentTable
+                                    .getTableInfo()
+                                    .getTableConfig()
+                                    .getMergeEngineType()
+                                    .isPresent()
+                            && currentTable
+                                            .getTableInfo()
+                                            .getTableConfig()
+                                            .getMergeEngineType()
+                                            .get()
+                                    == MergeEngineType.FIRST_ROW) {
+                        LOG.info(
+                                "current table {} is a first row merge engine, and scan records is empty, force to complete it",
+                                currentTable.getTableInfo().getTablePath());
+                        return completeLogRecords();
+                    }
+                }
                 return forLogRecords(scanRecords);
             } else {
                 return emptyTableBucketWriteResultWithSplitIds();
@@ -269,6 +293,8 @@ public class TieringSplitReader<WriteResult>
                 // if record is less than stopping offset
                 if (record.logOffset() < stoppingOffset) {
                     lakeWriter.write(record);
+                    currentTableTieredTimestamps.put(bucket, record.timestamp());
+                    currentTableTieredLogOffsets.put(bucket, record.logOffset());
                 }
             }
             ScanRecord lastRecord = bucketScanRecords.get(bucketScanRecords.size() - 1);
@@ -293,8 +319,37 @@ public class TieringSplitReader<WriteResult>
                                 lastRecord.timestamp()));
                 // put split of the bucket
                 finishedSplitIds.put(bucket, currentSplitId);
-                LOG.info("Split {} has been finished.", currentSplitId);
             }
+        }
+
+        if (!finishedSplitIds.isEmpty()) {
+            mayFinishCurrentTable();
+        }
+
+        return new TableBucketWriteResultWithSplitIds(writeResults, finishedSplitIds);
+    }
+
+    private RecordsWithSplitIds<TableBucketWriteResult<WriteResult>> completeLogRecords()
+            throws IOException {
+        Map<TableBucket, TableBucketWriteResult<WriteResult>> writeResults = new HashMap<>();
+        Map<TableBucket, String> finishedSplitIds = new HashMap<>();
+        Iterator<Map.Entry<TableBucket, TieringSplit>> currentTieringSplitIterator =
+                currentTableSplitsByBucket.entrySet().iterator();
+        while (currentTieringSplitIterator.hasNext()) {
+            Map.Entry<TableBucket, TieringSplit> entry = currentTieringSplitIterator.next();
+            TieringSplit currentTieringSplit = entry.getValue();
+            String currentSplitId = currentTieringSplit.splitId();
+            // put write result of the bucket
+            TableBucket bucket = entry.getKey();
+            writeResults.put(
+                    bucket,
+                    completeLakeWriter(
+                            bucket,
+                            currentTieringSplit.getPartitionName(),
+                            currentTableTieredLogOffsets.getOrDefault(bucket, -1L) + 1,
+                            currentTableTieredTimestamps.getOrDefault(bucket, -1L)));
+            finishedSplitIds.put(bucket, currentSplitId);
+            currentTieringSplitIterator.remove();
         }
 
         if (!finishedSplitIds.isEmpty()) {
@@ -327,8 +382,14 @@ public class TieringSplitReader<WriteResult>
             long maxTimestamp)
             throws IOException {
         LakeWriter<WriteResult> lakeWriter = lakeWriters.remove(bucket);
-        WriteResult writeResult = lakeWriter.complete();
-        lakeWriter.close();
+        WriteResult writeResult = null;
+        if (lakeWriter != null) {
+            writeResult = lakeWriter.complete();
+            lakeWriter.close();
+        }
+        if (logEndOffset == -1) {
+            checkState(writeResult == null, "write result must be null when logEndOffset = -1");
+        }
         return toTableBucketWriteResult(
                 currentTablePath,
                 bucket,
@@ -362,7 +423,7 @@ public class TieringSplitReader<WriteResult>
     private void mayFinishCurrentTable() throws IOException {
         // no any pending splits for the table, just finish the table
         if (currentTableSplitsByBucket.isEmpty()) {
-            LOG.info("Finish tier  table {} of table id {}.", currentTablePath, currentTableId);
+            LOG.info("Finish tier table {} of table id {}.", currentTablePath, currentTableId);
             finishCurrentTable();
         }
     }
@@ -437,6 +498,8 @@ public class TieringSplitReader<WriteResult>
         currentTableNumberOfSplits = null;
         currentPendingSnapshotSplits.clear();
         currentTableStoppingOffsets.clear();
+        currentTableTieredLogOffsets.clear();
+        currentTableTieredTimestamps.clear();
         currentTableEmptyLogSplits.clear();
         currentTableSplitsByBucket.clear();
     }

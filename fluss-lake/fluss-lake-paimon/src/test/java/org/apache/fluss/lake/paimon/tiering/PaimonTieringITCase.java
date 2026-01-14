@@ -202,6 +202,47 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
         }
     }
 
+    @Test
+    void testTieringWithFirstRowMergeEngine() throws Exception {
+        TablePath t1 = TablePath.of(DEFAULT_DB, "first_row_merge");
+        Schema schema =
+                Schema.newBuilder()
+                        .column("c0", DataTypes.INT())
+                        .column("c1", DataTypes.STRING())
+                        .primaryKey("c0")
+                        .build();
+
+        TableDescriptor.Builder tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(schema)
+                        .distributedBy(1, "c0")
+                        .property(ConfigOptions.TABLE_MERGE_ENGINE.key(), "first_row")
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true")
+                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500));
+        tableDescriptor.properties(Collections.emptyMap());
+        long t1Id = createTable(t1, tableDescriptor.build());
+        List<InternalRow> rows = Collections.singletonList(row(1, "v1"));
+
+        writeRows(t1, rows, false);
+
+        rows = Collections.singletonList(row(1, "v2"));
+
+        writeRows(t1, rows, false);
+
+        // then start tiering job
+        JobClient jobClient = buildTieringJob(execEnv);
+
+        TableBucket t1Bucket = new TableBucket(t1Id, 0);
+
+        assertReplicaStatus(t1Bucket, 1);
+
+        writeRows(t1, rows, false);
+
+        Thread.sleep(2_00000);
+
+        jobClient.cancel().get();
+    }
+
     private static Stream<Arguments> tieringAllTypesWriteArgs() {
         return Stream.of(Arguments.of(true), Arguments.of(false));
     }

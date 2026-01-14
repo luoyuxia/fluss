@@ -372,6 +372,11 @@ public class LogFetcher implements Closeable {
                                                 isCheckCrcs,
                                                 fetchOffset);
                                 logFetchBuffer.add(completedFetch);
+                            } else {
+                                LOG.debug(
+                                        "records empty? {}, error code {}",
+                                        MemoryLogRecords.EMPTY.equals(logRecords),
+                                        fetchResultForBucket.getErrorCode());
                             }
                         }
                     }
@@ -430,15 +435,17 @@ public class LogFetcher implements Closeable {
                 continue;
             }
 
+            LOG.debug("Fetch bucket {} from offset {}", tb, offset);
+
             // TODO add select preferred read replica, currently we can only read from leader.
 
             Integer leader = getTableBucketLeader(tb);
             if (leader == null) {
-                LOG.trace(
+                LOG.debug(
                         "Skipping fetch request for bucket {} because leader is not available.",
                         tb);
             } else if (nodesWithPendingFetchRequests.contains(leader)) {
-                LOG.trace(
+                LOG.debug(
                         "Skipping fetch request for bucket {} because previous request "
                                 + "to server {} has not been processed.",
                         tb,
