@@ -17,6 +17,14 @@
 
 package org.apache.fluss.lake.paimon.flink;
 
+import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.table.api.TableResult;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
+import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.metadata.PartitionInfo;
@@ -36,15 +44,6 @@ import org.apache.fluss.row.TimestampLtz;
 import org.apache.fluss.row.TimestampNtz;
 import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.types.DataTypes;
-
-import org.apache.flink.core.execution.JobClient;
-import org.apache.flink.core.execution.SavepointFormatType;
-import org.apache.flink.table.api.TableResult;
-import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.types.Row;
-import org.apache.flink.types.RowKind;
-import org.apache.flink.util.CloseableIterator;
-import org.apache.flink.util.CollectionUtil;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -52,7 +51,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.annotation.Nullable;
-
 import java.io.File;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -110,31 +108,19 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
         // will read paimon snapshot, won't merge log since it's empty
         List<String> resultEmptyLog =
                 toSortedRows(batchTEnv.executeSql("select * from " + tableName));
-        String expetedResultFromPaimon = buildExpectedResult(isPartitioned, partitions, 0, 1);
-        assertThat(resultEmptyLog.toString().replace("+U", "+I"))
-                .isEqualTo(expetedResultFromPaimon);
+        List<String> expetedResultFromPaimon = buildExpectedResult(isPartitioned, partitions, 0, 1);
+        assertThat(resultEmptyLog).containsExactlyInAnyOrderElementsOf(expetedResultFromPaimon);
 
         // read paimon directly using $lake
         TableResult tableResult =
                 batchTEnv.executeSql(String.format("select * from %s$lake", tableName));
-        List<String> paimonSnapshotRows =
-                CollectionUtil.iteratorToList(tableResult.collect()).stream()
-                        .map(
-                                row -> {
-                                    int userColumnCount = row.getArity() - 3;
-                                    Object[] fields = new Object[userColumnCount];
-                                    for (int i = 0; i < userColumnCount; i++) {
-                                        fields[i] = row.getField(i);
-                                    }
-                                    return Row.of(fields);
-                                })
-                        .map(Row::toString)
-                        .sorted()
-                        .collect(Collectors.toList());
         // paimon's source will emit +U[0, v0, xx] instead of +I[0, v0, xx], so
         // replace +U with +I to make it equal
-        assertThat(paimonSnapshotRows.toString().replace("+U", "+I"))
-                .isEqualTo(expetedResultFromPaimon);
+        List<String> paimonSnapshotRows =
+                CollectionUtil.iteratorToList(tableResult.collect()).stream()
+                        .map(row -> row.toString().replace("+U", "+I"))
+                        .collect(Collectors.toList());
+        assertThat(paimonSnapshotRows).containsExactlyInAnyOrderElementsOf(expetedResultFromPaimon);
 
         // test point query with fluss
         String queryFilterStr = "c4 = 30";
@@ -273,15 +259,6 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
                                                         tableName, queryFilterStr))
                                         .collect())
                         .stream()
-                        .map(
-                                row -> {
-                                    int columnCount = row.getArity() - 3;
-                                    Object[] fields = new Object[columnCount];
-                                    for (int i = 0; i < columnCount; i++) {
-                                        fields[i] = row.getField(i);
-                                    }
-                                    return Row.of(fields);
-                                })
                         .map(Row::toString)
                         .sorted()
                         .collect(Collectors.toList());
@@ -405,7 +382,11 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
 
         // now, query the result, it must be the union result of lake snapshot and log
         List<String> result = toSortedRows(batchTEnv.executeSql("select * from " + tableName));
-        String expectedResult = buildExpectedResult(isPartitioned, partitions, 0, 2);
+        String expectedResult =
+                buildExpectedResult(isPartitioned, partitions, 0, 2).stream()
+                        .sorted()
+                        .collect(Collectors.toList())
+                        .toString();
         assertThat(result.toString().replace("+U", "+I")).isEqualTo(expectedResult);
 
         // query with project push down
@@ -1132,7 +1113,7 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
         return bucketLogEndOffsets;
     }
 
-    private String buildExpectedResult(
+    private List<String> buildExpectedResult(
             boolean isPartitioned, List<String> partitions, int record1, int record2) {
         List<String> records = new ArrayList<>();
         records.add(
@@ -1158,15 +1139,13 @@ class FlinkUnionReadPrimaryKeyTableITCase extends FlinkUnionReadTestBase {
                         + "[5, 6, 7, 8], [2.1, 2.2, 2.3], +I[300, nested_value_3, 9.99], {key5=5, key6=6}, %s]");
 
         if (isPartitioned) {
-            return String.format(
-                    "[%s, %s, %s, %s]",
+            return Arrays.asList(
                     String.format(records.get(record1), partitions.get(0)),
                     String.format(records.get(record1), partitions.get(1)),
                     String.format(records.get(record2), partitions.get(0)),
                     String.format(records.get(record2), partitions.get(1)));
         } else {
-            return String.format(
-                    "[%s, %s]",
+            return Arrays.asList(
                     String.format(records.get(record1), "null"),
                     String.format(records.get(record2), "null"));
         }

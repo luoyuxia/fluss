@@ -25,7 +25,6 @@ import org.apache.fluss.types.DataField;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.types.RowType;
-
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionKey;
 import org.apache.iceberg.PartitionSpec;
@@ -38,12 +37,10 @@ import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.fluss.metadata.ResolvedPartitionSpec.PARTITION_SPEC_SEPARATOR;
-import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
 
 /** Utility class for static conversions between Fluss and Iceberg types. */
 public class IcebergConversions {
@@ -65,12 +62,21 @@ public class IcebergConversions {
                 partitionKey.set(pos++, partition);
             }
         }
-        partitionKey.set(pos, bucket);
+
+        if (!partitionSpec.fields().isEmpty()
+                && !partitionSpec
+                        .fields()
+                        .get(partitionSpec.fields().size() - 1)
+                        .transform()
+                        .isIdentity()) {
+            partitionKey.set(pos, bucket);
+        }
         return partitionKey;
     }
 
     public static Expression toFilterExpression(
             Table table, @Nullable String partitionName, int bucket) {
+        // todo: only consider primary key table
         List<PartitionField> partitionFields = table.spec().fields();
         Expression expression = Expressions.alwaysTrue();
         int partitionIndex = 0;
@@ -89,7 +95,6 @@ public class IcebergConversions {
                                         partition));
             }
         }
-        expression = Expressions.and(expression, Expressions.equal(BUCKET_COLUMN_NAME, bucket));
         return expression;
     }
 

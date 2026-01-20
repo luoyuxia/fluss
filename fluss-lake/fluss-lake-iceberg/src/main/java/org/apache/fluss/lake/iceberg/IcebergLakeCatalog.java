@@ -28,7 +28,6 @@ import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.IOUtils;
-
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RowLevelOperationMode;
 import org.apache.iceberg.Schema;
@@ -106,10 +105,8 @@ public class IcebergLakeCatalog implements LakeCatalog {
 
         PartitionSpec partitionSpec =
                 createPartitionSpec(tableDescriptor, icebergSchema, isPkTable);
-        SortOrder sortOrder = createSortOrder(icebergSchema);
         tableBuilder.withProperties(buildTableProperties(tableDescriptor, isPkTable));
         tableBuilder.withPartitionSpec(partitionSpec);
-        tableBuilder.withSortOrder(sortOrder);
         try {
             createTable(tablePath, tableBuilder);
         } catch (NoSuchNamespaceException e) {
@@ -177,9 +174,7 @@ public class IcebergLakeCatalog implements LakeCatalog {
     public Schema convertToIcebergSchema(TableDescriptor tableDescriptor, boolean isPkTable) {
         List<Types.NestedField> fields = new ArrayList<>();
         int fieldId = 0;
-
-        int totalTopLevelFields =
-                tableDescriptor.getSchema().getColumns().size() + SYSTEM_COLUMNS.size();
+        int totalTopLevelFields = tableDescriptor.getSchema().getColumns().size();
         FlussDataTypeToIcebergDataType converter =
                 new FlussDataTypeToIcebergDataType(totalTopLevelFields);
 
@@ -187,10 +182,6 @@ public class IcebergLakeCatalog implements LakeCatalog {
         for (org.apache.fluss.metadata.Schema.Column column :
                 tableDescriptor.getSchema().getColumns()) {
             String colName = column.getName();
-            if (SYSTEM_COLUMNS.containsKey(colName)) {
-                throw new IllegalArgumentException(
-                        "Column '" + colName + "' conflicts with a reserved system column name.");
-            }
             Types.NestedField field;
             if (column.getDataType().isNullable()) {
                 field =
@@ -208,13 +199,6 @@ public class IcebergLakeCatalog implements LakeCatalog {
                                 column.getComment().orElse(null));
             }
             fields.add(field);
-        }
-
-        // system columns
-        for (Map.Entry<String, Type> systemColumn : SYSTEM_COLUMNS.entrySet()) {
-            fields.add(
-                    Types.NestedField.required(
-                            fieldId++, systemColumn.getKey(), systemColumn.getValue()));
         }
 
         if (isPkTable) {
@@ -271,10 +255,7 @@ public class IcebergLakeCatalog implements LakeCatalog {
         if (isPkTable) {
             builder.bucket(bucketKeys.get(0), bucketCount);
         } else {
-            // if there is no bucket keys, use identity(__bucket)
-            if (bucketKeys.isEmpty()) {
-                builder.identity(BUCKET_COLUMN_NAME);
-            } else {
+            if (!bucketKeys.isEmpty()) {
                 builder.bucket(bucketKeys.get(0), bucketCount);
             }
         }

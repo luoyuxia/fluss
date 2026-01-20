@@ -22,7 +22,6 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.iceberg.utils.IcebergCatalogUtils;
 import org.apache.fluss.lake.source.Planner;
 import org.apache.fluss.metadata.TablePath;
-
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
@@ -33,7 +32,6 @@ import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.io.CloseableIterable;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -43,7 +41,6 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.apache.fluss.lake.iceberg.utils.IcebergConversions.toIceberg;
-import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
 
 /** Iceberg split planner. */
 public class IcebergSplitPlanner implements Planner<IcebergSplit> {
@@ -89,13 +86,15 @@ public class IcebergSplitPlanner implements Planner<IcebergSplit> {
         List<PartitionField> partitionFields = partitionSpec.fields();
 
         // the last one must be partition by fluss bucket
-        PartitionField bucketField = partitionFields.get(partitionFields.size() - 1);
+        PartitionField bucketField = null;
+        if (!partitionFields.isEmpty()) {
+            PartitionField partitionField = partitionFields.get(partitionFields.size() - 1);
+            if (!partitionField.transform().isIdentity()) {
+                bucketField = partitionField;
+            }
+        }
 
-        if (table.schema()
-                .asStruct()
-                .field(bucketField.sourceId())
-                .name()
-                .equals(BUCKET_COLUMN_NAME)) {
+        if (bucketField == null) {
             // partition by __bucket column, should be fluss log table without bucket key,
             // we don't care about the bucket since it's bucket un-aware
             return task -> -1;
@@ -107,20 +106,18 @@ public class IcebergSplitPlanner implements Planner<IcebergSplit> {
 
     private Function<FileScanTask, List<String>> createPartitionExtractor(Table table) {
         PartitionSpec partitionSpec = table.spec();
-        List<PartitionField> partitionFields = partitionSpec.fields();
+        List<PartitionField> partitionFields =
+                partitionSpec.fields().stream()
+                        .filter(partitionField -> partitionField.transform().isIdentity())
+                        .collect(Collectors.toList());
 
         // if only one partition, it must not be partitioned table since we will always use
         // partition by fluss bucket
-        if (partitionSpec.fields().size() <= 1) {
+        if (partitionSpec.fields().isEmpty()) {
             return task -> Collections.emptyList();
         } else {
             List<Integer> partitionFieldIndices =
-                    // since will always first partition by fluss partition columns, then fluss
-                    // bucket,
-                    // just ignore the last partition column of iceberg
-                    IntStream.range(0, partitionFields.size() - 1)
-                            .boxed()
-                            .collect(Collectors.toList());
+                    IntStream.range(0, partitionFields.size()).boxed().collect(Collectors.toList());
             return task ->
                     partitionFieldIndices.stream()
                             // since currently, only string partition is supported

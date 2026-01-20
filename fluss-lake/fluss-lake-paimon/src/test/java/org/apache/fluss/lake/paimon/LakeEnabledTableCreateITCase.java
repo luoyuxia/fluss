@@ -165,17 +165,10 @@ class LakeEnabledTableCreateITCase {
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "log_c1",
                             "log_c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 "log_c1,log_c2",
                 BUCKET_NUM);
@@ -203,17 +196,10 @@ class LakeEnabledTableCreateITCase {
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "log_c1",
                             "log_c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 null,
                 BUCKET_NUM);
@@ -242,17 +228,10 @@ class LakeEnabledTableCreateITCase {
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT().notNull(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "pk_c1",
                             "pk_c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 "pk_c1",
                 BUCKET_NUM);
@@ -285,18 +264,11 @@ class LakeEnabledTableCreateITCase {
                             org.apache.paimon.types.DataTypes.INT().notNull(),
                             org.apache.paimon.types.DataTypes.STRING(),
                             org.apache.paimon.types.DataTypes.STRING().notNull(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "c1",
                             "c2",
                             "c3",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 "c1",
                 BUCKET_NUM);
@@ -352,10 +324,6 @@ class LakeEnabledTableCreateITCase {
                             org.apache.paimon.types.DataTypes.TIME(),
                             org.apache.paimon.types.DataTypes.TIMESTAMP(),
                             org.apache.paimon.types.DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "log_c1",
@@ -374,9 +342,6 @@ class LakeEnabledTableCreateITCase {
                             "log_c14",
                             "log_c15",
                             "log_c16",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 null,
                 BUCKET_NUM);
@@ -456,8 +421,8 @@ class LakeEnabledTableCreateITCase {
                 .isInstanceOf(LakeTableAlreadyExistException.class)
                 .hasMessage(
                         "The table `fluss`.`log_table_with_exist_lake_table` already exists in Paimon catalog, but the table schema is not compatible. "
-                                + "Existing schema: UpdateSchema{fields=[`c1` STRING, `c2` INT, `__bucket` INT, `__offset` BIGINT, `__timestamp` TIMESTAMP(3) WITH LOCAL TIME ZONE], partitionKeys=[], primaryKeys=[], options={bucket=-1, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, file.format=parquet, fluss.k1=v1}, comment=null}, "
-                                + "new schema: UpdateSchema{fields=[`c1` STRING, `c2` INT, `__bucket` INT, `__offset` BIGINT, `__timestamp` TIMESTAMP(3) WITH LOCAL TIME ZONE], partitionKeys=[], primaryKeys=[], options={bucket=3, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, bucket-key=c1,c2, file.format=parquet, fluss.k1=v1}, comment=null}. "
+                                + "Existing schema: UpdateSchema{fields=[`c1` STRING, `c2` INT], partitionKeys=[], primaryKeys=[], options={bucket=-1, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, file.format=parquet, fluss.k1=v1, fluss.table.datalake.storage-version=2}, comment=null}, "
+                                + "new schema: UpdateSchema{fields=[`c1` STRING, `c2` INT], partitionKeys=[], primaryKeys=[], options={bucket=3, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, bucket-key=c1,c2, file.format=parquet, fluss.k1=v1, fluss.table.datalake.storage-version=2}, comment=null}. "
                                 + "Please first drop the table in Paimon catalog or use a new table name.");
 
         // create log table with different fields will throw exception
@@ -475,8 +440,8 @@ class LakeEnabledTableCreateITCase {
                 .isInstanceOf(LakeTableAlreadyExistException.class)
                 .hasMessage(
                         "The table `fluss`.`log_table_with_exist_lake_table` already exists in Paimon catalog, but the table schema is not compatible. "
-                                + "Existing schema: UpdateSchema{fields=[`c1` STRING, `c2` INT, `__bucket` INT, `__offset` BIGINT, `__timestamp` TIMESTAMP(3) WITH LOCAL TIME ZONE], partitionKeys=[], primaryKeys=[], options={bucket=-1, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, file.format=parquet, fluss.k1=v1}, comment=null}, "
-                                + "new schema: UpdateSchema{fields=[`c1` STRING, `c2` INT, `c3` STRING, `__bucket` INT, `__offset` BIGINT, `__timestamp` TIMESTAMP(3) WITH LOCAL TIME ZONE], partitionKeys=[], primaryKeys=[], options={bucket=-1, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, file.format=parquet, fluss.k1=v1}, comment=null}. "
+                                + "Existing schema: UpdateSchema{fields=[`c1` STRING, `c2` INT], partitionKeys=[], primaryKeys=[], options={bucket=-1, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, file.format=parquet, fluss.k1=v1, fluss.table.datalake.storage-version=2}, comment=null}, "
+                                + "new schema: UpdateSchema{fields=[`c1` STRING, `c2` INT, `c3` STRING], partitionKeys=[], primaryKeys=[], options={bucket=-1, fluss.table.replication.factor=1, fluss.table.datalake.enabled=true, fluss.table.datalake.format=paimon, partition.legacy-name=false, file.format=parquet, fluss.k1=v1, fluss.table.datalake.storage-version=2}, comment=null}. "
                                 + "Please first drop the table in Paimon catalog or use a new table name.");
 
         // add an insignificant option to Paimon table will be ok
@@ -612,17 +577,10 @@ class LakeEnabledTableCreateITCase {
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "log_c1",
                             "log_c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 "log_c1,log_c2",
                 BUCKET_NUM);
@@ -708,17 +666,10 @@ class LakeEnabledTableCreateITCase {
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "c1",
-                            "c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
+                            "c2"
                         }),
                 "c1,c2",
                 BUCKET_NUM);
@@ -739,17 +690,10 @@ class LakeEnabledTableCreateITCase {
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "c1",
                             "c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 "c1,c2",
                 BUCKET_NUM);
@@ -822,24 +766,17 @@ class LakeEnabledTableCreateITCase {
         Map<String, String> newProperties = new HashMap<>(tableDescriptor.getProperties());
         newProperties.put(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true");
         tableDescriptor = tableDescriptor.withProperties(newProperties, customProperties);
-        verifyPaimonTable(
+         verifyPaimonTable(
                 paimonTable,
                 tableDescriptor,
                 RowType.of(
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "c1",
                             "c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 "c1,c2",
                 BUCKET_NUM);
@@ -882,17 +819,10 @@ class LakeEnabledTableCreateITCase {
                         new DataType[] {
                             org.apache.paimon.types.DataTypes.INT(),
                             org.apache.paimon.types.DataTypes.STRING(),
-                            // for __bucket, __offset, __timestamp
-                            org.apache.paimon.types.DataTypes.INT(),
-                            org.apache.paimon.types.DataTypes.BIGINT(),
-                            org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS()
                         },
                         new String[] {
                             "c1",
                             "c2",
-                            BUCKET_COLUMN_NAME,
-                            OFFSET_COLUMN_NAME,
-                            TIMESTAMP_COLUMN_NAME
                         }),
                 "c1,c2",
                 BUCKET_NUM);
@@ -912,15 +842,12 @@ class LakeEnabledTableCreateITCase {
                 paimonCatalog.getTable(Identifier.create(DATABASE, tablePath.getTableName()));
         // Verify the new column c3 with comment was added to Paimon table
         RowType alteredRowType = alteredPaimonTable.rowType();
-        assertThat(alteredRowType.getFieldCount()).isEqualTo(6);
+        assertThat(alteredRowType.getFieldCount()).isEqualTo(3);
         assertThat(alteredRowType.getFieldNames())
                 .containsExactly(
                         "c1",
                         "c2",
-                        "c3",
-                        BUCKET_COLUMN_NAME,
-                        OFFSET_COLUMN_NAME,
-                        TIMESTAMP_COLUMN_NAME);
+                        "c3");
         // Verify c3 column has the correct type and comment
         assertThat(alteredRowType.getField("c3").type())
                 .isEqualTo(org.apache.paimon.types.DataTypes.INT());
@@ -941,6 +868,7 @@ class LakeEnabledTableCreateITCase {
         Identifier paimonIdentifier = Identifier.create(DATABASE, tablePath.getTableName());
 
         // alter to TIMESTAMP_WITH_LOCAL_TIME_ZONE to mock the legacy behavior
+        // todo: test legacy behavior
         paimonCatalog.alterTable(
                 paimonIdentifier,
                 SchemaChange.updateColumnType(

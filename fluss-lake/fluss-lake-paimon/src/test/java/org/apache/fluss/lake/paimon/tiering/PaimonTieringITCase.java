@@ -17,6 +17,8 @@
 
 package org.apache.fluss.lake.paimon.tiering;
 
+import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.fluss.client.table.getter.PartitionGetter;
 import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
@@ -36,9 +38,6 @@ import org.apache.fluss.row.TimestampNtz;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.utils.types.Tuple2;
-
-import org.apache.flink.core.execution.JobClient;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.reader.RecordReader;
@@ -135,7 +134,7 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
                     .isGreaterThan(-1);
 
             // check data in paimon
-            checkDataInPaimonAppendOnlyTable(t2, flussRows, 0);
+            checkDataInPaimonAppendOnlyTable(t2, flussRows);
 
             // then write data to the pk tables
             // write records
@@ -179,8 +178,7 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
                 checkDataInPaimonAppendOnlyPartitionedTable(
                         partitionedTablePath,
                         Collections.singletonMap(partitionCol, partitionName),
-                        writtenRowsByPartition.get(partitionName),
-                        0);
+                        writtenRowsByPartition.get(partitionName));
             }
             checkFlussOffsetsInSnapshot(partitionedTablePath, expectedOffsets);
         } finally {
@@ -374,7 +372,7 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
             assertReplicaStatus(t2Bucket, 30);
 
             // check data in paimon
-            checkDataInPaimonAppendOnlyTable(t2, flussRows, 0);
+            checkDataInPaimonAppendOnlyTable(t2, flussRows);
 
             // then write data to the pk tables
             // write records
@@ -424,8 +422,7 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
                 checkDataInPaimonAppendOnlyPartitionedTable(
                         partitionedTablePath,
                         Collections.singletonMap(partitionCol, partitionName),
-                        writtenRowsByPartition.get(partitionName),
-                        0);
+                        writtenRowsByPartition.get(partitionName));
             }
 
             checkFlussOffsetsInSnapshot(partitionedTablePath, expectedOffset);
@@ -494,7 +491,7 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
     }
 
     private void checkDataInPaimonAppendOnlyTable(
-            TablePath tablePath, List<InternalRow> expectedRows, long startingOffset)
+            TablePath tablePath, List<InternalRow> expectedRows)
             throws Exception {
         Iterator<org.apache.paimon.data.InternalRow> paimonRowIterator =
                 getPaimonRowCloseableIterator(tablePath);
@@ -504,18 +501,12 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
             InternalRow flussRow = flussRowIterator.next();
             assertThat(row.getInt(0)).isEqualTo(flussRow.getInt(0));
             assertThat(row.getString(1).toString()).isEqualTo(flussRow.getString(1).toString());
-            // system columns are always the last three: __bucket, __offset, __timestamp
-            int offsetIndex = row.getFieldCount() - 2;
-            assertThat(row.getLong(offsetIndex)).isEqualTo(startingOffset++);
         }
         assertThat(flussRowIterator.hasNext()).isFalse();
     }
 
     private void checkDataInPaimonAppendOnlyPartitionedTable(
-            TablePath tablePath,
-            Map<String, String> partitionSpec,
-            List<InternalRow> expectedRows,
-            long startingOffset)
+            TablePath tablePath, Map<String, String> partitionSpec, List<InternalRow> expectedRows)
             throws Exception {
         Iterator<org.apache.paimon.data.InternalRow> paimonRowIterator =
                 getPaimonRowCloseableIterator(tablePath, partitionSpec);
@@ -526,8 +517,6 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
             assertThat(row.getInt(0)).isEqualTo(flussRow.getInt(0));
             assertThat(row.getString(1).toString()).isEqualTo(flussRow.getString(1).toString());
             assertThat(row.getString(2).toString()).isEqualTo(flussRow.getString(2).toString());
-            // the idx 3 is __bucket, so use 4
-            assertThat(row.getLong(4)).isEqualTo(startingOffset++);
         }
         assertThat(flussRowIterator.hasNext()).isFalse();
     }
@@ -594,9 +583,8 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
             FileStoreTable paimonTable = (FileStoreTable) paimonCatalog.getTable(tableIdentifier);
             List<String> fieldNames = paimonTable.rowType().getFieldNames();
 
-            // Should have exact fields in order: a, b, c3, __bucket, __offset, __timestamp
-            assertThat(fieldNames)
-                    .containsExactly("a", "b", "c3", "__bucket", "__offset", "__timestamp");
+            // Should have exact fields in order: a, b, c3
+            assertThat(fieldNames).containsExactly("a", "b", "c3");
 
             // 9. Verify both schema evolution and data correctness
             // For initial rows (before ADD COLUMN), c3 should be NULL
@@ -611,8 +599,7 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
             expectedRows.add(row(5, "v5", 50));
             expectedRows.add(row(6, "v6", 60));
 
-            checkDataInPaimonAppendOnlyTable(tablePath, expectedRows, 0);
-
+            checkDataInPaimonAppendOnlyTable(tablePath, expectedRows);
         } finally {
             jobClient.cancel().get();
         }

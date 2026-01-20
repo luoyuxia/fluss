@@ -25,7 +25,6 @@ import org.apache.fluss.record.GenericRecord;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.row.ProjectedRow;
 import org.apache.fluss.utils.CloseableIterator;
-
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.predicate.Predicate;
 import org.apache.paimon.table.FileStoreTable;
@@ -34,7 +33,6 @@ import org.apache.paimon.table.source.TableRead;
 import org.apache.paimon.types.RowType;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.stream.IntStream;
@@ -94,10 +92,12 @@ public class PaimonRecordReader implements RecordReader {
         int timestampFieldPos = paimonFullRowType.getFieldIndex(TIMESTAMP_COLUMN_NAME);
 
         int[] paimonProject =
-                IntStream.concat(
-                                IntStream.of(projectIds),
-                                IntStream.of(offsetFieldPos, timestampFieldPos))
-                        .toArray();
+                hasSystemColumn(paimonFullRowType)
+                        ? IntStream.concat(
+                                        IntStream.of(projectIds),
+                                        IntStream.of(offsetFieldPos, timestampFieldPos))
+                                .toArray()
+                        : projectIds;
 
         return readBuilder.withProjection(paimonProject);
     }
@@ -110,17 +110,14 @@ public class PaimonRecordReader implements RecordReader {
         private final ProjectedRow projectedRow;
         private final PaimonRowAsFlussRow paimonRowAsFlussRow;
 
-        private final int logOffsetColIndex;
-        private final int timestampColIndex;
-
         public PaimonRowAsFlussRecordIterator(
                 org.apache.paimon.utils.CloseableIterator<InternalRow> paimonRowIterator,
                 RowType paimonRowType) {
             this.paimonRowIterator = paimonRowIterator;
-            this.logOffsetColIndex = paimonRowType.getFieldIndex(OFFSET_COLUMN_NAME);
-            this.timestampColIndex = paimonRowType.getFieldIndex(TIMESTAMP_COLUMN_NAME);
-
-            int[] project = IntStream.range(0, paimonRowType.getFieldCount() - 2).toArray();
+            int[] project =
+                    hasSystemColumn(paimonRowType)
+                            ? IntStream.range(0, paimonRowType.getFieldCount() - 2).toArray()
+                            : IntStream.range(0, paimonRowType.getFieldCount()).toArray();
             projectedRow = ProjectedRow.from(project);
             paimonRowAsFlussRow = new PaimonRowAsFlussRow();
         }
@@ -143,14 +140,20 @@ public class PaimonRecordReader implements RecordReader {
         public LogRecord next() {
             InternalRow paimonRow = paimonRowIterator.next();
             ChangeType changeType = toChangeType(paimonRow.getRowKind());
-            long offset = paimonRow.getLong(logOffsetColIndex);
-            long timestamp = paimonRow.getTimestamp(timestampColIndex, 6).getMillisecond();
 
             return new GenericRecord(
-                    offset,
-                    timestamp,
+                    -1,
+                    -1,
                     changeType,
                     projectedRow.replaceRow(paimonRowAsFlussRow.replaceRow(paimonRow)));
         }
+    }
+
+    private static boolean hasSystemColumn(RowType paimonRowType) {
+        return paimonRowType
+                .getFields()
+                .get(paimonRowType.getFieldCount() - 1)
+                .name()
+                .equals(TIMESTAMP_COLUMN_NAME);
     }
 }

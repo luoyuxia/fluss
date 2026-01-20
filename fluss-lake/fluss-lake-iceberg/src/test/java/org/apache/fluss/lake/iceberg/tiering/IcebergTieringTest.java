@@ -35,7 +35,6 @@ import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.utils.types.Tuple2;
-
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
@@ -54,11 +53,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
-
 import java.io.File;
 import java.io.IOException;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -70,9 +66,6 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.apache.fluss.lake.iceberg.utils.IcebergConversions.toIceberg;
-import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
 import static org.apache.fluss.record.ChangeType.DELETE;
 import static org.apache.fluss.record.ChangeType.INSERT;
 import static org.apache.fluss.record.ChangeType.UPDATE_AFTER;
@@ -138,7 +131,8 @@ class IcebergTieringTest {
 
         Table icebergTable = icebergCatalog.loadTable(toIceberg(tablePath));
 
-        Map<Tuple2<String, Integer>, List<LogRecord>> recordsByBucket = new HashMap<>();
+        Map<String, List<LogRecord>> recordsByBucket = new HashMap<>();
+        String nonPartitionedKey = "nonPartitionedKey";
         Map<Long, String> partitionIdAndName =
                 isPartitionedTable
                         ? new HashMap<Long, String>() {
@@ -148,7 +142,7 @@ class IcebergTieringTest {
                                 put(3L, "p3");
                             }
                         }
-                        : Collections.singletonMap(null, null);
+                        : Collections.singletonMap(-1L, null);
 
         List<IcebergWriteResult> icebergWriteResults = new ArrayList<>();
         SimpleVersionedSerializer<IcebergWriteResult> writeResultSerializer =
@@ -162,7 +156,6 @@ class IcebergTieringTest {
                 String partition = entry.getValue();
                 try (LakeWriter<IcebergWriteResult> writer =
                         createLakeWriter(tablePath, bucket, partition, entry.getKey(), tableInfo)) {
-                    Tuple2<String, Integer> partitionBucket = Tuple2.of(partition, bucket);
                     Tuple2<List<LogRecord>, List<LogRecord>> writeAndExpectRecords =
                             isPrimaryKeyTable
                                     ? genPrimaryKeyTableRecords(partition, bucket)
@@ -170,7 +163,9 @@ class IcebergTieringTest {
 
                     List<LogRecord> writtenRecords = writeAndExpectRecords.f0;
                     List<LogRecord> expectRecords = writeAndExpectRecords.f1;
-                    recordsByBucket.put(partitionBucket, expectRecords);
+                    recordsByBucket
+                            .computeIfAbsent(partition, (key) -> new ArrayList<>())
+                            .addAll(expectRecords);
 
                     for (LogRecord record : writtenRecords) {
                         writer.write(record);
@@ -203,14 +198,10 @@ class IcebergTieringTest {
         }
 
         // then, check data
-        for (int bucket = 0; bucket < 3; bucket++) {
-            for (String partition : partitionIdAndName.values()) {
-                Tuple2<String, Integer> partitionBucket = Tuple2.of(partition, bucket);
-                List<LogRecord> expectRecords = recordsByBucket.get(partitionBucket);
-                CloseableIterator<Record> actualRecords =
-                        getIcebergRows(icebergTable, partition, bucket);
-                verifyTableRecords(actualRecords, expectRecords, bucket, partition);
-            }
+        for (String partition : partitionIdAndName.values()) {
+            List<LogRecord> expectRecords = recordsByBucket.get(partition);
+            CloseableIterator<Record> actualRecords = getIcebergRows(icebergTable, partition);
+            verifyTableRecords(actualRecords, expectRecords, partition);
         }
     }
 
@@ -374,13 +365,7 @@ class IcebergTieringTest {
                         Arrays.asList(
                                 Types.NestedField.required(1, "c1", Types.IntegerType.get()),
                                 Types.NestedField.optional(2, "c2", Types.StringType.get()),
-                                Types.NestedField.required(3, "c3", Types.StringType.get()),
-                                Types.NestedField.required(
-                                        4, BUCKET_COLUMN_NAME, Types.IntegerType.get()),
-                                Types.NestedField.required(
-                                        5, OFFSET_COLUMN_NAME, Types.LongType.get()),
-                                Types.NestedField.required(
-                                        6, TIMESTAMP_COLUMN_NAME, Types.TimestampType.withZone())),
+                                Types.NestedField.required(3, "c3", Types.StringType.get())),
                         identifierFieldIds);
 
         PartitionSpec.Builder builder = PartitionSpec.builderFor(schema);
@@ -388,22 +373,17 @@ class IcebergTieringTest {
             builder.identity("c3");
         }
 
-        PartitionSpec partitionSpec;
         if (isPrimaryTable) {
-            partitionSpec = builder.bucket("c1", BUCKET_NUM).build();
-        } else {
-            partitionSpec = builder.identity(BUCKET_COLUMN_NAME).build();
+            builder.bucket("c1", BUCKET_NUM);
         }
 
         TableIdentifier tableId =
                 TableIdentifier.of(tablePath.getDatabaseName(), tablePath.getTableName());
-        icebergCatalog.createTable(tableId, schema, partitionSpec);
+        icebergCatalog.createTable(tableId, schema, builder.build());
     }
 
-    private CloseableIterator<Record> getIcebergRows(
-            Table table, @Nullable String partition, int bucket) {
-        IcebergGenerics.ScanBuilder scanBuilder =
-                IcebergGenerics.read(table).where(equal(BUCKET_COLUMN_NAME, bucket));
+    private CloseableIterator<Record> getIcebergRows(Table table, @Nullable String partition) {
+        IcebergGenerics.ScanBuilder scanBuilder = IcebergGenerics.read(table);
         if (partition != null) {
             String partitionCol = table.spec().fields().get(0).name();
             scanBuilder = scanBuilder.where(equal(partitionCol, partition));
@@ -415,30 +395,30 @@ class IcebergTieringTest {
     private void verifyTableRecords(
             CloseableIterator<Record> actualRecords,
             List<LogRecord> expectRecords,
-            int expectBucket,
             @Nullable String partition) {
-        for (LogRecord expectRecord : expectRecords) {
+        List<String> actualRecordStrings = new ArrayList<>();
+        while (actualRecords.hasNext()) {
             Record actualRecord = actualRecords.next();
-            // check business columns:
-            assertThat(actualRecord.get(0)).isEqualTo(expectRecord.getRow().getInt(0));
-            assertThat(actualRecord.get(1, String.class))
-                    .isEqualTo(expectRecord.getRow().getString(1).toString());
-            assertThat(actualRecord.get(2, String.class))
-                    .isEqualTo(expectRecord.getRow().getString(2).toString());
+            actualRecordStrings.add(
+                    String.format(
+                            "%d, %s, %s",
+                            actualRecord.get(0, Integer.class),
+                            actualRecord.get(1, String.class),
+                            actualRecord.get(2, String.class)));
             if (partition != null) {
                 assertThat(actualRecord.get(2, String.class)).isEqualTo(partition);
             }
-
-            // check system columns: __bucket, __offset, __timestamp
-            assertThat(actualRecord.get(3)).isEqualTo(expectBucket);
-            assertThat(actualRecord.get(4)).isEqualTo(expectRecord.logOffset());
-            assertThat(
-                            actualRecord
-                                    .get(5, OffsetDateTime.class)
-                                    .atZoneSameInstant(ZoneOffset.UTC)
-                                    .toInstant()
-                                    .toEpochMilli())
-                    .isEqualTo(expectRecord.timestamp());
         }
+
+        List<String> expectedRecordStrings = new ArrayList<>();
+        for (LogRecord logRecord : expectRecords) {
+            expectedRecordStrings.add(
+                    String.format(
+                            "%d, %s, %s",
+                            logRecord.getRow().getInt(0),
+                            logRecord.getRow().getString(1),
+                            logRecord.getRow().getString(2)));
+        }
+        assertThat(actualRecordStrings).containsExactlyInAnyOrderElementsOf(expectedRecordStrings);
     }
 }

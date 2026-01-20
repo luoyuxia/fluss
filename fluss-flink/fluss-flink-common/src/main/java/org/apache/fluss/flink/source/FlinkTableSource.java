@@ -41,6 +41,7 @@ import org.apache.fluss.predicate.PartitionPredicateVisitor;
 import org.apache.fluss.predicate.Predicate;
 import org.apache.fluss.predicate.PredicateBuilder;
 import org.apache.fluss.predicate.PredicateVisitor;
+import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.row.TimestampLtz;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.types.RowType;
@@ -387,31 +388,128 @@ public class FlinkTableSource
 
     private boolean pushTimeStampFilterToLakeSource(
             LakeSource<?> lakeSource, RowType flussRowType) {
-        // will push timestamp to lake
-        // we will have three additional system columns, __bucket, __offset, __timestamp
-        // in lake, get the  __timestamp index in lake table
-        final int timestampFieldIndex = flussRowType.getFieldCount() + 2;
-        Predicate timestampFilter =
+        // Check storage version to determine if this is a new table (storage-version=2)
+        org.apache.fluss.config.Configuration tableConf =
+                org.apache.fluss.config.Configuration.fromMap(tableOptions);
+        Optional<Integer> storageVersion =
+                tableConf.getOptional(org.apache.fluss.config.ConfigOptions.TABLE_DATALAKE_STORAGE_VERSION);
+        boolean isNewTable = storageVersion.isPresent() && storageVersion.get() >= 2;
+
+        if (isNewTable) {
+            // New table: no __timestamp column, use partition-level pruning for auto-partitioned tables
+            if (!isPartitioned()) {
+                throw new UnsupportedOperationException(
+                        "Timestamp-based startup mode is not supported for non-partitioned new lake tables "
+                                + "(storage-version >= 2). Please use auto-partitioning or use a different startup mode.");
+            }
+
+            // Check if auto-partitioning is enabled
+            org.apache.fluss.utils.AutoPartitionStrategy autoPartitionStrategy =
+                    org.apache.fluss.utils.AutoPartitionStrategy.from(tableOptions);
+            if (!autoPartitionStrategy.isAutoPartitionEnabled()) {
+                throw new UnsupportedOperationException(
+                        "Timestamp-based startup mode is not supported for non-auto-partitioned new lake tables "
+                                + "(storage-version >= 2). Please enable auto-partitioning or use a different startup mode.");
+            }
+
+            // Convert timestamp to partition value and create partition filter
+            return pushPartitionFilterForTimestamp(
+                    lakeSource, flussRowType, autoPartitionStrategy);
+        } else {
+            // Legacy table: use __timestamp column filter
+            // we will have three additional system columns, __bucket, __offset, __timestamp
+            // in lake, get the  __timestamp index in lake table
+            final int timestampFieldIndex = flussRowType.getFieldCount() + 2;
+            Predicate timestampFilter =
+                    new LeafPredicate(
+                            GreaterOrEqual.INSTANCE,
+                            DataTypes.TIMESTAMP_LTZ(),
+                            timestampFieldIndex,
+                            TIMESTAMP_COLUMN_NAME,
+                            Collections.singletonList(
+                                    TimestampLtz.fromEpochMillis(startupOptions.startupTimestampMs)));
+            List<Predicate> acceptedPredicates =
+                    lakeSource
+                            .withFilters(Collections.singletonList(timestampFilter))
+                            .acceptedPredicates();
+            if (acceptedPredicates.isEmpty()) {
+                LOG.warn(
+                        "The lake source doesn't accept the filter {}, won't read data from lake.",
+                        timestampFilter);
+                return false;
+            }
+            checkState(
+                    acceptedPredicates.size() == 1
+                            && acceptedPredicates.get(0).equals(timestampFilter));
+            return true;
+        }
+    }
+
+    private boolean pushPartitionFilterForTimestamp(
+            LakeSource<?> lakeSource,
+            RowType flussRowType,
+            org.apache.fluss.utils.AutoPartitionStrategy autoPartitionStrategy) {
+        // Convert timestamp to partition value
+        long timestampMs = startupOptions.startupTimestampMs;
+        java.time.ZonedDateTime zonedDateTime =
+                java.time.ZonedDateTime.ofInstant(
+                        java.time.Instant.ofEpochMilli(timestampMs),
+                        autoPartitionStrategy.timeZone().toZoneId());
+
+        // Get the auto partition key (or first partition key if single partition)
+        String partitionKey =
+                autoPartitionStrategy.key() != null
+                        ? autoPartitionStrategy.key()
+                        : (partitionKeyIndexes.length > 0
+                                ? flussRowType.getFieldNames().get(partitionKeyIndexes[0])
+                                : null);
+        if (partitionKey == null) {
+            throw new IllegalStateException(
+                    "Cannot determine partition key for timestamp-based filtering.");
+        }
+
+        // Generate partition value from timestamp
+        String partitionValue =
+                org.apache.fluss.utils.PartitionUtils.generateAutoPartitionTime(
+                        zonedDateTime, 0, autoPartitionStrategy.timeUnit());
+
+        // Find partition key index in flussRowType
+        int partitionKeyIndex = flussRowType.getFieldIndex(partitionKey);
+        if (partitionKeyIndex < 0) {
+            throw new IllegalStateException(
+                    "Partition key '" + partitionKey + "' not found in row type.");
+        }
+
+        // Create partition filter: partitionKey >= partitionValue
+        org.apache.fluss.types.DataType partitionKeyType =
+                flussRowType.getTypeAt(partitionKeyIndex);
+        Predicate partitionFilter =
                 new LeafPredicate(
                         GreaterOrEqual.INSTANCE,
-                        DataTypes.TIMESTAMP_LTZ(),
-                        timestampFieldIndex,
-                        TIMESTAMP_COLUMN_NAME,
-                        Collections.singletonList(
-                                TimestampLtz.fromEpochMillis(startupOptions.startupTimestampMs)));
+                        partitionKeyType,
+                        partitionKeyIndex,
+                        partitionKey,
+                        Collections.singletonList(BinaryString.fromString(partitionValue)));
+
+        // Push filter to lake source
         List<Predicate> acceptedPredicates =
                 lakeSource
-                        .withFilters(Collections.singletonList(timestampFilter))
+                        .withFilters(Collections.singletonList(partitionFilter))
                         .acceptedPredicates();
         if (acceptedPredicates.isEmpty()) {
             LOG.warn(
-                    "The lake source doesn't accept the filter {}, won't read data from lake.",
-                    timestampFilter);
+                    "The lake source doesn't accept the partition filter {}, won't read data from lake.",
+                    partitionFilter);
             return false;
         }
         checkState(
                 acceptedPredicates.size() == 1
-                        && acceptedPredicates.get(0).equals(timestampFilter));
+                        && acceptedPredicates.get(0).equals(partitionFilter));
+        LOG.info(
+                "Pushed partition filter for timestamp {}: {} >= {}",
+                timestampMs,
+                partitionKey,
+                partitionValue);
         return true;
     }
 

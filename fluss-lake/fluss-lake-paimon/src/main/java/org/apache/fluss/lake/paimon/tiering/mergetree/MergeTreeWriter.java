@@ -20,7 +20,6 @@ package org.apache.fluss.lake.paimon.tiering.mergetree;
 import org.apache.fluss.lake.paimon.tiering.RecordWriter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.record.LogRecord;
-
 import org.apache.paimon.KeyValue;
 import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.table.FileStoreTable;
@@ -28,7 +27,6 @@ import org.apache.paimon.table.sink.RowKeyExtractor;
 import org.apache.paimon.table.sink.TableWriteImpl;
 
 import javax.annotation.Nullable;
-
 import java.util.List;
 import java.util.Map;
 
@@ -49,13 +47,15 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
             FileStoreTable fileStoreTable,
             TableBucket tableBucket,
             @Nullable String partition,
-            List<String> partitionKeys) {
+            List<String> partitionKeys,
+            boolean includeSystemColumns) {
         super(
                 createTableWrite(fileStoreTable),
                 fileStoreTable.rowType(),
                 tableBucket,
                 partition,
-                partitionKeys);
+                partitionKeys,
+                includeSystemColumns);
         this.rowKeyExtractor = fileStoreTable.createRowKeyExtractor();
     }
 

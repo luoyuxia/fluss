@@ -18,6 +18,7 @@
 package org.apache.fluss.lake.paimon.utils;
 
 import org.apache.fluss.annotation.VisibleForTesting;
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.lake.paimon.source.FlussRowAsPaimonRow;
@@ -27,7 +28,6 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.InternalRow;
-
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.options.Options;
@@ -41,8 +41,10 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
+import static org.apache.fluss.config.ConfigOptions.TABLE_DATALAKE_STORAGE_VERSION;
 import static org.apache.fluss.lake.paimon.PaimonLakeCatalog.SYSTEM_COLUMNS;
 
 /** Utils for conversion between Paimon and Fluss. */
@@ -145,14 +147,12 @@ public class PaimonConversions {
                 org.apache.paimon.types.DataType paimonDataType =
                         flussDataType.accept(FlussDataTypeToPaimonDataType.INSTANCE);
 
-                String firstSystemColumnName = SYSTEM_COLUMNS.keySet().iterator().next();
                 schemaChanges.add(
                         SchemaChange.addColumn(
                                 addColumn.getName(),
                                 paimonDataType,
                                 addColumn.getComment(),
-                                SchemaChange.Move.before(
-                                        addColumn.getName(), firstSystemColumnName)));
+                                SchemaChange.Move.last(addColumn.getName())));
             } else {
                 throw new UnsupportedOperationException(
                         "Unsupported table change: " + tableChange.getClass());
@@ -206,10 +206,17 @@ public class PaimonConversions {
                     column.getComment().orElse(null));
         }
 
-        // add system metadata columns to schema
-        for (Map.Entry<String, DataType> systemColumn : SYSTEM_COLUMNS.entrySet()) {
-            schemaBuilder.column(systemColumn.getKey(), systemColumn.getValue());
+        // add system metadata columns to schema only for legacy tables (storage-version not set or
+        // < 2)
+        Configuration tableConf = Configuration.fromMap(tableDescriptor.getProperties());
+        Optional<Integer> storageVersion = tableConf.getOptional(TABLE_DATALAKE_STORAGE_VERSION);
+        if (!storageVersion.isPresent() || storageVersion.get() < 2) {
+            // Legacy table: add system columns,
+            for (Map.Entry<String, DataType> systemColumn : SYSTEM_COLUMNS.entrySet()) {
+                schemaBuilder.column(systemColumn.getKey(), systemColumn.getValue());
+            }
         }
+        // New table (storage-version=2): skip system columns
 
         // set pk
         if (tableDescriptor.hasPrimaryKey()) {

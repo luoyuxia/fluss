@@ -23,7 +23,6 @@ import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.lake.writer.WriterInitContext;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.LogRecord;
-
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.table.FileStoreTable;
@@ -59,12 +58,22 @@ public class PaimonLakeWriter implements LakeWriter<PaimonWriteResult> {
                                 fileStoreTable,
                                 writerInitContext.tableBucket(),
                                 writerInitContext.partition(),
-                                partitionKeys)
+                                partitionKeys,
+                                !writerInitContext
+                                        .tableInfo()
+                                        .getTableConfig()
+                                        .getDataLakeStorageVersion()
+                                        .isPresent())
                         : new MergeTreeWriter(
                                 fileStoreTable,
                                 writerInitContext.tableBucket(),
                                 writerInitContext.partition(),
-                                partitionKeys);
+                                partitionKeys,
+                                !writerInitContext
+                                        .tableInfo()
+                                        .getTableConfig()
+                                        .getDataLakeStorageVersion()
+                                        .isPresent());
     }
 
     @Override

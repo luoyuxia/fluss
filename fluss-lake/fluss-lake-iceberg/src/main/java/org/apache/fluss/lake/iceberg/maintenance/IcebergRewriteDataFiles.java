@@ -20,7 +20,6 @@ package org.apache.fluss.lake.iceberg.maintenance;
 
 import org.apache.fluss.lake.iceberg.tiering.writer.TaskWriterFactory;
 import org.apache.fluss.metadata.TableBucket;
-
 import org.apache.iceberg.BaseCombinedScanTask;
 import org.apache.iceberg.CombinedScanTask;
 import org.apache.iceberg.ContentScanTask;
@@ -39,19 +38,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.lake.iceberg.utils.IcebergConversions.toFilterExpression;
-import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
 import static org.apache.fluss.utils.Preconditions.checkState;
 
 /**
@@ -104,12 +98,6 @@ public class IcebergRewriteDataFiles {
             return Collections.emptyList();
         }
 
-        // then, pack the fileScanTasks into compaction units which contains compactable
-        // fileScanTasks, after compaction, we want to it still keep order by __offset column,
-        // so, let's first sort by __offset column
-        int offsetFieldId = table.schema().findField(OFFSET_COLUMN_NAME).fieldId();
-        fileScanTasks.sort(sortFileScanTask(offsetFieldId));
-
         // do package now
         BinPacking.ListPacker<FileScanTask> packer =
                 new BinPacking.ListPacker<>(targetSizeInBytes, 1, false);
@@ -117,26 +105,6 @@ public class IcebergRewriteDataFiles {
                 .filter(tasks -> tasks.size() > 1)
                 .map(BaseCombinedScanTask::new)
                 .collect(Collectors.toList());
-    }
-
-    private Comparator<FileScanTask> sortFileScanTask(int sortFiledId) {
-        return (f1, f2) -> {
-            ByteBuffer buffer1 =
-                    f1.file()
-                            .lowerBounds()
-                            .get(sortFiledId)
-                            .order(ByteOrder.LITTLE_ENDIAN)
-                            .rewind();
-            long offset1 = buffer1.getLong();
-            ByteBuffer buffer2 =
-                    f2.file()
-                            .lowerBounds()
-                            .get(sortFiledId)
-                            .order(ByteOrder.LITTLE_ENDIAN)
-                            .rewind();
-            long offset2 = buffer2.getLong();
-            return Long.compare(offset1, offset2);
-        };
     }
 
     @Nullable

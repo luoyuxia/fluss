@@ -17,6 +17,9 @@
 
 package org.apache.fluss.lake.iceberg.testutils;
 
+import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
 import org.apache.fluss.client.admin.Admin;
@@ -39,22 +42,15 @@ import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.lake.LakeTable;
-
-import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.core.execution.JobClient;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.TableScan;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.data.IcebergGenerics;
 import org.apache.iceberg.data.Record;
-import org.apache.iceberg.data.parquet.GenericParquetReaders;
 import org.apache.iceberg.hadoop.HadoopCatalog;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
-import org.apache.iceberg.parquet.Parquet;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,8 +58,6 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -74,13 +68,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.SortedSet;
-import java.util.TreeSet;
 
 import static org.apache.fluss.flink.tiering.source.TieringSourceOptions.POLL_TIERING_TABLE_INTERVAL;
 import static org.apache.fluss.lake.committer.LakeCommitter.FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY;
 import static org.apache.fluss.lake.iceberg.utils.IcebergConversions.toIceberg;
-import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.apache.fluss.testutils.common.CommonTestUtils.waitUntil;
@@ -346,8 +337,6 @@ public class FlinkIcebergTieringTestBase {
                 InternalRow flussRow = flussRowIterator.next();
                 assertThat(actualRecord.get(0)).isEqualTo(flussRow.getInt(0));
                 assertThat(actualRecord.get(1)).isEqualTo(flussRow.getString(1).toString());
-                // the idx 2 is __bucket, so use 3
-                assertThat(actualRecord.get(3)).isEqualTo(startingOffset++);
             }
             assertThat(flussRowIterator.hasNext()).isFalse();
         }
@@ -385,8 +374,6 @@ public class FlinkIcebergTieringTestBase {
                 assertThat(actualRecord.get(0)).isEqualTo(flussRow.getInt(0));
                 assertThat(actualRecord.get(1)).isEqualTo(flussRow.getString(1).toString());
                 assertThat(actualRecord.get(2)).isEqualTo(flussRow.getString(2).toString());
-                // the idx 3 is __bucket, so use 4
-                assertThat(actualRecord.get(4)).isEqualTo(startingOffset++);
             }
             assertThat(flussRowIterator.hasNext()).isFalse();
         }
@@ -400,59 +387,9 @@ public class FlinkIcebergTieringTestBase {
     private CloseableIterator<Record> getIcebergRows(
             TablePath tablePath, Map<String, String> partitionSpec) {
         org.apache.iceberg.Table table = icebergCatalog.loadTable(toIceberg(tablePath));
-        // is primary key, we don't care about records order,
-        // use iceberg read api directly
-        if (!table.schema().identifierFieldIds().isEmpty()) {
-            IcebergGenerics.ScanBuilder scanBuilder =
-                    filterByPartition(IcebergGenerics.read(table), partitionSpec);
-            return scanBuilder.build().iterator();
-        } else {
-            // is log table, we want to compare __offset column
-            // so sort data files by __offset according to the column stats
-            List<Record> records = new ArrayList<>();
-            int fieldId = table.schema().findField(OFFSET_COLUMN_NAME).fieldId();
-            SortedSet<DataFile> files =
-                    new TreeSet<>(
-                            (f1, f2) -> {
-                                ByteBuffer buffer1 =
-                                        (ByteBuffer)
-                                                f1.lowerBounds()
-                                                        .get(fieldId)
-                                                        .order(ByteOrder.LITTLE_ENDIAN)
-                                                        .rewind();
-                                long offset1 = buffer1.getLong();
-                                ByteBuffer buffer2 =
-                                        (ByteBuffer)
-                                                f2.lowerBounds()
-                                                        .get(fieldId)
-                                                        .order(ByteOrder.LITTLE_ENDIAN)
-                                                        .rewind();
-                                long offset2 = buffer2.getLong();
-                                return Long.compare(offset1, offset2);
-                            });
-
-            table.refresh();
-            TableScan tableScan = filterByPartition(table.newScan(), partitionSpec);
-            tableScan
-                    .includeColumnStats()
-                    .planFiles()
-                    .iterator()
-                    .forEachRemaining(fileScanTask -> files.add(fileScanTask.file()));
-
-            for (DataFile file : files) {
-                Iterable<Record> iterable =
-                        Parquet.read(table.io().newInputFile(file.location()))
-                                .project(table.schema())
-                                .createReaderFunc(
-                                        fileSchema ->
-                                                GenericParquetReaders.buildReader(
-                                                        table.schema(), fileSchema))
-                                .build();
-                iterable.forEach(records::add);
-            }
-
-            return CloseableIterator.withClose(records.iterator());
-        }
+        IcebergGenerics.ScanBuilder scanBuilder =
+                filterByPartition(IcebergGenerics.read(table), partitionSpec);
+        return scanBuilder.build().iterator();
     }
 
     private IcebergGenerics.ScanBuilder filterByPartition(

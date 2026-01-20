@@ -90,6 +90,7 @@ class FlinkUnionReadFromTimestampITCase extends FlinkPaimonTieringTestBase {
 
     @Test
     void testUnionReadFromTimestamp() throws Exception {
+        // todo: use old version
         // first of all, start tiering
         JobClient jobClient = buildTieringJob(execEnv);
         try {

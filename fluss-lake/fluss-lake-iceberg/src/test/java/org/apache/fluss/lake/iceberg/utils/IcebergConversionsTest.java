@@ -20,7 +20,6 @@ package org.apache.fluss.lake.iceberg.utils;
 
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.TablePath;
-
 import org.apache.iceberg.PartitionKey;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -47,17 +46,11 @@ class IcebergConversionsTest {
     void testToPartition(@TempDir File tempWarehouseDir) {
         Catalog catalog = getIcebergCatalog(tempWarehouseDir);
 
-        TablePath tablePath = TablePath.of("default", "fluss_non_partitioned_table");
-        // for non-multiple partition column partitioned table
-        Table table = createIcebergTable(catalog, tablePath, false);
-        PartitionKey partitionKey = IcebergConversions.toPartition(table, null, 1);
-        assertThat(partitionKey.toPath()).isEqualTo("__bucket=1");
-
         // for multiple partition columns partitioned table
-        tablePath = TablePath.of("default", "fluss_partitioned_table");
-        table = createIcebergTable(catalog, tablePath, true);
-        partitionKey = IcebergConversions.toPartition(table, "china$region1", 2);
-        assertThat(partitionKey.toPath()).isEqualTo("country=china/region=region1/__bucket=2");
+        TablePath tablePath = TablePath.of("default", "fluss_partitioned_table");
+        Table table = createIcebergTable(catalog, tablePath, true);
+        PartitionKey partitionKey = IcebergConversions.toPartition(table, "china$region1", 2);
+        assertThat(partitionKey.toPath()).isEqualTo("country=china/region=region1");
     }
 
     private Catalog getIcebergCatalog(File tempWarehouseDir) {
@@ -75,15 +68,11 @@ class IcebergConversionsTest {
                         required(1, "id", Types.LongType.get()),
                         optional(2, "name", Types.StringType.get()),
                         optional(3, "country", Types.StringType.get()),
-                        optional(4, "region", Types.StringType.get()),
-                        optional(5, "__bucket", Types.IntegerType.get()));
+                        optional(4, "region", Types.StringType.get()));
         PartitionSpec.Builder specBuilder = PartitionSpec.builderFor(schema);
         if (isMultiplePartitionKeyTable) {
             specBuilder.identity("country").identity("region");
         }
-
-        // we always us __bucket as partition spec
-        specBuilder.identity("__bucket");
 
         TableIdentifier tableIdentifier = toIceberg(tablePath);
 

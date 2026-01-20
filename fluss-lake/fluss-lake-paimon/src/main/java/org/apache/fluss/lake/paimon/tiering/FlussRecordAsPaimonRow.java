@@ -19,7 +19,6 @@ package org.apache.fluss.lake.paimon.tiering;
 
 import org.apache.fluss.lake.paimon.source.FlussRowAsPaimonRow;
 import org.apache.fluss.record.LogRecord;
-
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.data.Timestamp;
 import org.apache.paimon.types.RowKind;
@@ -39,13 +38,20 @@ public class FlussRecordAsPaimonRow extends FlussRowAsPaimonRow {
     private final int offsetFieldIndex;
     private final int timestampFieldIndex;
 
-    public FlussRecordAsPaimonRow(int bucket, RowType tableTowType) {
+    public FlussRecordAsPaimonRow(int bucket, RowType tableTowType, boolean includeSystemColumns) {
         super(tableTowType);
         this.bucket = bucket;
-        this.businessFieldCount = tableRowType.getFieldCount() - SYSTEM_COLUMNS.size();
+        this.businessFieldCount =
+                tableRowType.getFieldCount() - (includeSystemColumns ? SYSTEM_COLUMNS.size() : 0);
+
+        //
         this.bucketFieldIndex = businessFieldCount;
         this.offsetFieldIndex = businessFieldCount + 1;
         this.timestampFieldIndex = businessFieldCount + 2;
+    }
+
+    public FlussRecordAsPaimonRow(int bucket, RowType tableTowType) {
+        this(bucket, tableTowType, false);
     }
 
     public void setFlussRecord(LogRecord logRecord) {

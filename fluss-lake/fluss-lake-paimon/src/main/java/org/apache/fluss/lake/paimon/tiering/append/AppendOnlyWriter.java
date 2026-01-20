@@ -20,14 +20,12 @@ package org.apache.fluss.lake.paimon.tiering.append;
 import org.apache.fluss.lake.paimon.tiering.RecordWriter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.record.LogRecord;
-
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.TableWriteImpl;
 
 import javax.annotation.Nullable;
-
 import java.util.List;
 
 import static org.apache.fluss.lake.paimon.tiering.PaimonLakeTieringFactory.FLUSS_LAKE_TIERING_COMMIT_USER;
@@ -41,7 +39,8 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
             FileStoreTable fileStoreTable,
             TableBucket tableBucket,
             @Nullable String partition,
-            List<String> partitionKeys) {
+            List<String> partitionKeys,
+            boolean includeSystemColumns) {
         //noinspection unchecked
         super(
                 (TableWriteImpl<InternalRow>)
@@ -50,7 +49,8 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
                 fileStoreTable.rowType(),
                 tableBucket,
                 partition,
-                partitionKeys); // Pass to parent
+                partitionKeys,
+                includeSystemColumns); // Pass to parent
         this.fileStoreTable = fileStoreTable;
     }
 
