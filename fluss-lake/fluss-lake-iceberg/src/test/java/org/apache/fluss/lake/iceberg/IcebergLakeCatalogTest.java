@@ -30,8 +30,6 @@ import org.apache.fluss.types.DataTypes;
 
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.RowLevelOperationMode;
-import org.apache.iceberg.SortDirection;
-import org.apache.iceberg.SortField;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -51,9 +49,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 
@@ -138,13 +133,7 @@ class IcebergLakeCatalogTest {
                         Arrays.asList(
                                 Types.NestedField.required(1, "id", Types.IntegerType.get()),
                                 Types.NestedField.optional(
-                                        2, "name", Types.StringType.get(), "field name"),
-                                Types.NestedField.required(
-                                        3, BUCKET_COLUMN_NAME, Types.IntegerType.get()),
-                                Types.NestedField.required(
-                                        4, OFFSET_COLUMN_NAME, Types.LongType.get()),
-                                Types.NestedField.required(
-                                        5, TIMESTAMP_COLUMN_NAME, Types.TimestampType.withZone())),
+                                        2, "name", Types.StringType.get(), "field name")),
                         Collections.singleton(1));
 
         assertThat(createdTable.schema().toString()).isEqualTo(expectIcebergSchema.toString());
@@ -200,13 +189,7 @@ class IcebergLakeCatalogTest {
                                 Types.NestedField.optional(
                                         4, "num_orders", Types.IntegerType.get()),
                                 Types.NestedField.required(
-                                        5, "total_amount", Types.IntegerType.get()),
-                                Types.NestedField.required(
-                                        6, BUCKET_COLUMN_NAME, Types.IntegerType.get()),
-                                Types.NestedField.required(
-                                        7, OFFSET_COLUMN_NAME, Types.LongType.get()),
-                                Types.NestedField.required(
-                                        8, TIMESTAMP_COLUMN_NAME, Types.TimestampType.withZone())),
+                                        5, "total_amount", Types.IntegerType.get())),
                         identifierFieldIds);
         assertThat(createdTable.schema().toString()).isEqualTo(expectIcebergSchema.toString());
 
@@ -223,13 +206,6 @@ class IcebergLakeCatalogTest {
         assertThat(partitionField2.name()).isEqualTo("user_id_bucket");
         assertThat(partitionField2.transform().toString()).isEqualTo("bucket[10]");
         assertThat(partitionField2.sourceId()).isEqualTo(2);
-
-        // Verify sort order
-        assertThat(createdTable.sortOrder().fields()).hasSize(1);
-        SortField sortField = createdTable.sortOrder().fields().get(0);
-        assertThat(sortField.sourceId())
-                .isEqualTo(createdTable.schema().findField(OFFSET_COLUMN_NAME).fieldId());
-        assertThat(sortField.direction()).isEqualTo(SortDirection.ASC);
 
         // Verify  table properties
         assertThat(createdTable.properties())
@@ -303,29 +279,10 @@ class IcebergLakeCatalogTest {
                                 Types.NestedField.optional(1, "id", Types.LongType.get()),
                                 Types.NestedField.optional(2, "name", Types.StringType.get()),
                                 Types.NestedField.optional(3, "amount", Types.IntegerType.get()),
-                                Types.NestedField.optional(4, "address", Types.StringType.get()),
-                                Types.NestedField.required(
-                                        5, BUCKET_COLUMN_NAME, Types.IntegerType.get()),
-                                Types.NestedField.required(
-                                        6, OFFSET_COLUMN_NAME, Types.LongType.get()),
-                                Types.NestedField.required(
-                                        7, TIMESTAMP_COLUMN_NAME, Types.TimestampType.withZone())));
+                                Types.NestedField.optional(4, "address", Types.StringType.get())));
 
         // Verify iceberg table schema
         assertThat(createdTable.schema().toString()).isEqualTo(expectIcebergSchema.toString());
-
-        // Verify partition field and transform
-        assertThat(createdTable.spec().fields()).hasSize(1);
-        PartitionField partitionField = createdTable.spec().fields().get(0);
-        assertThat(partitionField.name()).isEqualTo(BUCKET_COLUMN_NAME);
-        assertThat(partitionField.transform().toString()).isEqualTo("identity");
-
-        // Verify sort field and order
-        assertThat(createdTable.sortOrder().fields()).hasSize(1);
-        SortField sortField = createdTable.sortOrder().fields().get(0);
-        assertThat(sortField.sourceId())
-                .isEqualTo(createdTable.schema().findField(OFFSET_COLUMN_NAME).fieldId());
-        assertThat(sortField.direction()).isEqualTo(SortDirection.ASC);
     }
 
     @Test
@@ -362,33 +319,17 @@ class IcebergLakeCatalogTest {
                                 Types.NestedField.optional(1, "id", Types.LongType.get()),
                                 Types.NestedField.optional(2, "name", Types.StringType.get()),
                                 Types.NestedField.optional(3, "amount", Types.IntegerType.get()),
-                                Types.NestedField.optional(4, "order_type", Types.StringType.get()),
-                                Types.NestedField.required(
-                                        5, BUCKET_COLUMN_NAME, Types.IntegerType.get()),
-                                Types.NestedField.required(
-                                        6, OFFSET_COLUMN_NAME, Types.LongType.get()),
-                                Types.NestedField.required(
-                                        7, TIMESTAMP_COLUMN_NAME, Types.TimestampType.withZone())));
+                                Types.NestedField.optional(
+                                        4, "order_type", Types.StringType.get())));
 
         // Verify iceberg table schema
         assertThat(createdTable.schema().toString()).isEqualTo(expectIcebergSchema.toString());
 
         // Verify partition field and transform
-        assertThat(createdTable.spec().fields()).hasSize(2);
+        assertThat(createdTable.spec().fields()).hasSize(1);
         PartitionField firstPartitionField = createdTable.spec().fields().get(0);
         assertThat(firstPartitionField.name()).isEqualTo("order_type");
         assertThat(firstPartitionField.transform().toString()).isEqualTo("identity");
-
-        PartitionField secondPartitionField = createdTable.spec().fields().get(1);
-        assertThat(secondPartitionField.name()).isEqualTo(BUCKET_COLUMN_NAME);
-        assertThat(secondPartitionField.transform().toString()).isEqualTo("identity");
-
-        // Verify sort field and order
-        assertThat(createdTable.sortOrder().fields()).hasSize(1);
-        SortField sortField = createdTable.sortOrder().fields().get(0);
-        assertThat(sortField.sourceId())
-                .isEqualTo(createdTable.schema().findField(OFFSET_COLUMN_NAME).fieldId());
-        assertThat(sortField.direction()).isEqualTo(SortDirection.ASC);
     }
 
     @Test

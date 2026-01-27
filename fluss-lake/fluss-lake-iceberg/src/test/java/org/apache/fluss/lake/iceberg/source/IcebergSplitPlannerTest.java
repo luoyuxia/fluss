@@ -30,16 +30,10 @@ import org.apache.iceberg.types.Types;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.Collections;
 import java.util.List;
 
-import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
 import static org.apache.iceberg.types.Types.NestedField.optional;
-import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test class for {@link IcebergSplitPlanner}. */
@@ -102,28 +96,17 @@ class IcebergSplitPlannerTest extends IcebergSourceTestBase {
                 new Schema(
                         optional(1, "c1", Types.IntegerType.get()),
                         optional(2, "c2", Types.StringType.get()),
-                        optional(3, "c3", Types.StringType.get()),
-                        // System columns
-                        required(14, BUCKET_COLUMN_NAME, Types.IntegerType.get()),
-                        required(15, OFFSET_COLUMN_NAME, Types.LongType.get()),
-                        required(16, TIMESTAMP_COLUMN_NAME, Types.TimestampType.withZone()));
+                        optional(3, "c3", Types.StringType.get()));
         PartitionSpec partitionSpec =
                 isPartitioned
-                        ? PartitionSpec.builderFor(schema)
-                                .identity("c2")
-                                .identity(BUCKET_COLUMN_NAME)
-                                .build()
-                        : PartitionSpec.builderFor(schema).identity(BUCKET_COLUMN_NAME).build();
+                        ? PartitionSpec.builderFor(schema).identity("c2").build()
+                        : PartitionSpec.builderFor(schema).build();
         createTable(tablePath, schema, partitionSpec);
 
         // write data
         Table table = getTable(tablePath);
-        GenericRecord record1 =
-                createIcebergRecord(
-                        schema, 12, "a", "A", 0, 100L, OffsetDateTime.now(ZoneOffset.UTC));
-        GenericRecord record2 =
-                createIcebergRecord(
-                        schema, 13, "b", "B", 1, 200L, OffsetDateTime.now(ZoneOffset.UTC));
+        GenericRecord record1 = createIcebergRecord(schema, 12, "a", "A");
+        GenericRecord record2 = createIcebergRecord(schema, 13, "b", "B");
 
         writeRecord(table, Collections.singletonList(record1), isPartitioned ? "a" : null, 0);
         writeRecord(table, Collections.singletonList(record2), isPartitioned ? "b" : null, 1);

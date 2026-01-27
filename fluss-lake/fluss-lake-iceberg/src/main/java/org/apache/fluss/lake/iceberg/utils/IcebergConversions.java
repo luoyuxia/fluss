@@ -43,7 +43,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.fluss.metadata.ResolvedPartitionSpec.PARTITION_SPEC_SEPARATOR;
-import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
 
 /** Utility class for static conversions between Fluss and Iceberg types. */
 public class IcebergConversions {
@@ -65,12 +64,18 @@ public class IcebergConversions {
                 partitionKey.set(pos++, partition);
             }
         }
-        partitionKey.set(pos, bucket);
+        if (!partitionSpec.fields().isEmpty()
+                && !partitionSpec
+                        .fields()
+                        .get(partitionSpec.fields().size() - 1)
+                        .transform()
+                        .isIdentity()) {
+            partitionKey.set(pos, bucket);
+        }
         return partitionKey;
     }
 
-    public static Expression toFilterExpression(
-            Table table, @Nullable String partitionName, int bucket) {
+    public static Expression toFilterExpression(Table table, @Nullable String partitionName) {
         List<PartitionField> partitionFields = table.spec().fields();
         Expression expression = Expressions.alwaysTrue();
         int partitionIndex = 0;
@@ -89,7 +94,7 @@ public class IcebergConversions {
                                         partition));
             }
         }
-        expression = Expressions.and(expression, Expressions.equal(BUCKET_COLUMN_NAME, bucket));
+        // todo: only consider primary key table
         return expression;
     }
 

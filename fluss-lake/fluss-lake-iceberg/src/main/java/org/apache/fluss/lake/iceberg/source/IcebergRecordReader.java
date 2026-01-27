@@ -37,7 +37,6 @@ import org.apache.iceberg.types.Types;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.IntStream;
@@ -80,8 +79,10 @@ public class IcebergRecordReader implements RecordReader {
             cols.add(structType.fields().get(project[0]));
         }
 
-        cols.add(structType.field(OFFSET_COLUMN_NAME));
-        cols.add(structType.field(TIMESTAMP_COLUMN_NAME));
+        if (hasSystemColumn(structType)) {
+            cols.add(structType.field(OFFSET_COLUMN_NAME));
+            cols.add(structType.field(TIMESTAMP_COLUMN_NAME));
+        }
         return tableScan.project(new Schema(cols));
     }
 
@@ -93,16 +94,14 @@ public class IcebergRecordReader implements RecordReader {
         private final ProjectedRow projectedRow;
         private final IcebergRecordAsFlussRow icebergRecordAsFlussRow;
 
-        private final int logOffsetColIndex;
-        private final int timestampColIndex;
-
         public IcebergRecordAsFlussRecordIterator(
                 CloseableIterable<Record> icebergRecordIterator, Types.StructType struct) {
             this.icebergRecordIterator = icebergRecordIterator.iterator();
-            this.logOffsetColIndex = struct.fields().indexOf(struct.field(OFFSET_COLUMN_NAME));
-            this.timestampColIndex = struct.fields().indexOf(struct.field(TIMESTAMP_COLUMN_NAME));
+            int[] project =
+                    hasSystemColumn(struct)
+                            ? IntStream.range(0, struct.fields().size() - 2).toArray()
+                            : IntStream.range(0, struct.fields().size()).toArray();
 
-            int[] project = IntStream.range(0, struct.fields().size() - 2).toArray();
             projectedRow = ProjectedRow.from(project);
             icebergRecordAsFlussRow = new IcebergRecordAsFlussRow();
         }
@@ -124,19 +123,17 @@ public class IcebergRecordReader implements RecordReader {
         @Override
         public LogRecord next() {
             Record icebergRecord = icebergRecordIterator.next();
-            long offset = icebergRecord.get(logOffsetColIndex, Long.class);
-            long timestamp =
-                    icebergRecord
-                            .get(timestampColIndex, OffsetDateTime.class)
-                            .toInstant()
-                            .toEpochMilli();
 
             return new GenericRecord(
-                    offset,
-                    timestamp,
+                    -1,
+                    -1,
                     ChangeType.INSERT,
                     projectedRow.replaceRow(
                             icebergRecordAsFlussRow.replaceIcebergRecord(icebergRecord)));
         }
+    }
+
+    private static boolean hasSystemColumn(Types.StructType struct) {
+        return struct.fields().stream().anyMatch(f -> f.name().equals(TIMESTAMP_COLUMN_NAME));
     }
 }

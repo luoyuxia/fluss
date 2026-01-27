@@ -161,11 +161,13 @@ public class IcebergLakeWriter implements LakeWriter<IcebergWriteResult> {
                         () -> {
                             try {
                                 Table table = icebergTable;
+                                int totalBuckets = writerInitContext.tableInfo().getNumBuckets();
                                 IcebergRewriteDataFiles rewriter =
                                         new IcebergRewriteDataFiles(
                                                         table,
                                                         writerInitContext.partition(),
-                                                        writerInitContext.tableBucket())
+                                                        writerInitContext.tableBucket(),
+                                                        totalBuckets)
                                                 .targetSizeInBytes(compactionTargetSize(table));
                                 return rewriter.execute();
                             } catch (Exception e) {

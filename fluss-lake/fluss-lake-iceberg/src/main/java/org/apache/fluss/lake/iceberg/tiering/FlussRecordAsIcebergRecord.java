@@ -32,7 +32,6 @@ import static org.apache.fluss.lake.iceberg.IcebergLakeCatalog.SYSTEM_COLUMNS;
 import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
 import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
 import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
-import static org.apache.fluss.utils.Preconditions.checkState;
 
 /**
  * Wrap Fluss {@link LogRecord} as Iceberg {@link Record}.
@@ -41,9 +40,6 @@ import static org.apache.fluss.utils.Preconditions.checkState;
  * write to iceberg for higher performance
  */
 public class FlussRecordAsIcebergRecord extends FlussRowAsIcebergRecord {
-
-    // Lake table for iceberg will append three system columns: __bucket, __offset,__timestamp
-    private static final int LAKE_ICEBERG_SYSTEM_COLUMNS = SYSTEM_COLUMNS.size();
 
     private LogRecord logRecord;
     private final int bucket;
@@ -61,9 +57,6 @@ public class FlussRecordAsIcebergRecord extends FlussRowAsIcebergRecord {
         this.logRecord = logRecord;
         this.internalRow = logRecord.getRow();
         this.originRowFieldCount = internalRow.getFieldCount();
-        checkState(
-                originRowFieldCount == structType.fields().size() - LAKE_ICEBERG_SYSTEM_COLUMNS,
-                "The Iceberg table fields count must equals to LogRecord's fields count.");
     }
 
     @Override

@@ -19,6 +19,7 @@ package org.apache.fluss.lake.paimon.utils;
 
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.metadata.TablePath;
+
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.options.ConfigOption;

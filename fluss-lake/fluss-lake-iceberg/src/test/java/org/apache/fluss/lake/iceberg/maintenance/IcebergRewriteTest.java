@@ -27,7 +27,6 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
-import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
@@ -51,14 +50,11 @@ import java.io.IOException;
 
 import static org.apache.fluss.lake.iceberg.utils.IcebergConversions.toIceberg;
 import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
-import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
 import static org.apache.fluss.utils.Preconditions.checkState;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Unit test to verify compaction via {@link IcebergRewriteDataFiles}. */
 class IcebergRewriteTest {
-
     private @TempDir File tempWarehouseDir;
     private Catalog icebergCatalog;
 
@@ -94,7 +90,7 @@ class IcebergRewriteTest {
         assertThat(rewriteDataFileResult).isNull();
 
         // append some files again, now, should rewrite
-        appendTinyFilesWithRowsAndBucket(icebergTable, 2, 3, 2000, bucket);
+        appendTinyFilesWithRowsAndBucket(icebergTable, 10, 3, 2000, bucket);
 
         long rowsBefore = countRows(icebergTable);
 
@@ -103,7 +99,7 @@ class IcebergRewriteTest {
 
         // verify the rewrite result
         assertThat(rewriteDataFileResult).isNotNull();
-        assertThat(rewriteDataFileResult.deletedDataFiles()).hasSize(4);
+        assertThat(rewriteDataFileResult.deletedDataFiles()).hasSize(12);
         assertThat(rewriteDataFileResult.addedDataFiles()).hasSize(1);
 
         // commit
@@ -122,46 +118,9 @@ class IcebergRewriteTest {
         assertThat(rowsAfter).isEqualTo(rowsBefore);
     }
 
-    @Test
-    void testMultipleBucketRewrite() throws Exception {
-        TablePath tablePath = TablePath.of("iceberg", "rewrite_bucket_scoped");
-        createTable(tablePath);
-
-        Table table = icebergCatalog.loadTable(toIceberg(tablePath));
-        // Seed bucket 0: 3 tiny files, bucket 1: 3 tiny files
-        appendTinyFilesWithRowsAndBucket(table, 3, 1, 4000, 0);
-        appendTinyFilesWithRowsAndBucket(table, 3, 1, 5000, 1);
-        table.refresh();
-
-        int filesBeforeBucket0 = countFilesForBucket(table, 0);
-        int filesBeforeBucket1 = countFilesForBucket(table, 1);
-        assertThat(filesBeforeBucket0).isEqualTo(3);
-        assertThat(filesBeforeBucket1).isEqualTo(3);
-
-        //  rewrite only bucket 0
-        RewriteDataFileResult rewriteDataFileResult =
-                createIcebergRewriteDataFiles(table, 0).execute();
-        assertThat(rewriteDataFileResult).isNotNull();
-        commitRewrite(table, rewriteDataFileResult);
-        table.refresh();
-
-        int filesAfterBucket0 = countFilesForBucket(table, 0);
-        int filesAfterBucket1 = countFilesForBucket(table, 1);
-        assertThat(filesAfterBucket0).isEqualTo(1);
-        assertThat(filesAfterBucket1).isEqualTo(3);
-
-        //  rewrite only bucket 1
-        RewriteDataFileResult res1 = createIcebergRewriteDataFiles(table, 1).execute();
-        assertThat(res1).isNotNull();
-        commitRewrite(table, res1);
-        table.refresh();
-        filesAfterBucket1 = countFilesForBucket(table, 1);
-        assertThat(filesAfterBucket1).isEqualTo(1);
-    }
-
     private IcebergRewriteDataFiles createIcebergRewriteDataFiles(Table table, int bucket) {
         table.refresh();
-        return new IcebergRewriteDataFiles(table, null, new TableBucket(0, bucket));
+        return new IcebergRewriteDataFiles(table, null, new TableBucket(0, bucket), 1);
     }
 
     private void commitRewrite(Table table, RewriteDataFileResult rewriteDataFileResult) {
@@ -183,17 +142,11 @@ class IcebergRewriteTest {
                 new Schema(
                         Types.NestedField.optional(1, "c1", Types.IntegerType.get()),
                         Types.NestedField.optional(2, "c2", Types.StringType.get()),
-                        Types.NestedField.optional(3, "c3", Types.StringType.get()),
-                        Types.NestedField.required(4, BUCKET_COLUMN_NAME, Types.IntegerType.get()),
-                        Types.NestedField.required(5, OFFSET_COLUMN_NAME, Types.LongType.get()),
-                        Types.NestedField.required(
-                                6, TIMESTAMP_COLUMN_NAME, Types.TimestampType.withZone()));
+                        Types.NestedField.optional(3, "c3", Types.StringType.get()));
 
-        PartitionSpec partitionSpec =
-                PartitionSpec.builderFor(schema).identity(BUCKET_COLUMN_NAME).build();
         TableIdentifier tableId =
                 TableIdentifier.of(tablePath.getDatabaseName(), tablePath.getTableName());
-        icebergCatalog.createTable(tableId, schema, partitionSpec);
+        icebergCatalog.createTable(tableId, schema);
     }
 
     private static int countDataFiles(Table table) throws IOException {
@@ -252,11 +205,6 @@ class IcebergRewriteTest {
                 r.setField("c1", i);
                 r.setField("c2", "v_" + i);
                 r.setField("c3", "g");
-                r.setField(BUCKET_COLUMN_NAME, bucket);
-                r.setField(OFFSET_COLUMN_NAME, (long) (startOffset + i));
-                r.setField(
-                        TIMESTAMP_COLUMN_NAME,
-                        java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC));
                 taskWriter.write(r);
             }
             DataFile[] dataFiles = taskWriter.dataFiles();
