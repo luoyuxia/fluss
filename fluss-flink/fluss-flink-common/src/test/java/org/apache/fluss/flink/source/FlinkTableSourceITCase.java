@@ -627,6 +627,160 @@ abstract class FlinkTableSourceITCase extends AbstractTestBase {
     }
 
     @Test
+    void testPartitionTimestampModeOnAutoPartitionedTable() throws Exception {
+        // Create an auto-partitioned log table with yearly partitions
+        String tableName = "partition_timestamp_mode_test";
+        tEnv.executeSql(
+                String.format(
+                        "create table %s ("
+                                + "a int, b varchar, dt string"
+                                + ") partitioned by (dt) "
+                                + "with ("
+                                + " 'table.auto-partition.enabled' = 'true',"
+                                + " 'table.auto-partition.time-unit' = 'year',"
+                                + " 'table.auto-partition.num-precreate' = '0')",
+                        tableName));
+        TablePath tablePath = TablePath.of(DEFAULT_DB, tableName);
+
+        // Manually create partitions: 2024, 2025, 2026
+        tEnv.executeSql(String.format("alter table %s add partition (dt='2024')", tableName));
+        tEnv.executeSql(String.format("alter table %s add partition (dt='2025')", tableName));
+        tEnv.executeSql(String.format("alter table %s add partition (dt='2026')", tableName));
+
+        Map<Long, String> partitionNameById =
+                waitUntilPartitions(FLUSS_CLUSTER_EXTENSION.getZooKeeperClient(), tablePath, 3);
+
+        // Write data to all partitions
+        List<InternalRow> rows = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            rows.add(row(i, "v" + i, "2024"));
+        }
+        for (int i = 10; i < 13; i++) {
+            rows.add(row(i, "v" + i, "2025"));
+        }
+        for (int i = 20; i < 23; i++) {
+            rows.add(row(i, "v" + i, "2026"));
+        }
+        writeRows(conn, tablePath, rows, true);
+
+        // Use partition-timestamp mode with a timestamp in 2025
+        // This should map to partition '2025' and filter: dt >= '2025'
+        // So we expect data from partitions 2025 and 2026 only
+        String timestampIn2025 = "2025-06-15 12:00:00";
+        String options =
+                String.format(
+                        " /*+ OPTIONS('scan.startup.mode' = 'partition-timestamp', "
+                                + "'scan.startup.timestamp' = '%s') */",
+                        timestampIn2025);
+        String query = "select a, b, dt from " + tableName + options;
+
+        // Expected: only data from partitions 2025 and 2026 (dt >= '2025')
+        List<String> expected =
+                Arrays.asList(
+                        "+I[10, v10, 2025]",
+                        "+I[11, v11, 2025]",
+                        "+I[12, v12, 2025]",
+                        "+I[20, v20, 2026]",
+                        "+I[21, v21, 2026]",
+                        "+I[22, v22, 2026]");
+
+        org.apache.flink.util.CloseableIterator<Row> rowIter = tEnv.executeSql(query).collect();
+        assertResultsIgnoreOrder(rowIter, expected, true);
+    }
+
+    @Test
+    void testPartitionTimestampModeOnMultiPartitionKeyTable() throws Exception {
+        // Create an auto-partitioned table with multiple partition keys
+        // and explicitly specify table.auto-partition.key
+        String tableName = "partition_timestamp_multi_key_test";
+        tEnv.executeSql(
+                String.format(
+                        "create table %s ("
+                                + "a int, b varchar, region string, dt string"
+                                + ") partitioned by (region, dt) "
+                                + "with ("
+                                + " 'table.auto-partition.enabled' = 'true',"
+                                + " 'table.auto-partition.time-unit' = 'year',"
+                                + " 'table.auto-partition.key' = 'dt',"
+                                + " 'table.auto-partition.num-precreate' = '0')",
+                        tableName));
+        TablePath tablePath = TablePath.of(DEFAULT_DB, tableName);
+
+        // Manually create partitions with composite keys
+        tEnv.executeSql(
+                String.format("alter table %s add partition (region='us', dt='2024')", tableName));
+        tEnv.executeSql(
+                String.format("alter table %s add partition (region='us', dt='2025')", tableName));
+        tEnv.executeSql(
+                String.format("alter table %s add partition (region='eu', dt='2024')", tableName));
+        tEnv.executeSql(
+                String.format("alter table %s add partition (region='eu', dt='2025')", tableName));
+
+        waitUntilPartitions(FLUSS_CLUSTER_EXTENSION.getZooKeeperClient(), tablePath, 4);
+
+        // Write data to all partitions
+        List<InternalRow> rows = new ArrayList<>();
+        // us-2024 partition
+        rows.add(row(1, "v1", "us", "2024"));
+        rows.add(row(2, "v2", "us", "2024"));
+        // us-2025 partition
+        rows.add(row(10, "v10", "us", "2025"));
+        rows.add(row(11, "v11", "us", "2025"));
+        // eu-2024 partition
+        rows.add(row(20, "v20", "eu", "2024"));
+        rows.add(row(21, "v21", "eu", "2024"));
+        // eu-2025 partition
+        rows.add(row(30, "v30", "eu", "2025"));
+        rows.add(row(31, "v31", "eu", "2025"));
+        writeRows(conn, tablePath, rows, true);
+
+        // Use partition-timestamp mode with a timestamp in 2025
+        // This should map to partition '2025' and filter: dt >= '2025'
+        // So we expect data from partitions where dt='2025' (both us and eu regions)
+        String timestampIn2025 = "2025-06-15 12:00:00";
+        String options =
+                String.format(
+                        " /*+ OPTIONS('scan.startup.mode' = 'partition-timestamp', "
+                                + "'scan.startup.timestamp' = '%s') */",
+                        timestampIn2025);
+        String query = "select a, b, region, dt from " + tableName + options;
+
+        // Expected: only data from partitions where dt >= '2025'
+        List<String> expected =
+                Arrays.asList(
+                        "+I[10, v10, us, 2025]",
+                        "+I[11, v11, us, 2025]",
+                        "+I[30, v30, eu, 2025]",
+                        "+I[31, v31, eu, 2025]");
+
+        org.apache.flink.util.CloseableIterator<Row> rowIter = tEnv.executeSql(query).collect();
+        assertResultsIgnoreOrder(rowIter, expected, true);
+    }
+
+    @Test
+    void testPartitionTimestampModeOnNonAutoPartitionedTableFails() throws Exception {
+        // Create a partitioned table WITHOUT auto-partition enabled
+        String tableName = "partition_timestamp_non_auto_test";
+        tEnv.executeSql(
+                String.format(
+                        "create table %s ("
+                                + "a int, b varchar, dt string"
+                                + ") partitioned by (dt)",
+                        tableName));
+
+        // Trying to use partition-timestamp mode on non-auto-partitioned table should fail
+        String query =
+                String.format(
+                        "select * from %s /*+ OPTIONS('scan.startup.mode' = 'partition-timestamp', "
+                                + "'scan.startup.timestamp' = '2025-06-15 12:00:00') */",
+                        tableName);
+
+        assertThatThrownBy(() -> tEnv.executeSql(query).await())
+                .hasStackTraceContaining(
+                        "PARTITION_TIMESTAMP mode only supports auto-partitioned tables");
+    }
+
+    @Test
     void testReadTimestampGreaterThanMaxTimestamp() throws Exception {
         tEnv.executeSql("create table timestamp_table (a int, b varchar) ");
         TablePath tablePath = TablePath.of(DEFAULT_DB, "timestamp_table");

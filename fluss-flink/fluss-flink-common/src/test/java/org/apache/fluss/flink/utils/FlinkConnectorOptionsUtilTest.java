@@ -75,10 +75,7 @@ class FlinkConnectorOptionsUtilTest {
         options.put(SCAN_STARTUP_MODE.key(), "partition-timestamp");
         ReadableConfig tableOptions = org.apache.flink.configuration.Configuration.fromMap(options);
 
-        assertThatThrownBy(
-                        () ->
-                                FlinkConnectorOptionsUtils.validateScanStartupMode(
-                                        tableOptions))
+        assertThatThrownBy(() -> FlinkConnectorOptionsUtils.validateScanStartupMode(tableOptions))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("'scan.startup.timestamp' is required");
     }

@@ -37,6 +37,7 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.CollectionUtil;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -57,6 +58,7 @@ import java.util.stream.Collectors;
 import static org.apache.fluss.flink.source.testutils.FlinkRowAssertionsUtils.assertResultsExactOrder;
 import static org.apache.fluss.flink.source.testutils.FlinkRowAssertionsUtils.assertResultsIgnoreOrder;
 import static org.apache.fluss.flink.source.testutils.FlinkRowAssertionsUtils.assertRowResultsIgnoreOrder;
+import static org.apache.fluss.flink.source.testutils.FlinkRowAssertionsUtils.collectRowsWithTimeout;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -248,6 +250,124 @@ public class FlinkUnionReadLogTableITCase extends FlinkUnionReadTestBase {
         // cancel jobs
         insertResult.getJobClient().get().cancel().get();
         jobClient.cancel().get();
+    }
+
+    @Test
+    void testPartitionTimestampModeOnLakeTable() throws Exception {
+        // Start tiering job
+        JobClient jobClient = buildTieringJob(execEnv);
+
+        String tableName = "partition_timestamp_lake_test";
+        TablePath tablePath = TablePath.of(DEFAULT_DB, tableName);
+
+        // Create auto-partitioned log table with datalake enabled
+        long tableId = createLogTable(tablePath, DEFAULT_BUCKET_NUM, true);
+
+        // Wait for partitions to be created
+        Map<Long, String> partitionNameByIds = waitUntilPartitions(tablePath);
+        assertThat(partitionNameByIds.size()).isGreaterThanOrEqualTo(2);
+
+        // Get sorted partition names (e.g., "2025", "2026")
+        List<String> sortedPartitions =
+                partitionNameByIds.values().stream().sorted().collect(Collectors.toList());
+        String olderPartition = sortedPartitions.get(0);
+        String newerPartition = sortedPartitions.get(1);
+
+        // Write data to partitions
+        List<InternalRow> rows = new ArrayList<>();
+        // Write to older partition
+        for (int i = 0; i < 3; i++) {
+            rows.add(row(i, "old_" + i, olderPartition));
+        }
+        // Write to newer partition
+        for (int i = 10; i < 13; i++) {
+            rows.add(row(i, "new_" + i, newerPartition));
+        }
+        writeRows(tablePath, rows, true);
+
+        // Wait until data is synced to lake
+        waitUntilBucketSynced(tablePath, tableId, DEFAULT_BUCKET_NUM, true);
+
+        // Cancel tiering job to create a scenario where we read from both lake and Fluss
+        jobClient.cancel().get();
+
+        // Write more data after tiering stopped (this will only be in Fluss)
+        List<InternalRow> moreRows = new ArrayList<>();
+        for (int i = 20; i < 23; i++) {
+            moreRows.add(row(i, "fluss_" + i, newerPartition));
+        }
+        writeRows(tablePath, moreRows, true);
+
+        // Use partition-timestamp mode with a timestamp that maps to the newer partition
+        // This should filter to: partition >= newerPartition
+        String timestampInNewerPartition = newerPartition + "-06-15 12:00:00";
+        String query =
+                String.format(
+                        "SELECT a, b, c FROM %s "
+                                + "/*+ OPTIONS('scan.startup.mode' = 'partition-timestamp', "
+                                + "'scan.startup.timestamp' = '%s', "
+                                + "'scan.partition.discovery.interval' = '100ms') */",
+                        tableName, timestampInNewerPartition);
+
+        CloseableIterator<Row> iterator = streamTEnv.executeSql(query).collect();
+
+        // Expected: only data from newer partition (from both lake and Fluss)
+        List<String> expected = new ArrayList<>();
+        // From lake (rows 10-12)
+        for (int i = 10; i < 13; i++) {
+            expected.add(String.format("+I[%d, new_%d, %s]", i, i, newerPartition));
+        }
+        // From Fluss (rows 20-22)
+        for (int i = 20; i < 23; i++) {
+            expected.add(String.format("+I[%d, fluss_%d, %s]", i, i, newerPartition));
+        }
+
+        // First, verify initial data is consumed
+        List<String> actual = collectRowsWithTimeout(iterator, expected.size(), false);
+        assertThat(actual).containsExactlyInAnyOrderElementsOf(expected);
+
+        // Now add a new partition that matches the filter (>= newerPartition)
+        // This tests that newly discovered partitions are also consumed
+        String newPartition = "3000"; // A future partition that's >= newerPartition
+        List<InternalRow> newPartitionRows = new ArrayList<>();
+        for (int i = 30; i < 33; i++) {
+            newPartitionRows.add(row(i, "new_partition_" + i, newPartition));
+        }
+        writeRows(tablePath, newPartitionRows, true);
+
+        // Expected data from the newly added partition
+        List<String> expectedNewPartition = new ArrayList<>();
+        for (int i = 30; i < 33; i++) {
+            expectedNewPartition.add(
+                    String.format("+I[%d, new_partition_%d, %s]", i, i, newPartition));
+        }
+
+        // Verify that data from the new partition is also consumed
+        List<String> actualNewPartition =
+                collectRowsWithTimeout(iterator, expectedNewPartition.size(), true);
+        assertThat(actualNewPartition).containsExactlyInAnyOrderElementsOf(expectedNewPartition);
+    }
+
+    protected long createLogTable(TablePath tablePath, int bucketNum, boolean isPartitioned)
+            throws Exception {
+        Schema.Builder schemaBuilder =
+                Schema.newBuilder().column("a", DataTypes.INT()).column("b", DataTypes.STRING());
+
+        TableDescriptor.Builder tableBuilder =
+                TableDescriptor.builder()
+                        .distributedBy(bucketNum, "a")
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true")
+                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500));
+
+        if (isPartitioned) {
+            schemaBuilder.column("c", DataTypes.STRING());
+            tableBuilder.property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true);
+            tableBuilder.partitionedBy("c");
+            tableBuilder.property(
+                    ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT, AutoPartitionTimeUnit.YEAR);
+        }
+        tableBuilder.schema(schemaBuilder.build());
+        return createTable(tablePath, tableBuilder.build());
     }
 
     private long prepareLogTable(

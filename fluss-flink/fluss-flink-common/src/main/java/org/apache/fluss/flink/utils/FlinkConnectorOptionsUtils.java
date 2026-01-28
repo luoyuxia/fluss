@@ -115,7 +115,7 @@ public class FlinkConnectorOptionsUtils {
 
     // ----------------------------------------------------------------------------------------
 
-    private static void validateScanStartupMode(ReadableConfig tableOptions) {
+    public static void validateScanStartupMode(ReadableConfig tableOptions) {
         ScanStartupMode scanStartupMode = tableOptions.get(SCAN_STARTUP_MODE);
         if (scanStartupMode == TIMESTAMP || scanStartupMode == PARTITION_TIMESTAMP) {
             if (!tableOptions.getOptional(SCAN_STARTUP_TIMESTAMP).isPresent()) {

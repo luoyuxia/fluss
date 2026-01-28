@@ -17,7 +17,6 @@
 
 package org.apache.fluss.flink.source;
 
-import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.flink.FlinkConnectorOptions;
@@ -37,22 +36,19 @@ import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.DeleteBehavior;
 import org.apache.fluss.metadata.MergeEngineType;
 import org.apache.fluss.metadata.TablePath;
-import org.apache.fluss.utils.AutoPartitionStrategy;
-import org.apache.fluss.predicate.GreaterOrEqual;
-import org.apache.fluss.predicate.LeafPredicate;
 import org.apache.fluss.predicate.PartitionPredicateVisitor;
 import org.apache.fluss.predicate.Predicate;
 import org.apache.fluss.predicate.PredicateBuilder;
 import org.apache.fluss.predicate.PredicateVisitor;
-import org.apache.fluss.row.TimestampLtz;
-import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.types.RowType;
+import org.apache.fluss.utils.AutoPartitionStrategy;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.ProviderContext;
 import org.apache.flink.table.connector.RowLevelModificationScanContext;
@@ -80,7 +76,6 @@ import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.api.TableException;
 import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -102,9 +97,7 @@ import static org.apache.fluss.flink.utils.PredicateConverter.convertToFlussPred
 import static org.apache.fluss.flink.utils.PushdownUtils.ValueConversion.FLINK_INTERNAL_VALUE;
 import static org.apache.fluss.flink.utils.PushdownUtils.extractFieldEquals;
 import static org.apache.fluss.flink.utils.StringifyPredicateVisitor.stringifyPartitionPredicate;
-import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
-import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** Flink table source to scan Fluss data. */
 public class FlinkTableSource
@@ -401,7 +394,20 @@ public class FlinkTableSource
      * @return true if lake source should be enabled
      */
     private boolean setupPartitionTimestampFilter() {
+        // Determine the auto-partition key
+        // If table.auto-partition.key is not specified, use the single partition key
         String autoPartitionKey = autoPartitionStrategy.key();
+        if (autoPartitionKey == null) {
+            if (partitionKeyIndexes.length == 1) {
+                // Single partition key - use it as the auto-partition key
+                autoPartitionKey = tableOutputType.getFieldNames().get(partitionKeyIndexes[0]);
+            } else {
+                throw new TableException(
+                        "PARTITION_TIMESTAMP mode requires 'table.auto-partition.key' to be specified "
+                                + "when the table has multiple partition keys.");
+            }
+        }
+
         String targetPartition =
                 PartitionTimestampUtils.mapTimestampToPartition(
                         startupOptions.partitionTimestampMs,
@@ -429,54 +435,16 @@ public class FlinkTableSource
                     PartitionTimestampUtils.createPartitionFilter(
                             fullRowType, autoPartitionKey, targetPartition);
             List<Predicate> accepted =
-                    lakeSource.withFilters(Collections.singletonList(lakeFilter)).acceptedPredicates();
+                    lakeSource
+                            .withFilters(Collections.singletonList(lakeFilter))
+                            .acceptedPredicates();
             if (accepted.isEmpty()) {
-                LOG.warn("Lake source didn't accept partition filter. Lake data may not be filtered.");
+                LOG.warn(
+                        "Lake source didn't accept partition filter. Lake data may not be filtered.");
             }
             return true;
         }
         return false;
-    }
-
-    private boolean handleLegacyV1LakeTable() {
-        if (hasPrimaryKey()) {
-            // Currently, for primary key tables, we do not consider lake data
-            // when reading from a given timestamp. This is because we will need
-            // to read the change log of primary key table.
-            // TODO: consider support it using paimon change log data?
-            return false;
-        } else {
-            return pushTimeStampFilterToLakeSource(lakeSource);
-        }
-    }
-
-    private boolean pushTimeStampFilterToLakeSource(LakeSource<?> lakeSource) {
-        // will push timestamp to lake
-        // we will have three additional system columns, __bucket, __offset, __timestamp
-        // in lake, get the  __timestamp index in lake table
-        final int timestampFieldIndex = tableOutputType.getFieldCount() + 2;
-        Predicate timestampFilter =
-                new LeafPredicate(
-                        GreaterOrEqual.INSTANCE,
-                        DataTypes.TIMESTAMP_LTZ(),
-                        timestampFieldIndex,
-                        TIMESTAMP_COLUMN_NAME,
-                        Collections.singletonList(
-                                TimestampLtz.fromEpochMillis(startupOptions.startupTimestampMs)));
-        List<Predicate> acceptedPredicates =
-                lakeSource
-                        .withFilters(Collections.singletonList(timestampFilter))
-                        .acceptedPredicates();
-        if (acceptedPredicates.isEmpty()) {
-            LOG.warn(
-                    "The lake source doesn't accept the filter {}, won't read data from lake.",
-                    timestampFilter);
-            return false;
-        }
-        checkState(
-                acceptedPredicates.size() == 1
-                        && acceptedPredicates.get(0).equals(timestampFilter));
-        return true;
     }
 
     @Override

@@ -18,9 +18,9 @@
 package org.apache.fluss.flink.utils;
 
 import org.apache.fluss.config.AutoPartitionTimeUnit;
-import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.predicate.Predicate;
 import org.apache.fluss.predicate.PredicateBuilder;
+import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.PartitionUtils;
 
@@ -67,7 +67,9 @@ public class PartitionTimestampUtils {
         int fieldIndex = partitionRowType.getFieldIndex(autoPartitionKey);
         if (fieldIndex < 0) {
             throw new IllegalArgumentException(
-                    "Auto-partition key '" + autoPartitionKey + "' not found in partition columns: "
+                    "Auto-partition key '"
+                            + autoPartitionKey
+                            + "' not found in partition columns: "
                             + partitionRowType.getFieldNames());
         }
         PredicateBuilder builder = new PredicateBuilder(partitionRowType);
