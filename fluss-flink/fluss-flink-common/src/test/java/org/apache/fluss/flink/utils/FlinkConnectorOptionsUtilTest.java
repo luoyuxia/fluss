@@ -18,15 +18,20 @@
 package org.apache.fluss.flink.utils;
 
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.flink.FlinkConnectorOptions;
 
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.TimeZone;
 
 import static org.apache.flink.configuration.CoreOptions.TMP_DIRS;
 import static org.apache.fluss.config.ConfigOptions.CLIENT_SCANNER_IO_TMP_DIR;
+import static org.apache.fluss.flink.FlinkConnectorOptions.SCAN_STARTUP_MODE;
 import static org.apache.fluss.flink.FlinkConnectorOptions.SCAN_STARTUP_TIMESTAMP;
 import static org.apache.fluss.flink.utils.FlinkConnectorOptionsUtils.parseTimestamp;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +66,38 @@ class FlinkConnectorOptionsUtilTest {
                         "Invalid properties 'scan.startup.timestamp' should follow the format 'yyyy-MM-dd HH:mm:ss' "
                                 + "or 'timestamp', but is '2023-12-09T23:09:12'. "
                                 + "You can config like: '2023-12-09 23:09:12' or '1678883047356'.");
+    }
+
+    @Test
+    void testPartitionTimestampModeValidation() {
+        // Test PARTITION_TIMESTAMP mode requires scan.startup.timestamp
+        Map<String, String> options = new HashMap<>();
+        options.put(SCAN_STARTUP_MODE.key(), "partition-timestamp");
+        ReadableConfig tableOptions = org.apache.flink.configuration.Configuration.fromMap(options);
+
+        assertThatThrownBy(
+                        () ->
+                                FlinkConnectorOptionsUtils.validateScanStartupMode(
+                                        tableOptions))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'scan.startup.timestamp' is required");
+    }
+
+    @Test
+    void testPartitionTimestampModeStartupOptions() {
+        // Test getting startup options for PARTITION_TIMESTAMP mode
+        Map<String, String> options = new HashMap<>();
+        options.put(SCAN_STARTUP_MODE.key(), "partition-timestamp");
+        options.put(SCAN_STARTUP_TIMESTAMP.key(), "2026-01-19 12:30:00");
+        ReadableConfig tableOptions = org.apache.flink.configuration.Configuration.fromMap(options);
+
+        ZoneId timeZone = TimeZone.getTimeZone("Asia/Shanghai").toZoneId();
+        FlinkConnectorOptionsUtils.StartupOptions startupOptions =
+                FlinkConnectorOptionsUtils.getStartupOptions(tableOptions, timeZone);
+
+        assertThat(startupOptions.startupMode)
+                .isEqualTo(FlinkConnectorOptions.ScanStartupMode.PARTITION_TIMESTAMP);
+        assertThat(startupOptions.partitionTimestampMs).isGreaterThan(0);
     }
 
     @Test

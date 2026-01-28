@@ -17,6 +17,7 @@
 
 package org.apache.fluss.flink.source;
 
+import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.flink.FlinkConnectorOptions;
@@ -27,6 +28,7 @@ import org.apache.fluss.flink.source.lookup.FlinkLookupFunction;
 import org.apache.fluss.flink.source.lookup.LookupNormalizer;
 import org.apache.fluss.flink.utils.FlinkConnectorOptionsUtils;
 import org.apache.fluss.flink.utils.FlinkConversions;
+import org.apache.fluss.flink.utils.PartitionTimestampUtils;
 import org.apache.fluss.flink.utils.PushdownUtils;
 import org.apache.fluss.flink.utils.PushdownUtils.FieldEqual;
 import org.apache.fluss.lake.source.LakeSource;
@@ -35,6 +37,7 @@ import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.DeleteBehavior;
 import org.apache.fluss.metadata.MergeEngineType;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.utils.AutoPartitionStrategy;
 import org.apache.fluss.predicate.GreaterOrEqual;
 import org.apache.fluss.predicate.LeafPredicate;
 import org.apache.fluss.predicate.PartitionPredicateVisitor;
@@ -77,6 +80,7 @@ import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -134,6 +138,7 @@ public class FlinkTableSource
     private final long scanPartitionDiscoveryIntervalMs;
     private final boolean isDataLakeEnabled;
     @Nullable private final MergeEngineType mergeEngineType;
+    @Nullable private final AutoPartitionStrategy autoPartitionStrategy;
 
     // output type after projection pushdown
     private LogicalType producedDataType;
@@ -171,6 +176,7 @@ public class FlinkTableSource
             long scanPartitionDiscoveryIntervalMs,
             boolean isDataLakeEnabled,
             @Nullable MergeEngineType mergeEngineType,
+            @Nullable AutoPartitionStrategy autoPartitionStrategy,
             Map<String, String> tableOptions) {
         this.tablePath = tablePath;
         this.flussConfig = flussConfig;
@@ -188,6 +194,7 @@ public class FlinkTableSource
         this.scanPartitionDiscoveryIntervalMs = scanPartitionDiscoveryIntervalMs;
         this.isDataLakeEnabled = isDataLakeEnabled;
         this.mergeEngineType = mergeEngineType;
+        this.autoPartitionStrategy = autoPartitionStrategy;
         this.tableOptions = tableOptions;
         if (isDataLakeEnabled) {
             this.lakeSource =
@@ -323,6 +330,11 @@ public class FlinkTableSource
                 offsetsInitializer =
                         OffsetsInitializer.timestamp(startupOptions.startupTimestampMs);
                 break;
+            case PARTITION_TIMESTAMP:
+                validateAutoPartitionedTable();
+                enableLakeSource = setupPartitionTimestampFilter();
+                offsetsInitializer = OffsetsInitializer.earliest();
+                break;
             default:
                 throw new IllegalArgumentException(
                         "Unsupported startup mode: " + startupOptions.startupMode);
@@ -370,6 +382,60 @@ public class FlinkTableSource
         } else {
             return SourceProvider.of(source);
         }
+    }
+
+    private void validateAutoPartitionedTable() {
+        if (!isPartitioned()
+                || autoPartitionStrategy == null
+                || !autoPartitionStrategy.isAutoPartitionEnabled()) {
+            throw new TableException(
+                    "PARTITION_TIMESTAMP mode only supports auto-partitioned tables. "
+                            + "Please ensure the table is partitioned and has "
+                            + "'table.auto-partition.enabled' = 'true'.");
+        }
+    }
+
+    /**
+     * Sets up partition filter for PARTITION_TIMESTAMP mode.
+     *
+     * @return true if lake source should be enabled
+     */
+    private boolean setupPartitionTimestampFilter() {
+        String autoPartitionKey = autoPartitionStrategy.key();
+        String targetPartition =
+                PartitionTimestampUtils.mapTimestampToPartition(
+                        startupOptions.partitionTimestampMs,
+                        autoPartitionStrategy.timeUnit(),
+                        autoPartitionStrategy.timeZone().toZoneId());
+
+        LOG.info(
+                "PARTITION_TIMESTAMP mode: timestamp {} -> partition '{}', filter: {} >= '{}'",
+                startupOptions.partitionTimestampMs,
+                targetPartition,
+                autoPartitionKey,
+                targetPartition);
+
+        // Create partition filter for Fluss partition discovery
+        RowType partitionRowType =
+                FlinkConversions.toFlussRowType(tableOutputType).project(partitionKeyIndexes);
+        partitionFilters =
+                PartitionTimestampUtils.createPartitionFilter(
+                        partitionRowType, autoPartitionKey, targetPartition);
+
+        // Push filter to lake source if enabled
+        if (lakeSource != null) {
+            RowType fullRowType = FlinkConversions.toFlussRowType(tableOutputType);
+            Predicate lakeFilter =
+                    PartitionTimestampUtils.createPartitionFilter(
+                            fullRowType, autoPartitionKey, targetPartition);
+            List<Predicate> accepted =
+                    lakeSource.withFilters(Collections.singletonList(lakeFilter)).acceptedPredicates();
+            if (accepted.isEmpty()) {
+                LOG.warn("Lake source didn't accept partition filter. Lake data may not be filtered.");
+            }
+            return true;
+        }
+        return false;
     }
 
     private boolean handleLegacyV1LakeTable() {
@@ -469,6 +535,7 @@ public class FlinkTableSource
                         scanPartitionDiscoveryIntervalMs,
                         isDataLakeEnabled,
                         mergeEngineType,
+                        autoPartitionStrategy,
                         tableOptions);
         source.producedDataType = producedDataType;
         source.projectedFields = projectedFields;

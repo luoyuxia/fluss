@@ -41,6 +41,7 @@ import static org.apache.flink.configuration.CoreOptions.TMP_DIRS;
 import static org.apache.fluss.config.ConfigOptions.CLIENT_SCANNER_IO_TMP_DIR;
 import static org.apache.fluss.flink.FlinkConnectorOptions.SCAN_STARTUP_MODE;
 import static org.apache.fluss.flink.FlinkConnectorOptions.SCAN_STARTUP_TIMESTAMP;
+import static org.apache.fluss.flink.FlinkConnectorOptions.ScanStartupMode.PARTITION_TIMESTAMP;
 import static org.apache.fluss.flink.FlinkConnectorOptions.ScanStartupMode.TIMESTAMP;
 
 /** Utility class for {@link FlinkConnectorOptions}. */
@@ -65,6 +66,12 @@ public class FlinkConnectorOptionsUtils {
         options.startupMode = scanStartupMode;
         if (scanStartupMode == TIMESTAMP) {
             options.startupTimestampMs =
+                    parseTimestamp(
+                            tableOptions.get(SCAN_STARTUP_TIMESTAMP),
+                            SCAN_STARTUP_TIMESTAMP.key(),
+                            timeZone);
+        } else if (scanStartupMode == PARTITION_TIMESTAMP) {
+            options.partitionTimestampMs =
                     parseTimestamp(
                             tableOptions.get(SCAN_STARTUP_TIMESTAMP),
                             SCAN_STARTUP_TIMESTAMP.key(),
@@ -110,12 +117,12 @@ public class FlinkConnectorOptionsUtils {
 
     private static void validateScanStartupMode(ReadableConfig tableOptions) {
         ScanStartupMode scanStartupMode = tableOptions.get(SCAN_STARTUP_MODE);
-        if (scanStartupMode == TIMESTAMP) {
+        if (scanStartupMode == TIMESTAMP || scanStartupMode == PARTITION_TIMESTAMP) {
             if (!tableOptions.getOptional(SCAN_STARTUP_TIMESTAMP).isPresent()) {
                 throw new ValidationException(
                         String.format(
-                                "'%s' is required int '%s' startup mode but missing.",
-                                SCAN_STARTUP_TIMESTAMP.key(), TIMESTAMP));
+                                "'%s' is required in '%s' startup mode but missing.",
+                                SCAN_STARTUP_TIMESTAMP.key(), scanStartupMode));
             }
         }
     }
@@ -164,9 +171,11 @@ public class FlinkConnectorOptionsUtils {
         return flussConf.getString(CLIENT_SCANNER_IO_TMP_DIR);
     }
 
-    /** Fluss startup options. * */
+    /** Fluss startup options. */
     public static class StartupOptions {
         public ScanStartupMode startupMode;
         public long startupTimestampMs;
+        /** Timestamp for partition-timestamp mode, used to map to partition filter. */
+        public long partitionTimestampMs;
     }
 }

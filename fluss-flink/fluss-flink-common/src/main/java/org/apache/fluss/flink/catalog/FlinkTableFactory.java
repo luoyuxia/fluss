@@ -28,6 +28,7 @@ import org.apache.fluss.flink.source.FlinkTableSource;
 import org.apache.fluss.flink.utils.FlinkConnectorOptionsUtils;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.utils.AutoPartitionStrategy;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.ConfigOption;
@@ -137,10 +138,14 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                         .get(FlinkConnectorOptions.SCAN_PARTITION_DISCOVERY_INTERVAL)
                         .toMillis();
 
+        // Extract auto-partition strategy from table options
+        Map<String, String> catalogTableOptions = context.getCatalogTable().getOptions();
+        AutoPartitionStrategy autoPartitionStrategy =
+                AutoPartitionStrategy.from(catalogTableOptions);
+
         return new FlinkTableSource(
                 toFlussTablePath(context.getObjectIdentifier()),
-                toFlussClientConfig(
-                        context.getCatalogTable().getOptions(), context.getConfiguration()),
+                toFlussClientConfig(catalogTableOptions, context.getConfiguration()),
                 tableOutputType,
                 primaryKeyIndexes,
                 bucketKeyIndexes,
@@ -152,7 +157,8 @@ public class FlinkTableFactory implements DynamicTableSourceFactory, DynamicTabl
                 partitionDiscoveryIntervalMs,
                 tableOptions.get(toFlinkOption(ConfigOptions.TABLE_DATALAKE_ENABLED)),
                 tableOptions.get(toFlinkOption(ConfigOptions.TABLE_MERGE_ENGINE)),
-                context.getCatalogTable().getOptions());
+                autoPartitionStrategy,
+                catalogTableOptions);
     }
 
     @Override
