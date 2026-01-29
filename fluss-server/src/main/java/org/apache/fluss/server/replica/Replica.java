@@ -323,6 +323,28 @@ public final class Replica {
         return tableConfig.isDataLakeEnabled();
     }
 
+    /**
+     * Check if this replica belongs to a historical partition.
+     *
+     * <p>Historical partitions are partitions in datalake-enabled tables where:
+     *
+     * <ul>
+     *   <li>Fluss data (logs/KV) has been cleaned up
+     *   <li>Partition metadata is retained
+     *   <li>Data is still available in the data lake (e.g., Paimon)
+     * </ul>
+     *
+     * @return true if this is a historical partition
+     */
+    public boolean isHistoricalPartition() {
+        Long partitionId = tableBucket.getPartitionId();
+        if (partitionId == null) {
+            // Non-partitioned table, not a historical partition
+            return false;
+        }
+        return metadataCache.isHistoricalPartition(partitionId);
+    }
+
     public long getLocalLogStartOffset() {
         return logTablet.localLogStartOffset();
     }
@@ -942,6 +964,9 @@ public final class Replica {
     public LogAppendInfo putRecordsToLeader(
             KvRecordBatch kvRecords, @Nullable int[] targetColumns, int requiredAcks)
             throws Exception {
+        // Note: Historical partitions are allowed for writes.
+        // Data is written to Fluss first, then tiering service will tier it to the data lake.
+
         return inReadLock(
                 leaderIsrUpdateLock,
                 () -> {
@@ -1169,6 +1194,17 @@ public final class Replica {
             throw new NonPrimaryKeyTableException(
                     "the primary key table not exists for " + tableBucket);
         }
+
+        // Check if this is a historical partition
+        if (isHistoricalPartition()) {
+            throw new org.apache.fluss.exception.HistoricalPartitionException(
+                    String.format(
+                            "Partition %s is a historical partition, lookup should be routed to data lake",
+                            physicalPath.getPartitionName()),
+                    tableBucket.getPartitionId(),
+                    physicalPath.getPartitionName());
+        }
+
         return inReadLock(
                 leaderIsrUpdateLock,
                 () -> {

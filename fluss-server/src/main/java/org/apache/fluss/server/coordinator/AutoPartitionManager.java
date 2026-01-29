@@ -87,6 +87,9 @@ public class AutoPartitionManager implements AutoCloseable {
     private final MetadataManager metadataManager;
     private final Clock clock;
 
+    /** Historical partition manager for datalake-enabled tables. May be null if not initialized. */
+    @Nullable private HistoricalPartitionManager historicalPartitionManager;
+
     private final long periodicInterval;
     private final AtomicBoolean isClosed = new AtomicBoolean(false);
 
@@ -115,7 +118,23 @@ public class AutoPartitionManager implements AutoCloseable {
                 conf,
                 SystemClock.getInstance(),
                 Executors.newScheduledThreadPool(
-                        1, new ExecutorThreadFactory("periodic-auto-partition-manager")));
+                        1, new ExecutorThreadFactory("periodic-auto-partition-manager")),
+                null);
+    }
+
+    public AutoPartitionManager(
+            ServerMetadataCache metadataCache,
+            MetadataManager metadataManager,
+            Configuration conf,
+            HistoricalPartitionManager historicalPartitionManager) {
+        this(
+                metadataCache,
+                metadataManager,
+                conf,
+                SystemClock.getInstance(),
+                Executors.newScheduledThreadPool(
+                        1, new ExecutorThreadFactory("periodic-auto-partition-manager")),
+                historicalPartitionManager);
     }
 
     @VisibleForTesting
@@ -125,11 +144,23 @@ public class AutoPartitionManager implements AutoCloseable {
             Configuration conf,
             Clock clock,
             ScheduledExecutorService periodicExecutor) {
+        this(metadataCache, metadataManager, conf, clock, periodicExecutor, null);
+    }
+
+    @VisibleForTesting
+    AutoPartitionManager(
+            ServerMetadataCache metadataCache,
+            MetadataManager metadataManager,
+            Configuration conf,
+            Clock clock,
+            ScheduledExecutorService periodicExecutor,
+            @Nullable HistoricalPartitionManager historicalPartitionManager) {
         this.metadataCache = metadataCache;
         this.metadataManager = metadataManager;
         this.clock = clock;
         this.periodicExecutor = periodicExecutor;
         this.periodicInterval = conf.get(ConfigOptions.AUTO_PARTITION_CHECK_INTERVAL).toMillis();
+        this.historicalPartitionManager = historicalPartitionManager;
     }
 
     public void initAutoPartitionTables(List<TableInfo> tableInfos) {
@@ -317,7 +348,8 @@ public class AutoPartitionManager implements AutoCloseable {
                     tableInfo.getPartitionKeys(),
                     createPartitionInstant,
                     tableInfo.getTableConfig().getAutoPartitionStrategy(),
-                    currentPartitions);
+                    currentPartitions,
+                    tableInfo.getTableConfig().isDataLakeEnabled());
             createPartitions(tableInfo, createPartitionInstant, currentPartitions);
         }
     }
@@ -413,7 +445,8 @@ public class AutoPartitionManager implements AutoCloseable {
             List<String> partitionKeys,
             Instant currentInstant,
             AutoPartitionStrategy autoPartitionStrategy,
-            NavigableMap<String, Set<String>> currentPartitions) {
+            NavigableMap<String, Set<String>> currentPartitions,
+            boolean isDataLakeEnabled) {
         int numToRetain = autoPartitionStrategy.numToRetain();
         // negative value means not to drop partitions
         if (numToRetain < 0) {
@@ -455,7 +488,41 @@ public class AutoPartitionManager implements AutoCloseable {
 
             while (dropIterator.hasNext()) {
                 String partitionName = dropIterator.next();
-                // drop the partition
+
+                // For datalake-enabled tables, mark partition as historical instead of dropping
+                if (isDataLakeEnabled && historicalPartitionManager != null) {
+                    try {
+                        // Get table ID from metadata
+                        TableRegistration table = metadataManager.getTableRegistration(tablePath);
+                        long tableId = table.tableId;
+
+                        // Mark partition as historical (metadata retained, data cleaned up)
+                        historicalPartitionManager.markPartitionAsHistorical(
+                                tableId, partitionName);
+
+                        // Clean up Fluss data but keep metadata
+                        // TODO: Implement data-only cleanup (keep partition in ZK but delete data)
+                        // For now, we skip the actual partition drop for lake tables
+                        LOG.info(
+                                "Auto partitioning marked partition {} for table [{}] as historical "
+                                        + "(datalake enabled, metadata retained).",
+                                partitionName,
+                                tablePath);
+
+                        // Remove from local cache as it's no longer active
+                        dropIterator.remove();
+                        continue;
+                    } catch (Exception e) {
+                        LOG.error(
+                                "Failed to mark partition {} as historical for table [{}], "
+                                        + "falling back to drop.",
+                                partitionName,
+                                tablePath,
+                                e);
+                    }
+                }
+
+                // Regular drop for non-lake tables or fallback
                 try {
                     metadataManager.dropPartition(
                             tablePath,

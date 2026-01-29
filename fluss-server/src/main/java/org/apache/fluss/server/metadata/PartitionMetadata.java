@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.metadata;
 
+import org.apache.fluss.metadata.PartitionStatus;
+
 import java.util.List;
 
 /** This entity used to describe the table's partition metadata. */
@@ -40,16 +42,27 @@ public class PartitionMetadata {
     private final String partitionName;
     private final long partitionId;
     private final List<BucketMetadata> bucketMetadataList;
+    private final PartitionStatus status;
 
     public PartitionMetadata(
             long tableId,
             String partitionName,
             long partitionId,
             List<BucketMetadata> bucketMetadataList) {
+        this(tableId, partitionName, partitionId, bucketMetadataList, PartitionStatus.ACTIVE);
+    }
+
+    public PartitionMetadata(
+            long tableId,
+            String partitionName,
+            long partitionId,
+            List<BucketMetadata> bucketMetadataList,
+            PartitionStatus status) {
         this.tableId = tableId;
         this.partitionName = partitionName;
         this.partitionId = partitionId;
         this.bucketMetadataList = bucketMetadataList;
+        this.status = status;
     }
 
     public long getTableId() {
@@ -66,5 +79,29 @@ public class PartitionMetadata {
 
     public List<BucketMetadata> getBucketMetadataList() {
         return bucketMetadataList;
+    }
+
+    public PartitionStatus getStatus() {
+        return status;
+    }
+
+    /**
+     * Check if this partition is a historical partition.
+     *
+     * @return true if this is a historical partition
+     */
+    public boolean isHistorical() {
+        return status == PartitionStatus.HISTORICAL;
+    }
+
+    /**
+     * Create a new PartitionMetadata with the given status.
+     *
+     * @param newStatus the new status
+     * @return a new PartitionMetadata with the given status
+     */
+    public PartitionMetadata withStatus(PartitionStatus newStatus) {
+        return new PartitionMetadata(
+                tableId, partitionName, partitionId, bucketMetadataList, newStatus);
     }
 }

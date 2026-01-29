@@ -20,6 +20,7 @@ package org.apache.fluss.server.metadata;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.cluster.TabletServerInfo;
+import org.apache.fluss.metadata.PartitionStatus;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.SchemaGetter;
@@ -69,6 +70,13 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
     private final MetadataManager metadataManager;
 
     private final ServerSchemaCache serverSchemaCache;
+
+    /**
+     * Map of partition ID -> partition status. Used to track historical partitions for
+     * datalake-enabled tables.
+     */
+    @GuardedBy("metadataLock")
+    private final Map<Long, PartitionStatus> partitionStatusMap = new HashMap<>();
 
     public TabletServerMetadataCache(MetadataManager metadataManager) {
         this.serverMetadataSnapshot = ServerMetadataSnapshot.empty();
@@ -437,5 +445,55 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
     @VisibleForTesting
     public ServerSchemaCache getServerSchemaCache() {
         return serverSchemaCache;
+    }
+
+    /**
+     * Get the status of a partition.
+     *
+     * @param partitionId the partition ID
+     * @return the partition status, or ACTIVE if not found
+     */
+    public PartitionStatus getPartitionStatus(long partitionId) {
+        return inLock(
+                metadataLock,
+                () -> partitionStatusMap.getOrDefault(partitionId, PartitionStatus.ACTIVE));
+    }
+
+    /**
+     * Check if a partition is a historical partition.
+     *
+     * @param partitionId the partition ID
+     * @return true if the partition is historical
+     */
+    public boolean isHistoricalPartition(long partitionId) {
+        return getPartitionStatus(partitionId) == PartitionStatus.HISTORICAL;
+    }
+
+    /**
+     * Update the status of a partition.
+     *
+     * @param partitionId the partition ID
+     * @param status the new status
+     */
+    public void updatePartitionStatus(long partitionId, PartitionStatus status) {
+        inLock(
+                metadataLock,
+                () -> {
+                    if (status == PartitionStatus.ACTIVE) {
+                        // Remove from map if active (default state)
+                        partitionStatusMap.remove(partitionId);
+                    } else {
+                        partitionStatusMap.put(partitionId, status);
+                    }
+                });
+    }
+
+    /**
+     * Remove partition status tracking when partition is deleted.
+     *
+     * @param partitionId the partition ID
+     */
+    public void removePartitionStatus(long partitionId) {
+        inLock(metadataLock, () -> partitionStatusMap.remove(partitionId));
     }
 }

@@ -73,4 +73,17 @@ public interface ServerMetadataCache {
         }
         return server;
     }
+
+    /**
+     * Check if a partition is a historical partition.
+     *
+     * <p>Historical partitions are partitions where Fluss data has been cleaned up, but metadata is
+     * retained and lake data is still available.
+     *
+     * @param partitionId the partition ID
+     * @return true if the partition is historical, false otherwise
+     */
+    default boolean isHistoricalPartition(long partitionId) {
+        return false;
+    }
 }

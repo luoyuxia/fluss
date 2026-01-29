@@ -29,6 +29,7 @@ import org.apache.fluss.exception.DeletionDisabledException;
 import org.apache.fluss.exception.DuplicateSequenceException;
 import org.apache.fluss.exception.FencedLeaderEpochException;
 import org.apache.fluss.exception.FencedTieringEpochException;
+import org.apache.fluss.exception.HistoricalPartitionException;
 import org.apache.fluss.exception.IneligibleReplicaException;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
@@ -240,7 +241,11 @@ public enum Errors {
     SEVER_TAG_NOT_EXIST_EXCEPTION(60, "The server tag not exist.", ServerTagNotExistException::new),
     REBALANCE_FAILURE_EXCEPTION(61, "The rebalance task failure.", RebalanceFailureException::new),
     NO_REBALANCE_IN_PROGRESS_EXCEPTION(
-            62, "No rebalance task in progress.", NoRebalanceInProgressException::new);
+            62, "No rebalance task in progress.", NoRebalanceInProgressException::new),
+    HISTORICAL_PARTITION_EXCEPTION(
+            63,
+            "The partition is a historical partition. Data has been tiered to the data lake.",
+            HistoricalPartitionException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

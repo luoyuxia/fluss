@@ -17,6 +17,10 @@
 
 package org.apache.fluss.flink.tiering.source;
 
+import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
+import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
+import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
+import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.table.Table;
@@ -34,16 +38,10 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.CloseableIterator;
-
-import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
-import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
-import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
-import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -499,13 +497,20 @@ public class TieringSplitReader<WriteResult>
 
     private TableBucketWriteResultWithSplitIds forSnapshotSplitRecords(
             TableBucket bucket, CloseableIterator<RecordAndPos> recordIterator) throws IOException {
+        // Check if there's data before creating writer
+        if (!recordIterator.hasNext()) {
+            recordIterator.close();
+            return emptyTableBucketWriteResultWithSplitIds();
+        }
         LakeWriter<WriteResult> lakeWriter =
                 getOrCreateLakeWriter(
                         bucket, checkNotNull(currentSnapshotSplit).getPartitionName());
-        while (recordIterator.hasNext()) {
+        // Use do-while since we already checked hasNext() above
+        do {
             ScanRecord scanRecord = recordIterator.next().record();
             lakeWriter.write(scanRecord);
-        }
+        } while (recordIterator.hasNext());
+
         recordIterator.close();
         return emptyTableBucketWriteResultWithSplitIds();
     }
