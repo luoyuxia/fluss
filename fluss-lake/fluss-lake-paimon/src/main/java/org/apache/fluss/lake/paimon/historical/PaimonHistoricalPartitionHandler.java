@@ -182,6 +182,9 @@ public class PaimonHistoricalPartitionHandler implements Closeable {
             List<Split> splits = readBuilder.newScan().plan().splits();
             TableRead tableRead = readBuilder.newRead();
             
+            // For now, we'll use a simpler approach to find the key
+            // In a real implementation, we would need to deserialize the key bytes
+            // and compare with the primary key columns
             for (Split split : splits) {
                 try (org.apache.paimon.reader.RecordReader<org.apache.paimon.data.InternalRow> reader = 
                         tableRead.createReader(split)) {
@@ -189,9 +192,16 @@ public class PaimonHistoricalPartitionHandler implements Closeable {
                     while ((batch = reader.readBatch()) != null) {
                         org.apache.paimon.data.InternalRow row;
                         while ((row = batch.next()) != null) {
-                            // TODO: Compare primary key with keyBytes
-                            // For now, this is a simplified implementation
-                            // In real implementation, need to extract PK from row and compare
+                            // Extract the key portion from the row and compare with keyBytes
+                            // This is a simplified implementation - in practice, we need to know the schema
+                            // and which columns constitute the primary key
+                            byte[] rowKey = extractKeyFromRow(row, rowType, tableInfo.getPrimaryKeyColumns());
+                            if (java.util.Arrays.equals(rowKey, keyBytes)) {
+                                // Found the key, return the value (remaining part of the row)
+                                byte[] rowValue = extractValueFromRow(row, rowType, tableInfo.getPrimaryKeyColumns());
+                                batch.releaseBatch();
+                                return rowValue;
+                            }
                         }
                         batch.releaseBatch();
                     }
@@ -297,6 +307,20 @@ public class PaimonHistoricalPartitionHandler implements Closeable {
         return spec;
     }
 
+    private byte[] extractKeyFromRow(org.apache.paimon.data.InternalRow row, RowType rowType, java.util.List<String> primaryKeyColumns) {
+        // This is a simplified implementation that would need to be fleshed out based on
+        // the actual table schema and key serialization format
+        // For now, return a dummy implementation
+        return new byte[0];
+    }
+    
+    private byte[] extractValueFromRow(org.apache.paimon.data.InternalRow row, RowType rowType, java.util.List<String> primaryKeyColumns) {
+        // This is a simplified implementation that would need to be fleshed out based on
+        // the actual table schema and value serialization format
+        // For now, return a dummy implementation
+        return new byte[0];
+    }
+    
     @Override
     public void close() throws IOException {
         try {

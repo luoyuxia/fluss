@@ -531,7 +531,8 @@ public class ServerRpcMessageUtils {
                 new PbPartitionMetadata()
                         .setTableId(partitionMetadata.getTableId())
                         .setPartitionId(partitionMetadata.getPartitionId())
-                        .setPartitionName(partitionMetadata.getPartitionName());
+                        .setPartitionName(partitionMetadata.getPartitionName())
+                        .setStatus(partitionMetadata.getStatus().getValue());
         pbPartitionMetadata.addAllBucketMetadatas(
                 toPbBucketMetadata(partitionMetadata.getBucketMetadataList()));
         return pbPartitionMetadata;
@@ -600,7 +601,8 @@ public class ServerRpcMessageUtils {
                 pbPartitionMetadata.getPartitionId(),
                 pbPartitionMetadata.getBucketMetadatasList().stream()
                         .map(ServerRpcMessageUtils::toBucketMetadata)
-                        .collect(Collectors.toList()));
+                        .collect(Collectors.toList()),
+                org.apache.fluss.metadata.PartitionStatus.fromValue((byte) pbPartitionMetadata.getStatus()));
     }
 
     public static NotifyLeaderAndIsrRequest makeNotifyLeaderAndIsrRequest(

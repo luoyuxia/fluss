@@ -52,6 +52,8 @@ import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperUtils;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
+import org.apache.fluss.server.coordinator.HistoricalPartitionManager;
+import org.apache.fluss.server.replica.changelog.PkTableChangelogManager;
 import org.apache.fluss.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
 import org.apache.fluss.utils.ExceptionUtils;
 import org.apache.fluss.utils.ExecutorUtils;
@@ -148,6 +150,9 @@ public class TabletServer extends ServerBase {
 
     @GuardedBy("lock")
     private @Nullable RemoteLogManager remoteLogManager = null;
+
+    @GuardedBy("lock")
+    private @Nullable HistoricalPartitionRemoteUploadManager historicalPartitionRemoteUploadManager = null;
 
     @GuardedBy("lock")
     private Scheduler scheduler;
@@ -275,6 +280,12 @@ public class TabletServer extends ServerBase {
                             clock,
                             ioExecutor);
             replicaManager.startup();
+
+            // Initialize the historical partition remote upload manager
+            this.historicalPartitionRemoteUploadManager =
+                    new HistoricalPartitionRemoteUploadManager(
+                            replicaManager, replicaManager.getRemoteLogManager(), conf);
+            historicalPartitionRemoteUploadManager.start();
 
             this.tabletService =
                     new TabletService(
@@ -444,6 +455,10 @@ public class TabletServer extends ServerBase {
                     replicaManager.shutdown();
                 }
 
+                if (historicalPartitionRemoteUploadManager != null) {
+                    historicalPartitionRemoteUploadManager.close();
+                }
+
                 if (authorizer != null) {
                     authorizer.close();
                 }
@@ -551,6 +566,11 @@ public class TabletServer extends ServerBase {
     @VisibleForTesting
     public ReplicaManager getReplicaManager() {
         return replicaManager;
+    }
+
+    @VisibleForTesting
+    public PkTableChangelogManager getPkTableChangelogManager() {
+        return replicaManager.getPkTableChangelogManager();
     }
 
     @VisibleForTesting

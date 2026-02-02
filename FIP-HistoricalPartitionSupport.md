@@ -1,560 +1,131 @@
-# FIP-XXX: Historical Partition Support for Fluss Datalake-Enabled Tables
+# FIP: Improve Historical Partition Support for Fluss Auto-Partitioned Tables with integrating with DataLake
 
 ## Motivation
-
-Currently, for Fluss auto-partitioned tables with lake tiering (e.g., Paimon), when Fluss partitions expire, several issues arise:
+Currently, for Fluss auto-partitioned tables with data lake (e.g., Paimon), when Fluss partitions expire but still exist in the data lake, several issues arise:
 
 ### Problem 1: Data Loss for Writes to Expired Partitions
-
 When data arrives late and is written to an already-expired partition:
 - The data is written to Fluss successfully
-- Fluss automatically cleans up the expired partition
+- Fluss automatically cleans up the partition data but retains the partition metadata
 - Although the partition exists in Paimon, the data cannot be tiered to Paimon
 - This results in silent data loss
 
 ### Problem 2: Point Query Inconsistency for Primary Key Tables
-
 For primary key tables with auto-partitioning:
 - Point queries (lookup) only query data from Fluss cluster
 - When a partition expires on Fluss, even though the partition data exists in Paimon, point queries cannot find it
 - Users see inconsistent results between point queries and batch reads
 - This is extremely confusing for users who expect the data to be available
 
-### Problem 3: Union Read Incomplete Data
-
-For union read scenarios:
-- Historical partitions that have been tiered to Paimon but expired on Fluss are not accessible
-- Users cannot query the full history of their data through Fluss
-
-### Proposed Solution
+### Problem 3: ZooKeeper Pressure from Historical Partition Metadata
+Maintaining all historical partition bucket's ZooKeeper nodes for extended periods creates significant pressure on ZooKeeper:
+- Each historical partition requires dedicated ZooKeeper metadata nodes
+- As the number of historical partitions grows, ZooKeeper becomes a bottleneck
+- Long-term retention of historical partition metadata increases operational overhead
+- This approach is not scalable for systems with many auto-partitioned tables
 
 This FIP proposes to make Paimon historical partitions truly serve as the data source for Fluss auto-partitioned tables after the corresponding Fluss partitions expire. Specifically:
-
-1. **Late data writes** to expired partitions should still be tiered to Paimon
-2. **Union read** should include historical partitions from Paimon
-3. **Point queries** for PK tables should fallback to Paimon for expired partitions
+- Writes to expired partitions by auto partition mechanism should still be tiered to data lake (e.g., Paimon)
+- Point queries for PK tables should fallback to Paimon for expired partitions
+- Address ZooKeeper pressure by optimizing historical partition metadata retention strategies
 
 ## Public Interfaces
 
-### 1. Automatic Enablement (No Explicit Configuration)
-
-Historical partition support is **automatically enabled** when both conditions are met:
-- `datalake.enabled = true` (lake table)
-- Table has auto-partitioning enabled
-
-No explicit configuration is needed. The partition lifecycle automatically follows the data lake's expiration policy.
-
-```sql
--- Example: This table automatically gets historical partition support
-CREATE TABLE orders (
-    order_id BIGINT,
-    order_time TIMESTAMP,
-    ...
-    PRIMARY KEY (order_id) NOT ENFORCED
-) PARTITIONED BY (DATE_FORMAT(order_time, 'yyyy-MM-dd'))
-WITH (
-    'datalake.enabled' = 'true',
-    'table.auto-partition.enabled' = 'true',
-    'table.auto-partition.time-interval' = '1 d'
-);
-
--- Partition lifecycle:
--- 1. Fluss partition expires (based on Fluss auto-partition config)
---    → metadata retained, Fluss data cleaned
--- 2. Paimon partition expires (based on Paimon partition.expiration-time)
---    → metadata cleaned, lake data cleaned
-```
-
-### 2. New Metadata Structure
-
-A new metadata structure to track historical partitions:
-
-```java
-public class HistoricalPartitionInfo {
-    private final String partitionName;
-    private final long flussExpireTimestamp;    // When the partition expired in Fluss
-    private final long lakeSnapshotId;          // Latest lake snapshot containing this partition
-}
-```
-
-**Lifecycle**: When Paimon partition expires (controlled by Paimon's `partition.expiration-time`), Fluss periodically syncs with Paimon and removes the corresponding `HistoricalPartitionInfo`.
-
-### 3. Extended Client API
-
-```java
-public interface Table {
-    // Existing method
-    List<PartitionInfo> listPartitions();
-    
-    // New method to include historical partitions from lake
-    List<PartitionInfo> listPartitions(boolean includeHistorical);
-}
-```
-
-### 5. Lake Integration (Paimon-Specific)
-
-Currently, only Paimon supports partition TTL (`partition.expiration-time`). We hardcode Paimon's TTL detection logic instead of abstracting it into a generic interface.
-
-**Rationale**: Avoid over-engineering when there's only one implementation. If other lake formats (Iceberg, Hudi) need support in the future, we can introduce abstraction then.
-
-```java
-/**
- * Paimon-specific historical partition handler.
- * Directly uses Paimon APIs for partition expiration detection.
- */
-public class PaimonHistoricalPartitionHandler {
-    
-    private final Table paimonTable;
-    
-    /**
-     * Check if a partition has expired in Paimon.
-     * Uses Paimon's partition.expiration-time configuration.
-     */
-    public boolean isPartitionExpiredInPaimon(String partitionName) {
-        // Directly use Paimon's partition expiration logic
-        // No abstraction needed for now
-    }
-    
-    /**
-     * Lookup a key from Paimon for changelog generation.
-     */
-    @Nullable
-    public InternalRow lookup(String partitionName, int bucket, InternalRow key) {
-        // Direct Paimon lookup
-    }
-    
-    /**
-     * Scan historical partition data from Paimon.
-     */
-    public CloseableIterator<InternalRow> scan(String partitionName, int bucket) {
-        // Direct Paimon scan
-    }
-}
-```
-
-**Future Extensibility**: If Iceberg/Hudi support is needed later, extract a `LakeHistoricalPartitionHandler` interface at that time.
+todo: Introduce a new lookup interface to lookup row from data-lake via key
 
 ## Proposed Changes
 
-### Phase 1: Historical Partition Metadata Management
+## Basic Approach
 
-#### 1.1 Partition Expiration Handling
+The core idea of this FIP is to introduce a new `DATALAKE_HISTORICAL` partition state that enables seamless integration between Fluss and its connected data lake (e.g., Paimon).
+When partitions expire in Fluss, they transition to the `DATALAKE_HISTORICAL` state with data deleted in Fluss, allowing the data lake to serve as the authoritative source for historical partition data. This approach addresses three critical issues:
 
-When a Fluss partition expires:
+1. **Data Loss Prevention**: Prevents silent data loss when writes occur to partitions that have expired in Fluss but still exist in the lake
+2. **Query Consistency**: Ensures consistent query results by routing operations targeting expired partitions to the data lake where the data actually resides
+3. **ZooKeeper Scalability**: Reduces ZooKeeper pressure by implementing efficient metadata management for historical partitions, with configurable retention policies to balance between operational needs and resource utilization
 
-```
-Before (Current):
-┌─────────────────┐
-│  Fluss Partition │ ──expire──> Partition Deleted (metadata + data)
-│     (active)     │
-└─────────────────┘
+The solution maintains partition metadata in Fluss while routing operations to the data lake for historical partitions, ensuring seamless user experience while preserving data integrity. The system checks both Fluss and data lake TTL configurations before fully deleting partitions.
 
-After (Proposed):
-┌─────────────────┐              ┌──────────────────────┐
-│  Fluss Partition │ ──expire──> │  Historical Partition │
-│     (active)     │             │   metadata: retained  │
-└─────────────────┘              │   data: cleaned up    │
-                                 └──────────────────────┘
-```
 
-**Key Points**:
-- **Metadata retained**: Partition metadata is kept so we know this partition exists as a historical partition
-- **Data cleaned up**: Fluss data (logs/KV) is cleaned up as before to free storage
-- **Lake data available**: Data that was already tiered to Paimon remains accessible
+### 1. Coordinator Server Modifications
 
-#### 1.2 Historical Partition Data Lifecycle
+#### Partition Lifecycle Management
+The coordinator continuously checks whether partitions on Fluss should be automatically TTL'd according to Fluss's own partition TTL rules. If a partition should be TTL'd but it's a data lake enabled table, the system checks whether the partition should be TTL'd on the data lake side:
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Historical Partition Lifecycle                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  Fluss Partition    expire     Historical Partition    Paimon expires   │
-│    (active)      ──────────>    (metadata only)      ───────────────>   │
-│  - has data                    - metadata retained     Fully Cleaned    │
-│  - being tiered                - Fluss data cleaned    - metadata gone  │
-│                                - lake data available   - lake data gone │
-│                                - can receive late data                   │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+- For Paimon, the system uses the user-defined partition TTL rules (e.g., `partition.expiration-time` = '7 d', `partition.expiration-check-interval` = '1 d', `partition.timestamp-formatter` = 'yyyyMMdd') to determine if it should be TTL'd. Note that Iceberg does not support this natively, so in the future we may consider introducing a procedure to force partition TTL.
 
-#### 1.3 Historical Partition Data Cleanup
+- If the partition should be TTL'd on the data lake side, the corresponding partition is directly deleted and its data is removed from ZooKeeper as well.
 
-Historical partitions can still receive late data, which will be tiered to Paimon. To prevent unbounded data growth, the cleanup is governed by **Paimon's partition expiration policy**:
+- Otherwise, the partition state is set to `DATALAKE_HISTORICAL` and the corresponding TabletServer is notified, allowing the TabletServer to clean up the local data.
 
-- Paimon's `partition.expiration-time` controls how long partition data is retained in the lake
-- When Paimon expires a partition, Fluss detects this and cleans up the corresponding historical partition metadata
-- This ensures both Fluss metadata and Paimon data are cleaned up in a coordinated manner
+This approach introduces a new `DATALAKE_HISTORICAL` partition state alongside the existing `ACTIVE` state. When partitions expire in Fluss but still exist in the data lake (Paimon), the partition data in Fluss is cleaned up but the partition metadata remains in Fluss and it transitions to `DATALAKE_HISTORICAL` state. The system checks the data lake's TTL configuration and only fully deletes partitions when they have expired in both Fluss and the data lake. This ensures the data lake serves as the authoritative source for historical partition data.
 
-#### 1.4 Coordinator Server Changes
+Additionally, to address ZooKeeper pressure concerns from maintaining historical partition metadata, the system implements configurable retention policies for DATALAKE_HISTORICAL partitions in ZooKeeper. These policies include:
 
-- Maintain a `HistoricalPartitionManager` to track expired partitions with lake data
-- Store historical partition metadata in Zookeeper/metadata store
-- Provide APIs for querying historical partition information
-- **Periodically sync with Paimon** to detect expired partitions in lake and clean up corresponding Fluss metadata
+- Automatic cleanup of historical partition metadata after configurable time periods
+- Configurable thresholds for the number of historical partitions maintained in ZooKeeper
+- Lazy loading mechanisms to temporarily load historical partition metadata when needed
+- Efficient aggregation of historical partition metadata to reduce the total number of ZooKeeper nodes required
 
-### Phase 2: Write Path Enhancement
+These mechanisms allow administrators to tune the balance between operational requirements and resource utilization based on their specific deployment requirements.
 
-#### 2.1 Late Data Write Handling (Log Tables)
 
-For log tables (append-only), late data writes go through the normal Fluss write path:
+-- todo: may update the state to zk, and mark the state in update metadata request
 
-```
-Write Request (partition=dt-2024-01-01, data)
-           │
-           ▼
-┌──────────────────────────┐
-│  Check Partition Status   │
-└──────────────────────────┘
-           │
-           ├── Active Partition ──────────> Normal Write Path
-           │
-           └── Historical Partition ─────────> Normal Write Path
-                                                    │
-                                                    ▼
-                                           ┌─────────────────┐
-                                           │ Write to Fluss  │
-                                           │ (same as normal)│
-                                           └─────────────────┘
-                                                    │
-                                                    ▼
-                                           ┌─────────────────┐
-                                           │ Tiering Service │
-                                           │ writes to Paimon│
-                                           └─────────────────┘
-```
+### 2. Tablet Server Modifications
 
-**Key Design Decision**: Historical partitions receive writes through the same path as active partitions. The tiering service then handles tiering the data to Paimon. This simplifies the implementation and ensures consistency.
+#### 2.1 Log Table Handling
+For log tables (append-only tables without primary keys), when a partition is marked as DATALAKE_HISTORICAL:
+- **Notification Handling**: The Tablet Server receives notification that the partition has been marked as DATALAKE_HISTORICAL
+- **Log TTL Logic**: If the corresponding log's endOffset has already been synced to the data lake, the Tablet Server can directly TTL the corresponding log segments
+- **Low-Frequency Write Handling**: If new data is subsequently written to this partition, the data is written normally, but considering the lower frequency of data writes, if the log's endOffset has been synced to the data lake, the Tablet Server can also TTL the corresponding log segments
+- **Change Log Generation**: To handle PUT requests and generate complete change logs, the system needs to probe data from Paimon to generate -U data, and then generate +U change logs
+- **Tiering**: The tiering service continues to move log segments from Fluss to the data lake (Paimon)
+- **Query Operations**: Both streaming and batch queries can access data from historical partitions through the data lake
+- **Segment Management**: Historical partitions with low update frequency will have their inactive log segments periodically uploaded to remote storage and rely on remote TTL for cleanup
 
-#### 2.2 Late Data Write Handling (Primary Key Tables)
-
-For PK tables, writes to historical partitions follow the same path as active partitions:
-
-```
-PK Table Write (partition=dt-2024-01-01, key=K, value=V)
-           │
-           ▼
-┌──────────────────────────┐
-│  Check Partition Status   │
-└──────────────────────────┘
-           │
-           ├── Active Partition ──────> Normal Write Path (Fluss KV + Log)
-           │
-           └── Historical Partition ───> Normal Write Path (Fluss KV + Log)
-                     │
-                     ▼
-           ┌─────────────────────────┐
-           │  Tiering Service         │
-           │  - Reads from Fluss log  │
-           │  - Writes to Paimon      │
-           │  - Changelog already     │
-           │    generated by Fluss KV │
-           └─────────────────────────┘
-```
-
-**Key Design Decision**: For historical partitions, writes go through the normal Fluss KV path:
-1. Fluss KV generates changelog by looking up existing values in Fluss KV store
-2. Data is written to Fluss log
-3. Tiering service then writes the data to Paimon
-
-This approach:
-- Avoids the complexity of querying Paimon for changelog generation
-- Reuses existing write path infrastructure
-- Maintains consistency with active partition behavior
-
-**Note**: The Fluss KV store for historical partitions may be empty initially (data cleaned up). In this case:
-- All writes are treated as INSERTs initially
-- This is acceptable because the tiering service will reconcile with existing Paimon data
-
-#### 2.2.1 Historical Partition Lookup Performance
-
-Considering that **point queries to historical partitions are relatively infrequent**, we can directly query data from Paimon. The latency (50-200ms) is acceptable for this use case.
-
-**Optional Optimizations** (can be implemented incrementally based on actual usage patterns):
-
-1. **LRU Cache**: Cache recently accessed keys in Tablet Server memory to speed up repeated lookups
-2. **Preload / Warm-up**: Preload hot keys when partition transitions from active to historical
-3. **Paimon File Index**: Enable bloom filter for PK columns to speed up key existence check
-
-```properties
-# Optional configuration (future optimization)
-fluss.historical.cache.enabled = false  # Enable LRU cache
-fluss.historical.cache.size = 256mb
-fluss.historical.warmup.enabled = false # Enable preload
-```
-
-#### 2.3 Tablet Server Changes
-
-- Accept writes to historical partitions through the normal write path
-- No special routing needed - writes go through standard Fluss KV/Log path
-- Tiering service handles writing data to Paimon (same as active partitions)
-
-### Phase 3: Read Path Enhancement
-
-#### Design Principle: Server-Side Paimon Abstraction
-
-**All Paimon lookup/read operations are encapsulated within Fluss cluster**. Clients (Flink connector, Java client, etc.) do not need to know about Paimon or implement any fallback logic.
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Client View (Simple)                           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│   Flink Connector / Java Client                                          │
-│         │                                                                │
-│         │  lookup(partition, key) / scan(partition)                     │
-│         ▼                                                                │
-│   ┌─────────────────┐                                                   │
-│   │  Fluss Cluster  │  ← Single entry point, transparent to clients     │
-│   └─────────────────┘                                                   │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    Server View (Handles Complexity)                      │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│   Fluss Tablet Server                                                    │
-│         │                                                                │
-│         ├── Active Partition ────────> Fluss KV / Log                   │
-│         │                                                                │
-│         └── Historical Partition ────> Paimon (encapsulated)            │
-│                                                                          │
-│   Benefits:                                                              │
-│   • Clients stay simple, no Paimon dependency                           │
-│   • Consistent behavior across all clients                               │
-│   • Server-side caching and optimization                                 │
-│   • Easier to evolve Paimon integration                                  │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-#### 3.1 Union Read Enhancement
-
-```
-Union Read Query
-       │
-       ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Partition Planning                     │
-├─────────────────────────────────────────────────────────┤
-│  Active Partitions    │  Historical Partitions           │
-│  (from Fluss)         │  (from Paimon)                   │
-│                       │                                   │
-│  ┌─────────────────┐  │  ┌─────────────────────────────┐ │
-│  │ Fluss Log +      │  │  │ Paimon Snapshot (full data) │ │
-│  │ Paimon Snapshot  │  │  └─────────────────────────────┘ │
-│  └─────────────────┘  │                                   │
-└─────────────────────────────────────────────────────────┘
-```
-
-#### 3.2 Point Query Enhancement for PK Tables
-
-The Fluss server handles the routing internally - clients simply call `lookup(partition, key)`:
-
-```
-Client: lookup(partition=dt-2024-01-01, key=xxx)
-           │
-           ▼
-┌──────────────────────────────────────────────────────────────┐
-│              Fluss Tablet Server (Internal Routing)          │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│   Check Partition Status                                     │
-│         │                                                    │
-│         ├── Active Partition                                │
-│         │         │                                          │
-│         │         ▼                                          │
-│         │   ┌─────────────────┐                              │
-│         │   │ Query Fluss KV │                              │
-│         │   └─────────────────┘                              │
-│         │                                                    │
-│         └── Historical Partition                             │
-│                   │                                          │
-│                   ▼                                          │
-│             ┌────────────────────────────────────┐          │
-│             │ Query Paimon (server-side)     │          │
-│             │ - Use file index if available  │          │
-│             │ - Or bucket scan               │          │
-│             │ - Results cached on server     │          │
-│             └────────────────────────────────────┘          │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-           │
-           ▼
-    Return result to client (transparent)
-```
-
-#### 3.3 Flink Connector Changes
-
-Since Paimon fallback is handled server-side, Flink connector changes are minimal:
-
-- `FlinkLookupFunction`: No changes needed - server handles historical partition lookup
-- `FlinkTableSource`: No changes needed for union read - server returns combined results
-- Partition metadata APIs may need to include historical partition info for planning
-
-### Phase 4: Tiering Service Enhancement
-
-#### 4.1 Historical Partition Tiering
-
-- Support tiering data directly to Paimon for expired partitions
-- Ensure data consistency between late writes and existing Paimon data
-- Handle concurrent writes to the same historical partition
+### 2.2. Primary Key Table Handling
+For primary-key tables with KV full data + change log, when a partition is marked as DATALAKE_HISTORICAL:
+- **Notification Handling**: The Tablet Server receives notification that the partition has been marked as DATALAKE_HISTORICAL
+- **Log TTL Logic**: If the corresponding log's endOffset has already been synced to the data lake, the Tablet Server can directly TTL the corresponding log segments
+- **Change Log Generation**: If new data is subsequently written to this partition, the data is written normally，to handle PUT/DELETE requests and generate complete change logs, the system needs to probe data from Paimon to generate -U data, and then generate +U change logs
+- **Memory State Maintenance**: The system maintains this part of data in memory because subsequent PUT requests may not be in Paimon but in this change log
+- **Tiering Service Coordination**: When the tiering service syncs this part of data, the system needs to remove the corresponding offset data from memory
+- **Recovery Process**: During recovery, apply change logs starting from the latest synced offset to Paimon until reaching the latest change log to rebuild the part of kv data in memory
+- **Query Routing**: When point queries target historical partitions, route them to the data lake to maintain consistency
 
 ## Compatibility, Deprecation, and Migration Plan
 
 ### Backward Compatibility
+- Existing applications will continue to work without changes
+- Only when partitions become historical will the new behavior take effect, and still no any backward compatibility issue
+- All existing APIs remain compatible
 
-1. **Automatic enablement**: Historical partition support is automatically enabled for tables with `datalake.enabled = true` AND auto-partitioning. No configuration changes needed.
-2. **Metadata Compatibility**: New historical partition metadata is additive; old clients will ignore it
-3. **Wire Protocol**: New APIs are additive; existing clients continue to work
-
-### Migration Plan
-
-#### For Existing Tables
-
-Existing datalake-enabled auto-partitioned tables will automatically get historical partition support after cluster upgrade. No manual migration needed.
-
-#### For New Tables
-
-Historical partition support is enabled by default for new tables created with:
-- `datalake.enabled = true`
-- Auto-partitioning enabled
-
-### Deprecation
-
-No existing features are deprecated.
+### Migration Strategy
+- No manual migration required
+- Existing data in expired partitions will be preserved in Paimon
+- New writes to historical partitions will follow the new behavior automatically
+- Applications can gradually adapt to the improved consistency model
 
 ## Test Plan
 
-### Unit Tests
-
-1. **HistoricalPartitionManager Tests**
-   - Test partition expiration with lake data tracking
-   - Test historical partition metadata persistence and recovery
-   - Test metadata cleanup when Paimon partition expires (sync with lake)
-
-2. **Write Path Tests**
-   - Test late data writes to expired partitions
-   - Test concurrent writes to historical partitions
-   - Test tiering of historical partition data
-
-3. **Read Path Tests**
-   - Test union read including historical partitions
-   - Test point query fallback to Paimon
-   - Test partition pruning with historical partitions
-
 ### Integration Tests
+- End-to-end tests for write operations to historical partitions
+- Point query routing from Fluss to Paimon for historical partitions
 
-1. **End-to-End Tiering Tests**
-   - Create auto-partitioned table with Paimon tiering
-   - Write data, let partitions expire
-   - Write late data to expired partitions
-   - Verify data is tiered to Paimon correctly
+## Rejected Alternatives
 
-2. **Query Tests**
-   - Verify union read returns data from both Fluss and Paimon
-   - Verify point queries return correct results for expired partitions
-   - Verify Flink SQL queries work correctly with historical partitions
+### Alternative 1: Immediate Partition Deletion
+写老分区就直接 reject 写入，但是对于 lookup，如果对应的分区不存在，且是湖表，尝试直接在 client 侧进行 lookup
 
-3. **Failure Recovery Tests**
-   - Test coordinator failover with historical partition metadata
-   - Test tablet server failover during historical partition writes
-   - Test tiering service recovery for historical partitions
 
-### Performance Tests
+湖表原地升级：
+- 非分区表
+    - 非主键表，直接创建对应的 replica 即可
+    - 主键表，需要 scan 出底层的数据，然后 apply 到 rocksdb
 
-1. **Lookup Latency**
-   - Measure point query latency for expired partitions (Paimon fallback)
-   - Compare with active partition lookup latency
-
-2. **Write Throughput**
-   - Measure throughput for late data writes to expired partitions
-   - Ensure no significant impact on active partition writes
-
-### Compatibility Tests
-
-1. **Rolling Upgrade Test**
-   - Upgrade cluster from old version to new version
-   - Verify existing tables continue to work
-   - Verify new features work after enabling
-
-2. **Client Compatibility Test**
-   - Test old clients with new server
-   - Test new clients with old server
-
-## Implementation Status
-
-### Core Framework (Completed)
-
-The following components have been implemented as part of the core framework:
-
-1. **PartitionStatus Enum** (`fluss-common/src/main/java/org/apache/fluss/metadata/PartitionStatus.java`)
-   - Defines `ACTIVE` and `HISTORICAL` partition states
-   - Used to track partition lifecycle
-
-2. **HistoricalPartitionException** (`fluss-common/src/main/java/org/apache/fluss/exception/HistoricalPartitionException.java`)
-   - Runtime exception thrown when operations target historical partitions
-   - Contains partition ID and name for routing to lake
-
-3. **PartitionMetadata Enhancement** (`fluss-server/src/main/java/org/apache/fluss/server/metadata/PartitionMetadata.java`)
-   - Added `PartitionStatus` field to track partition state
-   - Added `isHistorical()` and `withStatus()` methods
-
-4. **TabletServerMetadataCache Enhancement** (`fluss-server/src/main/java/org/apache/fluss/server/metadata/TabletServerMetadataCache.java`)
-   - Added partition status tracking map
-   - Added `isHistoricalPartition()`, `getPartitionStatus()`, `updatePartitionStatus()` methods
-
-5. **ServerMetadataCache Interface** (`fluss-server/src/main/java/org/apache/fluss/server/metadata/ServerMetadataCache.java`)
-   - Added `isHistoricalPartition()` method with default implementation
-
-6. **HistoricalPartitionManager** (`fluss-server/src/main/java/org/apache/fluss/server/coordinator/HistoricalPartitionManager.java`)
-   - Manager for tracking historical partitions on Coordinator
-   - Handles partition status transitions and lake sync
-
-7. **PaimonHistoricalPartitionHandler** (`fluss-lake/fluss-lake-paimon/src/main/java/org/apache/fluss/lake/paimon/historical/PaimonHistoricalPartitionHandler.java`)
-   - Paimon-specific handler for historical partition operations
-   - Provides lookup, scan, and partition expiration check methods
-
-8. **Replica Read/Write Path** (`fluss-server/src/main/java/org/apache/fluss/server/replica/Replica.java`)
-   - Added `isHistoricalPartition()` method to check partition status
-   - Modified `lookups()` to throw `HistoricalPartitionException` for historical partitions
-   - Modified `putRecordsToLeader()` to throw `HistoricalPartitionException` for historical partitions
-
-9. **AutoPartitionManager Integration** (`fluss-server/src/main/java/org/apache/fluss/server/coordinator/AutoPartitionManager.java`)
-   - Modified to mark partitions as historical for lake tables instead of dropping
-
-10. **Error Protocol** (`fluss-rpc/src/main/java/org/apache/fluss/rpc/protocol/Errors.java`)
-    - Added `HISTORICAL_PARTITION_EXCEPTION` error code (63) for client-side handling
-
-11. **Lake Handler Interface** (`fluss-server/src/main/java/org/apache/fluss/server/lake/`)
-    - Created `LakeHistoricalPartitionReader` interface for historical partition lookups
-    - Created `LakeHistoricalPartitionReaderFactory` interface for reader creation
-
-### Remaining Work
-
-1. **Partition Status Sync**: Implement coordinator-to-tablet-server partition status synchronization via UpdateMetadataRequest
-2. **Lake Handler Implementation**: Implement `PaimonHistoricalPartitionReader` that uses `PaimonHistoricalPartitionHandler`
-3. **Client-Side Handling**: Handle `HISTORICAL_PARTITION_EXCEPTION` in Flink connector to route lookups to lake
-4. **Lake Expiration Sync**: Implement periodic sync with Paimon to detect expired partitions
-5. **Integration Tests**: End-to-end tests for the feature
-
-### Implementation Notes
-
-**Current Status (2026-01-29)**:
-- Core framework complete: exception handling, error codes, partition status tracking
-- Write path: Historical partitions allow writes through normal Fluss path, tiering service handles Paimon
-- Read path: Lookups to historical partitions throw `HistoricalPartitionException` (error code 63)
-- FIP document updated to reflect simplified write path design
-
-**Key Files Modified**:
-- `fluss-common/.../exception/HistoricalPartitionException.java` - extends ApiException
-- `fluss-common/.../metadata/PartitionStatus.java` - ACTIVE/HISTORICAL enum
-- `fluss-rpc/.../protocol/Errors.java` - added HISTORICAL_PARTITION_EXCEPTION (63)
-- `fluss-server/.../replica/Replica.java` - isHistoricalPartition(), lookups() throws exception
-- `fluss-server/.../metadata/TabletServerMetadataCache.java` - partition status tracking
-- `fluss-server/.../coordinator/HistoricalPartitionManager.java` - coordinator-side management
-- `fluss-server/.../coordinator/AutoPartitionManager.java` - mark as historical instead of drop
-- `fluss-server/.../lake/LakeHistoricalPartitionReader.java` - interface for lake lookups
-- `fluss-lake/.../historical/PaimonHistoricalPartitionHandler.java` - Paimon-specific handler
+- 分区表
+    - 非主键表，直接创建对应的 partition +  replica 即可
+    - 主键表
+        - 支持所有类型分区，需要 scan 所有的 partition & apply 数据，成本会比较高
+        - 只支持时间分区（partition.expiration-strategy）：，只 scan 最新partition & apply 数据成本会比较高，历史分区不支持写入

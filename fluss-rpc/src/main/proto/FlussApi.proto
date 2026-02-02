@@ -678,6 +678,8 @@ message PbPartitionMetadata {
   required string partition_name = 2;
   required int64 partition_id = 3;
   repeated PbBucketMetadata bucket_metadata = 4;
+  // the status of the partition (0=ACTIVE, 1=HISTORICAL)
+  optional int32 status = 5 [default = 0];
 }
 
 message PbBucketMetadata {

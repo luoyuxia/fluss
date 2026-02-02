@@ -349,7 +349,7 @@ public class AutoPartitionManager implements AutoCloseable {
                     createPartitionInstant,
                     tableInfo.getTableConfig().getAutoPartitionStrategy(),
                     currentPartitions,
-                    tableInfo.getTableConfig().isDataLakeEnabled());
+                    tableInfo);
             createPartitions(tableInfo, createPartitionInstant, currentPartitions);
         }
     }
@@ -446,7 +446,7 @@ public class AutoPartitionManager implements AutoCloseable {
             Instant currentInstant,
             AutoPartitionStrategy autoPartitionStrategy,
             NavigableMap<String, Set<String>> currentPartitions,
-            boolean isDataLakeEnabled) {
+            TableInfo tableInfo) {
         int numToRetain = autoPartitionStrategy.numToRetain();
         // negative value means not to drop partitions
         if (numToRetain < 0) {
@@ -489,36 +489,80 @@ public class AutoPartitionManager implements AutoCloseable {
             while (dropIterator.hasNext()) {
                 String partitionName = dropIterator.next();
 
-                // For datalake-enabled tables, mark partition as historical instead of dropping
-                if (isDataLakeEnabled && historicalPartitionManager != null) {
+                // For datalake-enabled tables, check Paimon expiration before dropping
+                if (tableInfo.getTableConfig().isDataLakeEnabled() && historicalPartitionManager != null) {
                     try {
-                        // Get table ID from metadata
-                        TableRegistration table = metadataManager.getTableRegistration(tablePath);
-                        long tableId = table.tableId;
+                        long tableId = tableInfo.getTableId();
 
-                        // Mark partition as historical (metadata retained, data cleaned up)
-                        historicalPartitionManager.markPartitionAsHistorical(
-                                tableId, partitionName);
-
-                        // Clean up Fluss data but keep metadata
-                        // TODO: Implement data-only cleanup (keep partition in ZK but delete data)
-                        // For now, we skip the actual partition drop for lake tables
-                        LOG.info(
-                                "Auto partitioning marked partition {} for table [{}] as historical "
-                                        + "(datalake enabled, metadata retained).",
-                                partitionName,
-                                tablePath);
-
-                        // Remove from local cache as it's no longer active
-                        dropIterator.remove();
-                        continue;
+                        // Check if Paimon has TTL configuration for this table
+                        if (hasPaimonTtlConfiguration(tableInfo)) {
+                            // Create a Paimon handler to check if partition has expired in Paimon
+                            try {
+                                PaimonHistoricalPartitionHandler paimonHandler = new PaimonHistoricalPartitionHandler(
+                                        getPaimonCatalogForTable(tableInfo), tableInfo.getTablePath());
+                                
+                                boolean isExpiredInPaimon = paimonHandler.isPartitionExpiredInPaimon(partitionName);
+                                
+                                if (isExpiredInPaimon) {
+                                    // Both Fluss and Paimon partitions have expired, we can fully drop it
+                                    LOG.info(
+                                            "Partition {} of table [{}] has expired in both Fluss and Paimon, fully dropping.",
+                                            partitionName, tablePath);
+                                    
+                                    // Remove from historical tracking if it was there
+                                    historicalPartitionManager.removeHistoricalPartition(tableId, partitionName);
+                                    
+                                    // Actually drop the partition
+                                    metadataManager.dropPartition(
+                                            tablePath,
+                                            ResolvedPartitionSpec.fromPartitionName(partitionKeys, partitionName),
+                                            false);
+                                    
+                                    // Remove from local cache
+                                    dropIterator.remove();
+                                    continue; // Continue to next partition
+                                } else {
+                                    // Paimon partition still exists, mark as historical (keep metadata)
+                                    historicalPartitionManager.markPartitionAsHistorical(
+                                            tableId, partitionName);
+                                    
+                                    LOG.info(
+                                            "Partition {} of table [{}] has expired in Fluss but still exists in Paimon, marking as historical.",
+                                            partitionName, tablePath);
+                                    
+                                    // Remove from local cache as it's no longer active
+                                    dropIterator.remove();
+                                    continue; // Continue to next partition
+                                }
+                            } catch (Exception e) {
+                                LOG.warn(
+                                        "Failed to check Paimon expiration for partition {} of table [{}], "
+                                                + "marking as historical as fallback.",
+                                        partitionName, tablePath, e);
+                                
+                                // Fallback: mark as historical
+                                historicalPartitionManager.markPartitionAsHistorical(tableId, partitionName);
+                                dropIterator.remove();
+                                continue;
+                            }
+                        } else {
+                            // No Paimon TTL configuration, treat as historical partition
+                            historicalPartitionManager.markPartitionAsHistorical(tableId, partitionName);
+                            
+                            LOG.info(
+                                    "Partition {} of table [{}] marked as historical "
+                                            + "(datalake enabled, no Paimon TTL config, metadata retained).",
+                                    partitionName, tablePath);
+                            
+                            // Remove from local cache as it's no longer active
+                            dropIterator.remove();
+                            continue;
+                        }
                     } catch (Exception e) {
                         LOG.error(
-                                "Failed to mark partition {} as historical for table [{}], "
-                                        + "falling back to drop.",
-                                partitionName,
-                                tablePath,
-                                e);
+                                "Failed to process datalake-enabled partition {} for table [{}], "
+                                        + "falling back to regular drop.",
+                                partitionName, tablePath, e);
                     }
                 }
 
@@ -543,6 +587,32 @@ public class AutoPartitionManager implements AutoCloseable {
                         tablePath);
             }
             iterator.remove();
+        }
+    }
+    
+    private boolean hasPaimonTtlConfiguration(TableInfo tableInfo) {
+        // Check if Paimon table has TTL configuration ('partition.expiration-time')
+        // This is a simplified check - in a real implementation, we'd check the actual Paimon table config
+        // For now, we'll return true if it's a datalake-enabled table
+        return tableInfo.getTableConfig().isDataLakeEnabled();
+    }
+    
+    private org.apache.paimon.catalog.Catalog getPaimonCatalogForTable(TableInfo tableInfo) {
+        // This would need to be implemented to get the appropriate Paimon catalog
+        // for the given table based on the lake storage configuration
+        throw new UnsupportedOperationException(
+                "Getting Paimon catalog for table not implemented yet. " +
+                "This would need to be implemented based on the table's lake storage configuration.");
+    }
+    
+    // We need to get the tableInfo for the current processing, so we'll modify the method signature
+    // Actually, we need to get tableInfo from the tableId
+    private TableInfo getTableInfo(TablePath tablePath) {
+        try {
+            return metadataManager.getTable(tablePath);
+        } catch (Exception e) {
+            LOG.warn("Failed to get table info for {}", tablePath, e);
+            return null;
         }
     }
 

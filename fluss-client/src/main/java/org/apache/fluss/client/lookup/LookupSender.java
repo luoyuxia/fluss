@@ -457,6 +457,21 @@ class LookupSender implements Runnable {
                 destination,
                 tableBucket,
                 exception);
+        
+        if (exception instanceof HistoricalPartitionException) {
+            LOG.info(
+                    "Received HistoricalPartitionException for bucket {}: {}", 
+                    tableBucket, 
+                    exception.getMessage());
+            
+            // Complete all lookups with the HistoricalPartitionException
+            // The upper layer (e.g. Flink connector) will handle the routing to the data lake
+            for (AbstractLookupQuery<?> lookup : lookups) {
+                lookup.future().completeExceptionally(exception);
+            }
+            return; // Exit early as we've handled the historical partition case
+        }
+        
         if (exception instanceof InvalidMetadataException) {
             LOG.warn(
                     "Invalid metadata error in {} request. Going to request metadata update.",

@@ -83,6 +83,8 @@ import org.apache.fluss.server.log.LogReadInfo;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.log.checkpoint.OffsetCheckpointFile;
 import org.apache.fluss.server.log.remote.RemoteLogManager;
+import org.apache.fluss.server.replica.changelog.PkTableChangelogManager;
+import org.apache.fluss.server.replica.changelog.PkTableChangelogProcessor;
 import org.apache.fluss.server.metadata.ClusterMetadata;
 import org.apache.fluss.server.metadata.TableMetadata;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
@@ -187,6 +189,9 @@ public class ReplicaManager {
     // remote log manager for remote log storage.
     private final RemoteLogManager remoteLogManager;
 
+    // changelog manager for primary-key tables
+    private final PkTableChangelogManager pkTableChangelogManager;
+
     // for metrics
     private final TabletServerMetricGroup serverMetricGroup;
     private final UserMetrics userMetrics;
@@ -290,6 +295,7 @@ public class ReplicaManager {
                 DefaultSnapshotContext.create(
                         zkClient, completedKvSnapshotCommitter, kvSnapshotResource, conf);
         this.remoteLogManager = remoteLogManager;
+        this.pkTableChangelogManager = new PkTableChangelogManager(remoteLogManager);
         this.serverMetricGroup = serverMetricGroup;
         this.userMetrics = userMetrics;
         this.clock = clock;
@@ -310,6 +316,10 @@ public class ReplicaManager {
 
     public RemoteLogManager getRemoteLogManager() {
         return remoteLogManager;
+    }
+
+    public PkTableChangelogManager getPkTableChangelogManager() {
+        return pkTableChangelogManager;
     }
 
     private void registerMetrics() {
@@ -1741,6 +1751,11 @@ public class ReplicaManager {
         replicaFetcherManager.shutdown();
         delayedWriteManager.shutdown();
         delayedFetchLogManager.shutdown();
+        
+        // Close the primary-key table changelog manager
+        if (pkTableChangelogManager != null) {
+            pkTableChangelogManager.close();
+        }
 
         // Checkpoint highWatermark.
         checkpointHighWatermarks();

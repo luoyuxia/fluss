@@ -773,6 +773,15 @@ public class ConfigOptions {
                                     + "copy segments, clean up remote log segments, delete local log segments etc. "
                                     + "If the value is set to 0, it means that the remote log storage is disabled.");
 
+    public static final ConfigOption<Duration> HISTORICAL_PARTITION_REMOTE_UPLOAD_INTERVAL =
+            key("historical.partition.remote-upload.interval")
+                    .durationType()
+                    .defaultValue(Duration.ofHours(1))
+                    .withDescription(
+                            "The interval for uploading inactive log segments of historical partitions to remote storage. "
+                                    + "This controls how frequently the system uploads segments for low-frequency-update partitions. "
+                                    + "The default value is 1 hour.");
+
     public static final ConfigOption<MemorySize> REMOTE_LOG_INDEX_FILE_CACHE_SIZE =
             key("remote.log.index-file-cache-size")
                     .memoryType()
@@ -1836,6 +1845,15 @@ public class ConfigOptions {
                     .withDescription(
                             "The datalake format used by of Fluss to be as lakehouse storage. Currently, supported formats are Paimon, Iceberg, and Lance. "
                                     + "In the future, more kinds of data lake format will be supported, such as DeltaLake or Hudi.");
+
+    public static final ConfigOption<Duration> HISTORICAL_PARTITION_SYNC_INTERVAL =
+            key("historical.partition.sync.interval")
+                    .durationType()
+                    .defaultValue(Duration.ofHours(1))
+                    .withDescription(
+                            "The interval for synchronizing historical partitions with the data lake. "
+                                    + "This controls how frequently the system checks for partitions that have expired in the lake "
+                                    + "and can be fully cleaned up. The default value is 1 hour.");
 
     // ------------------------------------------------------------------------
     //  ConfigOptions for tiering service

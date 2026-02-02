@@ -113,7 +113,7 @@ public class LogTieringTask implements Runnable {
         }
     }
 
-    private void runOnce() throws InterruptedException {
+    void runOnce() throws InterruptedException {
         if (isCancelled()) {
             LOG.info("Returning from LogTieringTask runOnes as the task state is changed");
             return;

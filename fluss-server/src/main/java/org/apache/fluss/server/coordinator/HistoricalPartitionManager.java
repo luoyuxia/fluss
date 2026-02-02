@@ -18,9 +18,16 @@
 package org.apache.fluss.server.coordinator;
 
 import org.apache.fluss.annotation.VisibleForTesting;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.metrics.Counter;
+import org.apache.fluss.metrics.Gauge;
+import org.apache.fluss.metrics.MetricNames;
+import org.apache.fluss.metrics.SimpleCounter;
+import org.apache.fluss.metrics.groups.CoordinatorMetricGroup;
 import org.apache.fluss.metadata.PartitionStatus;
 import org.apache.fluss.metadata.TableInfo;
+import org.apache.fluss.lake.paimon.catalog.PaimonCatalogFactory;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 
 import org.slf4j.Logger;
@@ -64,11 +71,16 @@ public class HistoricalPartitionManager implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(HistoricalPartitionManager.class);
 
     /** Default interval to check lake partition expiration. */
-    private static final long DEFAULT_LAKE_SYNC_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-
     private final ScheduledExecutorService syncExecutor;
+    private final ServerMetadataCache metadataCache;
     private final MetadataManager metadataManager;
+    private final long syncIntervalMs;
     private final AtomicBoolean isClosed = new AtomicBoolean(false);
+
+    // Metrics
+    private Counter historicalPartitionCount;
+    private Counter expiredPartitionCleanupCount;
+    private Counter syncFailureCount;
 
     private final Lock lock = new ReentrantLock();
 
@@ -83,8 +95,12 @@ public class HistoricalPartitionManager implements AutoCloseable {
     @GuardedBy("lock")
     private final Map<Long, TableInfo> trackedTables = new HashMap<>();
 
-    public HistoricalPartitionManager(MetadataManager metadataManager, Configuration conf) {
+    public HistoricalPartitionManager(
+            ServerMetadataCache metadataCache,
+            MetadataManager metadataManager,
+            Configuration conf) {
         this(
+                metadataCache,
                 metadataManager,
                 conf,
                 Executors.newScheduledThreadPool(
@@ -93,11 +109,20 @@ public class HistoricalPartitionManager implements AutoCloseable {
 
     @VisibleForTesting
     HistoricalPartitionManager(
+            ServerMetadataCache metadataCache,
             MetadataManager metadataManager,
             Configuration conf,
             ScheduledExecutorService syncExecutor) {
+        this.metadataCache = metadataCache;
         this.metadataManager = metadataManager;
         this.syncExecutor = syncExecutor;
+        this.syncIntervalMs = conf.get(ConfigOptions.HISTORICAL_PARTITION_SYNC_INTERVAL).toMillis();
+        
+        // Initialize metrics
+        // Note: We'll need to initialize these properly in the future
+        this.historicalPartitionCount = new SimpleCounter();
+        this.expiredPartitionCleanupCount = new SimpleCounter();
+        this.syncFailureCount = new SimpleCounter();
     }
 
     /** Start the historical partition manager. Schedules periodic sync with the data lake. */
@@ -105,12 +130,12 @@ public class HistoricalPartitionManager implements AutoCloseable {
         checkNotClosed();
         syncExecutor.scheduleWithFixedDelay(
                 this::syncWithLake,
-                DEFAULT_LAKE_SYNC_INTERVAL_MS,
-                DEFAULT_LAKE_SYNC_INTERVAL_MS,
+                syncIntervalMs,
+                syncIntervalMs,
                 TimeUnit.MILLISECONDS);
         LOG.info(
                 "Historical partition manager started with sync interval {}ms.",
-                DEFAULT_LAKE_SYNC_INTERVAL_MS);
+                syncIntervalMs);
     }
 
     /**
@@ -168,7 +193,10 @@ public class HistoricalPartitionManager implements AutoCloseable {
                 () -> {
                     Set<String> historicalPartitions = historicalPartitionsByTable.get(tableId);
                     if (historicalPartitions != null) {
-                        historicalPartitions.add(partitionName);
+                        boolean added = historicalPartitions.add(partitionName);
+                        if (added) {
+                            historicalPartitionCount.inc();
+                        }
                         LOG.info(
                                 "Marked partition {} of table {} as historical.",
                                 partitionName,
@@ -192,7 +220,10 @@ public class HistoricalPartitionManager implements AutoCloseable {
                 () -> {
                     Set<String> historicalPartitions = historicalPartitionsByTable.get(tableId);
                     if (historicalPartitions != null) {
-                        historicalPartitions.remove(partitionName);
+                        boolean removed = historicalPartitions.remove(partitionName);
+                        if (removed) {
+                            historicalPartitionCount.dec();
+                        }
                         LOG.info(
                                 "Removed historical partition {} of table {}.",
                                 partitionName,
@@ -274,6 +305,8 @@ public class HistoricalPartitionManager implements AutoCloseable {
      */
     private void syncWithLake() {
         LOG.debug("Starting sync with data lake for historical partitions.");
+        
+        // Get a snapshot of tracked tables and historical partitions
         Map<Long, TableInfo> tables;
         Map<Long, Set<String>> partitionsToCheck;
 
@@ -281,15 +314,114 @@ public class HistoricalPartitionManager implements AutoCloseable {
         inLock(
                 lock,
                 () -> {
-                    // Nothing to sync
+                    tables = new HashMap<>(trackedTables);
+                    partitionsToCheck = new HashMap<>();
+                    for (Map.Entry<Long, Set<String>> entry : historicalPartitionsByTable.entrySet()) {
+                        if (tables.containsKey(entry.getKey())) {
+                            partitionsToCheck.put(entry.getKey(), new HashSet<>(entry.getValue()));
+                        }
+                    }
                 });
 
-        // TODO: Implement actual sync with Paimon
-        // For each table, check if historical partitions have expired in Paimon
-        // using PaimonHistoricalPartitionHandler.isPartitionExpiredInPaimon()
-        // If expired, clean up the partition metadata
+        // Process each table
+        for (Map.Entry<Long, TableInfo> tableEntry : tables.entrySet()) {
+            long tableId = tableEntry.getKey();
+            TableInfo tableInfo = tableEntry.getValue();
+            Set<String> historicalPartitions = partitionsToCheck.get(tableId);
+            
+            if (historicalPartitions == null || historicalPartitions.isEmpty()) {
+                continue;
+            }
+            
+            try {
+                // Create a Paimon handler for this table to check expiration
+                PaimonHistoricalPartitionHandler paimonHandler = new PaimonHistoricalPartitionHandler(
+                        getCatalogForTable(tableInfo), tableInfo.getTablePath());
+                
+                for (String partitionName : historicalPartitions) {
+                    try {
+                        boolean isExpiredInPaimon = paimonHandler.isPartitionExpiredInPaimon(partitionName);
+                        
+                        if (isExpiredInPaimon) {
+                            // Partition has expired in Paimon, we can fully clean it up
+                            LOG.info(
+                                    "Partition {} of table {} (id={}) has expired in Paimon, cleaning up metadata.",
+                                    partitionName, tableInfo.getTablePath(), tableId);
+                            
+                            // Remove from historical tracking
+                            inLock(lock, () -> {
+                                Set<String> histParts = historicalPartitionsByTable.get(tableId);
+                                if (histParts != null) {
+                                    histParts.remove(partitionName);
+                                }
+                            });
+                            
+                            // Clean up the partition metadata from ZK/storage
+                            try {
+                                metadataManager.dropPartition(
+                                        tableInfo.getTablePath(),
+                                        org.apache.fluss.metadata.ResolvedPartitionSpec.fromPartitionName(
+                                                tableInfo.getPartitionKeys(), partitionName),
+                                        true); // force delete even if not in ZK
+                                expiredPartitionCleanupCount.inc();
+                                LOG.debug(
+                                        "Successfully cleaned up partition {} for table {}.",
+                                        partitionName, tableInfo.getTablePath());
+                            } catch (Exception e) {
+                                syncFailureCount.inc();
+                                LOG.error(
+                                        "Failed to clean up partition {} for table {}, will retry in next sync.",
+                                        partitionName, tableInfo.getTablePath(), e);
+                                // Continue processing other partitions despite this failure
+                                continue;
+                            }
+                        }
+                    } catch (Exception e) {
+                        LOG.warn(
+                                "Failed to check expiration for partition {} of table {}, continuing...",
+                                partitionName, tableInfo.getTablePath(), e);
+                    }
+                }
+                
+                paimonHandler.close();
+            } catch (Exception e) {
+                syncFailureCount.inc();
+                LOG.warn(
+                        "Failed to sync historical partitions for table {}, continuing with other tables.",
+                        tableInfo.getTablePath(), e);
+            }
+        }
 
         LOG.debug("Completed sync with data lake for historical partitions.");
+    }
+    
+
+    private org.apache.paimon.catalog.Catalog getCatalogForTable(TableInfo tableInfo) {
+        // Create Paimon catalog based on table configuration
+        try {
+            return org.apache.fluss.lake.paimon.catalog.PaimonCatalogFactory.createCatalog(tableInfo);
+        } catch (Exception e) {
+            LOG.error("Failed to create Paimon catalog for table {}", tableInfo.getTablePath(), e);
+            throw new RuntimeException(
+                    String.format("Could not create Paimon catalog for table %s", tableInfo.getTablePath()), e);
+        }
+    }
+
+    /**
+     * Get the total count of historical partitions across all tables.
+     *
+     * @return the total number of historical partitions
+     */
+    public int getTotalHistoricalPartitionCount() {
+        return inLock(
+                lock,
+                () -> {
+                    int totalCount = 0;
+                    for (Set<String> partitions : historicalPartitionsByTable.values()) {
+                        totalCount += partitions.size();
+                    }
+                    return totalCount;
+                });
     }
 
     private void checkNotClosed() {

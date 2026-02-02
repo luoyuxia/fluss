@@ -314,6 +314,32 @@ public class RemoteLogManager implements Closeable {
         return remoteLog;
     }
 
+    /**
+     * Force immediate processing of log segments for a specific replica.
+     * This method runs the log tiering task once immediately, bypassing the normal schedule.
+     * 
+     * @param replica the replica to process
+     */
+    public void forceImmediateProcessing(Replica replica) {
+        if (remoteDisabled()) {
+            return;
+        }
+        
+        TableBucket tableBucket = replica.getTableBucket();
+        TaskWithFuture taskWithFuture = rlmTasks.get(tableBucket);
+        if (taskWithFuture != null) {
+            try {
+                // Run the task once immediately
+                taskWithFuture.task.runOnce();
+                LOG.info("Forced immediate processing of remote log segments for replica {}", tableBucket);
+            } catch (Exception e) {
+                LOG.error("Failed to force immediate processing for replica {}", tableBucket, e);
+            }
+        } else {
+            LOG.warn("No remote log task found for replica {}, cannot force processing", tableBucket);
+        }
+    }
+
     @Override
     public void close() throws IOException {
         rlmTasks.values().forEach(TaskWithFuture::cancel);

@@ -43,6 +43,12 @@ public class MetricNames {
     public static final String PARTITION_COUNT = "partitionCount";
     public static final String REPLICAS_TO_DELETE_COUNT = "replicasToDeleteCount";
 
+    // for historical partition management
+    public static final String HISTORICAL_PARTITION_COUNT = "historicalPartitionCount";
+    public static final String TOTAL_HISTORICAL_PARTITION_COUNT = "totalHistoricalPartitionCount";
+    public static final String EXPIRED_PARTITION_CLEANUP_COUNT = "expiredPartitionCleanUpCount";
+    public static final String HISTORICAL_PARTITION_SYNC_FAILURE_COUNT = "historicalPartitionSyncFailureCount";
+
     // for coordinator event processor
     public static final String EVENT_QUEUE_SIZE = "eventQueueSize";
     public static final String EVENT_QUEUE_TIME_MS = "eventQueueTimeMs";
