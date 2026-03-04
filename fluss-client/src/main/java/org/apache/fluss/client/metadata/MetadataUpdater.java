@@ -143,6 +143,47 @@ public class MetadataUpdater {
         return cluster.getRandomTabletServer();
     }
 
+    /**
+     * Get a tablet server for lake lookup using hash-based selection.
+     *
+     * <p>This is used when the partition doesn't exist in Fluss anymore (e.g., expired partitions
+     * in auto-partitioned tables), so we can't route the request based on partition/bucket leader.
+     * Instead, we use hash of "table_path + partition_name + bucket_id" to consistently select a
+     * tablet server.
+     *
+     * <p>The hash algorithm combines tablePath, partitionName, and bucketId:
+     *
+     * <pre>
+     * hash = tablePath.hashCode()
+     * hash = hash * 31 + (partitionName == null ? 0 : partitionName.hashCode())
+     * hash = hash * 31 + bucketId
+     * index = (hash &amp; 0x7FFFFFFF) % serverCount
+     * </pre>
+     *
+     * @param tablePath the table path
+     * @param partitionName the partition name (may be null for non-partitioned tables)
+     * @param bucketId the bucket id
+     * @return the selected tablet server node, or null if no servers available
+     */
+    public @Nullable ServerNode getTabletServerForLakeLookup(
+            TablePath tablePath, @Nullable String partitionName, int bucketId) {
+        List<ServerNode> aliveServers = cluster.getAliveTabletServerList();
+        if (aliveServers.isEmpty()) {
+            return null;
+        }
+
+        int serverCount = aliveServers.size();
+
+        // Combine hash of tablePath, partitionName, and bucketId
+        int hash = tablePath.hashCode();
+        hash = hash * 31 + (partitionName == null ? 0 : partitionName.hashCode());
+        hash = hash * 31 + bucketId;
+
+        int index = (hash & 0x7FFFFFFF) % serverCount;
+
+        return aliveServers.get(index);
+    }
+
     public CoordinatorGateway newCoordinatorServerClient() {
         return GatewayClientProxy.createGatewayProxy(
                 this::getCoordinatorServer, rpcClient, CoordinatorGateway.class);

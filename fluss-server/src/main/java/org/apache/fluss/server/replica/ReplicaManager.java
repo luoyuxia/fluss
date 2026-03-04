@@ -32,6 +32,11 @@ import org.apache.fluss.exception.StorageException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
 import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.lake.lakestorage.LakeStorage;
+import org.apache.fluss.lake.lakestorage.LakeStoragePlugin;
+import org.apache.fluss.lake.lakestorage.LakeStoragePluginSetUp;
+import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
+import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.Schema;
@@ -48,6 +53,7 @@ import org.apache.fluss.remote.RemoteLogFetchInfo;
 import org.apache.fluss.remote.RemoteLogSegment;
 import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
+import org.apache.fluss.rpc.entity.LakeLookupResultForBucket;
 import org.apache.fluss.rpc.entity.LimitScanResultForBucket;
 import org.apache.fluss.rpc.entity.ListOffsetsResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
@@ -105,6 +111,7 @@ import org.apache.fluss.server.replica.delay.DelayedWrite;
 import org.apache.fluss.server.replica.fetcher.InitialFetchStatus;
 import org.apache.fluss.server.replica.fetcher.ReplicaFetcherManager;
 import org.apache.fluss.server.utils.FatalErrorHandler;
+import org.apache.fluss.server.utils.LakeStorageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
 import org.apache.fluss.utils.FileUtils;
@@ -112,13 +119,12 @@ import org.apache.fluss.utils.FlussPaths;
 import org.apache.fluss.utils.MapUtils;
 import org.apache.fluss.utils.clock.Clock;
 import org.apache.fluss.utils.concurrent.Scheduler;
-
+import org.apache.fluss.utils.types.Tuple2;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -168,6 +174,9 @@ public class ReplicaManager {
     private final ExecutorService ioExecutor;
     private final ProjectionPushdownCache projectionsCache = new ProjectionPushdownCache();
     private final Lock replicaStateChangeLock = new ReentrantLock();
+    private final @Nullable LakeStorage lakeStorage;
+    private final Map<TablePath, LakeTableLookuper> lakeTableLookuperCache =
+            MapUtils.newConcurrentHashMap();
 
     /**
      * delayed write operation manager is used to manage the delayed write operation, which is
@@ -305,6 +314,7 @@ public class ReplicaManager {
         this.userMetrics = userMetrics;
         this.clock = clock;
         this.ioExecutor = ioExecutor;
+        this.lakeStorage = createLakeStorage(conf);
         registerMetrics();
     }
 
@@ -840,6 +850,72 @@ public class ReplicaManager {
             }
         }
         responseCallback.accept(result);
+    }
+
+    /**
+     * Lookup keys from lake storage for expired partitions.
+     *
+     * <p>This method is used when a partition has expired in Fluss and data has been tiered to lake
+     * storage. It performs point lookups directly against the lake storage.
+     *
+     * <p>The lookup is executed asynchronously in a separate thread pool to prevent slow lake
+     * storage lookups from blocking fast memory lookups.
+     *
+     * @param tablePath the table path
+     * @param entriesPerBucket map of (partitionName, bucketId) to list of keys to lookup
+     * @param responseCallback callback to receive the lookup results
+     */
+    public void lakeLookups(
+            TablePath tablePath,
+            Map<Tuple2<String, Integer>, List<byte[]>> entriesPerBucket,
+            Consumer<List<LakeLookupResultForBucket>> responseCallback) {
+        if (lakeStorage == null) {
+            throw new IllegalStateException(
+                    "Lake storage is not available, lake storage is not configured. " + tablePath);
+        }
+        int schemaId = metadataCache.getLatestSchemaId(tablePath);
+        LakeTableLookuper lookuper =
+                lakeTableLookuperCache.computeIfAbsent(
+                        tablePath, lakeStorage::createLakeTableLookuper);
+        ioExecutor.submit(
+                () -> {
+                    List<LakeLookupResultForBucket> results = new ArrayList<>();
+                    for (Map.Entry<Tuple2<String, Integer>, List<byte[]>> entry :
+                            entriesPerBucket.entrySet()) {
+                        String partitionName = entry.getKey().f0;
+                        int bucketId = entry.getKey().f1;
+                        List<byte[]> keys = entry.getValue();
+                        List<byte[]> values = new ArrayList<>(keys.size());
+                        LakeTableLookuper.LookupContext context =
+                                new LakeTableLookuper.LookupContext(
+                                        partitionName, bucketId, schemaId);
+                        try {
+                            for (byte[] key : keys) {
+                                values.add(lookuper.lookup(key, context));
+                            }
+                            results.add(
+                                    new LakeLookupResultForBucket(partitionName, bucketId, values));
+                        } catch (Exception e) {
+                            results.add(
+                                    new LakeLookupResultForBucket(
+                                            partitionName, bucketId, ApiError.fromThrowable(e)));
+                        }
+                    }
+                    responseCallback.accept(results);
+                });
+    }
+
+    @Nullable
+    private static LakeStorage createLakeStorage(Configuration conf) {
+        DataLakeFormat dataLakeFormat = conf.get(ConfigOptions.DATALAKE_FORMAT);
+        if (dataLakeFormat == null) {
+            return null;
+        }
+        Map<String, String> lakeProperties =
+                checkNotNull(LakeStorageUtils.extractLakeProperties(conf));
+        LakeStoragePlugin lakeStoragePlugin =
+                LakeStoragePluginSetUp.fromDataLakeFormat(dataLakeFormat.toString(), null);
+        return lakeStoragePlugin.createLakeStorage(Configuration.fromMap(lakeProperties));
     }
 
     public void listOffsets(

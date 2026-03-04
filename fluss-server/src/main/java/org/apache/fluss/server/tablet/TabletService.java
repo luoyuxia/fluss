@@ -36,6 +36,8 @@ import org.apache.fluss.rpc.messages.GetTableStatsRequest;
 import org.apache.fluss.rpc.messages.GetTableStatsResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
+import org.apache.fluss.rpc.messages.LakeLookupRequest;
+import org.apache.fluss.rpc.messages.LakeLookupResponse;
 import org.apache.fluss.rpc.messages.LimitScanRequest;
 import org.apache.fluss.rpc.messages.LimitScanResponse;
 import org.apache.fluss.rpc.messages.ListOffsetsRequest;
@@ -114,6 +116,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getUpdateMetad
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeFetchLogResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeGetTableStatsResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeInitWriterResponse;
+import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeLakeLookupResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeLimitScanResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeListOffsetsResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeLookupResponse;
@@ -122,6 +125,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makePrefixLook
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLogResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makePutKvResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeStopReplicaResponse;
+import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toLakeLookupData;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toLookupData;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toPrefixLookupData;
 
@@ -292,6 +296,19 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
                 prefixLookupData,
                 currentSession().getApiVersion(),
                 value -> response.complete(makePrefixLookupResponse(value, errorResponseMap)));
+        return response;
+    }
+
+    @Override
+    public CompletableFuture<LakeLookupResponse> lakeLookup(LakeLookupRequest request) {
+        TablePath tablePath = ServerRpcMessageUtils.toTablePath(request.getTablePath());
+        authorizeTable(READ, tablePath);
+
+        CompletableFuture<LakeLookupResponse> response = new CompletableFuture<>();
+        replicaManager.lakeLookups(
+                tablePath,
+                toLakeLookupData(request),
+                value -> response.complete(makeLakeLookupResponse(value)));
         return response;
     }
 

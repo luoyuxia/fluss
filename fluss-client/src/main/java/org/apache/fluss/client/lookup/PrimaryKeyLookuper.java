@@ -31,8 +31,8 @@ import org.apache.fluss.types.RowType;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
-
 import java.util.Collections;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.client.utils.ClientUtils.getPartitionId;
@@ -103,6 +103,8 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
                 bucketKeyEncoder == primaryKeyEncoder
                         ? pkBytes
                         : bucketKeyEncoder.encodeKey(lookupKey);
+
+        String partitionName;
         Long partitionId = null;
         if (partitionGetter != null) {
             try {
@@ -112,7 +114,13 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
                                 partitionGetter,
                                 tableInfo.getTablePath(),
                                 metadataUpdater);
-            } catch (PartitionNotExistException e) {
+            } catch (Exception e) {
+                // Partition doesn't exist, check if we can fallback to lake lookup
+                partitionName = partitionGetter.getPartition(lookupKey);
+                if (shouldFallbackToLakeLookup()) {
+                    return performLakeLookup(partitionName, bkBytes, pkBytes);
+                }
+                // No lake lookup possible, return empty result
                 return CompletableFuture.completedFuture(new LookupResult(Collections.emptyList()));
             }
         }
@@ -122,6 +130,54 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
         CompletableFuture<LookupResult> lookupFuture = new CompletableFuture<>();
         lookupClient
                 .lookup(tableInfo.getTablePath(), tableBucket, pkBytes, insertIfNotExists)
+                .whenComplete(
+                        (result, error) -> {
+                            if (error != null) {
+                                lookupFuture.completeExceptionally(error);
+                            } else {
+                                handleLookupResponse(
+                                        result == null
+                                                ? Collections.emptyList()
+                                                : Collections.singletonList(result),
+                                        lookupFuture);
+                            }
+                        });
+        return lookupFuture;
+    }
+
+    /**
+     * Check if the lookup should fallback to lake storage when partition doesn't exist.
+     *
+     * <p>According to the design, lake lookup is only supported for tables with: - datalake enabled
+     * - Paimon format (Iceberg and Lance don't support efficient point lookups) - Primary key table
+     * (not prefix lookup)
+     */
+    private boolean shouldFallbackToLakeLookup() {
+        // Check if datalake is enabled and format is Paimon
+        if (!tableInfo.getTableConfig().isDataLakeEnabled()) {
+            return false;
+        }
+        Optional<DataLakeFormat> lakeFormatOpt = tableInfo.getTableConfig().getDataLakeFormat();
+        return lakeFormatOpt.isPresent()
+                && lakeFormatOpt.get() == DataLakeFormat.PAIMON
+                && tableInfo.getTableConfig().getAutoPartitionStrategy().isAutoPartitionEnabled();
+    }
+
+    /**
+     * Perform a lake lookup when partition doesn't exist in Fluss.
+     *
+     * @param partitionName the partition name extracted from the lookup key
+     * @param bucketKeyBytes the encoded bucket key bytes for bucket computation
+     * @param pkBytes the encoded primary key bytes
+     * @return a future containing the lookup result
+     */
+    private CompletableFuture<LookupResult> performLakeLookup(
+            String partitionName, byte[] bucketKeyBytes, byte[] pkBytes) {
+        int bucketId = bucketingFunction.bucketing(bucketKeyBytes, numBuckets);
+        CompletableFuture<LookupResult> lookupFuture = new CompletableFuture<>();
+
+        lookupClient
+                .lakeLookup(tableInfo.getTablePath(), partitionName, bucketId, pkBytes)
                 .whenComplete(
                         (result, error) -> {
                             if (error != null) {

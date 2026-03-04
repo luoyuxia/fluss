@@ -20,6 +20,7 @@ package org.apache.fluss.client.lookup;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.client.metadata.MetadataUpdater;
+import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidMetadataException;
@@ -28,9 +29,13 @@ import org.apache.fluss.exception.RetriableException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePartition;
+import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.LakeLookupRequest;
+import org.apache.fluss.rpc.messages.LakeLookupResponse;
 import org.apache.fluss.rpc.messages.LookupRequest;
 import org.apache.fluss.rpc.messages.LookupResponse;
+import org.apache.fluss.rpc.messages.PbLakeLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbPrefixLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbValueList;
@@ -38,12 +43,10 @@ import org.apache.fluss.rpc.messages.PrefixLookupRequest;
 import org.apache.fluss.rpc.messages.PrefixLookupResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.utils.types.Tuple2;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -164,16 +167,37 @@ class LookupSender implements Runnable {
             int leader;
             // lookup the leader node
             TableBucket tb = lookup.tableBucket();
-            try {
-                // TODO Metadata requests are being sent too frequently here. consider first
-                // collecting the tables that need to be updated and then sending them together in
-                // one request.
-                leader = metadataUpdater.leaderFor(lookup.tablePath(), tb);
-            } catch (Exception e) {
-                // if leader is not found, re-enqueue the lookup to send again.
-                LOG.warn("Failed to lookup the leader for {} when lookup", tb, e);
-                reEnqueueLookup(lookup);
-                continue;
+
+            // For LAKE_LOOKUP type, use hash-based tablet server selection
+            if (lookup.lookupType() == LookupType.LAKE_LOOKUP) {
+                LakeLookupQuery lakeLookup = (LakeLookupQuery) lookup;
+                ServerNode serverNode =
+                        metadataUpdater.getTabletServerForLakeLookup(
+                                lakeLookup.tablePath(),
+                                lakeLookup.partitionName(),
+                                lakeLookup.bucketId());
+                if (serverNode == null) {
+                    LOG.warn(
+                            "No tablet server available for lake lookup for table: {}, partition: {}, bucket: {}",
+                            lakeLookup.tablePath(),
+                            lakeLookup.partitionName(),
+                            lakeLookup.bucketId());
+                    reEnqueueLookup(lookup);
+                    continue;
+                }
+                leader = serverNode.id();
+            } else {
+                try {
+                    // TODO Metadata requests are being sent too frequently here. consider first
+                    // collecting the tables that need to be updated and then sending them together
+                    // in one request.
+                    leader = metadataUpdater.leaderFor(lookup.tablePath(), tb);
+                } catch (Exception e) {
+                    // if leader is not found, re-enqueue the lookup to send again.
+                    LOG.warn("Failed to lookup the leader for {} when lookup", tb, e);
+                    reEnqueueLookup(lookup);
+                    continue;
+                }
             }
             lookupBatchesByLeader
                     .computeIfAbsent(Tuple2.of(leader, lookup.lookupType()), k -> new ArrayList<>())
@@ -191,6 +215,8 @@ class LookupSender implements Runnable {
             sendLookupRequest(destination, lookupBatches, true);
         } else if (lookupType == LookupType.PREFIX_LOOKUP) {
             sendPrefixLookupRequest(destination, lookupBatches);
+        } else if (lookupType == LookupType.LAKE_LOOKUP) {
+            sendLakeLookupRequest(destination, lookupBatches);
         } else {
             throw new IllegalArgumentException("Unsupported lookup type: " + lookupType);
         }
@@ -277,6 +303,63 @@ class LookupSender implements Runnable {
                                 prefixLookupBatch));
     }
 
+    private void sendLakeLookupRequest(int destination, List<AbstractLookupQuery<?>> lakeLookups) {
+        // Group lake lookups by table path
+        // tablePath -> LakeLookupBatch (which internally groups by partitionName+bucketId)
+        Map<TablePath, LakeLookupBatch> lookupByTable = new HashMap<>();
+        for (AbstractLookupQuery<?> abstractLookupQuery : lakeLookups) {
+            LakeLookupQuery lakeLookup = (LakeLookupQuery) abstractLookupQuery;
+            lookupByTable
+                    .computeIfAbsent(lakeLookup.tablePath(), k -> new LakeLookupBatch(k))
+                    .addLookup(lakeLookup);
+        }
+
+        TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
+        if (gateway == null) {
+            lookupByTable.forEach(
+                    (tablePath, batch) ->
+                            handleLakeLookupException(
+                                    new LeaderNotAvailableException(
+                                            "Server "
+                                                    + destination
+                                                    + " is not found in metadata cache."),
+                                    destination,
+                                    batch));
+            return;
+        }
+
+        // Send one request per table
+        lookupByTable.forEach(
+                (tablePath, batch) -> {
+                    LakeLookupRequest request = makeLakeLookupRequest(batch);
+                    sendLakeLookupRequestAndHandleResponse(destination, gateway, request, batch);
+                });
+    }
+
+    private LakeLookupRequest makeLakeLookupRequest(LakeLookupBatch batch) {
+        LakeLookupRequest request = new LakeLookupRequest();
+        request.setTablePath(
+                new org.apache.fluss.rpc.messages.PbTablePath()
+                        .setDatabaseName(batch.tablePath.getDatabaseName())
+                        .setTableName(batch.tablePath.getTableName()));
+        // Add buckets with their partition name and keys
+        for (Map.Entry<Tuple2<String, Integer>, List<LakeLookupQuery>> entry :
+                batch.getEntries()) {
+            org.apache.fluss.rpc.messages.PbLakeLookupReqForBucket bucketReq =
+                    request.addBucketsReq();
+            String partitionName = entry.getKey().f0;
+            int bucketId = entry.getKey().f1;
+            if (partitionName != null) {
+                bucketReq.setPartitionName(partitionName);
+            }
+            bucketReq.setBucketId(bucketId);
+            for (LakeLookupQuery query : entry.getValue()) {
+                bucketReq.addKey(query.key());
+            }
+        }
+        return request;
+    }
+
     private void sendLookupRequestAndHandleResponse(
             int destination,
             TabletServerGateway gateway,
@@ -339,6 +422,37 @@ class LookupSender implements Runnable {
                         e -> {
                             try {
                                 handlePrefixLookupException(e, destination, lookupsByBucket);
+                                return null;
+                            } finally {
+                                maxInFlightReuqestsSemaphore.release();
+                            }
+                        });
+    }
+
+    private void sendLakeLookupRequestAndHandleResponse(
+            int destination,
+            TabletServerGateway gateway,
+            LakeLookupRequest lakeLookupRequest,
+            LakeLookupBatch batch) {
+        try {
+            maxInFlightReuqestsSemaphore.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new FlussRuntimeException("interrupted:", e);
+        }
+        gateway.lakeLookup(lakeLookupRequest)
+                .thenAccept(
+                        lakeLookupResponse -> {
+                            try {
+                                handleLakeLookupResponse(destination, lakeLookupResponse, batch);
+                            } finally {
+                                maxInFlightReuqestsSemaphore.release();
+                            }
+                        })
+                .exceptionally(
+                        e -> {
+                            try {
+                                handleLakeLookupException(e, destination, batch);
                                 return null;
                             } finally {
                                 maxInFlightReuqestsSemaphore.release();
@@ -441,6 +555,78 @@ class LookupSender implements Runnable {
         }
     }
 
+    private void handleLakeLookupResponse(
+            int destination, LakeLookupResponse lakeLookupResponse, LakeLookupBatch batch) {
+        for (PbLakeLookupRespForBucket pbRespForBucket : lakeLookupResponse.getBucketsRespsList()) {
+            int bucketId = pbRespForBucket.getBucketId();
+            String partitionName =
+                    pbRespForBucket.hasPartitionName() ? pbRespForBucket.getPartitionName() : null;
+
+            // Get the lookups for this partition+bucket
+            List<LakeLookupQuery> bucketLookups = batch.getLookups(partitionName, bucketId);
+            if (bucketLookups == null) {
+                LOG.warn(
+                        "Received response for unknown partition {} bucket {} in lake lookup",
+                        partitionName,
+                        bucketId);
+                continue;
+            }
+
+            if (pbRespForBucket.hasErrorCode()) {
+                ApiError error = ApiError.fromErrorMessage(pbRespForBucket);
+                for (LakeLookupQuery query : bucketLookups) {
+                    handleLakeLookupError(query, destination, error);
+                }
+            } else {
+                List<byte[]> values =
+                        pbRespForBucket.getValuesList().stream()
+                                .map(
+                                        pbValue -> {
+                                            if (pbValue.hasValues()) {
+                                                return pbValue.getValues();
+                                            } else {
+                                                return null;
+                                            }
+                                        })
+                                .collect(Collectors.toList());
+
+                // Complete each lookup with corresponding value
+                for (int i = 0; i < bucketLookups.size() && i < values.size(); i++) {
+                    bucketLookups.get(i).future().complete(values.get(i));
+                }
+            }
+        }
+    }
+
+    private void handleLakeLookupException(Throwable t, int destination, LakeLookupBatch batch) {
+        ApiError error = ApiError.fromThrowable(t);
+        for (LakeLookupQuery query : batch.getAllLookups()) {
+            handleLakeLookupError(query, destination, error);
+        }
+    }
+
+    private void handleLakeLookupError(LakeLookupQuery query, int destination, ApiError error) {
+        LOG.error(
+                "Failed to lake lookup from node {} for table {}, partition {}, bucket {}",
+                destination,
+                query.tablePath(),
+                query.partitionName(),
+                query.bucketId(),
+                error.error().exception());
+
+        if (canRetry(query, error.exception())) {
+            LOG.warn(
+                    "Get error response on lake lookup, retrying ({} attempts left). Error: {}",
+                    maxRetries - query.retries(),
+                    error.formatErrMsg());
+            query.incrementRetries();
+            reEnqueueLookup(query);
+        } else {
+            LOG.warn("Get error response on lake lookup, fail. Error: {}", error.formatErrMsg());
+            query.future().completeExceptionally(error.exception());
+        }
+    }
+
     private void reEnqueueLookup(AbstractLookupQuery<?> lookup) {
         lookupQueue.reEnqueue(lookup);
     }
@@ -534,6 +720,38 @@ class LookupSender implements Runnable {
                 @Nullable Set<Long> tableIds, @Nullable Set<TablePartition> tablePartitions) {
             this.tableIds = tableIds;
             this.tablePartitions = tablePartitions;
+        }
+    }
+
+    /** A helper class to hold lake lookup queries for a table/partition combination. */
+    private static class LakeLookupBatch {
+        private final TablePath tablePath;
+        // (partitionName, bucketId) -> lookups
+        private final Map<Tuple2<String, Integer>, List<LakeLookupQuery>> lookupsByPartitionBucket =
+                new HashMap<>();
+
+        LakeLookupBatch(TablePath tablePath) {
+            this.tablePath = tablePath;
+        }
+
+        void addLookup(LakeLookupQuery query) {
+            Tuple2<String, Integer> key =
+                    Tuple2.of(query.partitionName(), query.bucketId());
+            lookupsByPartitionBucket.computeIfAbsent(key, k -> new ArrayList<>()).add(query);
+        }
+
+        List<LakeLookupQuery> getLookups(String partitionName, int bucketId) {
+            return lookupsByPartitionBucket.get(Tuple2.of(partitionName, bucketId));
+        }
+
+        Set<Map.Entry<Tuple2<String, Integer>, List<LakeLookupQuery>>> getEntries() {
+            return lookupsByPartitionBucket.entrySet();
+        }
+
+        List<LakeLookupQuery> getAllLookups() {
+            return lookupsByPartitionBucket.values().stream()
+                    .flatMap(List::stream)
+                    .collect(Collectors.toList());
         }
     }
 

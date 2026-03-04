@@ -50,4 +50,21 @@ public interface LakeStorage {
      * @return a configured lake source instance for the specified table
      */
     LakeSource<?> createLakeSource(TablePath tablePath);
+
+    /**
+     * Creates a lake table lookuper for performing point lookups against lake storage for the
+     * specified table.
+     *
+     * <p>This is used when partitions have expired in Fluss and their data has been tiered to lake
+     * storage. The returned lookuper is bound to the specified table and caches per-table
+     * resources.
+     *
+     * @param tablePath the table path to create the lookuper for
+     * @return a lake table lookuper instance for the specified table
+     * @since 0.10
+     */
+    default LakeTableLookuper createLakeTableLookuper(TablePath tablePath) {
+        throw new UnsupportedOperationException(
+                "Point lookup is not supported for this lake storage.");
+    }
 }

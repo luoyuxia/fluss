@@ -48,6 +48,8 @@ import org.apache.fluss.rpc.messages.GetTableStatsRequest;
 import org.apache.fluss.rpc.messages.GetTableStatsResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
+import org.apache.fluss.rpc.messages.LakeLookupRequest;
+import org.apache.fluss.rpc.messages.LakeLookupResponse;
 import org.apache.fluss.rpc.messages.LimitScanRequest;
 import org.apache.fluss.rpc.messages.LimitScanResponse;
 import org.apache.fluss.rpc.messages.ListAclsRequest;
@@ -198,6 +200,11 @@ public class TestTabletServerGateway implements TabletServerGateway {
 
     @Override
     public CompletableFuture<PrefixLookupResponse> prefixLookup(PrefixLookupRequest request) {
+        return null;
+    }
+
+    @Override
+    public CompletableFuture<LakeLookupResponse> lakeLookup(LakeLookupRequest request) {
         return null;
     }
 

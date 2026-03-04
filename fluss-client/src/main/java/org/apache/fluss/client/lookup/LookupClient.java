@@ -28,6 +28,7 @@ import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.time.Duration;
@@ -103,6 +104,26 @@ public class LookupClient {
         LookupQuery lookup = new LookupQuery(tablePath, tableBucket, keyBytes, insertIfNotExists);
         lookupQueue.appendLookup(lookup);
         return lookup.future();
+    }
+
+    /**
+     * Lookup a key from lake storage (e.g., Paimon) when the partition doesn't exist in Fluss.
+     *
+     * <p>This is used for point lookups on expired partitions where data has been tiered to lake
+     * storage.
+     *
+     * @param tablePath the table path
+     * @param partitionName the partition name (may be null for non-partitioned tables)
+     * @param bucketId the bucket id
+     * @param keyBytes the encoded key bytes
+     * @return a future containing the lookup result
+     */
+    public CompletableFuture<byte[]> lakeLookup(
+            TablePath tablePath, @Nullable String partitionName, int bucketId, byte[] keyBytes) {
+        LakeLookupQuery lakeLookup =
+                new LakeLookupQuery(tablePath, partitionName, bucketId, keyBytes);
+        lookupQueue.appendLookup(lakeLookup);
+        return lakeLookup.future();
     }
 
     public CompletableFuture<List<byte[]>> prefixLookup(

@@ -269,6 +269,36 @@ message PrefixLookupResponse {
   repeated PbPrefixLookupRespForBucket buckets_resp = 1;
 }
 
+// Lake Lookup request and response
+// Used for looking up data from lake storage (e.g., Paimon) when the partition
+// doesn't exist in Fluss anymore (e.g., expired partitions in auto-partitioned tables).
+message LakeLookupRequest {
+  required PbTablePath table_path = 1;
+  repeated PbLakeLookupReqForBucket buckets_req = 2;
+}
+
+message LakeLookupResponse {
+  repeated PbLakeLookupRespForBucket buckets_resp = 1;
+}
+
+// Lake lookup request for a bucket
+message PbLakeLookupReqForBucket {
+  // Partition name for partitioned tables, not set for non-partitioned tables
+  optional string partition_name = 1;
+  required int32 bucket_id = 2;
+  repeated bytes keys = 3;
+}
+
+// Lake lookup response for a bucket
+message PbLakeLookupRespForBucket {
+  // Partition name for partitioned tables, not set for non-partitioned tables
+  optional string partition_name = 1;
+  required int32 bucket_id = 2;
+  optional int32 error_code = 3;
+  optional string error_message = 4;
+  repeated PbValue values = 5;
+}
+
 
 // limit scan request and response
 message LimitScanRequest {

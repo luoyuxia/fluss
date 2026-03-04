@@ -51,6 +51,7 @@ import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.remote.RemoteLogFetchInfo;
 import org.apache.fluss.remote.RemoteLogSegment;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
+import org.apache.fluss.rpc.entity.LakeLookupResultForBucket;
 import org.apache.fluss.rpc.entity.LimitScanResultForBucket;
 import org.apache.fluss.rpc.entity.ListOffsetsResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
@@ -78,6 +79,8 @@ import org.apache.fluss.rpc.messages.GetProducerOffsetsResponse;
 import org.apache.fluss.rpc.messages.GetTableStatsRequest;
 import org.apache.fluss.rpc.messages.GetTableStatsResponse;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
+import org.apache.fluss.rpc.messages.LakeLookupRequest;
+import org.apache.fluss.rpc.messages.LakeLookupResponse;
 import org.apache.fluss.rpc.messages.LakeTieringHeartbeatResponse;
 import org.apache.fluss.rpc.messages.LimitScanResponse;
 import org.apache.fluss.rpc.messages.ListAclsResponse;
@@ -116,6 +119,8 @@ import org.apache.fluss.rpc.messages.PbKeyValue;
 import org.apache.fluss.rpc.messages.PbKvSnapshot;
 import org.apache.fluss.rpc.messages.PbKvSnapshotLeaseForBucket;
 import org.apache.fluss.rpc.messages.PbKvSnapshotLeaseForTable;
+import org.apache.fluss.rpc.messages.PbLakeLookupReqForBucket;
+import org.apache.fluss.rpc.messages.PbLakeLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbLakeSnapshotForBucket;
 import org.apache.fluss.rpc.messages.PbLakeTableOffsetForBucket;
 import org.apache.fluss.rpc.messages.PbLakeTableSnapshotInfo;
@@ -196,9 +201,9 @@ import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
 import org.apache.fluss.utils.json.DataTypeJsonSerde;
 import org.apache.fluss.utils.json.JsonSerdeUtils;
 import org.apache.fluss.utils.json.TableBucketOffsets;
+import org.apache.fluss.utils.types.Tuple2;
 
 import javax.annotation.Nullable;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -2146,5 +2151,59 @@ public class ServerRpcMessageUtils {
             }
         }
         return offsets;
+    }
+
+    // =========================== Lake Lookup methods ==============================
+
+    /**
+     * Converts a LakeLookupRequest to a map of (partitionName, bucketId) to keys.
+     *
+     * @param lakeLookupRequest the lake lookup request
+     * @return map of (partitionName, bucketId) to list of keys
+     */
+    public static Map<Tuple2<String, Integer>, List<byte[]>> toLakeLookupData(
+            LakeLookupRequest lakeLookupRequest) {
+        Map<Tuple2<String, Integer>, List<byte[]>> lookupData = new HashMap<>();
+        for (PbLakeLookupReqForBucket bucketReq : lakeLookupRequest.getBucketsReqsList()) {
+            String partitionName =
+                    bucketReq.hasPartitionName() ? bucketReq.getPartitionName() : null;
+            int bucketId = bucketReq.getBucketId();
+            List<byte[]> keys = new ArrayList<>(bucketReq.getKeysCount());
+            for (int i = 0; i < bucketReq.getKeysCount(); i++) {
+                keys.add(bucketReq.getKeyAt(i));
+            }
+            lookupData.put(Tuple2.of(partitionName, bucketId), keys);
+        }
+        return lookupData;
+    }
+
+    /**
+     * Creates a LakeLookupResponse from a list of {@link LakeLookupResultForBucket}.
+     *
+     * @param bucketResults list of lake lookup results per partition bucket
+     * @return the lake lookup response
+     */
+    public static LakeLookupResponse makeLakeLookupResponse(
+            List<LakeLookupResultForBucket> bucketResults) {
+        LakeLookupResponse response = new LakeLookupResponse();
+        for (LakeLookupResultForBucket bucketResult : bucketResults) {
+            PbLakeLookupRespForBucket bucketResp = response.addBucketsResp();
+            String partitionName = bucketResult.getPartitionName();
+            if (partitionName != null) {
+                bucketResp.setPartitionName(partitionName);
+            }
+            bucketResp.setBucketId(bucketResult.getBucketId());
+            if (bucketResult.failed()) {
+                bucketResp.setError(bucketResult.getErrorCode(), bucketResult.getErrorMessage());
+            } else {
+                for (byte[] value : checkNotNull(bucketResult.getValues())) {
+                    PbValue pbValue = bucketResp.addValue();
+                    if (value != null) {
+                        pbValue.setValues(value);
+                    }
+                }
+            }
+        }
+        return response;
     }
 }

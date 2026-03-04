@@ -28,6 +28,7 @@ import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.types.DataTypeRoot;
+import org.apache.fluss.types.DataTypes;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Identifier;
@@ -256,6 +257,77 @@ public class PaimonConversions {
         tableDescriptor.getComment().ifPresent(schemaBuilder::comment);
 
         return schemaBuilder.build();
+    }
+
+    /** Convert Paimon RowType to Fluss RowType. */
+    public static org.apache.fluss.types.RowType toFlussRowType(RowType paimonRowType) {
+        org.apache.fluss.types.RowType.Builder builder = org.apache.fluss.types.RowType.builder();
+        for (org.apache.paimon.types.DataField field : paimonRowType.getFields()) {
+            builder.field(field.name(), toFlussDataType(field.type()));
+        }
+        return builder.build();
+    }
+
+    /** Convert Paimon DataType to Fluss DataType. */
+    public static org.apache.fluss.types.DataType toFlussDataType(DataType paimonType) {
+        if (paimonType instanceof org.apache.paimon.types.BooleanType) {
+            return DataTypes.BOOLEAN();
+        } else if (paimonType instanceof org.apache.paimon.types.TinyIntType) {
+            return DataTypes.TINYINT();
+        } else if (paimonType instanceof org.apache.paimon.types.SmallIntType) {
+            return DataTypes.SMALLINT();
+        } else if (paimonType instanceof org.apache.paimon.types.IntType) {
+            return DataTypes.INT();
+        } else if (paimonType instanceof org.apache.paimon.types.BigIntType) {
+            return DataTypes.BIGINT();
+        } else if (paimonType instanceof org.apache.paimon.types.FloatType) {
+            return DataTypes.FLOAT();
+        } else if (paimonType instanceof org.apache.paimon.types.DoubleType) {
+            return DataTypes.DOUBLE();
+        } else if (paimonType instanceof org.apache.paimon.types.DateType) {
+            return DataTypes.DATE();
+        } else if (paimonType instanceof org.apache.paimon.types.TimeType) {
+            return DataTypes.TIME();
+        } else if (paimonType instanceof org.apache.paimon.types.CharType) {
+            org.apache.paimon.types.CharType charType =
+                    (org.apache.paimon.types.CharType) paimonType;
+            return DataTypes.CHAR(charType.getLength());
+        } else if (paimonType instanceof org.apache.paimon.types.VarCharType) {
+            return DataTypes.STRING();
+        } else if (paimonType instanceof org.apache.paimon.types.BinaryType) {
+            org.apache.paimon.types.BinaryType binaryType =
+                    (org.apache.paimon.types.BinaryType) paimonType;
+            return DataTypes.BINARY(binaryType.getLength());
+        } else if (paimonType instanceof org.apache.paimon.types.VarBinaryType) {
+            return DataTypes.BYTES();
+        } else if (paimonType instanceof org.apache.paimon.types.DecimalType) {
+            org.apache.paimon.types.DecimalType decimalType =
+                    (org.apache.paimon.types.DecimalType) paimonType;
+            return DataTypes.DECIMAL(decimalType.getPrecision(), decimalType.getScale());
+        } else if (paimonType instanceof org.apache.paimon.types.TimestampType) {
+            org.apache.paimon.types.TimestampType timestampType =
+                    (org.apache.paimon.types.TimestampType) paimonType;
+            return DataTypes.TIMESTAMP(timestampType.getPrecision());
+        } else if (paimonType instanceof org.apache.paimon.types.LocalZonedTimestampType) {
+            org.apache.paimon.types.LocalZonedTimestampType ltzType =
+                    (org.apache.paimon.types.LocalZonedTimestampType) paimonType;
+            return DataTypes.TIMESTAMP_LTZ(ltzType.getPrecision());
+        } else if (paimonType instanceof org.apache.paimon.types.ArrayType) {
+            org.apache.paimon.types.ArrayType arrayType =
+                    (org.apache.paimon.types.ArrayType) paimonType;
+            return new org.apache.fluss.types.ArrayType(
+                    paimonType.isNullable(), toFlussDataType(arrayType.getElementType()));
+        } else if (paimonType instanceof org.apache.paimon.types.MapType) {
+            org.apache.paimon.types.MapType mapType = (org.apache.paimon.types.MapType) paimonType;
+            return new org.apache.fluss.types.MapType(
+                    paimonType.isNullable(),
+                    toFlussDataType(mapType.getKeyType()),
+                    toFlussDataType(mapType.getValueType()));
+        } else if (paimonType instanceof RowType) {
+            return toFlussRowType((RowType) paimonType);
+        } else {
+            throw new IllegalArgumentException("Unsupported Paimon type: " + paimonType);
+        }
     }
 
     private static void validatePaimonOptions(Map<String, String> properties) {

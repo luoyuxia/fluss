@@ -135,5 +135,12 @@ public class PluginLakeStorageWrapper implements LakeStoragePlugin {
         public LakeSource<?> createLakeSource(TablePath tablePath) {
             return inner.createLakeSource(tablePath);
         }
+
+        @Override
+        public LakeTableLookuper createLakeTableLookuper(TablePath tablePath) {
+            try (TemporaryClassLoaderContext ignored = TemporaryClassLoaderContext.of(loader)) {
+                return inner.createLakeTableLookuper(tablePath);
+            }
+        }
     }
 }

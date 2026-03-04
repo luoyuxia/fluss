@@ -150,6 +150,22 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
                 tableId, (short) schemaInfo.getSchemaId(), schemaInfo.getSchema());
     }
 
+    /**
+     * Gets the latest schema ID for a table from the in-memory cache. Returns -1 if not found.
+     *
+     * <p>This is a lightweight operation that does not access ZooKeeper, suitable for hot paths like
+     * lake lookups.
+     */
+    public int getLatestSchemaId(TablePath tablePath) {
+        OptionalLong tableIdOpt = serverMetadataSnapshot.getTableId(tablePath);
+        if (!tableIdOpt.isPresent()) {
+            return -1;
+        }
+        SchemaInfo schemaInfo =
+                serverSchemaCache.getLatestSchemaByTableId().get(tableIdOpt.getAsLong());
+        return schemaInfo != null ? schemaInfo.getSchemaId() : -1;
+    }
+
     public Optional<PartitionMetadata> getPartitionMetadata(PhysicalTablePath partitionPath) {
         TablePath tablePath = partitionPath.getTablePath();
         String partitionName = partitionPath.getPartitionName();

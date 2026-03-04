@@ -24,6 +24,8 @@ import org.apache.fluss.rpc.messages.GetTableStatsRequest;
 import org.apache.fluss.rpc.messages.GetTableStatsResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
+import org.apache.fluss.rpc.messages.LakeLookupRequest;
+import org.apache.fluss.rpc.messages.LakeLookupResponse;
 import org.apache.fluss.rpc.messages.LimitScanRequest;
 import org.apache.fluss.rpc.messages.LimitScanResponse;
 import org.apache.fluss.rpc.messages.ListOffsetsRequest;
@@ -122,6 +124,15 @@ public interface TabletServerGateway extends RpcGateway, AdminReadOnlyGateway {
      */
     @RPC(api = ApiKeys.PREFIX_LOOKUP)
     CompletableFuture<PrefixLookupResponse> prefixLookup(PrefixLookupRequest request);
+
+    /**
+     * Lake lookup to get value from lake storage (e.g., Paimon) when the partition doesn't exist in
+     * Fluss anymore (e.g., expired partitions in auto-partitioned tables).
+     *
+     * @return Lake lookup response.
+     */
+    @RPC(api = ApiKeys.LAKE_LOOKUP)
+    CompletableFuture<LakeLookupResponse> lakeLookup(LakeLookupRequest request);
 
     /**
      * Get limit number of values from the specified table bucket.
