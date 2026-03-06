@@ -28,7 +28,11 @@ import javax.annotation.Nullable;
  * lookuper can be used to perform point lookups directly against the lake storage.
  *
  * <p>Each instance is bound to a specific table and caches per-table resources (e.g., catalog
- * connections, table metadata, key decoders) for efficient repeated lookups.
+ * connections, table metadata) for efficient repeated lookups.
+ *
+ * <p>The key bytes passed to {@link #lookup} are already encoded in the lake storage's native
+ * format (e.g., Paimon BinaryRow format for Paimon tables) by the client-side encoder, so
+ * implementations can use them directly without re-encoding.
  *
  * @since 0.10
  */
@@ -38,8 +42,15 @@ public interface LakeTableLookuper {
     /**
      * Lookup a single key from lake storage for an expired partition.
      *
-     * @param key the encoded key bytes to lookup
-     * @param context the lookup context containing partition and bucket information
+     * <p>The key bytes are already encoded in the lake storage's native key format by the
+     * client-side encoder (e.g., Paimon BinaryRow format). Implementations can wrap them directly
+     * as the lake storage's key type without decode/re-encode.
+     *
+     * <p>The returned value bytes should be encoded with the a schema ID so the client can
+     * correctly decode them.
+     *
+     * @param key the encoded key bytes to lookup, in the lake storage's native key format
+     * @param context the lookup context containing partition, bucket, and schema information
      * @return the encoded value bytes, or null if the key is not found
      * @throws Exception if the lookup fails
      */
@@ -70,7 +81,7 @@ public interface LakeTableLookuper {
             return bucketId;
         }
 
-        /** Returns the schema id. */
+        /** Returns the latest schema id of the table. */
         public int getSchemaId() {
             return schemaId;
         }
