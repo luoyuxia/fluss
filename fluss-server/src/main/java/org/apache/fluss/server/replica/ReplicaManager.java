@@ -861,18 +861,26 @@ public class ReplicaManager {
      * <p>The lookup is executed asynchronously in a separate thread pool to prevent slow lake
      * storage lookups from blocking fast memory lookups.
      *
-     * @param tablePath the table path
+     * @param tableId the table id
      * @param entriesPerBucket map of (partitionName, bucketId) to list of keys to lookup
      * @param responseCallback callback to receive the lookup results
      */
     public void lakeLookups(
-            TablePath tablePath,
+            long tableId,
             Map<Tuple2<String, Integer>, List<byte[]>> entriesPerBucket,
             Consumer<List<LakeLookupResultForBucket>> responseCallback) {
         if (lakeStorage == null) {
             throw new IllegalStateException(
-                    "Lake storage is not available, lake storage is not configured. " + tablePath);
+                    "Lake storage is not available, lake storage is not configured. tableId="
+                            + tableId);
         }
+        TablePath tablePath =
+                metadataCache
+                        .getTablePath(tableId)
+                        .orElseThrow(
+                                () ->
+                                        new IllegalStateException(
+                                                "Table path not found for tableId=" + tableId));
         int schemaId = metadataCache.getLatestSchemaId(tablePath);
         LakeTableLookuper lookuper =
                 lakeTableLookuperCache.computeIfAbsent(

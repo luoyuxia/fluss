@@ -301,12 +301,12 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
 
     @Override
     public CompletableFuture<LakeLookupResponse> lakeLookup(LakeLookupRequest request) {
-        TablePath tablePath = ServerRpcMessageUtils.toTablePath(request.getTablePath());
-        authorizeTable(READ, tablePath);
+        long tableId = request.getTableId();
+        authorizeTable(READ, tableId);
 
         CompletableFuture<LakeLookupResponse> response = new CompletableFuture<>();
         replicaManager.lakeLookups(
-                tablePath,
+                tableId,
                 toLakeLookupData(request),
                 value -> response.complete(makeLakeLookupResponse(value)));
         return response;

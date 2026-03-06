@@ -56,8 +56,7 @@ public interface LakeStorage {
      * specified table.
      *
      * <p>This is used when partitions have expired in Fluss and their data has been tiered to lake
-     * storage. The returned lookuper is bound to the specified table and caches per-table
-     * resources.
+     * storage.
      *
      * @param tablePath the table path to create the lookuper for
      * @return a lake table lookuper instance for the specified table

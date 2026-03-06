@@ -177,7 +177,7 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
         CompletableFuture<LookupResult> lookupFuture = new CompletableFuture<>();
 
         lookupClient
-                .lakeLookup(tableInfo.getTablePath(), partitionName, bucketId, pkBytes)
+                .lakeLookup(tableInfo.getTablePath(), tableInfo.getTableId(), partitionName, bucketId, pkBytes)
                 .whenComplete(
                         (result, error) -> {
                             if (error != null) {

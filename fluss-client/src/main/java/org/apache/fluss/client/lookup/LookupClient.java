@@ -113,15 +113,20 @@ public class LookupClient {
      * storage.
      *
      * @param tablePath the table path
+     * @param tableId the table id
      * @param partitionName the partition name (may be null for non-partitioned tables)
      * @param bucketId the bucket id
      * @param keyBytes the encoded key bytes
      * @return a future containing the lookup result
      */
     public CompletableFuture<byte[]> lakeLookup(
-            TablePath tablePath, @Nullable String partitionName, int bucketId, byte[] keyBytes) {
+            TablePath tablePath,
+            long tableId,
+            @Nullable String partitionName,
+            int bucketId,
+            byte[] keyBytes) {
         LakeLookupQuery lakeLookup =
-                new LakeLookupQuery(tablePath, partitionName, bucketId, keyBytes);
+                new LakeLookupQuery(tablePath, tableId, partitionName, bucketId, keyBytes);
         lookupQueue.appendLookup(lakeLookup);
         return lakeLookup.future();
     }

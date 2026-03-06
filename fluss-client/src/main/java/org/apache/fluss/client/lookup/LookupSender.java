@@ -310,7 +310,9 @@ class LookupSender implements Runnable {
         for (AbstractLookupQuery<?> abstractLookupQuery : lakeLookups) {
             LakeLookupQuery lakeLookup = (LakeLookupQuery) abstractLookupQuery;
             lookupByTable
-                    .computeIfAbsent(lakeLookup.tablePath(), k -> new LakeLookupBatch(k))
+                    .computeIfAbsent(
+                            lakeLookup.tablePath(),
+                            k -> new LakeLookupBatch(k, lakeLookup.tableId()))
                     .addLookup(lakeLookup);
         }
 
@@ -338,10 +340,7 @@ class LookupSender implements Runnable {
 
     private LakeLookupRequest makeLakeLookupRequest(LakeLookupBatch batch) {
         LakeLookupRequest request = new LakeLookupRequest();
-        request.setTablePath(
-                new org.apache.fluss.rpc.messages.PbTablePath()
-                        .setDatabaseName(batch.tablePath.getDatabaseName())
-                        .setTableName(batch.tablePath.getTableName()));
+        request.setTableId(batch.tableId);
         // Add buckets with their partition name and keys
         for (Map.Entry<Tuple2<String, Integer>, List<LakeLookupQuery>> entry :
                 batch.getEntries()) {
@@ -726,12 +725,14 @@ class LookupSender implements Runnable {
     /** A helper class to hold lake lookup queries for a table/partition combination. */
     private static class LakeLookupBatch {
         private final TablePath tablePath;
+        private final long tableId;
         // (partitionName, bucketId) -> lookups
         private final Map<Tuple2<String, Integer>, List<LakeLookupQuery>> lookupsByPartitionBucket =
                 new HashMap<>();
 
-        LakeLookupBatch(TablePath tablePath) {
+        LakeLookupBatch(TablePath tablePath, long tableId) {
             this.tablePath = tablePath;
+            this.tableId = tableId;
         }
 
         void addLookup(LakeLookupQuery query) {

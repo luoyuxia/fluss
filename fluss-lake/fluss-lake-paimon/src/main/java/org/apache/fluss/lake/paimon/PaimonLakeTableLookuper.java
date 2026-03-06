@@ -19,12 +19,9 @@ package org.apache.fluss.lake.paimon;
 
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
-import org.apache.fluss.lake.paimon.source.FlussRowAsPaimonRow;
 import org.apache.fluss.lake.paimon.utils.PaimonRowAsFlussRow;
-import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.row.InternalRow;
-import org.apache.fluss.row.decode.KeyDecoder;
 import org.apache.fluss.row.encode.CompactedRowEncoder;
 import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.types.DataType;
@@ -36,6 +33,7 @@ import org.apache.paimon.catalog.CatalogFactory;
 import org.apache.paimon.data.BinaryRow;
 import org.apache.paimon.data.BinaryRowWriter;
 import org.apache.paimon.disk.IOManager;
+import org.apache.paimon.memory.MemorySegment;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
@@ -58,10 +56,12 @@ import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toFlussRowTyp
  * Paimon implementation of {@link LakeTableLookuper}.
  *
  * <p>Each instance is bound to a specific table and caches per-table resources (Catalog,
- * FileStoreTable, KeyDecoder, LocalTableQuery, etc.) for efficient repeated lookups.
+ * FileStoreTable, LocalTableQuery, etc.) for efficient repeated lookups.
  *
  * <p>Performs point lookups against Paimon lake storage for expired partitions using {@link
- * LocalTableQuery}.
+ * LocalTableQuery}. The key bytes passed to {@link #lookup} are already encoded in Paimon's
+ * BinaryRow format by the client-side {@code PaimonKeyEncoder}, so they can be directly wrapped as
+ * a Paimon BinaryRow without decode/re-encode.
  */
 public class PaimonLakeTableLookuper implements LakeTableLookuper {
 
@@ -75,8 +75,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     private Catalog catalog;
     private FileStoreTable fileStoreTable;
     private RowType flussRowType;
-    private KeyDecoder keyDecoder;
-    private org.apache.paimon.types.RowType paimonPkRowType;
+    private int numPkFields;
     private List<String> partitionKeys;
     private InternalRow.FieldGetter[] fieldGetters;
     private LocalTableQuery tableQuery;
@@ -119,15 +118,14 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             refreshedBuckets.add(bucketKey);
         }
 
-        // Decode Fluss key bytes to InternalRow
-        InternalRow keyRow = keyDecoder.decodeKey(key);
-
-        // Wrap Fluss key row as Paimon InternalRow using adapter
-        FlussRowAsPaimonRow paimonKeyRow = new FlussRowAsPaimonRow(keyRow, paimonPkRowType);
+        // The key bytes are already encoded in Paimon's BinaryRow format by PaimonKeyEncoder,
+        // so we can directly wrap them as a Paimon BinaryRow without decode/re-encode.
+        BinaryRow keyRow = new BinaryRow(numPkFields);
+        keyRow.pointTo(MemorySegment.wrap(key), 0, key.length);
 
         // Perform lookup
         org.apache.paimon.data.InternalRow valueRow =
-                tableQuery.lookup(partition, bucketId, paimonKeyRow);
+                tableQuery.lookup(partition, bucketId, keyRow);
 
         if (valueRow != null) {
             // Wrap Paimon value row as Fluss InternalRow using adapter
@@ -183,23 +181,8 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         flussRowType = toFlussRowType(paimonFullRowType);
         List<String> primaryKeyFields = fileStoreTable.schema().trimmedPrimaryKeys();
 
-        // Create key decoder
-        keyDecoder =
-                KeyDecoder.ofPrimaryKeyDecoder(
-                        flussRowType,
-                        primaryKeyFields,
-                        (short) 1, // kvFormatVersion 1 uses Paimon encoder
-                        DataLakeFormat.PAIMON,
-                        true // isDefaultBucketKey should always be true when fall back to lake
-                        // lookup
-                        );
-
-        // Build Paimon PK RowType for FlussRowAsPaimonRow adapter
-        int[] pkFieldIndices = new int[primaryKeyFields.size()];
-        for (int i = 0; i < primaryKeyFields.size(); i++) {
-            pkFieldIndices[i] = paimonFullRowType.getFieldIndex(primaryKeyFields.get(i));
-        }
-        paimonPkRowType = paimonFullRowType.project(pkFieldIndices);
+        // Store the number of PK fields for wrapping key bytes as BinaryRow
+        numPkFields = primaryKeyFields.size();
 
         partitionKeys = fileStoreTable.partitionKeys();
 

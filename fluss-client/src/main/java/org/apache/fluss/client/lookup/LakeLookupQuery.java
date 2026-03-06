@@ -35,6 +35,7 @@ import java.util.concurrent.CompletableFuture;
 public class LakeLookupQuery extends AbstractLookupQuery<byte[]> {
 
     private final CompletableFuture<byte[]> future;
+    private final long tableId;
     private final String partitionName;
     private final int bucketId;
 
@@ -42,15 +43,22 @@ public class LakeLookupQuery extends AbstractLookupQuery<byte[]> {
      * Creates a LakeLookupQuery.
      *
      * @param tablePath the table path
+     * @param tableId the table id
      * @param partitionName the partition name (may be null for non-partitioned tables)
      * @param bucketId the bucket id
      * @param key the encoded key bytes
      */
-    LakeLookupQuery(TablePath tablePath, @Nullable String partitionName, int bucketId, byte[] key) {
+    LakeLookupQuery(
+            TablePath tablePath,
+            long tableId,
+            @Nullable String partitionName,
+            int bucketId,
+            byte[] key) {
         // For lake lookup, we don't have a partitionId since the partition doesn't exist in Fluss
         // We use a TableBucket with null partitionId
         super(tablePath, null, key);
         this.future = new CompletableFuture<>();
+        this.tableId = tableId;
         this.partitionName = partitionName;
         this.bucketId = bucketId;
     }
@@ -63,6 +71,15 @@ public class LakeLookupQuery extends AbstractLookupQuery<byte[]> {
     @Override
     public CompletableFuture<byte[]> future() {
         return future;
+    }
+
+    /**
+     * Gets the table id for lake lookup.
+     *
+     * @return the table id
+     */
+    public long tableId() {
+        return tableId;
     }
 
     /**
