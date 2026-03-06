@@ -38,6 +38,13 @@ public class PhysicalTablePath implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    /**
+     * The name of the overflow partition used to accept writes for expired partitions. This
+     * partition never expires and serves as a catch-all for late-arriving data targeting historical
+     * partitions that have been removed.
+     */
+    public static final String OVERFLOW_PARTITION_NAME = "overflow";
+
     private final TablePath tablePath;
 
     private final @Nullable String partitionName;

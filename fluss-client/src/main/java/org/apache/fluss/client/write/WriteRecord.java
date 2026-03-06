@@ -301,4 +301,22 @@ public final class WriteRecord {
     public int getSchemaId() {
         return tableInfo.getSchemaId();
     }
+
+    /**
+     * Creates a new {@link WriteRecord} with the given physical table path, keeping all other fields
+     * unchanged. This is used for redirecting writes to the overflow partition when the original
+     * target partition has expired.
+     */
+    public WriteRecord withPhysicalTablePath(PhysicalTablePath newPhysicalTablePath) {
+        return new WriteRecord(
+                tableInfo,
+                newPhysicalTablePath,
+                key,
+                bucketKey,
+                row,
+                writeFormat,
+                targetColumns,
+                estimatedSizeInBytes,
+                mergeMode);
+    }
 }

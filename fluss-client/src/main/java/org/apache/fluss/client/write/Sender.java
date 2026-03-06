@@ -40,12 +40,10 @@ import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.utils.ExceptionUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.GuardedBy;
-
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -217,8 +215,7 @@ public class Sender implements Runnable {
             } catch (Exception e) {
                 // TODO: this try-catch is not needed when we don't update metadata for
                 //  unready partitions
-                Throwable t = ExceptionUtils.stripExecutionException(e);
-                if (t.getCause() instanceof PartitionNotExistException) {
+                if (ExceptionUtils.findThrowable(e, PartitionNotExistException.class).isPresent()) {
                     // ignore this exception, this is probably happen because the partition
                 } else {
                     throw e;

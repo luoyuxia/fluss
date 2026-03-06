@@ -100,6 +100,52 @@ public class DynamicPartitionCreator {
         }
     }
 
+    /**
+     * Ensures a partition exists, creating it synchronously if necessary. Unlike {@link
+     * #checkAndCreatePartitionAsync}, this method always creates the partition if it doesn't exist,
+     * regardless of the {@link #dynamicPartitionEnabled} flag. This is used for creating the
+     * overflow partition when redirecting writes for expired partitions.
+     *
+     * <p>The partition creation is synchronous to ensure the partition exists on the server before
+     * the caller accumulates records, avoiding races with the Sender thread that needs partition
+     * metadata to resolve leaders.
+     */
+    public void ensurePartitionCreated(
+            PhysicalTablePath physicalTablePath, List<String> partitionKeys) {
+        String partitionName = physicalTablePath.getPartitionName();
+        if (partitionName == null) {
+            return;
+        }
+
+        Optional<Long> partitionIdOpt = metadataUpdater.getPartitionId(physicalTablePath);
+        if (partitionIdOpt.isPresent()) {
+            return;
+        }
+
+        if (inflightPartitionsToCreate.contains(physicalTablePath)) {
+            return;
+        }
+
+        // Force check if it exists on the server side.
+        boolean exists = false;
+        try {
+            exists = metadataUpdater.checkAndUpdatePartitionMetadata(physicalTablePath);
+        } catch (Exception e) {
+            Throwable t = ExceptionUtils.stripExecutionException(e);
+            if (!(t instanceof PartitionNotExistException)) {
+                throw new FlussRuntimeException(e.getMessage(), e);
+            }
+            // PartitionNotExistException is expected, continue to create
+        }
+
+        if (!exists) {
+            if (inflightPartitionsToCreate.add(physicalTablePath)) {
+                LOG.info("Creating overflow partition {}", physicalTablePath);
+                createPartitionSync(physicalTablePath, partitionKeys);
+            }
+        }
+    }
+
     private boolean forceCheckPartitionExist(PhysicalTablePath physicalTablePath) {
         boolean idExist = false;
         // force an IO to check whether the partition exists
@@ -141,6 +187,31 @@ public class DynamicPartitionCreator {
                                 onPartitionCreationSuccess(physicalTablePath);
                             }
                         });
+    }
+
+    /**
+     * Creates a partition synchronously, blocking until the server confirms creation. Used for
+     * overflow partition creation where we need the partition to exist before accumulating records.
+     */
+    private void createPartitionSync(
+            PhysicalTablePath physicalTablePath, List<String> partitionKeys) {
+        String partitionName = physicalTablePath.getPartitionName();
+        TablePath tablePath = physicalTablePath.getTablePath();
+        checkArgument(partitionName != null, "Partition name shouldn't be null.");
+        ResolvedPartitionSpec resolvedPartitionSpec =
+                ResolvedPartitionSpec.fromPartitionName(partitionKeys, partitionName);
+
+        try {
+            admin.createPartition(tablePath, resolvedPartitionSpec.toPartitionSpec(), true).get();
+            onPartitionCreationSuccess(physicalTablePath);
+            // Refresh metadata cache so the Sender can resolve the partition leader
+            // immediately without hitting PartitionNotExistException.
+            metadataUpdater.checkAndUpdatePartitionMetadata(physicalTablePath);
+        } catch (Exception e) {
+            onPartitionCreationFailed(physicalTablePath, e);
+            throw new FlussRuntimeException(
+                    "Failed to create overflow partition " + physicalTablePath, e);
+        }
     }
 
     private void onPartitionCreationSuccess(PhysicalTablePath physicalTablePath) {

@@ -28,6 +28,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.IllegalConfigurationException;
+import org.apache.fluss.exception.PartitionNotExistException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
@@ -35,12 +36,10 @@ import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.utils.CopyOnWriteMap;
 import org.apache.fluss.utils.clock.SystemClock;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.ThreadSafe;
-
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -176,39 +175,64 @@ public class WriterClient {
 
             TableInfo tableInfo = record.getTableInfo();
             PhysicalTablePath physicalTablePath = record.getPhysicalTablePath();
-            dynamicPartitionCreator.checkAndCreatePartitionAsync(
-                    physicalTablePath, tableInfo.getPartitionKeys());
+
+            try {
+                metadataUpdater.updateTableOrPartitionMetadata(tableInfo.getTablePath(), null);
+                dynamicPartitionCreator.checkAndCreatePartitionAsync(
+                        physicalTablePath, tableInfo.getPartitionKeys());
+            } catch (PartitionNotExistException e) {
+                if (shouldRedirectToOverflow(tableInfo)) {
+                    // Redirect to the overflow partition for expired partition writes.
+                    physicalTablePath =
+                            PhysicalTablePath.of(
+                                    physicalTablePath.getTablePath(),
+                                    PhysicalTablePath.OVERFLOW_PARTITION_NAME);
+                    record = record.withPhysicalTablePath(physicalTablePath);
+                    dynamicPartitionCreator.ensurePartitionCreated(
+                            physicalTablePath, tableInfo.getPartitionKeys());
+                } else {
+                    throw e;
+                }
+            }
+
+            // Use effectively final variables after potential overflow redirect.
+            final WriteRecord finalRecord = record;
+            final PhysicalTablePath finalPhysicalTablePath = physicalTablePath;
 
             // maybe create bucket assigner.
             Cluster cluster = metadataUpdater.getCluster();
             BucketAssigner bucketAssigner =
                     bucketAssignerMap.computeIfAbsent(
-                            physicalTablePath,
-                            k -> createBucketAssigner(tableInfo, physicalTablePath, conf));
+                            finalPhysicalTablePath,
+                            k -> createBucketAssigner(tableInfo, finalPhysicalTablePath, conf));
 
             // Append the record to the accumulator.
-            int bucketId = bucketAssigner.assignBucket(record.getBucketKey(), cluster);
+            int bucketId = bucketAssigner.assignBucket(finalRecord.getBucketKey(), cluster);
 
             RecordAppendResult result =
                     accumulator.append(
-                            record, callback, cluster, bucketId, bucketAssigner.abortIfBatchFull());
+                            finalRecord,
+                            callback,
+                            cluster,
+                            bucketId,
+                            bucketAssigner.abortIfBatchFull());
 
             if (result.abortRecordForNewBatch) {
                 int prevBucketId = bucketId;
                 bucketAssigner.onNewBatch(cluster, prevBucketId);
-                bucketId = bucketAssigner.assignBucket(record.getBucketKey(), cluster);
+                bucketId = bucketAssigner.assignBucket(finalRecord.getBucketKey(), cluster);
                 LOG.trace(
                         "Retrying append due to new batch creation for table {} bucket {}, the old bucket was {}.",
-                        physicalTablePath,
+                        finalPhysicalTablePath,
                         bucketId,
                         prevBucketId);
-                result = accumulator.append(record, callback, cluster, bucketId, false);
+                result = accumulator.append(finalRecord, callback, cluster, bucketId, false);
             }
 
             if (result.batchIsFull || result.newBatchCreated) {
                 LOG.trace(
                         "Waking up the sender since table {} bucket {} is either full or getting a new batch",
-                        record.getPhysicalTablePath(),
+                        finalRecord.getPhysicalTablePath(),
                         bucketId);
                 // TODO add the wakeup logic refer to Kafka.
             }
@@ -227,6 +251,16 @@ public class WriterClient {
             LOG.error("Aborting all pending write batches due to fatal error", t);
             accumulator.abortBatches(toException(t));
         }
+    }
+
+    /**
+     * Checks whether writes for a non-existent partition should be redirected to the overflow
+     * partition. This is applicable for auto-partitioned tables with data lake tiering enabled,
+     * where expired partition writes can be captured in the overflow partition and later tiered to
+     * the correct lake partition.
+     */
+    private boolean shouldRedirectToOverflow(TableInfo tableInfo) {
+        return tableInfo.isAutoPartitioned() && tableInfo.getTableConfig().isDataLakeEnabled();
     }
 
     // Verify that writer instance has not been closed. This method throws IllegalStateException if
