@@ -19,7 +19,6 @@ package org.apache.fluss.server.replica;
 
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.compression.ArrowCompressionInfo;
-import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.exception.FencedLeaderEpochException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
@@ -31,6 +30,8 @@ import org.apache.fluss.exception.NonPrimaryKeyTableException;
 import org.apache.fluss.exception.NotEnoughReplicasException;
 import org.apache.fluss.exception.NotLeaderOrFollowerException;
 import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.lake.lakestorage.LakeStorage;
+import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
 import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.PhysicalTablePath;
@@ -54,6 +55,7 @@ import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvRecoverHelper;
 import org.apache.fluss.server.kv.KvTablet;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
+import org.apache.fluss.server.kv.overflow.OverflowWriteContext;
 import org.apache.fluss.server.kv.rocksdb.RocksDBKvBuilder;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
@@ -162,6 +164,8 @@ public final class Replica {
     private final SnapshotContext snapshotContext;
     // null if table without pk
     private final @Nullable KvManager kvManager;
+    // null if data lake is not configured
+    private final @Nullable LakeStorage lakeStorage;
 
     private final int localTabletServerId;
     private final DelayedOperationManager<DelayedWrite<?>> delayedWriteManager;
@@ -211,6 +215,7 @@ public final class Replica {
             TableBucket tableBucket,
             LogManager logManager,
             @Nullable KvManager kvManager,
+            @Nullable LakeStorage lakeStorage,
             long replicaMaxLagTime,
             int minInSyncReplicas,
             int localTabletServerId,
@@ -229,6 +234,7 @@ public final class Replica {
         this.tableBucket = tableBucket;
         this.logManager = logManager;
         this.kvManager = kvManager;
+        this.lakeStorage = lakeStorage;
         this.metadataCache = metadataCache;
         this.replicaMaxLagTime = replicaMaxLagTime;
         this.minInSyncReplicas = minInSyncReplicas;
@@ -770,7 +776,60 @@ public final class Replica {
             bucketMetricGroup.registerRocksDBStatistics(kvTablet.getRocksDBStatistics());
         }
 
+        // Set up overflow write context for overflow partitions
+        maySetupOverflowContext();
+
         return optCompletedSnapshot;
+    }
+
+    /**
+     * Sets up the overflow write context on the KvTablet if this replica belongs to an overflow
+     * partition. The overflow context routes records to per-partition buffers and RocksDB column
+     * families based on the original partition extracted from each row.
+     */
+    private void maySetupOverflowContext() {
+        if (kvTablet == null) {
+            return;
+        }
+        String partitionName = physicalPath.getPartitionName();
+        if (!PhysicalTablePath.OVERFLOW_PARTITION_NAME.equals(partitionName)) {
+            return;
+        }
+        List<String> partitionKeys = tableInfo.getPartitionKeys();
+        if (partitionKeys.isEmpty()) {
+            return;
+        }
+        try {
+            // Create a lake table lookuper for Paimon fallback if lake storage is configured
+            LakeTableLookuper lakeLookuper = null;
+            if (lakeStorage != null) {
+                lakeLookuper = lakeStorage.createLakeTableLookuper(physicalPath.getTablePath());
+            }
+
+            OverflowWriteContext overflowContext =
+                    new OverflowWriteContext(
+                            kvTablet.getRocksDBKv(),
+                            kvTablet.getWriteBatchSize(),
+                            kvTablet.getServerMetricGroup(),
+                            lakeLookuper,
+                            tableBucket.getBucket(),
+                            tableInfo.getSchema().getRowType(),
+                            partitionKeys);
+            kvTablet.setOverflowContext(overflowContext);
+            LOG.info(
+                    "Overflow write context set for {} of table {} with partition keys {}"
+                            + " (lake lookuper: {}).",
+                    tableBucket,
+                    physicalPath,
+                    partitionKeys,
+                    lakeLookuper != null ? "enabled" : "disabled");
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to set up overflow write context for {} of table {}.",
+                    tableBucket,
+                    physicalPath,
+                    e);
+        }
     }
 
     private void downloadKvSnapshots(CompletedSnapshot completedSnapshot, Path kvTabletDir)

@@ -153,8 +153,8 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
     /**
      * Gets the latest schema ID for a table from the in-memory cache. Returns -1 if not found.
      *
-     * <p>This is a lightweight operation that does not access ZooKeeper, suitable for hot paths like
-     * lake lookups.
+     * <p>This is a lightweight operation that does not access ZooKeeper, suitable for hot paths
+     * like lake lookups.
      */
     public int getLatestSchemaId(TablePath tablePath) {
         OptionalLong tableIdOpt = serverMetadataSnapshot.getTableId(tablePath);

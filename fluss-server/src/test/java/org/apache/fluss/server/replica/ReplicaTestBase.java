@@ -475,6 +475,7 @@ public class ReplicaTestBase {
                 tableBucket,
                 logManager,
                 isPkTable ? kvManager : null,
+                null,
                 conf.get(ConfigOptions.LOG_REPLICA_MAX_LAG_TIME).toMillis(),
                 conf.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER),
                 TABLET_SERVER_ID,

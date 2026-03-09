@@ -25,6 +25,8 @@ import org.apache.fluss.server.kv.KvBatchWriter;
 import org.apache.fluss.server.metrics.group.TabletServerMetricGroup;
 import org.apache.fluss.utils.MurmurHashUtils;
 
+import org.rocksdb.ColumnFamilyHandle;
+
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
@@ -88,6 +90,12 @@ import static org.apache.fluss.utils.UnsafeUtils.BYTE_ARRAY_BASE_OFFSET;
 public class KvPreWriteBuffer implements AutoCloseable {
     private final KvBatchWriter kvBatchWriter;
 
+    /**
+     * Optional column family handle for overflow partition buffers. When set, flush operations will
+     * use CF-aware put/delete methods on the batch writer.
+     */
+    private final @Nullable ColumnFamilyHandle columnFamilyHandle;
+
     // a mapping from the key to the kv-entry
     private final Map<Key, KvEntry> kvEntryMap = new HashMap<>();
 
@@ -103,7 +111,15 @@ public class KvPreWriteBuffer implements AutoCloseable {
 
     public KvPreWriteBuffer(
             KvBatchWriter kvBatchWriter, TabletServerMetricGroup serverMetricGroup) {
+        this(kvBatchWriter, null, serverMetricGroup);
+    }
+
+    public KvPreWriteBuffer(
+            KvBatchWriter kvBatchWriter,
+            @Nullable ColumnFamilyHandle columnFamilyHandle,
+            TabletServerMetricGroup serverMetricGroup) {
         this.kvBatchWriter = kvBatchWriter;
+        this.columnFamilyHandle = columnFamilyHandle;
 
         truncateAsDuplicatedCount = serverMetricGroup.kvTruncateAsDuplicatedCount();
         truncateAsErrorCount = serverMetricGroup.kvTruncateAsErrorCount();
@@ -230,10 +246,18 @@ public class KvPreWriteBuffer implements AutoCloseable {
             Value value = entry.getValue();
             if (value.value != null) {
                 flushedCount += 1;
-                kvBatchWriter.put(entry.getKey().key, value.value);
+                if (columnFamilyHandle != null) {
+                    kvBatchWriter.put(columnFamilyHandle, entry.getKey().key, value.value);
+                } else {
+                    kvBatchWriter.put(entry.getKey().key, value.value);
+                }
             } else {
                 flushedCount += 1;
-                kvBatchWriter.delete(entry.getKey().key);
+                if (columnFamilyHandle != null) {
+                    kvBatchWriter.delete(columnFamilyHandle, entry.getKey().key);
+                } else {
+                    kvBatchWriter.delete(entry.getKey().key);
+                }
             }
 
             // for update_after, we don't change the row count
@@ -284,6 +308,12 @@ public class KvPreWriteBuffer implements AutoCloseable {
 
     public Counter getTruncateAsErrorCount() {
         return truncateAsErrorCount;
+    }
+
+    /** Returns the column family handle associated with this buffer, or null for default CF. */
+    @Nullable
+    public ColumnFamilyHandle getColumnFamilyHandle() {
+        return columnFamilyHandle;
     }
 
     // -------------------------------------------------------------------------------------------

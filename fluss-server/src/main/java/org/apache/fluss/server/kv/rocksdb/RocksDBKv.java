@@ -26,6 +26,7 @@ import org.apache.fluss.utils.BytesUtils;
 import org.apache.fluss.utils.IOUtils;
 
 import org.rocksdb.Cache;
+import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.ReadOptions;
@@ -38,8 +39,11 @@ import org.rocksdb.WriteOptions;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /** A wrapper for the operation of {@link org.rocksdb.RocksDB}. */
 public class RocksDBKv implements AutoCloseable {
@@ -72,6 +76,9 @@ public class RocksDBKv implements AutoCloseable {
 
     // mark whether this kv is already closed and prevent duplicate closing
     private volatile boolean closed = false;
+
+    /** Cache of dynamically created column family handles, keyed by CF name. */
+    private final Map<String, ColumnFamilyHandle> columnFamilyHandles = new HashMap<>();
 
     public RocksDBKv(
             RocksDBResourceContainer optionsContainer,
@@ -167,6 +174,72 @@ public class RocksDBKv implements AutoCloseable {
         }
     }
 
+    // -------------------------------------------------------------------------------------------
+    // Column family aware operations
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Gets or creates a column family with the given name. Column family handles are cached
+     * internally and reused on subsequent calls with the same name.
+     */
+    public ColumnFamilyHandle getOrCreateColumnFamily(String cfName) throws IOException {
+        ColumnFamilyHandle handle = columnFamilyHandles.get(cfName);
+        if (handle != null) {
+            return handle;
+        }
+        try {
+            ColumnFamilyOptions cfOptions = optionsContainer.getColumnOptions();
+            ColumnFamilyDescriptor cfDescriptor =
+                    new ColumnFamilyDescriptor(cfName.getBytes(StandardCharsets.UTF_8), cfOptions);
+            handle = db.createColumnFamily(cfDescriptor);
+            columnFamilyHandles.put(cfName, handle);
+            return handle;
+        } catch (RocksDBException e) {
+            throw new IOException("Failed to create column family: " + cfName, e);
+        }
+    }
+
+    /** Get a value by key from the specified column family. */
+    public @Nullable byte[] get(ColumnFamilyHandle columnFamily, byte[] key) throws IOException {
+        try {
+            return db.get(columnFamily, key);
+        } catch (RocksDBException e) {
+            throw new IOException("Fail to get key from column family.", e);
+        }
+    }
+
+    /** Put a key-value pair into the specified column family. */
+    public void put(ColumnFamilyHandle columnFamily, byte[] key, byte[] value) throws IOException {
+        try {
+            db.put(columnFamily, writeOptions, key, value);
+        } catch (RocksDBException e) {
+            throw new IOException("Fail to put key to column family.", e);
+        }
+    }
+
+    /** Delete a key from the specified column family. */
+    public void delete(ColumnFamilyHandle columnFamily, byte[] key) throws IOException {
+        try {
+            db.delete(columnFamily, key);
+        } catch (RocksDBException e) {
+            throw new IOException("Fail to delete key from column family.", e);
+        }
+    }
+
+    /** Drop a column family. Removes it from the internal cache and closes the handle. */
+    public void dropColumnFamily(String cfName) throws IOException {
+        ColumnFamilyHandle handle = columnFamilyHandles.remove(cfName);
+        if (handle != null) {
+            try {
+                db.dropColumnFamily(handle);
+            } catch (RocksDBException e) {
+                throw new IOException("Failed to drop column family: " + cfName, e);
+            } finally {
+                handle.close();
+            }
+        }
+    }
+
     public void checkIfRocksDBClosed() {
         if (this.closed) {
             throw new FlussRuntimeException(
@@ -202,6 +275,14 @@ public class RocksDBKv implements AutoCloseable {
             RocksDBOperationUtils.addColumnFamilyOptionsToCloseLater(
                     columnFamilyOptions, defaultColumnFamilyHandle);
             IOUtils.closeQuietly(defaultColumnFamilyHandle);
+
+            // ... close dynamically created column families ...
+            for (ColumnFamilyHandle cfHandle : columnFamilyHandles.values()) {
+                RocksDBOperationUtils.addColumnFamilyOptionsToCloseLater(
+                        columnFamilyOptions, cfHandle);
+                IOUtils.closeQuietly(cfHandle);
+            }
+            columnFamilyHandles.clear();
 
             // ... and finally close the DB instance ...
             IOUtils.closeQuietly(db);

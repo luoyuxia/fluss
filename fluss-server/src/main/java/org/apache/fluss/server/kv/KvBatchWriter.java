@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.kv;
 
+import org.rocksdb.ColumnFamilyHandle;
+
 import javax.annotation.Nonnull;
 
 import java.io.IOException;
@@ -30,8 +32,23 @@ public interface KvBatchWriter extends AutoCloseable {
     /** Put a key-value pair. */
     void put(@Nonnull byte[] key, @Nonnull byte[] value) throws IOException;
 
+    /** Put a key-value pair into the specified column family. */
+    default void put(
+            @Nonnull ColumnFamilyHandle columnFamily, @Nonnull byte[] key, @Nonnull byte[] value)
+            throws IOException {
+        throw new UnsupportedOperationException(
+                "Column family aware put is not supported by this writer.");
+    }
+
     /** Delete a key-value pair by the given key. */
     void delete(@Nonnull byte[] key) throws IOException;
+
+    /** Delete a key-value pair by the given key from the specified column family. */
+    default void delete(@Nonnull ColumnFamilyHandle columnFamily, @Nonnull byte[] key)
+            throws IOException {
+        throw new UnsupportedOperationException(
+                "Column family aware delete is not supported by this writer.");
+    }
 
     /** Flush the written key-value pair. */
     void flush() throws IOException;

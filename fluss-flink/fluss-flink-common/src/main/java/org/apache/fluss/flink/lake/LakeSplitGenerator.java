@@ -33,9 +33,7 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -210,8 +208,7 @@ public class LakeSplitGenerator {
                             partitionId,
                             partitionName,
                             isLogTable,
-                            // pass empty map since we won't read lake splits
-                            Collections.emptyMap(),
+                            tableBucketSnapshotLogOffset,
                             bucketEndOffset));
         }
         return splits;

@@ -22,6 +22,7 @@ import org.apache.fluss.metrics.Histogram;
 import org.apache.fluss.server.kv.KvBatchWriter;
 import org.apache.fluss.utils.IOUtils;
 
+import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.WriteBatch;
@@ -106,12 +107,35 @@ public class RocksDBWriteBatchWrapper implements KvBatchWriter {
         }
     }
 
+    @Override
+    public void put(
+            @Nonnull ColumnFamilyHandle columnFamily, @Nonnull byte[] key, @Nonnull byte[] value)
+            throws IOException {
+        try {
+            batch.put(columnFamily, key, value);
+            flushIfNeeded();
+        } catch (RocksDBException e) {
+            throw new IOException("Failed to put key-value pair to RocksDB column family.", e);
+        }
+    }
+
     public void delete(@Nonnull byte[] key) throws IOException {
         try {
             batch.delete(key);
             flushIfNeeded();
         } catch (RocksDBException e) {
             throw new IOException("Failed to remove key from RocksDB.", e);
+        }
+    }
+
+    @Override
+    public void delete(@Nonnull ColumnFamilyHandle columnFamily, @Nonnull byte[] key)
+            throws IOException {
+        try {
+            batch.delete(columnFamily, key);
+            flushIfNeeded();
+        } catch (RocksDBException e) {
+            throw new IOException("Failed to remove key from RocksDB column family.", e);
         }
     }
 

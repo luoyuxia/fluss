@@ -50,6 +50,7 @@ import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementUpdater;
+import org.apache.fluss.server.kv.overflow.OverflowWriteContext;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.TruncateReason;
 import org.apache.fluss.server.kv.rocksdb.RocksDBKv;
@@ -75,6 +76,7 @@ import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.BytesUtils;
 import org.apache.fluss.utils.FileUtils;
 
+import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.RateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -144,6 +146,13 @@ public final class KvTablet {
 
     @GuardedBy("kvLock")
     private volatile boolean isClosed = false;
+
+    /**
+     * Optional overflow write context for handling records from multiple original partitions. When
+     * set, records are routed to per-partition buffers and column families based on the extracted
+     * partition name from the row.
+     */
+    @Nullable private OverflowWriteContext overflowContext;
 
     private KvTablet(
             PhysicalTablePath physicalPath,
@@ -272,6 +281,17 @@ public final class KvTablet {
     @Nullable
     public String getPartitionName() {
         return physicalPath.getPartitionName();
+    }
+
+    /** Sets the overflow write context for routing records to per-partition buffers and CFs. */
+    public void setOverflowContext(@Nullable OverflowWriteContext overflowContext) {
+        this.overflowContext = overflowContext;
+    }
+
+    /** Returns the overflow write context, or null if this tablet is not an overflow tablet. */
+    @Nullable
+    public OverflowWriteContext getOverflowContext() {
+        return overflowContext;
     }
 
     public File getKvTabletDir() {
@@ -429,6 +449,10 @@ public final class KvTablet {
                         if (logAppendInfo.duplicated()) {
                             kvPreWriteBuffer.truncateTo(
                                     logEndOffsetOfPrevBatch, TruncateReason.DUPLICATED);
+                            if (overflowContext != null) {
+                                overflowContext.truncateAll(
+                                        logEndOffsetOfPrevBatch, TruncateReason.DUPLICATED);
+                            }
                         }
                         return logAppendInfo;
                     } catch (Throwable t) {
@@ -439,6 +463,10 @@ public final class KvTablet {
                         // TODO for some errors, the cdc logs may already be written to disk, for
                         //  those errors, we should not truncate the kvPreWriteBuffer.
                         kvPreWriteBuffer.truncateTo(logEndOffsetOfPrevBatch, TruncateReason.ERROR);
+                        if (overflowContext != null) {
+                            overflowContext.truncateAll(
+                                    logEndOffsetOfPrevBatch, TruncateReason.ERROR);
+                        }
                         throw t;
                     } finally {
                         // deallocate the memory and arrow writer used by the wal builder
@@ -479,10 +507,24 @@ public final class KvTablet {
             BinaryRow row = kvRecord.getRow();
             BinaryValue currentValue = row == null ? null : new BinaryValue(schemaIdOfNewData, row);
 
+            // Resolve per-partition buffer and partition name for overflow tablets
+            String partitionName = null;
+            KvPreWriteBuffer activeBuffer;
+            if (overflowContext != null && row != null) {
+                partitionName = overflowContext.extractPartitionName(row);
+                activeBuffer =
+                        overflowContext.getOrCreatePartitionContext(partitionName).getBuffer();
+            } else {
+                activeBuffer = kvPreWriteBuffer;
+            }
+
             if (currentValue == null) {
                 logOffset =
                         processDeletion(
                                 key,
+                                activeBuffer,
+                                partitionName,
+                                schemaIdOfNewData,
                                 currentMerger,
                                 valueDecoder,
                                 walBuilder,
@@ -492,6 +534,9 @@ public final class KvTablet {
                 logOffset =
                         processUpsert(
                                 key,
+                                activeBuffer,
+                                partitionName,
+                                schemaIdOfNewData,
                                 currentValue,
                                 currentMerger,
                                 autoIncrementUpdater,
@@ -505,6 +550,9 @@ public final class KvTablet {
 
     private long processDeletion(
             KvPreWriteBuffer.Key key,
+            KvPreWriteBuffer activeBuffer,
+            @Nullable String partitionName,
+            short schemaId,
             RowMerger currentMerger,
             ValueDecoder valueDecoder,
             WalBuilder walBuilder,
@@ -521,7 +569,20 @@ public final class KvTablet {
                             + "The table.delete.behavior is set to 'disable'.");
         }
 
-        byte[] oldValueBytes = getFromBufferOrKv(key);
+        // For overflow deletes (row is null), activeBuffer is the default buffer.
+        // We need to search all overflow partition contexts to find the key.
+        if (overflowContext != null && activeBuffer == kvPreWriteBuffer) {
+            return processOverflowDeletion(
+                    key,
+                    schemaId,
+                    currentMerger,
+                    valueDecoder,
+                    walBuilder,
+                    latestSchemaRow,
+                    logOffset);
+        }
+
+        byte[] oldValueBytes = getFromBufferOrKv(key, activeBuffer, partitionName, schemaId);
         if (oldValueBytes == null) {
             LOG.debug(
                     "The specific key can't be found in kv tablet although the kv record is for deletion, "
@@ -534,14 +595,61 @@ public final class KvTablet {
 
         // if newValue is null, it means the row should be deleted
         if (newValue == null) {
-            return applyDelete(key, oldValue, walBuilder, latestSchemaRow, logOffset);
+            return applyDelete(key, oldValue, activeBuffer, walBuilder, latestSchemaRow, logOffset);
         } else {
-            return applyUpdate(key, oldValue, newValue, walBuilder, latestSchemaRow, logOffset);
+            return applyUpdate(
+                    key, oldValue, newValue, activeBuffer, walBuilder, latestSchemaRow, logOffset);
         }
+    }
+
+    /**
+     * Handles deletion in overflow tablets where the partition is unknown (row is null). Searches
+     * all per-partition contexts (buffer + RocksDB + Paimon) to find the key.
+     */
+    private long processOverflowDeletion(
+            KvPreWriteBuffer.Key key,
+            short schemaId,
+            RowMerger currentMerger,
+            ValueDecoder valueDecoder,
+            WalBuilder walBuilder,
+            PaddingRow latestSchemaRow,
+            long logOffset)
+            throws Exception {
+        assert overflowContext != null;
+        // Search all per-partition contexts: buffer → RocksDB → Paimon
+        for (OverflowWriteContext.PartitionKvContext ctx :
+                overflowContext.getPartitionContexts().values()) {
+            byte[] oldValueBytes =
+                    getFromBufferOrKv(key, ctx.getBuffer(), ctx.getPartitionName(), schemaId);
+            if (oldValueBytes != null) {
+                BinaryValue oldValue = valueDecoder.decodeValue(oldValueBytes);
+                BinaryValue newValue = currentMerger.delete(oldValue);
+                if (newValue == null) {
+                    return applyDelete(
+                            key, oldValue, ctx.getBuffer(), walBuilder, latestSchemaRow, logOffset);
+                } else {
+                    return applyUpdate(
+                            key,
+                            oldValue,
+                            newValue,
+                            ctx.getBuffer(),
+                            walBuilder,
+                            latestSchemaRow,
+                            logOffset);
+                }
+            }
+        }
+        LOG.debug(
+                "The specific key can't be found in any overflow partition for deletion, "
+                        + "ignore it directly.");
+        return logOffset;
     }
 
     private long processUpsert(
             KvPreWriteBuffer.Key key,
+            KvPreWriteBuffer activeBuffer,
+            @Nullable String partitionName,
+            short schemaId,
             BinaryValue currentValue,
             RowMerger currentMerger,
             AutoIncrementUpdater autoIncrementUpdater,
@@ -557,14 +665,16 @@ public final class KvTablet {
         if (changelogImage == ChangelogImage.WAL
                 && !autoIncrementUpdater.hasAutoIncrement()
                 && currentMerger instanceof DefaultRowMerger) {
-            return applyUpdate(key, null, currentValue, walBuilder, latestSchemaRow, logOffset);
+            return applyUpdate(
+                    key, null, currentValue, activeBuffer, walBuilder, latestSchemaRow, logOffset);
         }
 
-        byte[] oldValueBytes = getFromBufferOrKv(key);
+        byte[] oldValueBytes = getFromBufferOrKv(key, activeBuffer, partitionName, schemaId);
         if (oldValueBytes == null) {
             return applyInsert(
                     key,
                     currentValue,
+                    activeBuffer,
                     walBuilder,
                     latestSchemaRow,
                     logOffset,
@@ -579,24 +689,27 @@ public final class KvTablet {
             return logOffset;
         }
 
-        return applyUpdate(key, oldValue, newValue, walBuilder, latestSchemaRow, logOffset);
+        return applyUpdate(
+                key, oldValue, newValue, activeBuffer, walBuilder, latestSchemaRow, logOffset);
     }
 
     private long applyDelete(
             KvPreWriteBuffer.Key key,
             BinaryValue oldValue,
+            KvPreWriteBuffer activeBuffer,
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
             long logOffset)
             throws Exception {
         walBuilder.append(ChangeType.DELETE, latestSchemaRow.replaceRow(oldValue.row));
-        kvPreWriteBuffer.delete(key, logOffset);
+        activeBuffer.delete(key, logOffset);
         return logOffset + 1;
     }
 
     private long applyInsert(
             KvPreWriteBuffer.Key key,
             BinaryValue currentValue,
+            KvPreWriteBuffer activeBuffer,
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
             long logOffset,
@@ -604,7 +717,7 @@ public final class KvTablet {
             throws Exception {
         BinaryValue newValue = autoIncrementUpdater.updateAutoIncrementColumns(currentValue);
         walBuilder.append(ChangeType.INSERT, latestSchemaRow.replaceRow(newValue.row));
-        kvPreWriteBuffer.insert(key, newValue.encodeValue(), logOffset);
+        activeBuffer.insert(key, newValue.encodeValue(), logOffset);
         return logOffset + 1;
     }
 
@@ -612,18 +725,19 @@ public final class KvTablet {
             KvPreWriteBuffer.Key key,
             BinaryValue oldValue,
             BinaryValue newValue,
+            KvPreWriteBuffer activeBuffer,
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
             long logOffset)
             throws Exception {
         if (changelogImage == ChangelogImage.WAL) {
             walBuilder.append(ChangeType.UPDATE_AFTER, latestSchemaRow.replaceRow(newValue.row));
-            kvPreWriteBuffer.update(key, newValue.encodeValue(), logOffset);
+            activeBuffer.update(key, newValue.encodeValue(), logOffset);
             return logOffset + 1;
         } else {
             walBuilder.append(ChangeType.UPDATE_BEFORE, latestSchemaRow.replaceRow(oldValue.row));
             walBuilder.append(ChangeType.UPDATE_AFTER, latestSchemaRow.replaceRow(newValue.row));
-            kvPreWriteBuffer.update(key, newValue.encodeValue(), logOffset + 1);
+            activeBuffer.update(key, newValue.encodeValue(), logOffset + 1);
             return logOffset + 2;
         }
     }
@@ -679,6 +793,9 @@ public final class KvTablet {
                     } else {
                         try {
                             int rowCountDiff = kvPreWriteBuffer.flush(exclusiveUpToLogOffset);
+                            if (overflowContext != null) {
+                                rowCountDiff += overflowContext.flushAll(exclusiveUpToLogOffset);
+                            }
                             flushedLogOffset = exclusiveUpToLogOffset;
                             if (rowCount != ROW_COUNT_DISABLED) {
                                 // row count is enabled, we update the row count after flush.
@@ -720,11 +837,22 @@ public final class KvTablet {
         return runnable -> inWriteLock(kvLock, runnable::run);
     }
 
-    // get from kv pre-write buffer first, if can't find, get from rocksdb
-    private byte[] getFromBufferOrKv(KvPreWriteBuffer.Key key) throws IOException {
-        KvPreWriteBuffer.Value value = kvPreWriteBuffer.get(key);
+    // get from kv pre-write buffer first, then rocksdb, then optionally Paimon (for overflow)
+    private byte[] getFromBufferOrKv(
+            KvPreWriteBuffer.Key key,
+            KvPreWriteBuffer activeBuffer,
+            @Nullable String partitionName,
+            short schemaId)
+            throws IOException {
+        KvPreWriteBuffer.Value value = activeBuffer.get(key);
         if (value == null) {
-            return rocksDBKv.get(key.get());
+            ColumnFamilyHandle cf = activeBuffer.getColumnFamilyHandle();
+            byte[] result = cf != null ? rocksDBKv.get(cf, key.get()) : rocksDBKv.get(key.get());
+            // Fallback to Paimon for overflow partitions when data is not in buffer or RocksDB
+            if (result == null && overflowContext != null && partitionName != null) {
+                result = overflowContext.lookupInLake(key.get(), partitionName, schemaId);
+            }
+            return result;
         }
         return value.get();
     }
@@ -771,6 +899,11 @@ public final class KvTablet {
                     if (isClosed) {
                         return;
                     }
+                    // Close overflow context first (before RocksDB)
+                    if (overflowContext != null) {
+                        overflowContext.close();
+                        overflowContext = null;
+                    }
                     // Note: RocksDB metrics lifecycle is managed by TableMetricGroup
                     // No need to close it here
                     if (rocksDBKv != null) {
@@ -815,5 +948,15 @@ public final class KvTablet {
     @VisibleForTesting
     public RocksDBKv getRocksDBKv() {
         return rocksDBKv;
+    }
+
+    /** Returns the write batch size configured for this KV tablet. */
+    public long getWriteBatchSize() {
+        return writeBatchSize;
+    }
+
+    /** Returns the server metric group used by this KV tablet. */
+    public TabletServerMetricGroup getServerMetricGroup() {
+        return serverMetricGroup;
     }
 }

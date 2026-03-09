@@ -627,7 +627,11 @@ public abstract class RpcServiceBase extends RpcGatewayService implements AdminR
         for (PhysicalTablePath partitionPath : authorizedPartitions) {
             Optional<PartitionMetadata> metadataFromCache =
                     metadataProvider.getPartitionMetadataFromCache(partitionPath);
-            System.out.println("get metadata from cache for : " + partitionPath + ", cache: " + metadataFromCache);
+            System.out.println(
+                    "get metadata from cache for : "
+                            + partitionPath
+                            + ", cache: "
+                            + metadataFromCache);
             if (metadataFromCache.isPresent()) {
                 partitionsMetadata.add(metadataFromCache.get());
             } else {

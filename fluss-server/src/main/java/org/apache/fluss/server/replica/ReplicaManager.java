@@ -120,11 +120,13 @@ import org.apache.fluss.utils.MapUtils;
 import org.apache.fluss.utils.clock.Clock;
 import org.apache.fluss.utils.concurrent.Scheduler;
 import org.apache.fluss.utils.types.Tuple2;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -1945,6 +1947,7 @@ public class ReplicaManager {
                                 tb,
                                 logManager,
                                 isKvTable ? kvManager : null,
+                                lakeStorage,
                                 conf.get(ConfigOptions.LOG_REPLICA_MAX_LAG_TIME).toMillis(),
                                 conf.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER),
                                 serverId,
