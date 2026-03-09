@@ -101,6 +101,41 @@ public class DynamicPartitionCreator {
     }
 
     /**
+     * Checks whether a partition exists, throwing {@link PartitionNotExistException} if it does
+     * not. Unlike {@link #checkAndCreatePartitionAsync}, this method never creates the partition
+     * dynamically. It is used for auto-partitioned + datalake tables where the auto-partition
+     * service owns partition lifecycle: a missing partition means it has expired, and the caller
+     * should redirect the write to the overflow partition instead.
+     */
+    public void checkPartitionExistsOrThrow(PhysicalTablePath physicalTablePath) {
+        String partitionName = physicalTablePath.getPartitionName();
+        if (partitionName == null) {
+            return;
+        }
+
+        Optional<Long> partitionIdOpt = metadataUpdater.getPartitionId(physicalTablePath);
+        if (partitionIdOpt.isPresent()) {
+            return;
+        }
+
+        // Force a server round-trip to get the latest partition state.
+        boolean exists = false;
+        try {
+            exists = metadataUpdater.checkAndUpdatePartitionMetadata(physicalTablePath);
+        } catch (Exception e) {
+            Throwable t = ExceptionUtils.stripExecutionException(e);
+            if (!(t instanceof PartitionNotExistException)) {
+                throw new FlussRuntimeException(e.getMessage(), e);
+            }
+        }
+
+        if (!exists) {
+            throw new PartitionNotExistException(
+                    String.format("Table partition '%s' does not exist.", physicalTablePath));
+        }
+    }
+
+    /**
      * Ensures a partition exists, creating it synchronously if necessary. Unlike {@link
      * #checkAndCreatePartitionAsync}, this method always creates the partition if it doesn't exist,
      * regardless of the {@link #dynamicPartitionEnabled} flag. This is used for creating the
@@ -150,7 +185,6 @@ public class DynamicPartitionCreator {
         boolean idExist = false;
         // force an IO to check whether the partition exists
         try {
-            // force an IO to check whether the partition exists
             idExist = metadataUpdater.checkAndUpdatePartitionMetadata(physicalTablePath);
         } catch (Exception e) {
             Throwable t = ExceptionUtils.stripExecutionException(e);

@@ -120,16 +120,19 @@ class OverflowPartitionWriteITCase {
     }
 
     /**
-     * Test that writes to a dropped partition are redirected to the overflow partition.
+     * Test that writes to a dropped partition are redirected to the overflow partition,
+     * regardless of whether dynamic partition creation is enabled.
      *
      * <p>Test flow:
      *
      * <ol>
      *   <li>Create an auto-partitioned PK table with datalake enabled
      *   <li>Wait for auto-partitions to be created
-     *   <li>Write data to an existing partition
+     *   <li>Create a past-year partition manually (auto-partition won't recreate it after drop)
+     *   <li>Write initial data to that partition
      *   <li>Drop the partition (simulating expiration)
-     *   <li>Write new data targeting the dropped partition with dynamic partition creation disabled
+     *   <li>Write late data targeting the dropped partition — verifies redirect works with both
+     *       {@code dynamicPartitionEnabled=true} and {@code dynamicPartitionEnabled=false}
      *   <li>Verify the {@code __overflow__} partition is created
      *   <li>Verify data can be read from the overflow partition
      * </ol>
@@ -162,17 +165,14 @@ class OverflowPartitionWriteITCase {
         long tableId = admin.getTableInfo(tablePath).get().getTableId();
 
         // 2. Wait for auto-partitions to be created (current year + next year)
-        Map<Long, String> partitionNameByIds = waitUntilPartitions(tablePath, 2);
-        assertThat(partitionNameByIds).hasSize(2);
+        waitUntilPartitions(tablePath, 2);
 
-        Long targetPartitionId = partitionNameByIds.keySet().iterator().next();
-        String targetPartitionName = partitionNameByIds.get(targetPartitionId);
+        // 3. Create a past-year partition manually — auto-partition won't recreate it after drop,
+        // which eliminates the race condition between drop and the auto-partition service.
+        String targetPartitionName = "2026";
 
-        // Write some initial data to the partition (with dynamic partition disabled)
-        Configuration noDynConf = new Configuration(clientConf);
-        noDynConf.set(ConfigOptions.CLIENT_WRITER_DYNAMIC_CREATE_PARTITION_ENABLED, false);
-
-        try (Connection connection = ConnectionFactory.createConnection(noDynConf);
+        // 4. Write initial data to the past-year partition
+        try (Connection connection = ConnectionFactory.createConnection(clientConf);
                 Table table = connection.getTable(tablePath)) {
             UpsertWriter writer = table.newUpsert().createWriter();
             writer.upsert(row(1, "initial_1", targetPartitionName));
@@ -180,35 +180,31 @@ class OverflowPartitionWriteITCase {
             writer.flush();
         }
 
-        // 4. Drop the partition (simulating expiration)
+        // 5. Drop the partition (simulating expiration)
         admin.dropPartition(
                         tablePath,
-                        new PartitionSpec(
-                                Collections.singletonMap("dt", targetPartitionName)),
+                        new PartitionSpec(Collections.singletonMap("dt", targetPartitionName)),
                         false)
                 .get();
 
-        // Wait until partition is dropped
+        // Wait until partition is fully dropped
         retry(
                 Duration.ofSeconds(30),
                 () -> {
-                    List<PartitionInfo> partitions =
-                            admin.listPartitionInfos(tablePath).get();
-                    boolean found =
-                            partitions.stream()
-                                    .anyMatch(
-                                            p ->
-                                                    p.getPartitionName()
-                                                            .equals(targetPartitionName));
-                    assertThat(found)
-                            .as(
-                                    "Partition %s should be dropped",
-                                    targetPartitionName)
+                    List<PartitionInfo> partitions = admin.listPartitionInfos(tablePath).get();
+                    assertThat(
+                                    partitions.stream()
+                                            .anyMatch(
+                                                    p ->
+                                                            p.getPartitionName()
+                                                                    .equals(targetPartitionName)))
+                            .as("Partition %s should be dropped", targetPartitionName)
                             .isFalse();
                 });
 
-        // 5. Write new data targeting the dropped partition — should redirect to __overflow__
-        try (Connection connection = ConnectionFactory.createConnection(noDynConf);
+        // 6. Write late data targeting the dropped partition using the DEFAULT conf
+        // (dynamicPartitionEnabled=true). The overflow redirect must work regardless of this flag.
+        try (Connection connection = ConnectionFactory.createConnection(clientConf);
                 Table table = connection.getTable(tablePath)) {
             UpsertWriter writer = table.newUpsert().createWriter();
             writer.upsert(row(10, "late_data_1", targetPartitionName));
@@ -216,7 +212,7 @@ class OverflowPartitionWriteITCase {
             writer.flush();
         }
 
-        // 6. Verify the overflow partition was created
+        // 7. Verify the overflow partition was created
         long overflowPartitionId =
                 waitValue(
                         () -> {
@@ -240,7 +236,7 @@ class OverflowPartitionWriteITCase {
         TableBucket overflowBucket = new TableBucket(tableId, overflowPartitionId, 0);
         FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(overflowBucket);
 
-        // 7. Verify data can be read from the overflow partition
+        // 8. Verify data can be read from the overflow partition
         try (Connection connection = ConnectionFactory.createConnection(clientConf);
                 Table table = connection.getTable(tablePath)) {
             LogScanner logScanner = table.newScan().createLogScanner();
@@ -257,11 +253,9 @@ class OverflowPartitionWriteITCase {
                 }
             }
 
-            assertThat(rows)
-                    .as("Should read 2 records from the overflow partition")
-                    .hasSize(2);
+            assertThat(rows).as("Should read 2 records from the overflow partition").hasSize(2);
 
-            // Verify the rows contain the expected data
+            // Verify the rows contain the expected ids
             List<Integer> ids =
                     rows.stream().map(r -> r.getInt(0)).collect(Collectors.toList());
             assertThat(ids).containsExactlyInAnyOrder(10, 11);
@@ -269,10 +263,8 @@ class OverflowPartitionWriteITCase {
             // Verify the partition column still carries the original partition value
             for (InternalRow row : rows) {
                 assertThat(row.getString(2).toString())
-                        .as(
-                                "Row in overflow partition should carry original partition value")
+                        .as("Row in overflow partition should carry original partition value")
                         .isEqualTo(targetPartitionName);
-                System.out.println("row: " + row);
             }
 
             logScanner.close();

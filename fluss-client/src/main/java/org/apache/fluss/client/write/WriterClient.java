@@ -177,9 +177,15 @@ public class WriterClient {
             PhysicalTablePath physicalTablePath = record.getPhysicalTablePath();
 
             try {
-                metadataUpdater.updateTableOrPartitionMetadata(tableInfo.getTablePath(), null);
-                dynamicPartitionCreator.checkAndCreatePartitionAsync(
-                        physicalTablePath, tableInfo.getPartitionKeys());
+                if (shouldRedirectToOverflow(tableInfo)) {
+                    // For auto-partitioned + datalake tables the auto-partition service owns
+                    // the partition lifecycle, so we never create partitions dynamically here.
+                    // If the partition is missing it has expired, redirect to overflow.
+                    dynamicPartitionCreator.checkPartitionExistsOrThrow(physicalTablePath);
+                } else {
+                    dynamicPartitionCreator.checkAndCreatePartitionAsync(
+                            physicalTablePath, tableInfo.getPartitionKeys());
+                }
             } catch (PartitionNotExistException e) {
                 if (shouldRedirectToOverflow(tableInfo)) {
                     // Redirect to the overflow partition for expired partition writes.
@@ -188,6 +194,11 @@ public class WriterClient {
                                     physicalTablePath.getTablePath(),
                                     PhysicalTablePath.OVERFLOW_PARTITION_NAME);
                     record = record.withPhysicalTablePath(physicalTablePath);
+                    LOG.info(
+                            "Partition {} does not exist, redirecting write to overflow partition {}",
+                            e.getMessage(),
+                            physicalTablePath);
+                    // Ensure the overflow partition exists, creating it if necessary.
                     dynamicPartitionCreator.ensurePartitionCreated(
                             physicalTablePath, tableInfo.getPartitionKeys());
                 } else {
