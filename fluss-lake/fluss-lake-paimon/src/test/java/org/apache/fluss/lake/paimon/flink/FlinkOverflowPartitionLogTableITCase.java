@@ -17,14 +17,15 @@
 
 package org.apache.fluss.lake.paimon.flink;
 
-import org.apache.flink.core.execution.JobClient;
-import org.apache.flink.types.Row;
-import org.apache.flink.util.CollectionUtil;
 import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.row.InternalRow;
+
+import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CollectionUtil;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 

@@ -27,6 +27,7 @@ import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.types.Tuple2;
+
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
@@ -44,6 +45,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -130,8 +132,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         if (valueRow != null) {
             // Wrap Paimon value row as Fluss InternalRow using adapter
             PaimonRowAsFlussRow flussValueRow = new PaimonRowAsFlussRow(valueRow);
-            return encodeValueRow(
-                    flussValueRow, flussRowType, fieldGetters, context.getSchemaId());
+            return encodeValueRow(flussValueRow, flussRowType, fieldGetters, context.getSchemaId());
         } else {
             return null;
         }

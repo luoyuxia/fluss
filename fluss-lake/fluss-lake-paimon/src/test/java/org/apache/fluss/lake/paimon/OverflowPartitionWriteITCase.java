@@ -120,8 +120,8 @@ class OverflowPartitionWriteITCase {
     }
 
     /**
-     * Test that writes to a dropped partition are redirected to the overflow partition,
-     * regardless of whether dynamic partition creation is enabled.
+     * Test that writes to a dropped partition are redirected to the overflow partition, regardless
+     * of whether dynamic partition creation is enabled.
      *
      * <p>Test flow:
      *
@@ -256,8 +256,7 @@ class OverflowPartitionWriteITCase {
             assertThat(rows).as("Should read 2 records from the overflow partition").hasSize(2);
 
             // Verify the rows contain the expected ids
-            List<Integer> ids =
-                    rows.stream().map(r -> r.getInt(0)).collect(Collectors.toList());
+            List<Integer> ids = rows.stream().map(r -> r.getInt(0)).collect(Collectors.toList());
             assertThat(ids).containsExactlyInAnyOrder(10, 11);
 
             // Verify the partition column still carries the original partition value
