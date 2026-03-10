@@ -85,12 +85,16 @@ public class RocksDBKv implements AutoCloseable {
             RocksDB db,
             ResourceGuard rocksDBResourceGuard,
             ColumnFamilyHandle defaultColumnFamilyHandle,
+            Map<String, ColumnFamilyHandle> existingColumnFamilyHandles,
             @Nullable Statistics statistics) {
         this.optionsContainer = optionsContainer;
         this.db = db;
         this.rocksDBResourceGuard = rocksDBResourceGuard;
         this.writeOptions = optionsContainer.getWriteOptions();
         this.defaultColumnFamilyHandle = defaultColumnFamilyHandle;
+        if (existingColumnFamilyHandles != null) {
+            this.columnFamilyHandles.putAll(existingColumnFamilyHandles);
+        }
         this.statistics = statistics;
     }
 

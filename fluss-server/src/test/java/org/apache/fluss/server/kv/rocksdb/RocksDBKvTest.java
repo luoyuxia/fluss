@@ -21,6 +21,7 @@ import org.apache.fluss.config.Configuration;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.ColumnFamilyHandle;
 
 import java.io.File;
 import java.nio.file.Path;
@@ -62,6 +63,38 @@ class RocksDBKvTest {
             rocksDBKv.put(key2, val2);
 
             assertThat(rocksDBKv.multiGet(Arrays.asList(key, key2))).containsExactly(null, val2);
+        }
+    }
+
+    @Test
+    void testReopenWithExistingColumnFamilies(@TempDir Path tempDir) throws Exception {
+        File instanceBasePath = tempDir.toFile();
+        byte[] key = new byte[] {9, 9, 9};
+        byte[] value = new byte[] {7, 7};
+        String cfName = "overflow_2020";
+
+        RocksDBResourceContainer firstResourceContainer =
+                new RocksDBResourceContainer(new Configuration(), instanceBasePath);
+        RocksDBKvBuilder firstBuilder =
+                new RocksDBKvBuilder(
+                        instanceBasePath,
+                        firstResourceContainer,
+                        firstResourceContainer.getColumnOptions());
+        try (RocksDBKv rocksDBKv = firstBuilder.build()) {
+            ColumnFamilyHandle cf = rocksDBKv.getOrCreateColumnFamily(cfName);
+            rocksDBKv.put(cf, key, value);
+        }
+
+        RocksDBResourceContainer secondResourceContainer =
+                new RocksDBResourceContainer(new Configuration(), instanceBasePath);
+        RocksDBKvBuilder secondBuilder =
+                new RocksDBKvBuilder(
+                        instanceBasePath,
+                        secondResourceContainer,
+                        secondResourceContainer.getColumnOptions());
+        try (RocksDBKv rocksDBKv = secondBuilder.build()) {
+            ColumnFamilyHandle cf = rocksDBKv.getOrCreateColumnFamily(cfName);
+            assertThat(rocksDBKv.get(cf, key)).isEqualTo(value);
         }
     }
 }

@@ -36,6 +36,7 @@ import org.apache.fluss.row.encode.RowEncoder;
 import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
+import org.apache.fluss.server.kv.overflow.OverflowWriteContext;
 import org.apache.fluss.server.log.FetchIsolation;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.zk.ZooKeeperClient;
@@ -45,6 +46,7 @@ import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.CloseableIterator;
 import org.apache.fluss.utils.function.ThrowingConsumer;
 
+import org.rocksdb.ColumnFamilyHandle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -124,10 +126,21 @@ public class KvRecoverHelper {
                                 schema, autoIncRange, kvTablet.getAutoIncrementCacheSize())
                         : new NoOpAutoIncIDRangeUpdater();
         // read to high watermark
+        OverflowWriteContext overflowContext = kvTablet.getOverflowContext();
         try (KvBatchWriter kvBatchWriter = kvTablet.createKvBatchWriter()) {
             ThrowingConsumer<KeyValueAndLogOffset, Exception> resumeRecordApplier =
                     (resumeRecord) -> {
-                        if (resumeRecord.value == null) {
+                        if (overflowContext != null && resumeRecord.partitionName != null) {
+                            ColumnFamilyHandle cfHandle =
+                                    overflowContext
+                                            .getOrCreatePartitionContext(resumeRecord.partitionName)
+                                            .getColumnFamilyHandle();
+                            if (resumeRecord.value == null) {
+                                kvBatchWriter.delete(cfHandle, resumeRecord.key);
+                            } else {
+                                kvBatchWriter.put(cfHandle, resumeRecord.key, resumeRecord.value);
+                            }
+                        } else if (resumeRecord.value == null) {
                             kvBatchWriter.delete(resumeRecord.key);
                         } else {
                             kvBatchWriter.put(resumeRecord.key, resumeRecord.value);
@@ -166,7 +179,8 @@ public class KvRecoverHelper {
                                 resumeRecord.changeType,
                                 resumeRecord.key,
                                 resumeRecord.value,
-                                resumeRecord.logOffset);
+                                resumeRecord.logOffset,
+                                resumeRecord.partitionName);
         readLogRecordsAndApply(
                 nextLogOffset,
                 // records in pre-write-buffer shouldn't affect the row count, the high-watermark
@@ -231,9 +245,19 @@ public class KvRecoverHelper {
                                             ValueEncoder.encodeValue(
                                                     currentSchemaId.shortValue(), row);
                                 }
+                                String partitionName = null;
+                                OverflowWriteContext overflowContext =
+                                        kvTablet.getOverflowContext();
+                                if (overflowContext != null && logRow != null) {
+                                    partitionName = overflowContext.extractPartitionName(logRow);
+                                }
                                 resumeRecordConsumer.accept(
                                         new KeyValueAndLogOffset(
-                                                changeType, key, value, logRecord.logOffset()));
+                                                changeType,
+                                                key,
+                                                value,
+                                                logRecord.logOffset(),
+                                                partitionName));
 
                                 // reuse the logRow instance which is usually a CompactedRow which
                                 // has been deserialized during toKvRow(..)
@@ -308,13 +332,19 @@ public class KvRecoverHelper {
         private final byte[] key;
         private final @Nullable byte[] value;
         private final long logOffset;
+        private final @Nullable String partitionName;
 
         public KeyValueAndLogOffset(
-                ChangeType changeType, byte[] key, byte[] value, long logOffset) {
+                ChangeType changeType,
+                byte[] key,
+                byte[] value,
+                long logOffset,
+                @Nullable String partitionName) {
             this.changeType = changeType;
             this.key = key;
             this.value = value;
             this.logOffset = logOffset;
+            this.partitionName = partitionName;
         }
     }
 

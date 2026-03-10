@@ -755,6 +755,9 @@ public final class Replica {
                 autoIncIDRange = null;
             }
 
+            // Overflow routing context must be available before recovery so replayed records can be
+            // routed into the correct per-partition buffers/CFs.
+            maySetupOverflowContext();
             logTablet.updateMinRetainOffset(restoreStartOffset);
             recoverKvTablet(restoreStartOffset, rowCount, autoIncIDRange);
         } catch (Exception e) {
@@ -775,9 +778,6 @@ public final class Replica {
         if (kvTablet != null && kvTablet.getRocksDBStatistics() != null) {
             bucketMetricGroup.registerRocksDBStatistics(kvTablet.getRocksDBStatistics());
         }
-
-        // Set up overflow write context for overflow partitions
-        maySetupOverflowContext();
 
         return optCompletedSnapshot;
     }

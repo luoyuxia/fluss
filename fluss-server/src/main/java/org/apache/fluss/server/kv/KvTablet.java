@@ -813,13 +813,38 @@ public final class KvTablet {
     /** put key,value,logOffset into pre-write buffer directly. */
     void putToPreWriteBuffer(
             ChangeType changeType, byte[] key, @Nullable byte[] value, long logOffset) {
+        putToPreWriteBuffer(changeType, key, value, logOffset, null);
+    }
+
+    /**
+     * Put key,value,logOffset into pre-write buffer directly, routing by partition for overflow
+     * tablets when partition name is provided.
+     */
+    void putToPreWriteBuffer(
+            ChangeType changeType,
+            byte[] key,
+            @Nullable byte[] value,
+            long logOffset,
+            @Nullable String partitionName) {
+        KvPreWriteBuffer targetBuffer = kvPreWriteBuffer;
+        if (overflowContext != null && partitionName != null) {
+            try {
+                targetBuffer =
+                        overflowContext.getOrCreatePartitionContext(partitionName).getBuffer();
+            } catch (IOException e) {
+                throw new KvStorageException(
+                        "Failed to resolve overflow pre-write buffer for partition: "
+                                + partitionName,
+                        e);
+            }
+        }
         KvPreWriteBuffer.Key wrapKey = KvPreWriteBuffer.Key.of(key);
         if (changeType == ChangeType.DELETE && value == null) {
-            kvPreWriteBuffer.delete(wrapKey, logOffset);
+            targetBuffer.delete(wrapKey, logOffset);
         } else if (changeType == ChangeType.INSERT) {
-            kvPreWriteBuffer.insert(wrapKey, value, logOffset);
+            targetBuffer.insert(wrapKey, value, logOffset);
         } else if (changeType == ChangeType.UPDATE_AFTER) {
-            kvPreWriteBuffer.update(wrapKey, value, logOffset);
+            targetBuffer.update(wrapKey, value, logOffset);
         } else {
             throw new IllegalArgumentException(
                     "Unsupported change type for putToPreWriteBuffer: " + changeType);

@@ -23,13 +23,20 @@ import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.DBOptions;
+import org.rocksdb.Options;
 import org.rocksdb.RocksDB;
+import org.rocksdb.RocksDBException;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /** Utility for creating a RocksDB instance either from scratch or from restored local data. */
 public class RocksDBHandle implements AutoCloseable {
@@ -42,6 +49,7 @@ public class RocksDBHandle implements AutoCloseable {
     private RocksDB db;
 
     private ColumnFamilyHandle defaultColumnFamilyHandle;
+    private final Map<String, ColumnFamilyHandle> extraColumnFamilyHandles = new HashMap<>();
 
     private final ColumnFamilyOptions defaultColumnFamilyOptions;
 
@@ -68,17 +76,54 @@ public class RocksDBHandle implements AutoCloseable {
     }
 
     private void loadDb() throws IOException {
-        // we only have one column family, default column family
+        List<byte[]> existingColumnFamilies = listExistingColumnFamilies();
+        if (existingColumnFamilies.isEmpty()) {
+            existingColumnFamilies = Collections.singletonList(RocksDB.DEFAULT_COLUMN_FAMILY);
+        }
+        boolean hasDefaultCf =
+                existingColumnFamilies.stream()
+                        .anyMatch(cfName -> Arrays.equals(cfName, RocksDB.DEFAULT_COLUMN_FAMILY));
+        if (!hasDefaultCf) {
+            existingColumnFamilies = new ArrayList<>(existingColumnFamilies);
+            existingColumnFamilies.add(RocksDB.DEFAULT_COLUMN_FAMILY);
+        }
+
         List<ColumnFamilyDescriptor> columnFamilyDescriptors =
-                Collections.singletonList(
-                        new ColumnFamilyDescriptor(
-                                RocksDB.DEFAULT_COLUMN_FAMILY, defaultColumnFamilyOptions));
-        List<ColumnFamilyHandle> defaultCfHandle = new ArrayList<>(1);
+                existingColumnFamilies.stream()
+                        .map(
+                                cfName ->
+                                        Arrays.equals(cfName, RocksDB.DEFAULT_COLUMN_FAMILY)
+                                                ? new ColumnFamilyDescriptor(
+                                                        cfName, defaultColumnFamilyOptions)
+                                                : new ColumnFamilyDescriptor(cfName))
+                        .collect(Collectors.toList());
+        List<ColumnFamilyHandle> openedHandles = new ArrayList<>(columnFamilyDescriptors.size());
         db =
                 RocksDBOperationUtils.openDB(
-                        dbPath, columnFamilyDescriptors, defaultCfHandle, dbOptions, isReadOnly);
-        // remove the default column family which is located at the first index
-        defaultColumnFamilyHandle = defaultCfHandle.remove(0);
+                        dbPath, columnFamilyDescriptors, openedHandles, dbOptions, isReadOnly);
+
+        defaultColumnFamilyHandle = null;
+        for (int i = 0; i < openedHandles.size(); i++) {
+            byte[] cfNameBytes = existingColumnFamilies.get(i);
+            ColumnFamilyHandle cfHandle = openedHandles.get(i);
+            if (Arrays.equals(cfNameBytes, RocksDB.DEFAULT_COLUMN_FAMILY)) {
+                defaultColumnFamilyHandle = cfHandle;
+            } else {
+                extraColumnFamilyHandles.put(
+                        new String(cfNameBytes, StandardCharsets.UTF_8), cfHandle);
+            }
+        }
+        if (defaultColumnFamilyHandle == null) {
+            throw new IOException("Default column family handle is missing after opening RocksDB.");
+        }
+    }
+
+    private List<byte[]> listExistingColumnFamilies() {
+        try (Options options = new Options()) {
+            return RocksDB.listColumnFamilies(options, dbPath);
+        } catch (RocksDBException e) {
+            return Collections.emptyList();
+        }
     }
 
     public RocksDB getDb() {
@@ -89,9 +134,17 @@ public class RocksDBHandle implements AutoCloseable {
         return defaultColumnFamilyHandle;
     }
 
+    public Map<String, ColumnFamilyHandle> getExtraColumnFamilyHandles() {
+        return extraColumnFamilyHandles;
+    }
+
     @Override
     public void close() {
         IOUtils.closeQuietly(defaultColumnFamilyHandle);
+        for (ColumnFamilyHandle cfHandle : extraColumnFamilyHandles.values()) {
+            IOUtils.closeQuietly(cfHandle);
+        }
+        extraColumnFamilyHandles.clear();
         IOUtils.closeQuietly(db);
         // Making sure the already created column family options will be closed
         IOUtils.closeQuietly(defaultColumnFamilyOptions);

@@ -34,6 +34,8 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -78,6 +80,7 @@ public class RocksDBKvBuilder {
 
     public RocksDBKv build() throws KvBuildingException {
         ColumnFamilyHandle defaultColumnFamilyHandle = null;
+        Map<String, ColumnFamilyHandle> existingColumnFamilyHandles = new HashMap<>();
         RocksDB db = null;
         ResourceGuard rocksDBResourceGuard = new ResourceGuard();
         RocksDBHandle rocksDBHandle = null;
@@ -93,6 +96,7 @@ public class RocksDBKvBuilder {
             rocksDBHandle.openDB();
             db = rocksDBHandle.getDb();
             defaultColumnFamilyHandle = rocksDBHandle.getDefaultColumnFamilyHandle();
+            existingColumnFamilyHandles.putAll(rocksDBHandle.getExtraColumnFamilyHandles());
         } catch (Throwable t) {
             IOUtils.closeQuietly(defaultColumnFamilyHandle);
             IOUtils.closeQuietly(db);
@@ -112,6 +116,7 @@ public class RocksDBKvBuilder {
                 db,
                 rocksDBResourceGuard,
                 defaultColumnFamilyHandle,
+                existingColumnFamilyHandles,
                 optionsContainer.getStatistics());
     }
 
