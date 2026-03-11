@@ -112,6 +112,7 @@ import org.apache.fluss.server.replica.fetcher.InitialFetchStatus;
 import org.apache.fluss.server.replica.fetcher.ReplicaFetcherManager;
 import org.apache.fluss.server.utils.FatalErrorHandler;
 import org.apache.fluss.server.utils.LakeStorageUtils;
+import org.apache.fluss.server.utils.ServerRpcMessageUtils.PutKvDataForBucket;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
 import org.apache.fluss.utils.FileUtils;
@@ -158,6 +159,7 @@ import static org.apache.fluss.utils.concurrent.LockUtils.inLock;
 /** A manager for replica. */
 public class ReplicaManager {
     private static final Logger LOG = LoggerFactory.getLogger(ReplicaManager.class);
+    private static final short MIN_PUT_KV_VERSION_FOR_HISTORICAL_WRITES = 2;
 
     public static final String HIGH_WATERMARK_CHECKPOINT_FILE_NAME = "high-watermark-checkpoint";
     private final Configuration conf;
@@ -592,7 +594,7 @@ public class ReplicaManager {
     public void putRecordsToKv(
             int timeoutMs,
             int requiredAcks,
-            Map<TableBucket, KvRecordBatch> entriesPerBucket,
+            Map<TableBucket, PutKvDataForBucket> entriesPerBucket,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
             short apiVersion,
@@ -754,10 +756,13 @@ public class ReplicaManager {
                 // the original key bytes are wrapped in KeyRecordBatch, then during putRecordsToKv
                 // they are decoded to rows and immediately re-encoded back to key bytes, causing
                 // redundant encode/decode overhead.
+                Map<TableBucket, PutKvDataForBucket> putKvData = new HashMap<>();
+                produceEntryData.forEach(
+                        (tb, batch) -> putKvData.put(tb, new PutKvDataForBucket(batch, null)));
                 putRecordsToKv(
                         timeoutMs,
                         requiredAcks,
-                        produceEntryData,
+                        putKvData,
                         schema.getPrimaryKeyIndexes(),
                         MergeMode.DEFAULT,
                         apiVersion,
@@ -1302,24 +1307,32 @@ public class ReplicaManager {
     }
 
     private Map<TableBucket, PutKvResultForBucket> putToLocalKv(
-            Map<TableBucket, KvRecordBatch> entriesPerBucket,
+            Map<TableBucket, PutKvDataForBucket> entriesPerBucket,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
             int requiredAcks,
             short apiVersion) {
         Map<TableBucket, PutKvResultForBucket> putResultForBucketMap = new HashMap<>();
-        for (Map.Entry<TableBucket, KvRecordBatch> entry : entriesPerBucket.entrySet()) {
+        for (Map.Entry<TableBucket, PutKvDataForBucket> entry : entriesPerBucket.entrySet()) {
             TableBucket tb = entry.getKey();
+            PutKvDataForBucket putKvDataForBucket = entry.getValue();
+            KvRecordBatch kvRecordBatch = putKvDataForBucket.getKvRecordBatch();
             TableMetricGroup tableMetrics = null;
             try {
                 LOG.trace("Put records to local kv tablet for table bucket {}", tb);
                 Replica replica = getReplicaOrException(tb);
                 validateClientVersionForPkTable(apiVersion, replica.getTableInfo());
+                validateHistoricalWriteCompatibility(
+                        (short) apiVersion, replica, putKvDataForBucket);
                 tableMetrics = replica.tableMetrics();
                 tableMetrics.totalPutKvRequests().inc();
                 LogAppendInfo appendInfo =
                         replica.putRecordsToLeader(
-                                entry.getValue(), targetColumns, mergeMode, requiredAcks);
+                                kvRecordBatch,
+                                putKvDataForBucket.getOriginalPartitionName(),
+                                targetColumns,
+                                mergeMode,
+                                requiredAcks);
                 LOG.trace(
                         "Written to local kv for {}, and the cdc log beginning at offset {} and ending at offset {}",
                         tb,
@@ -1329,8 +1342,8 @@ public class ReplicaManager {
                         tb, new PutKvResultForBucket(tb, appendInfo.lastOffset() + 1));
 
                 // metric for kv
-                tableMetrics.incKvMessageIn(entry.getValue().getRecordCount());
-                tableMetrics.incKvBytesIn(entry.getValue().sizeInBytes());
+                tableMetrics.incKvMessageIn(kvRecordBatch.getRecordCount());
+                tableMetrics.incKvBytesIn(kvRecordBatch.sizeInBytes());
                 // metric for cdc log of kv
                 tableMetrics.incLogBytesIn(appendInfo.validBytes());
                 tableMetrics.incLogMessageIn(appendInfo.numMessages());
@@ -1350,6 +1363,25 @@ public class ReplicaManager {
         }
 
         return putResultForBucketMap;
+    }
+
+    private void validateHistoricalWriteCompatibility(
+            short apiVersion, Replica replica, PutKvDataForBucket putKvDataForBucket) {
+        String partitionName = replica.getPhysicalTablePath().getPartitionName();
+        if (!PhysicalTablePath.OVERFLOW_PARTITION_NAME.equals(partitionName)) {
+            return;
+        }
+        if (apiVersion < MIN_PUT_KV_VERSION_FOR_HISTORICAL_WRITES) {
+            throw new UnsupportedVersionException(
+                    String.format(
+                            "PUT_KV API version %d is not supported for '__historical__' partition writes. "
+                                    + "Please upgrade client to version %d or newer.",
+                            apiVersion, MIN_PUT_KV_VERSION_FOR_HISTORICAL_WRITES));
+        }
+        if (putKvDataForBucket.getOriginalPartitionName() == null) {
+            throw new UnsupportedVersionException(
+                    "Missing partition_name for '__historical__' partition write.");
+        }
     }
 
     public void getTableStats(

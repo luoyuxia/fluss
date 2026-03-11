@@ -20,6 +20,7 @@ package org.apache.fluss.lake.lakestorage;
 import org.apache.fluss.annotation.PublicEvolving;
 
 import javax.annotation.Nullable;
+import java.io.Closeable;
 
 /**
  * An interface for performing point lookups against lake storage for expired partitions.
@@ -37,7 +38,7 @@ import javax.annotation.Nullable;
  * @since 0.10
  */
 @PublicEvolving
-public interface LakeTableLookuper {
+public interface LakeTableLookuper extends Closeable {
 
     /**
      * Lookup a single key from lake storage for an expired partition.

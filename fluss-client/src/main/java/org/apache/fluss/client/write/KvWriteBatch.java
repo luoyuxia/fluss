@@ -36,6 +36,7 @@ import javax.annotation.concurrent.NotThreadSafe;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -53,6 +54,7 @@ public class KvWriteBatch extends WriteBatch {
     private final @Nullable int[] targetColumns;
     private final int schemaId;
     private final MergeMode mergeMode;
+    private final @Nullable String originalPartitionName;
 
     public KvWriteBatch(
             int bucketId,
@@ -63,6 +65,7 @@ public class KvWriteBatch extends WriteBatch {
             AbstractPagedOutputView outputView,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
+            @Nullable String originalPartitionName,
             long createdMs) {
         super(bucketId, physicalTablePath, createdMs);
         this.outputView = outputView;
@@ -71,6 +74,7 @@ public class KvWriteBatch extends WriteBatch {
         this.targetColumns = targetColumns;
         this.schemaId = schemaId;
         this.mergeMode = mergeMode;
+        this.originalPartitionName = originalPartitionName;
     }
 
     @Override
@@ -107,6 +111,9 @@ public class KvWriteBatch extends WriteBatch {
                                     + "Batch mergeMode: %s, Record mergeMode: %s",
                             this.mergeMode, writeRecord.getMergeMode()));
         }
+        if (!Objects.equals(writeRecord.getOriginalPartitionName(), originalPartitionName)) {
+            return false;
+        }
 
         byte[] key = writeRecord.getKey();
         checkNotNull(key, "key must be not null for kv record");
@@ -129,6 +136,10 @@ public class KvWriteBatch extends WriteBatch {
 
     public MergeMode getMergeMode() {
         return mergeMode;
+    }
+
+    public @Nullable String getOriginalPartitionName() {
+        return originalPartitionName;
     }
 
     @Override

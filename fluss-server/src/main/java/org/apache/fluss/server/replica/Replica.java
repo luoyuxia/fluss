@@ -1048,6 +1048,7 @@ public final class Replica {
 
     public LogAppendInfo putRecordsToLeader(
             KvRecordBatch kvRecords,
+            @Nullable String originalPartitionName,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
             int requiredAcks)
@@ -1068,7 +1069,9 @@ public final class Replica {
                             kv, "KvTablet for the replica to put kv records shouldn't be null.");
                     LogAppendInfo logAppendInfo;
                     try {
-                        logAppendInfo = kv.putAsLeader(kvRecords, targetColumns, mergeMode);
+                        logAppendInfo =
+                                kv.putAsLeader(
+                                        kvRecords, originalPartitionName, targetColumns, mergeMode);
                     } catch (IOException e) {
                         LOG.error("Error while putting records to {}", tableBucket, e);
                         fatalErrorHandler.onFatalError(e);

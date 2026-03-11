@@ -46,6 +46,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -240,5 +241,10 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             LOG.warn("Failed to encode value row", e);
             return null;
         }
+    }
+
+    @Override
+    public void close() throws IOException {
+        tableQuery.close();
     }
 }

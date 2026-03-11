@@ -48,7 +48,9 @@ public enum ApiKeys {
     // Version 0: Uses lake's encoder for primary key encoding (legacy behavior).
     // Version 1: Uses CompactedKeyEncoder for primary key encoding when bucket key differs from
     //            primary key, enabling prefix lookup support.
-    PUT_KV(1016, 0, 1, PUBLIC),
+    // Version 2: Supports partition_name in put-kv request bucket metadata for
+    //            deterministic historical-partition write routing.
+    PUT_KV(1016, 0, 2, PUBLIC),
 
     // Version 0: Uses lake's encoder for primary key encoding (legacy behavior).
     // Version 1: Uses CompactedKeyEncoder for primary key encoding when bucket key differs from

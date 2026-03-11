@@ -190,6 +190,13 @@ public class ClientRpcMessageUtils {
                     if (tableBucket.getPartitionId() != null) {
                         pbPutKvReqForBucket.setPartitionId(tableBucket.getPartitionId());
                     }
+                    if (readyBatch.writeBatch() instanceof KvWriteBatch) {
+                        String originalPartitionName =
+                                ((KvWriteBatch) readyBatch.writeBatch()).getOriginalPartitionName();
+                        if (originalPartitionName != null) {
+                            pbPutKvReqForBucket.setPartitionName(originalPartitionName);
+                        }
+                    }
                 });
         return request;
     }

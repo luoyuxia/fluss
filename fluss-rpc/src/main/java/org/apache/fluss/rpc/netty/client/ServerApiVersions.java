@@ -81,6 +81,36 @@ final class ServerApiVersions {
         }
     }
 
+    /**
+     * Get the latest usable version supported by the server within an allowed range of versions.
+     * This follows Kafka's latestUsableVersion negotiation model.
+     */
+    public short latestUsableVersion(
+            ApiKeys apiKey, short oldestAllowedVersion, short latestAllowedVersion) {
+        short serverMaxVersion = highestAvailableVersion(apiKey);
+        Optional<Short> version =
+                availableMaxVersion(
+                        oldestAllowedVersion,
+                        latestAllowedVersion,
+                        apiKey.lowestSupportedVersion,
+                        serverMaxVersion);
+        if (version.isPresent()) {
+            return version.get();
+        }
+        throw new UnsupportedVersionException(
+                "The server does not support "
+                        + apiKey
+                        + " with version in range ["
+                        + oldestAllowedVersion
+                        + ","
+                        + latestAllowedVersion
+                        + "]. The supported range is ["
+                        + apiKey.lowestSupportedVersion
+                        + ","
+                        + serverMaxVersion
+                        + "].");
+    }
+
     static Optional<Short> availableMaxVersion(
             short clientMinVersion,
             short clientMaxVersion,

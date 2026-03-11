@@ -986,9 +986,29 @@ public class ServerRpcMessageUtils {
         return fetchLogResponse;
     }
 
-    public static Map<TableBucket, KvRecordBatch> getPutKvData(PutKvRequest putKvRequest) {
+    /** Parsed put-kv payload for one bucket, including optional original partition hint. */
+    public static final class PutKvDataForBucket {
+        private final KvRecordBatch kvRecordBatch;
+        private final @Nullable String originalPartitionName;
+
+        public PutKvDataForBucket(
+                KvRecordBatch kvRecordBatch, @Nullable String originalPartitionName) {
+            this.kvRecordBatch = kvRecordBatch;
+            this.originalPartitionName = originalPartitionName;
+        }
+
+        public KvRecordBatch getKvRecordBatch() {
+            return kvRecordBatch;
+        }
+
+        public @Nullable String getOriginalPartitionName() {
+            return originalPartitionName;
+        }
+    }
+
+    public static Map<TableBucket, PutKvDataForBucket> getPutKvData(PutKvRequest putKvRequest) {
         long tableId = putKvRequest.getTableId();
-        Map<TableBucket, KvRecordBatch> produceEntryData = new HashMap<>();
+        Map<TableBucket, PutKvDataForBucket> produceEntryData = new HashMap<>();
         for (PbPutKvReqForBucket putKvReqForBucket : putKvRequest.getBucketsReqsList()) {
             ByteBuffer recordsBuffer = toByteBuffer(putKvReqForBucket.getRecordsSlice());
             DefaultKvRecordBatch kvRecords = DefaultKvRecordBatch.pointToByteBuffer(recordsBuffer);
@@ -999,7 +1019,11 @@ public class ServerRpcMessageUtils {
                                     ? putKvReqForBucket.getPartitionId()
                                     : null,
                             putKvReqForBucket.getBucketId());
-            produceEntryData.put(tb, kvRecords);
+            String originalPartitionName =
+                    putKvReqForBucket.hasPartitionName()
+                            ? putKvReqForBucket.getPartitionName()
+                            : null;
+            produceEntryData.put(tb, new PutKvDataForBucket(kvRecords, originalPartitionName));
         }
         return produceEntryData;
     }

@@ -25,11 +25,14 @@ import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidServerTypeException;
 import org.apache.fluss.exception.NetworkException;
 import org.apache.fluss.exception.RetriableAuthenticationException;
+import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.rpc.messages.ApiMessage;
 import org.apache.fluss.rpc.messages.ApiVersionsRequest;
 import org.apache.fluss.rpc.messages.ApiVersionsResponse;
 import org.apache.fluss.rpc.messages.AuthenticateRequest;
 import org.apache.fluss.rpc.messages.AuthenticateResponse;
+import org.apache.fluss.rpc.messages.PbPutKvReqForBucket;
+import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
 import org.apache.fluss.rpc.metrics.ConnectionMetrics;
 import org.apache.fluss.rpc.protocol.ApiKeys;
@@ -68,6 +71,7 @@ import static org.apache.fluss.utils.IOUtils.closeQuietly;
 @ThreadSafe
 final class ServerConnection {
     private static final Logger LOG = LoggerFactory.getLogger(ServerConnection.class);
+    private static final short PUT_KV_VERSION_WITH_PARTITION_NAME = 2;
 
     private final ServerNode node;
 
@@ -306,17 +310,12 @@ final class ServerConnection {
                 return responseFuture;
             }
 
-            // version equals highestSupportedVersion might happen when requesting api version check
-            // before serverApiVersions is  initialized. We always use the highest version for api
-            // version checking.
-            short version = apiKey.highestSupportedVersion;
-            if (serverApiVersions != null) {
-                try {
-                    version = serverApiVersions.highestAvailableVersion(apiKey);
-                } catch (Exception e) {
-                    responseFuture.completeExceptionally(e);
-                    return responseFuture;
-                }
+            short version;
+            try {
+                version = chooseRequestVersion(apiKey, rawRequest);
+            } catch (Exception e) {
+                responseFuture.completeExceptionally(e);
+                return responseFuture;
             }
 
             InflightRequest inflight =
@@ -363,6 +362,52 @@ final class ServerConnection {
                                     });
             return inflight.responseFuture;
         }
+    }
+
+    /**
+     * Chooses a request version compatible with both request features and server support, similar to
+     * Kafka's "latest usable version" negotiation.
+     */
+    private short chooseRequestVersion(ApiKeys apiKey, ApiMessage rawRequest) {
+        short minRequiredVersion = apiKey.lowestSupportedVersion;
+        if (apiKey == ApiKeys.PUT_KV && requiresPartitionNameHint(rawRequest)) {
+            minRequiredVersion = PUT_KV_VERSION_WITH_PARTITION_NAME;
+        }
+
+        if (serverApiVersions == null) {
+            if (apiKey.highestSupportedVersion < minRequiredVersion) {
+                throw new UnsupportedVersionException(
+                        String.format(
+                                "Client does not support %s version %d required by request. "
+                                        + "Client supports up to version %d.",
+                                apiKey, minRequiredVersion, apiKey.highestSupportedVersion));
+            }
+            return apiKey.highestSupportedVersion;
+        }
+
+        try {
+            return serverApiVersions.latestUsableVersion(
+                    apiKey, minRequiredVersion, apiKey.highestSupportedVersion);
+        } catch (UnsupportedVersionException e) {
+            throw new UnsupportedVersionException(
+                    String.format(
+                            "Server %s does not support %s version %d required by request.",
+                            node, apiKey, minRequiredVersion),
+                    e);
+        }
+    }
+
+    private boolean requiresPartitionNameHint(ApiMessage rawRequest) {
+        if (!(rawRequest instanceof PutKvRequest)) {
+            return false;
+        }
+        PutKvRequest putKvRequest = (PutKvRequest) rawRequest;
+        for (PbPutKvReqForBucket bucketReq : putKvRequest.getBucketsReqsList()) {
+            if (bucketReq.hasPartitionName()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void handleApiVersionsResponse(ApiMessage response, Throwable cause) {

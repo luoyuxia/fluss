@@ -88,7 +88,8 @@ public final class WriteRecord {
                 writeFormat,
                 targetColumns,
                 estimatedSizeInBytes,
-                mergeMode);
+                mergeMode,
+                null);
     }
 
     /** Create a write record for delete operation and partial-delete update. */
@@ -131,7 +132,8 @@ public final class WriteRecord {
                 writeFormat,
                 targetColumns,
                 estimatedSizeInBytes,
-                mergeMode);
+                mergeMode,
+                null);
     }
 
     /** Create a write record for append operation for indexed format. */
@@ -152,7 +154,8 @@ public final class WriteRecord {
                 WriteFormat.INDEXED_LOG,
                 null,
                 estimatedSizeInBytes,
-                MergeMode.DEFAULT);
+                MergeMode.DEFAULT,
+                null);
     }
 
     /** Creates a write record for append operation for Arrow format. */
@@ -174,7 +177,8 @@ public final class WriteRecord {
                 WriteFormat.ARROW_LOG,
                 null,
                 estimatedSizeInBytes,
-                MergeMode.DEFAULT);
+                MergeMode.DEFAULT,
+                null);
     }
 
     /** Creates a write record for append operation for Compacted format. */
@@ -195,7 +199,8 @@ public final class WriteRecord {
                 WriteFormat.COMPACTED_LOG,
                 null,
                 estimatedSizeInBytes,
-                MergeMode.DEFAULT);
+                MergeMode.DEFAULT,
+                null);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -221,6 +226,7 @@ public final class WriteRecord {
      * </ul>
      */
     private final MergeMode mergeMode;
+    private final @Nullable String originalPartitionName;
 
     private WriteRecord(
             TableInfo tableInfo,
@@ -231,7 +237,8 @@ public final class WriteRecord {
             WriteFormat writeFormat,
             @Nullable int[] targetColumns,
             int estimatedSizeInBytes,
-            MergeMode mergeMode) {
+            MergeMode mergeMode,
+            @Nullable String originalPartitionName) {
         this.tableInfo = tableInfo;
         this.physicalTablePath = physicalTablePath;
         this.key = key;
@@ -241,6 +248,7 @@ public final class WriteRecord {
         this.targetColumns = targetColumns;
         this.estimatedSizeInBytes = estimatedSizeInBytes;
         this.mergeMode = mergeMode;
+        this.originalPartitionName = originalPartitionName;
     }
 
     public PhysicalTablePath getPhysicalTablePath() {
@@ -302,12 +310,20 @@ public final class WriteRecord {
         return tableInfo.getSchemaId();
     }
 
+    public @Nullable String getOriginalPartitionName() {
+        return originalPartitionName;
+    }
+
     /**
      * Creates a new {@link WriteRecord} with the given physical table path, keeping all other fields
      * unchanged. This is used for redirecting writes to the overflow partition when the original
      * target partition has expired.
      */
     public WriteRecord withPhysicalTablePath(PhysicalTablePath newPhysicalTablePath) {
+        String updatedOriginalPartitionName =
+                originalPartitionName != null
+                        ? originalPartitionName
+                        : physicalTablePath.getPartitionName();
         return new WriteRecord(
                 tableInfo,
                 newPhysicalTablePath,
@@ -317,6 +333,7 @@ public final class WriteRecord {
                 writeFormat,
                 targetColumns,
                 estimatedSizeInBytes,
-                mergeMode);
+                mergeMode,
+                updatedOriginalPartitionName);
     }
 }

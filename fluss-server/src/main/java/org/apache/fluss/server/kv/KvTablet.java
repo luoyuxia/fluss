@@ -349,7 +349,7 @@ public final class KvTablet {
     /**
      * Put the KvRecordBatch into the kv storage with default DEFAULT mode.
      *
-     * <p>This is a convenience method that calls {@link #putAsLeader(KvRecordBatch, int[],
+     * <p>This is a convenience method that calls {@link #putAsLeader(KvRecordBatch, String, int[],
      * MergeMode)} with {@link MergeMode#DEFAULT}.
      *
      * @param kvRecords the kv records to put into
@@ -357,7 +357,7 @@ public final class KvTablet {
      */
     public LogAppendInfo putAsLeader(KvRecordBatch kvRecords, @Nullable int[] targetColumns)
             throws Exception {
-        return putAsLeader(kvRecords, targetColumns, MergeMode.DEFAULT);
+        return putAsLeader(kvRecords, null, targetColumns, MergeMode.DEFAULT);
     }
 
     /**
@@ -383,6 +383,15 @@ public final class KvTablet {
      */
     public LogAppendInfo putAsLeader(
             KvRecordBatch kvRecords, @Nullable int[] targetColumns, MergeMode mergeMode)
+            throws Exception {
+        return putAsLeader(kvRecords, null, targetColumns, mergeMode);
+    }
+
+    public LogAppendInfo putAsLeader(
+            KvRecordBatch kvRecords,
+            @Nullable String originalPartitionNameHint,
+            @Nullable int[] targetColumns,
+            MergeMode mergeMode)
             throws Exception {
         return inWriteLock(
                 kvLock,
@@ -426,6 +435,7 @@ public final class KvTablet {
                         processKvRecords(
                                 kvRecords,
                                 kvRecords.schemaId(),
+                                originalPartitionNameHint,
                                 currentMerger,
                                 currentAutoIncrementUpdater,
                                 walBuilder,
@@ -488,6 +498,7 @@ public final class KvTablet {
     private void processKvRecords(
             KvRecordBatch kvRecords,
             short schemaIdOfNewData,
+            @Nullable String originalPartitionNameHint,
             RowMerger currentMerger,
             AutoIncrementUpdater autoIncrementUpdater,
             WalBuilder walBuilder,
@@ -512,6 +523,10 @@ public final class KvTablet {
             KvPreWriteBuffer activeBuffer;
             if (overflowContext != null && row != null) {
                 partitionName = overflowContext.extractPartitionName(row);
+                activeBuffer =
+                        overflowContext.getOrCreatePartitionContext(partitionName).getBuffer();
+            } else if (overflowContext != null && originalPartitionNameHint != null) {
+                partitionName = originalPartitionNameHint;
                 activeBuffer =
                         overflowContext.getOrCreatePartitionContext(partitionName).getBuffer();
             } else {
@@ -569,17 +584,13 @@ public final class KvTablet {
                             + "The table.delete.behavior is set to 'disable'.");
         }
 
-        // For overflow deletes (row is null), activeBuffer is the default buffer.
-        // We need to search all overflow partition contexts to find the key.
+        // For historical-partition deletes with row == null, original partition cannot be derived.
+        // Searching all partition contexts is unsafe because identical PK bytes can exist in
+        // multiple original partitions and may delete the wrong row.
         if (overflowContext != null && activeBuffer == kvPreWriteBuffer) {
-            return processOverflowDeletion(
-                    key,
-                    schemaId,
-                    currentMerger,
-                    valueDecoder,
-                    walBuilder,
-                    latestSchemaRow,
-                    logOffset);
+            throw new IllegalArgumentException(
+                    "Delete in __historical__ partition requires partition routing information; "
+                            + "either include row partition columns or provide originalPartitionName in putKv request.");
         }
 
         byte[] oldValueBytes = getFromBufferOrKv(key, activeBuffer, partitionName, schemaId);
@@ -600,49 +611,6 @@ public final class KvTablet {
             return applyUpdate(
                     key, oldValue, newValue, activeBuffer, walBuilder, latestSchemaRow, logOffset);
         }
-    }
-
-    /**
-     * Handles deletion in overflow tablets where the partition is unknown (row is null). Searches
-     * all per-partition contexts (buffer + RocksDB + Paimon) to find the key.
-     */
-    private long processOverflowDeletion(
-            KvPreWriteBuffer.Key key,
-            short schemaId,
-            RowMerger currentMerger,
-            ValueDecoder valueDecoder,
-            WalBuilder walBuilder,
-            PaddingRow latestSchemaRow,
-            long logOffset)
-            throws Exception {
-        assert overflowContext != null;
-        // Search all per-partition contexts: buffer → RocksDB → Paimon
-        for (OverflowWriteContext.PartitionKvContext ctx :
-                overflowContext.getPartitionContexts().values()) {
-            byte[] oldValueBytes =
-                    getFromBufferOrKv(key, ctx.getBuffer(), ctx.getPartitionName(), schemaId);
-            if (oldValueBytes != null) {
-                BinaryValue oldValue = valueDecoder.decodeValue(oldValueBytes);
-                BinaryValue newValue = currentMerger.delete(oldValue);
-                if (newValue == null) {
-                    return applyDelete(
-                            key, oldValue, ctx.getBuffer(), walBuilder, latestSchemaRow, logOffset);
-                } else {
-                    return applyUpdate(
-                            key,
-                            oldValue,
-                            newValue,
-                            ctx.getBuffer(),
-                            walBuilder,
-                            latestSchemaRow,
-                            logOffset);
-                }
-            }
-        }
-        LOG.debug(
-                "The specific key can't be found in any overflow partition for deletion, "
-                        + "ignore it directly.");
-        return logOffset;
     }
 
     private long processUpsert(

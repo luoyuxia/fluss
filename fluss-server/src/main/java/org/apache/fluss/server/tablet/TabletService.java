@@ -23,7 +23,6 @@ import org.apache.fluss.exception.UnknownTableOrBucketException;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
-import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.entity.FetchLogResultForBucket;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
@@ -232,7 +231,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
     public CompletableFuture<PutKvResponse> putKv(PutKvRequest request) {
         authorizeTable(WRITE, request.getTableId());
 
-        Map<TableBucket, KvRecordBatch> putKvData = getPutKvData(request);
+        Map<TableBucket, ServerRpcMessageUtils.PutKvDataForBucket> putKvData = getPutKvData(request);
         // Get mergeMode from request, default to DEFAULT if not set
         MergeMode mergeMode =
                 request.hasAggMode()
