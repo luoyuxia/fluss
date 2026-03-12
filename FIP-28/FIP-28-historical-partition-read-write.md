@@ -1,4 +1,4 @@
-# FIP: Historical Partition Read/Write Support with Historical Partition and Lake Lookup
+# FIP: Support Write and Lookup for Expired Partitions in DataLake-Enabled Tables
 
 ## Motivation
 
@@ -19,47 +19,29 @@ This FIP proposes a unified solution for both read and write:
 Scope and eligibility:
 
 - This FIP only supports tables with Paimon-enabled lake storage.
-- Reason: Primary Key tables require point lookup for expired partitions; non-datalake-enabled tables cannot provide this capability.
-- Although Log-table historical writes can technically work without lake lookup, we still do not support non-datalake-enabled tables in this FIP, to keep behavior consistent across table types.
+- For Primary Key tables, this is a hard technical requirement: historical writes need old-value resolution to generate correct changelog (`UPDATE_BEFORE` + `UPDATE_AFTER`), and the old value for expired partitions only exists in lake storage. Without a lake backend, old-value lookup is impossible and the write path cannot produce correct results.
+- For Log tables, historical writes are technically feasible without lake storage (append-only, no old-value resolution needed). However, we still restrict this FIP to lake-enabled tables to avoid a fragmented feature matrix — supporting historical writes for lake-enabled Log tables but not for non-lake Log tables would create inconsistent user expectations across the same table type.
 
-Note: This FIP primarily focuses on Paimon as the lake storage backend, because Paimon provides efficient point lookup capabilities via its `LocalTableQuery` API. Other lake formats such as Iceberg and Lance do not currently offer comparable point query performance, so support for them can be considered in future FIPs as their point lookup capabilities mature.
+Note: This FIP primarily focuses on Paimon as the lake storage backend, because Paimon provides efficient point lookup capabilities via its `LocalTableQuery` API. Other lake formats such as Iceberg and Lance do not currently offer comparable point query performance, so support for them can be considered in future FIPs, which will required a full cache on Iceberg.
 
 ## Public Interfaces
 
-### New RPC API
+### RPC Extensions
 
-Add a lake lookup RPC for server-side fallback:
+Extend lookup RPC for historical partition lake lookup:
 
 ```protobuf
-message LakeLookupRequest {
-  required int64 table_id = 1;
-  repeated PbLakeLookupReqForBucket buckets_req = 2;
-}
-
-message LakeLookupResponse {
-  repeated PbLakeLookupRespForBucket buckets_resp = 1;
-}
-
-message PbLakeLookupReqForBucket {
-  required string partition_name = 1;
-  required int32 bucket_id = 2;
-  repeated bytes keys = 3;
-}
-
-message PbLakeLookupRespForBucket {
-  optional int32 error_code = 1;
-  optional string error_message = 2;
-  required string partition_name = 3;
-  required int32 bucket_id = 4;
-  repeated PbValue values = 5;
+message PbLookupReqForBucket {
+  // existing fields...
+  optional string partition_name = N;  // original partition name for historical lookup
 }
 ```
 
-Why introduce `LakeLookupRequest` instead of reusing `LookupRequest`:
+- `partition_name` carries the original partition name when the lookup targets `__historical__` partition.
+- Server uses this field to determine which lake partition to query.
+- Field is optional; absent for normal lookups.
 
-- **Different execution profile**: normal `LookupRequest` targets local RocksDB with predictable latency, while lake lookup is remote/file-based I/O with much higher latency variance and different timeout/backpressure needs.
-- **Different routing key**: lake lookup is naturally scoped by `(originalPartition, bucket)` for expired partitions and historical routing; forcing it into normal lookup shape would add ambiguous semantics.
-- **Protocol evolution safety**: keeping a dedicated request/response pair allows future lake-specific fields without coupling to regular lookup protocol compatibility.
+This reuses the existing `LookupRequest` instead of introducing a separate RPC. The dispatch strategy (synchronous local lookup vs. async lake lookup) is determined server-side based on whether the target is `__historical__` partition — the same approach used for the write path.
 
 Extend put-kv RPC for deterministic historical delete routing:
 
@@ -133,10 +115,6 @@ public interface LakeTableLookuper {
     }
 }
 ```
-
-### New Lookup Type
-
-Add `LookupType.LAKE_LOOKUP` to distinguish this path from normal local lookup.
 
 ## Proposed Changes
 
@@ -239,7 +217,7 @@ Server-side handling:
    - upsert -> merge and write to partition buffer,
    - delete -> delete from partition buffer,
    - flush -> partition buffer flushes into its own CF.
-8. For Primary Key historical writes, when old-value fallback needs lake lookup, execute that remote lookup on a dedicated IO executor (instead of the write/apply thread) and then continue write processing with returned result.
+8. For Primary Key historical writes, when old-value fallback needs lake lookup, execute that remote lookup asynchronously and then continue write processing with returned result. The threading model for historical writes is described in Section C.
 Note: unlike normal non-historical put flow, when local old value is absent this path can fallback to point lookup from underlying lake storage; detailed lookup behavior is described in Section B.
 
 Flow sketch:
@@ -248,7 +226,9 @@ Flow sketch:
 Incoming PK record on __historical__
         |
         v
-Extract original partition (from row partition columns)
+Extract original partition:
+  - upsert (row != null): from row partition columns
+  - delete (row == null): from `partition_name` field in the RPC request (`PbPutKvReqForBucket.partition_name`), since there is no row payload to extract partition columns from
         |
         v
 Resolve or create partition-scoped write context
@@ -271,13 +251,7 @@ Old-value resolution chain:
 
 Execution note:
 
-- Step 3 (lake fallback) runs on a dedicated IO executor for Primary Key historical writes, so unpredictable remote lake I/O latency does not block write/apply threads.
-
-Delete special case:
-
-- if delete record has `row == null`, partition is unknown in payload;
-- in `__historical__` path this is unsafe if no partition hint is provided (same PK bytes may exist in multiple original partitions);
-- key-only delete is supported when client carries `partition_name` in put-kv request so server can route to one deterministic partition context.
+- The entire historical write processing (including step 3 lake fallback) is offloaded from the RPC thread to a shared IO executor, so unpredictable remote lake I/O latency does not block RPC threads or real-time write paths. See Section C for details.
 
 #### A.3.2 Why per-partition CF instead of encoding partition into key
 
@@ -341,18 +315,18 @@ When `PrimaryKeyLookuper` cannot resolve partition (partition expired):
 
 - compute `bucketId` by following the same `__historical__` write bucketing strategy (bucket-key based),
 - route lookup request to the leader of `__historical__` partition + `bucketId`,
-- build lake lookup query with `(tablePath, originalPartition, bucketId, keyBytes)`.
-- `LookupSender` groups `LakeLookupQuery` instances by destination server and table path into `LakeLookupBatch`. Each batch is sent as a single `LakeLookupRequest` containing multiple `PbLakeLookupReqForBucket` entries, reducing RPC overhead.
+- send a standard `LookupRequest` with the additional `partition_name` field set to the original partition name.
+- `LookupSender` groups these requests by destination server as usual; no separate batch type is needed.
 
-#### B.2 Server-Side: Asynchronous Lake Lookup Execution
+#### B.2 Server-Side: Dispatch by Partition Type
 
-`ReplicaManager.lakeLookups()` handles incoming requests:
+`ReplicaManager.lookups()` checks whether the target is `__historical__` partition:
 
-- Validates that lake storage is configured (throws `IllegalStateException` if not)
-- Obtains (or caches) a per-table `LakeTableLookuper`
-- Submits the actual lookup work to a dedicated IO executor thread pool to prevent blocking the RPC thread
-
-**Why a dedicated IO executor?** Unlike regular lookups in Fluss which operate against local RocksDB and are fast with predictable latency, lake lookups involve remote file I/O operations against the lake storage (e.g., reading Paimon data files from remote storage, loading file indexes). These operations can have unpredictable latency due to disk access, file cache misses, or first-time file loading. If executed directly on the RPC thread, slow lake lookups would block the processing of other RPC requests (including regular lookups, writes, etc.), degrading overall cluster performance. By offloading lake lookups to a separate IO executor, we isolate their latency impact and keep the RPC threads responsive for normal operations.
+- **Normal partition**: execute lookup synchronously against local RocksDB (existing path, unchanged).
+- **`__historical__` partition**: submit the lookup to `ioExecutor` for async lake lookup (see Section C for threading model):
+  - Validates that lake storage is configured
+  - Obtains (or caches) a per-table `LakeTableLookuper`
+  - Uses `partition_name` from the request to identify the original partition in lake storage
 
 #### B.3 Paimon Implementation: `PaimonLakeTableLookuper`
 
@@ -372,29 +346,71 @@ The Paimon-specific implementation uses Paimon's `LocalTableQuery` for efficient
 3. If found, wrap Paimon result as Fluss `InternalRow` via `PaimonRowAsFlussRow` adapter
 4. Encode value using `CompactedRowEncoder` + `ValueEncoder.encodeValue(binaryRow)`
 
+### C. Performance Isolation: Thread Isolation between Real-time and Historical Paths
+
+Historical partition operations (both writes and lookups) involve lake I/O with unpredictable latency. Without isolation, these slow operations would block the RPC threads that also serve real-time partition reads and writes.
+
+Current Fluss write path is fully synchronous on the RPC thread: `TabletService.putKv()` → `ReplicaManager.putRecordsToKv()` → `putToLocalKv()` → `KvTablet.putAsLeader()`. If a historical PK write needs lake old-value lookup on the RPC thread, it blocks not only other writes but all RPC processing (reads, heartbeats, etc.) on that thread.
+
+#### C.1 Client-side: Separate Batching by Partition Type
+
+Client sender/accumulator layer batches records by partition type: real-time partitions and `__historical__` partition are accumulated into **separate batches** and sent as **independent requests**. This ensures server receives requests that are purely real-time or purely historical, enabling clean dispatch at the request level without per-bucket splitting.
+
+#### C.2 Server-side: Offload Historical Operations to IO Executor
+
+`ReplicaManager` uses a shared `ioExecutor` (bounded thread pool) to offload all historical partition operations from RPC threads:
+
+- **Write path**: `putRecordsToKv()` checks whether the target is `__historical__` partition. If so, the entire write processing is submitted to `ioExecutor` asynchronously, and the RPC thread is released immediately. Real-time writes continue to execute synchronously on the RPC thread as before.
+- **Lookup path**: `lookups()` checks whether the target is `__historical__` partition. If so, the lookup is submitted to `ioExecutor` for async lake lookup. Normal lookups continue to execute synchronously against local RocksDB as before.
+
+Both paths share the same `ioExecutor` because they are both lake I/O bound. A shared pool also provides a unified bound on total lake I/O concurrency per server.
+
+```text
+Real-time write:    RPC Thread → synchronous putToLocalKv() → RocksDB
+Real-time lookup:   RPC Thread → synchronous local RocksDB query
+
+Historical write:   RPC Thread → ioExecutor → putToLocalKv() → lake old-value lookup → RocksDB
+Historical lookup:  RPC Thread → ioExecutor → Paimon LocalTableQuery
+```
+
+Real-time paths are not affected by any new executor or concurrency control — they remain fully synchronous on the RPC thread as before.
+
+#### C.3 Server-side: Flow Control
+
+The `ioExecutor` uses a bounded queue (default capacity: 64, configurable) as a natural flow control mechanism. Historical writes and lake lookups share the same queue, which provides a unified bound on total lake I/O concurrency per server.
+
+When the queue is full, the server rejects the request with a `HISTORICAL_PARTITION_THROTTLED` error code. Client receives this error and performs backoff retry using the existing client retry mechanism — no historical-partition-specific retry logic is needed.
+
+Queue size rationale: the upper bound of useful queue capacity is constrained by request timeout — requests that wait too long in the queue will time out before execution, wasting resources. The default is tentatively set to 16; the final value needs to be determined by benchmarking actual lake I/O latency. The formula for tuning: `queue_size = thread_count × (max_acceptable_wait / avg_lake_io_latency)`.
+
 ## Compatibility, Deprecation, and Migration Plan
 
-- Additive change for eligible auto-partitioned tables with Paimon lake storage enabled.
-- No behavior change for non-expired partition read/write paths.
-- No behavior change for tables that never hit `__historical__` path.
-- Lake lookup fallback only triggers for Primary Key tables when partition metadata is absent.
-- Existing `LakeStorage` implementations remain compatible via default `UnsupportedOperationException` for unsupported point lookup.
-- No deprecation is introduced in this FIP.
-- No data migration is required; this is a forward-compatible protocol and behavior extension.
+### Previous behavior (before this FIP)
 
-Rolling upgrade behavior:
+Writing to an expired partition on auto-partitioned tables was already broken:
+
+- If `dynamicPartitionEnabled = true`: client dynamically creates the expired partition, but `AutoPartitionManager` immediately drops it on the next TTL check cycle, causing a create/drop loop.
+- If `dynamicPartitionEnabled = false`: client throws `PartitionNotExistException` directly.
+- Point lookup on expired partitions returns `null`, even though data exists in lake storage.
+
+In both cases, writing to or reading from expired partitions did not produce correct results.
+
+### New behavior (this FIP)
+
+- Writes to expired partitions are redirected to the `__historical__` partition and succeed.
+- Point lookups on expired partitions fall back to lake storage via `LookupRequest` with `partition_name` and return the correct value.
+
+### Compatibility
 
 - **Old client -> New server**
-  - Request compatibility: old client does not send `PbPutKvReqForBucket.partition_name`; new server accepts it because the field is optional.
-  - Behavior: normal writes and non-historical deletes are unchanged.
-  - Limitation: for writes on `__historical__` path, if `partition_name` is not set, new server rejects the request to avoid ambiguous partition routing.
+  - Request compatibility: old client does not send `partition_name` in put-kv or lookup requests; new server accepts it because the field is optional.
+  - Normal writes, deletes, and lookups are unchanged.
+  - Old client does not have the redirect-to-`__historical__` logic, so it falls back to the previous behavior (dynamic create/drop loop or `PartitionNotExistException`).
 
 - **New client -> Old server**
-  - Protocol compatibility: unknown protobuf field `partition_name` is ignored by old server.
-  - Lake lookup path: no impact; behavior stays the same.
-  - Write `__historical__` path: not allowed. Old server does not have the new Primary Key historical write behavior (including correct old-value lookup/changelog `-U/+U` semantics), so writing historical partition data to old server can produce incorrect results.
-  - Client requirement: new client must perform server capability gating (e.g., API version check) and must NOT send any `__historical__` write to old servers.
-  - If capability is not available, client should fail fast and block the historical write path.
+  - Old server does not have `__historical__` partition support (no per-partition CF isolation, no lake old-value lookup, no lake lookup dispatch).
+  - No special version check is needed. The new client attempts to redirect to `__historical__`, but since old server does not create or correctly handle `__historical__`, the write/lookup fails — this is equivalent to the previous behavior where writing to expired partitions was already unsupported.
+  - Normal writes, deletes, and lookups on non-expired partitions are unaffected.
 
 ## Test Plan
 
