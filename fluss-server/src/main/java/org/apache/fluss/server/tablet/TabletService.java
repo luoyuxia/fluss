@@ -32,6 +32,12 @@ import org.apache.fluss.rpc.entity.ResultForBucket;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadRequest;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadResponse;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotResponse;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetTableStatsRequest;
 import org.apache.fluss.rpc.messages.GetTableStatsResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
@@ -52,12 +58,18 @@ import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrResponse;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsRequest;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsResponse;
+import org.apache.fluss.rpc.messages.PbFilePositionEntries;
+import org.apache.fluss.rpc.messages.PbLakeDvEntry;
+import org.apache.fluss.rpc.messages.PbLogDvEntry;
+import org.apache.fluss.rpc.messages.PbRowPosition;
 import org.apache.fluss.rpc.messages.PrefixLookupRequest;
 import org.apache.fluss.rpc.messages.PrefixLookupResponse;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.messages.PutKvResponse;
+import org.apache.fluss.rpc.messages.ReportPositionRequest;
+import org.apache.fluss.rpc.messages.ReportPositionResponse;
 import org.apache.fluss.rpc.messages.StopReplicaRequest;
 import org.apache.fluss.rpc.messages.StopReplicaResponse;
 import org.apache.fluss.rpc.messages.UpdateMetadataRequest;
@@ -74,18 +86,23 @@ import org.apache.fluss.server.coordinator.MetadataManager;
 import org.apache.fluss.server.entity.FetchReqInfo;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.UserContext;
+import org.apache.fluss.server.kv.KvTablet;
+import org.apache.fluss.server.kv.dv.DvManager;
 import org.apache.fluss.server.log.FetchParams;
 import org.apache.fluss.server.log.ListOffsetsParam;
 import org.apache.fluss.server.metadata.TabletServerMetadataCache;
 import org.apache.fluss.server.metadata.TabletServerMetadataProvider;
+import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.replica.ReplicaManager;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -420,6 +437,137 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         CompletableFuture<NotifyLakeTableOffsetResponse> response = new CompletableFuture<>();
         replicaManager.notifyLakeTableOffset(getNotifyLakeTableOffset(request), response::complete);
         return response;
+    }
+
+    @Override
+    public CompletableFuture<ReportPositionResponse> reportPosition(ReportPositionRequest request) {
+        authorizeTable(WRITE, request.getTableId());
+
+        TableBucket tableBucket =
+                new TableBucket(
+                        request.getTableId(),
+                        request.hasPartitionId() ? request.getPartitionId() : null,
+                        request.getBucketId());
+        Replica replica = replicaManager.getReplicaOrException(tableBucket);
+        KvTablet kvTablet =
+                java.util.Objects.requireNonNull(
+                        replica.getKvTablet(), "KvTablet for reportPosition should not be null.");
+
+        Map<String, List<long[]>> positionReport = new LinkedHashMap<>();
+        for (PbFilePositionEntries entries : request.getFilePositionEntriesList()) {
+            List<long[]> rowPositions = new ArrayList<>(entries.getRowPositionsCount());
+            for (PbRowPosition rowPosition : entries.getRowPositionsList()) {
+                rowPositions.add(new long[] {rowPosition.getRowId(), rowPosition.getRowPosition()});
+            }
+            positionReport.put(entries.getFilePath(), rowPositions);
+        }
+
+        kvTablet.reportPosition(
+                positionReport,
+                request.getSplitLastTieredOffset(),
+                request.getSplitLatestOffset(),
+                request.getMaterializedDvFilesList(),
+                request.getActualSnapshotId());
+        return CompletableFuture.completedFuture(new ReportPositionResponse());
+    }
+
+    @Override
+    public CompletableFuture<GetLakeDvSnapshotResponse> getLakeDvSnapshot(
+            GetLakeDvSnapshotRequest request) {
+        authorizeTable(READ, request.getTableId());
+
+        TableBucket tableBucket =
+                new TableBucket(
+                        request.getTableId(),
+                        request.hasPartitionId() ? request.getPartitionId() : null,
+                        request.getBucketId());
+        Replica replica = replicaManager.getReplicaOrException(tableBucket);
+        KvTablet kvTablet =
+                java.util.Objects.requireNonNull(
+                        replica.getKvTablet(),
+                        "KvTablet for getLakeDvSnapshot should not be null.");
+
+        Map<String, byte[]> lakeDvSnapshot = kvTablet.snapshotLakeDv();
+        List<PbLakeDvEntry> lakeDvEntries = new ArrayList<>(lakeDvSnapshot.size());
+        for (Map.Entry<String, byte[]> entry : lakeDvSnapshot.entrySet()) {
+            lakeDvEntries.add(
+                    new PbLakeDvEntry().setFilePath(entry.getKey()).setDelBitmap(entry.getValue()));
+        }
+
+        return CompletableFuture.completedFuture(
+                new GetLakeDvSnapshotResponse()
+                        .addAllLakeDvEntries(lakeDvEntries)
+                        .setLogHighWatermark(replica.getLocalLogEndOffset()));
+    }
+
+    @Override
+    public CompletableFuture<GetLogDvSnapshotResponse> getLogDvSnapshot(
+            GetLogDvSnapshotRequest request) {
+        authorizeTable(READ, request.getTableId());
+
+        TableBucket tableBucket =
+                new TableBucket(
+                        request.getTableId(),
+                        request.hasPartitionId() ? request.getPartitionId() : null,
+                        request.getBucketId());
+        Replica replica = replicaManager.getReplicaOrException(tableBucket);
+        KvTablet kvTablet =
+                java.util.Objects.requireNonNull(
+                        replica.getKvTablet(), "KvTablet for getLogDvSnapshot should not be null.");
+
+        Map<Long, byte[]> logDvSnapshot =
+                kvTablet.snapshotLogDv(request.getStartOffset(), request.getEndOffset());
+        List<PbLogDvEntry> logDvEntries = new ArrayList<>(logDvSnapshot.size());
+        for (Map.Entry<Long, byte[]> entry : logDvSnapshot.entrySet()) {
+            logDvEntries.add(
+                    new PbLogDvEntry().setBaseOffset(entry.getKey()).setDelBits(entry.getValue()));
+        }
+
+        return CompletableFuture.completedFuture(
+                new GetLogDvSnapshotResponse().addAllLogDvEntries(logDvEntries));
+    }
+
+    @Override
+    public CompletableFuture<GetDvForUnionReadResponse> getDvForUnionRead(
+            GetDvForUnionReadRequest request) {
+        authorizeTable(READ, request.getTableId());
+
+        TableBucket tableBucket =
+                new TableBucket(
+                        request.getTableId(),
+                        request.hasPartitionId() ? request.getPartitionId() : null,
+                        request.getBucketId());
+        Replica replica = replicaManager.getReplicaOrException(tableBucket);
+        KvTablet kvTablet =
+                java.util.Objects.requireNonNull(
+                        replica.getKvTablet(),
+                        "KvTablet for getDvForUnionRead should not be null.");
+
+        DvManager.DvReadResult result =
+                kvTablet.getDvForUnionRead(
+                        request.getRequestedSnapshotId(), request.getDataFilesList());
+
+        GetDvForUnionReadResponse response =
+                new GetDvForUnionReadResponse().setLogEndOffset(result.getLogEndOffset());
+        if (result.isStale()) {
+            response.setIsStale(true)
+                    .setCurrentReadableSnapshot(result.getCurrentReadableSnapshot());
+        }
+
+        List<PbLakeDvEntry> lakeDvEntries = new ArrayList<>(result.getLakeDv().size());
+        for (Map.Entry<String, byte[]> entry : result.getLakeDv().entrySet()) {
+            lakeDvEntries.add(
+                    new PbLakeDvEntry().setFilePath(entry.getKey()).setDelBitmap(entry.getValue()));
+        }
+        response.addAllLakeDvs(lakeDvEntries);
+
+        List<PbLogDvEntry> logDvEntries = new ArrayList<>(result.getLogDv().size());
+        for (Map.Entry<Long, byte[]> entry : result.getLogDv().entrySet()) {
+            logDvEntries.add(
+                    new PbLogDvEntry().setBaseOffset(entry.getKey()).setDelBits(entry.getValue()));
+        }
+        response.addAllLogDvs(logDvEntries);
+        return CompletableFuture.completedFuture(response);
     }
 
     @Override

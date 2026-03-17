@@ -22,11 +22,19 @@ import org.apache.fluss.client.initializer.BucketOffsetsRetrieverImpl;
 import org.apache.fluss.client.initializer.OffsetsInitializer.BucketOffsetsRetriever;
 import org.apache.fluss.client.metadata.KvSnapshots;
 import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotResponse;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotResponse;
+import org.apache.fluss.rpc.messages.PbLakeDvEntry;
+import org.apache.fluss.rpc.messages.PbLogDvEntry;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import org.apache.flink.util.FlinkRuntimeException;
@@ -51,9 +59,11 @@ public class TieringSplitGenerator {
     private static final Logger LOG = LoggerFactory.getLogger(TieringSplitGenerator.class);
 
     private final Admin flussAdmin;
+    private final MetadataUpdater metadataUpdater;
 
-    public TieringSplitGenerator(Admin flussAdmin) {
+    public TieringSplitGenerator(Admin flussAdmin, MetadataUpdater metadataUpdater) {
         this.flussAdmin = flussAdmin;
+        this.metadataUpdater = metadataUpdater;
     }
 
     public List<TieringSplit> generateTableSplits(TableInfo tableInfo) throws Exception {
@@ -204,6 +214,7 @@ public class TieringSplitGenerator {
                                 tableInfo.getTablePath(),
                                 tableBucket,
                                 partitionName,
+                                tableInfo.getTableConfig().isDvEnabled(),
                                 latestSnapshotId,
                                 offsetOfLatestSnapshotId,
                                 lastCommittedBucketOffset,
@@ -238,6 +249,7 @@ public class TieringSplitGenerator {
             TablePath tablePath,
             TableBucket tableBucket,
             @Nullable String partitionName,
+            boolean dvEnabled,
             @Nullable Long latestSnapshotId,
             @Nullable Long latestOffsetOfSnapshot,
             @Nullable Long lastCommittedBucketOffset,
@@ -261,7 +273,14 @@ public class TieringSplitGenerator {
                                 partitionName,
                                 EARLIEST_OFFSET,
                                 latestBucketOffset,
-                                0));
+                                0,
+                                false,
+                                dvEnabled ? fetchLakeDvSnapshot(tablePath, tableBucket) : null,
+                                fetchLogDvSnapshot(
+                                        tablePath,
+                                        tableBucket,
+                                        EARLIEST_OFFSET,
+                                        latestBucketOffset)));
             } else {
                 // bucket with snapshot, read kv to latest snapshotId + latestOffsetOfSnapshot
                 checkState(latestOffsetOfSnapshot != null);
@@ -272,7 +291,9 @@ public class TieringSplitGenerator {
                                 partitionName,
                                 latestSnapshotId,
                                 latestOffsetOfSnapshot,
-                                0));
+                                0,
+                                false,
+                                fetchLakeDvSnapshot(tablePath, tableBucket)));
             }
         } else {
             // the bucket has been tiered, read bounded log
@@ -284,7 +305,14 @@ public class TieringSplitGenerator {
                                 partitionName,
                                 lastCommittedBucketOffset,
                                 latestBucketOffset,
-                                0));
+                                0,
+                                false,
+                                dvEnabled ? fetchLakeDvSnapshot(tablePath, tableBucket) : null,
+                                fetchLogDvSnapshot(
+                                        tablePath,
+                                        tableBucket,
+                                        lastCommittedBucketOffset,
+                                        latestBucketOffset)));
             } else {
                 LOG.debug(
                         "The lastCommittedBucketOffset {} is equals or bigger than latestBucketOffset {}, skip generating split for bucket {}",
@@ -319,7 +347,12 @@ public class TieringSplitGenerator {
                             tableBucket,
                             partitionName,
                             EARLIEST_OFFSET,
-                            latestBucketOffset));
+                            latestBucketOffset,
+                            TieringSplit.UNKNOWN_NUMBER_OF_SPLITS,
+                            false,
+                            null,
+                            fetchLogDvSnapshot(
+                                    tablePath, tableBucket, EARLIEST_OFFSET, latestBucketOffset)));
         } else {
             // the bucket has been tiered, scan remain fluss log
             if (lastCommittedBucketOffset < latestBucketOffset) {
@@ -329,7 +362,15 @@ public class TieringSplitGenerator {
                                 tableBucket,
                                 partitionName,
                                 lastCommittedBucketOffset,
-                                latestBucketOffset));
+                                latestBucketOffset,
+                                TieringSplit.UNKNOWN_NUMBER_OF_SPLITS,
+                                false,
+                                null,
+                                fetchLogDvSnapshot(
+                                        tablePath,
+                                        tableBucket,
+                                        lastCommittedBucketOffset,
+                                        latestBucketOffset)));
             }
         }
         LOG.debug(
@@ -338,5 +379,76 @@ public class TieringSplitGenerator {
                 latestBucketOffset,
                 tableBucket);
         return Optional.empty();
+    }
+
+    @Nullable
+    private Map<Long, byte[]> fetchLogDvSnapshot(
+            TablePath tablePath, TableBucket tableBucket, long startOffset, long endOffset) {
+        try {
+            int leader = metadataUpdater.leaderFor(tablePath, tableBucket);
+            TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(leader);
+            if (gateway == null) {
+                throw new IllegalStateException(
+                        String.format("Server %s is not found in metadata cache.", leader));
+            }
+
+            GetLogDvSnapshotRequest request =
+                    new GetLogDvSnapshotRequest()
+                            .setTableId(tableBucket.getTableId())
+                            .setBucketId(tableBucket.getBucket())
+                            .setStartOffset(startOffset)
+                            .setEndOffset(endOffset);
+            if (tableBucket.getPartitionId() != null) {
+                request.setPartitionId(tableBucket.getPartitionId());
+            }
+
+            GetLogDvSnapshotResponse response = gateway.getLogDvSnapshot(request).get();
+            Map<Long, byte[]> logDvSnapshot =
+                    new java.util.LinkedHashMap<>(response.getLogDvEntriesCount());
+            for (PbLogDvEntry entry : response.getLogDvEntriesList()) {
+                logDvSnapshot.put(entry.getBaseOffset(), entry.getDelBits());
+            }
+            return logDvSnapshot.isEmpty() ? null : logDvSnapshot;
+        } catch (Exception e) {
+            throw new FlinkRuntimeException(
+                    String.format(
+                            "Failed to get LogDv snapshot for table %s bucket %s in range [%s, %s)",
+                            tablePath, tableBucket, startOffset, endOffset),
+                    ExceptionUtils.stripCompletionException(e));
+        }
+    }
+
+    @Nullable
+    private Map<String, byte[]> fetchLakeDvSnapshot(TablePath tablePath, TableBucket tableBucket) {
+        try {
+            int leader = metadataUpdater.leaderFor(tablePath, tableBucket);
+            TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(leader);
+            if (gateway == null) {
+                throw new IllegalStateException(
+                        String.format("Server %s is not found in metadata cache.", leader));
+            }
+
+            GetLakeDvSnapshotRequest request =
+                    new GetLakeDvSnapshotRequest()
+                            .setTableId(tableBucket.getTableId())
+                            .setBucketId(tableBucket.getBucket());
+            if (tableBucket.getPartitionId() != null) {
+                request.setPartitionId(tableBucket.getPartitionId());
+            }
+
+            GetLakeDvSnapshotResponse response = gateway.getLakeDvSnapshot(request).get();
+            Map<String, byte[]> lakeDvSnapshot =
+                    new java.util.LinkedHashMap<>(response.getLakeDvEntriesCount());
+            for (PbLakeDvEntry entry : response.getLakeDvEntriesList()) {
+                lakeDvSnapshot.put(entry.getFilePath(), entry.getDelBitmap());
+            }
+            return lakeDvSnapshot.isEmpty() ? null : lakeDvSnapshot;
+        } catch (Exception e) {
+            throw new FlinkRuntimeException(
+                    String.format(
+                            "Failed to get LakeDv snapshot for table %s bucket %s",
+                            tablePath, tableBucket),
+                    ExceptionUtils.stripCompletionException(e));
+        }
     }
 }

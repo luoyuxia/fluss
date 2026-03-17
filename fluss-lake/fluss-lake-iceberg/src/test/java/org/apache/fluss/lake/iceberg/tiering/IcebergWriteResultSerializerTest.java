@@ -35,7 +35,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -87,6 +91,38 @@ class IcebergWriteResultSerializerTest {
         serializedData = serializer.serialize(originalResult);
         deserializedResult = serializer.deserialize(serializer.getVersion(), serializedData);
         assertThat(deserializedResult.toString()).isEqualTo(originalResult.toString());
+    }
+
+    @Test
+    void testSerializeAndDeserializeWithDvMetadata() throws IOException {
+        DataFile dataFile = createDataFile("/data/file2.parquet", 200L);
+        WriteResult writeResult = WriteResult.builder().addDataFiles(dataFile).build();
+
+        Map<String, List<long[]>> positionReport = new HashMap<>();
+        List<long[]> positions = new ArrayList<>();
+        positions.add(new long[] {11L, 0});
+        positions.add(new long[] {12L, 1});
+        positionReport.put("/data/file2.parquet", positions);
+
+        List<String> materializedDvFiles = new ArrayList<>();
+        materializedDvFiles.add("/data/file2.parquet");
+
+        IcebergWriteResult originalResult =
+                new IcebergWriteResult(writeResult, null, positionReport, 99L, materializedDvFiles);
+
+        byte[] serializedData = serializer.serialize(originalResult);
+        IcebergWriteResult deserializedResult =
+                serializer.deserialize(serializer.getVersion(), serializedData);
+
+        assertThat(deserializedResult.getBaseSnapshotId()).isEqualTo(99L);
+        assertThat(deserializedResult.getPositionReport()).containsOnlyKeys("/data/file2.parquet");
+        assertThat(deserializedResult.getPositionReport().get("/data/file2.parquet")).hasSize(2);
+        assertThat(deserializedResult.getMaterializedDvFiles())
+                .containsExactly("/data/file2.parquet");
+        assertThat(deserializedResult.getPositionReport().get("/data/file2.parquet").get(0))
+                .containsExactly(11L, 0L);
+        assertThat(deserializedResult.getPositionReport().get("/data/file2.parquet").get(1))
+                .containsExactly(12L, 1L);
     }
 
     private DeleteFile createDeleteFile(String path, long recordCount) {

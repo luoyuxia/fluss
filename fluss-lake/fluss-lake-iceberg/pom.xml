@@ -76,6 +76,12 @@
         </dependency>
 
         <dependency>
+            <groupId>org.roaringbitmap</groupId>
+            <artifactId>RoaringBitmap</artifactId>
+            <version>${roaringbitmap.version}</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.fluss</groupId>
             <artifactId>fluss-common</artifactId>
             <version>${project.version}</version>

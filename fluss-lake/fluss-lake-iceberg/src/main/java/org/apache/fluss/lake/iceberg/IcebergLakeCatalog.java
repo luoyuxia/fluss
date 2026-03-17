@@ -333,6 +333,12 @@ public class IcebergLakeCatalog implements LakeCatalog {
                     TableProperties.MERGE_MODE, RowLevelOperationMode.MERGE_ON_READ.modeName());
         }
 
+        // When DV is enabled, use Iceberg format-version 3 for position delete support
+        if (tableDescriptor.isDvEnabled()) {
+            icebergProperties.put("format-version", "3");
+            icebergProperties.put("fluss.system-columns", "__offset,__bucket");
+        }
+
         tableDescriptor
                 .getProperties()
                 .forEach((k, v) -> setFlussPropertyToIceberg(k, v, icebergProperties));

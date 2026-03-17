@@ -82,6 +82,7 @@ import org.apache.fluss.server.coordinator.event.NewTabletServerEvent;
 import org.apache.fluss.server.coordinator.event.NotifyKvSnapshotOffsetEvent;
 import org.apache.fluss.server.coordinator.event.NotifyLakeTableOffsetEvent;
 import org.apache.fluss.server.coordinator.event.NotifyLeaderAndIsrResponseReceivedEvent;
+import org.apache.fluss.server.coordinator.event.ReadableSnapshotUpdatedEvent;
 import org.apache.fluss.server.coordinator.event.RebalanceEvent;
 import org.apache.fluss.server.coordinator.event.RemoveServerTagEvent;
 import org.apache.fluss.server.coordinator.event.SchemaChangeEvent;
@@ -116,6 +117,7 @@ import org.apache.fluss.server.zk.data.TableAssignment;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 import org.apache.fluss.server.zk.data.ZkData.PartitionIdsZNode;
 import org.apache.fluss.server.zk.data.ZkData.TableIdsZNode;
+import org.apache.fluss.server.zk.data.lake.LakeTable;
 import org.apache.fluss.server.zk.data.lake.LakeTableHelper;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
 import org.apache.fluss.utils.types.Tuple2;
@@ -180,6 +182,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private final RebalanceManager rebalanceManager;
     private final CompletedSnapshotStoreManager completedSnapshotStoreManager;
     private final LakeTableHelper lakeTableHelper;
+    private final Map<TableBucket, Long> lastReadableSnapshotByBucket = new HashMap<>();
 
     public CoordinatorEventProcessor(
             ZooKeeperClient zooKeeperClient,
@@ -594,6 +597,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
             processNotifyKvSnapshotOffsetEvent((NotifyKvSnapshotOffsetEvent) event);
         } else if (event instanceof NotifyLakeTableOffsetEvent) {
             processNotifyLakeTableOffsetEvent((NotifyLakeTableOffsetEvent) event);
+        } else if (event instanceof ReadableSnapshotUpdatedEvent) {
+            processReadableSnapshotUpdatedEvent((ReadableSnapshotUpdatedEvent) event);
         } else if (event instanceof CommitRemoteLogManifestEvent) {
             CommitRemoteLogManifestEvent commitRemoteLogManifestEvent =
                     (CommitRemoteLogManifestEvent) event;
@@ -1794,6 +1799,62 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 coordinatorContext.getCoordinatorEpoch());
     }
 
+    private void processReadableSnapshotUpdatedEvent(ReadableSnapshotUpdatedEvent event) {
+        try {
+            notifyReadableSwitchIfNeeded(event.getTableId());
+        } catch (Exception e) {
+            throw new FlussRuntimeException(
+                    "Failed to process readable snapshot update for table " + event.getTableId(),
+                    e);
+        }
+    }
+
+    private void notifyReadableSwitchIfNeeded(long tableId) throws Exception {
+        Optional<LakeTable> optLakeTable = zooKeeperClient.getLakeTable(tableId);
+        if (!optLakeTable.isPresent()) {
+            return;
+        }
+
+        LakeTableSnapshot readableSnapshot =
+                optLakeTable.get().getOrReadLatestReadableTableSnapshot();
+        if (readableSnapshot == null) {
+            return;
+        }
+
+        long readableSnapshotId = readableSnapshot.getSnapshotId();
+        Map<TableBucket, Long> bucketLogEndOffsets = readableSnapshot.getBucketLogEndOffset();
+        if (bucketLogEndOffsets.isEmpty()) {
+            return;
+        }
+
+        boolean hasNewSwitch = false;
+        for (TableBucket tableBucket : bucketLogEndOffsets.keySet()) {
+            long lastReadableSnapshotId =
+                    lastReadableSnapshotByBucket.getOrDefault(tableBucket, -1L);
+            if (lastReadableSnapshotId < readableSnapshotId) {
+                hasNewSwitch = true;
+                break;
+            }
+        }
+        if (!hasNewSwitch) {
+            return;
+        }
+
+        coordinatorRequestBatch.newBatch();
+        for (Map.Entry<TableBucket, Long> entry : bucketLogEndOffsets.entrySet()) {
+            TableBucket tableBucket = entry.getKey();
+            coordinatorRequestBatch.addNotifyKvSnapshotOffsetRequestForTabletServers(
+                    coordinatorContext.getAssignment(tableBucket),
+                    tableBucket,
+                    null,
+                    readableSnapshotId,
+                    entry.getValue());
+            lastReadableSnapshotByBucket.put(tableBucket, readableSnapshotId);
+        }
+        coordinatorRequestBatch.sendNotifyKvSnapshotOffsetRequest(
+                coordinatorContext.getCoordinatorEpoch());
+    }
+
     private CommitRemoteLogManifestResponse tryProcessCommitRemoteLogManifest(
             CommitRemoteLogManifestEvent event) {
         CommitRemoteLogManifestData manifestData = event.getCommitRemoteLogManifestData();
@@ -1910,6 +1971,15 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 commitLakeTableSnapshotsData.getLakeTableSnapshot(),
                                 commitLakeTableSnapshotsData.getTableMaxTieredTimestamps(),
                                 failedTableIds);
+                        commitLakeTableSnapshotsData
+                                .getCommitLakeTableSnapshotByTableId()
+                                .keySet()
+                                .stream()
+                                .filter(tableId -> !failedTableIds.contains(tableId))
+                                .forEach(
+                                        tableId ->
+                                                coordinatorEventManager.put(
+                                                        new ReadableSnapshotUpdatedEvent(tableId)));
                         callback.complete(response);
                     } catch (Exception e) {
                         callback.completeExceptionally(e);
@@ -1971,6 +2041,15 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 commitLakeTableSnapshotsData.getLakeTableSnapshot(),
                                 commitLakeTableSnapshotsData.getTableMaxTieredTimestamps(),
                                 failedTableIds);
+                        commitLakeTableSnapshotsData
+                                .getCommitLakeTableSnapshotByTableId()
+                                .keySet()
+                                .stream()
+                                .filter(tableId -> !failedTableIds.contains(tableId))
+                                .forEach(
+                                        tableId ->
+                                                coordinatorEventManager.put(
+                                                        new ReadableSnapshotUpdatedEvent(tableId)));
                         callback.complete(response);
                     } catch (Exception e) {
                         callback.completeExceptionally(e);

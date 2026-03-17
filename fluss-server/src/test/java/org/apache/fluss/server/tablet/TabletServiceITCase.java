@@ -20,6 +20,7 @@ package org.apache.fluss.server.tablet;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidRequiredAcksException;
+import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.KvFormat;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.metadata.PhysicalTablePath;
@@ -37,6 +38,8 @@ import org.apache.fluss.row.encode.ValueDecoder;
 import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadRequest;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
 import org.apache.fluss.rpc.messages.InitWriterResponse;
 import org.apache.fluss.rpc.messages.ListOffsetsResponse;
@@ -44,16 +47,21 @@ import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrRequest;
 import org.apache.fluss.rpc.messages.NotifyLeaderAndIsrResponse;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForBucket;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForTable;
+import org.apache.fluss.rpc.messages.PbFilePositionEntries;
+import org.apache.fluss.rpc.messages.PbLakeDvEntry;
 import org.apache.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import org.apache.fluss.rpc.messages.PbLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbNotifyLeaderAndIsrReqForBucket;
 import org.apache.fluss.rpc.messages.PbPrefixLookupRespForBucket;
 import org.apache.fluss.rpc.messages.PbPutKvRespForBucket;
+import org.apache.fluss.rpc.messages.PbRowPosition;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.messages.PutKvResponse;
+import org.apache.fluss.rpc.messages.ReportPositionRequest;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
+import org.apache.fluss.server.kv.KvTablet;
 import org.apache.fluss.server.log.ListOffsetsParam;
 import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
@@ -76,8 +84,10 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Random;
 import java.util.Set;
@@ -91,6 +101,7 @@ import static org.apache.fluss.record.TestData.DATA1;
 import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_ROW_TYPE;
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
+import static org.apache.fluss.record.TestData.DATA1_SCHEMA_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_DESCRIPTOR;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_DESCRIPTOR_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
@@ -1071,5 +1082,87 @@ public class TabletServiceITCase {
         InternalRow newRow = valueDecoder.decodeValue(resp2.getValuesList().get(1).getValues()).row;
         assertThat(existingRow.getLong(1)).isEqualTo(1L);
         assertThat(newRow.getLong(1)).isEqualTo(3L);
+    }
+
+    @Test
+    void testReportPositionAndGetDvForUnionRead() throws Exception {
+        TableDescriptor descriptor =
+                TableDescriptor.builder()
+                        .schema(DATA1_SCHEMA_PK)
+                        .distributedBy(1, "a")
+                        .property(ConfigOptions.TABLE_CHANGELOG_IMAGE, ChangelogImage.FULL)
+                        .property(ConfigOptions.TABLE_DV_ENABLED, true)
+                        .build();
+        long tableId = createTable(FLUSS_CLUSTER_EXTENSION, DATA1_TABLE_PATH_PK, descriptor);
+        TableBucket tb = new TableBucket(tableId, 0);
+        FLUSS_CLUSTER_EXTENSION.waitUntilAllReplicaReady(tb);
+
+        int leader = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(tb);
+        TabletServerGateway gateway = FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(leader);
+        KvTablet kvTablet =
+                FLUSS_CLUSTER_EXTENSION
+                        .getTabletServerById(leader)
+                        .getReplicaManager()
+                        .getReplicaOrException(tb)
+                        .getKvTablet();
+        assertThat(kvTablet).isNotNull();
+
+        Map<String, List<long[]>> initialBuild = new HashMap<>();
+        initialBuild.put("file-a.parquet", Collections.singletonList(new long[] {1L, 1L}));
+        kvTablet.getDvManager().handleInitialBuild(initialBuild, 10L, 1L);
+
+        ReportPositionRequest reportPositionRequest =
+                new ReportPositionRequest()
+                        .setTableId(tableId)
+                        .setBucketId(0)
+                        .setSplitLastTieredOffset(1L)
+                        .setSplitLatestOffset(3L)
+                        .setActualSnapshotId(11L)
+                        .addAllFilePositionEntries(
+                                Collections.singletonList(
+                                        new PbFilePositionEntries()
+                                                .setFilePath("file-b.parquet")
+                                                .addAllRowPositions(
+                                                        Collections.singletonList(
+                                                                new PbRowPosition()
+                                                                        .setRowId(2L)
+                                                                        .setRowPosition(7)))));
+        gateway.reportPosition(reportPositionRequest).get();
+
+        Integer fileId = kvTablet.getDvManager().getFileDict().getFileId("file-b.parquet");
+        assertThat(fileId).isNotNull();
+        assertThat(kvTablet.getDvManager().getRowPosIndex().getPending(2L)).isNotNull();
+        assertThat(kvTablet.getDvManager().getRowPosIndex().getPending(2L).getFileId())
+                .isEqualTo(fileId);
+
+        GetDvForUnionReadResponse staleResponse =
+                gateway.getDvForUnionRead(
+                                new GetDvForUnionReadRequest()
+                                        .setTableId(tableId)
+                                        .setBucketId(0)
+                                        .setRequestedSnapshotId(9L)
+                                        .addAllDataFiles(
+                                                Collections.singletonList("file-b.parquet")))
+                        .get();
+        assertThat(staleResponse.isIsStale()).isTrue();
+        assertThat(staleResponse.getCurrentReadableSnapshot()).isEqualTo(10L);
+
+        kvTablet.getDvManager().handleReadableSwitch(11L, 3L, Collections.emptyList());
+        kvTablet.getDvManager().handleChangelogSynced(Collections.singletonList(2L));
+
+        GetDvForUnionReadResponse response =
+                gateway.getDvForUnionRead(
+                                new GetDvForUnionReadRequest()
+                                        .setTableId(tableId)
+                                        .setBucketId(0)
+                                        .setRequestedSnapshotId(11L)
+                                        .addAllDataFiles(
+                                                Collections.singletonList("file-b.parquet")))
+                        .get();
+        assertThat(response.hasIsStale()).isFalse();
+        assertThat(response.getLakeDvsCount()).isEqualTo(1);
+        PbLakeDvEntry lakeDvEntry = response.getLakeDvAt(0);
+        assertThat(lakeDvEntry.getFilePath()).isEqualTo("file-b.parquet");
+        assertThat(lakeDvEntry.getDelBitmap()).isNotNull();
     }
 }

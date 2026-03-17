@@ -20,6 +20,12 @@ package org.apache.fluss.rpc.gateway;
 import org.apache.fluss.rpc.RpcGateway;
 import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadRequest;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadResponse;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotResponse;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetTableStatsRequest;
 import org.apache.fluss.rpc.messages.GetTableStatsResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
@@ -44,6 +50,8 @@ import org.apache.fluss.rpc.messages.ProduceLogRequest;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.messages.PutKvResponse;
+import org.apache.fluss.rpc.messages.ReportPositionRequest;
+import org.apache.fluss.rpc.messages.ReportPositionResponse;
 import org.apache.fluss.rpc.messages.StopReplicaRequest;
 import org.apache.fluss.rpc.messages.StopReplicaResponse;
 import org.apache.fluss.rpc.messages.UpdateMetadataRequest;
@@ -166,7 +174,7 @@ public interface TabletServerGateway extends RpcGateway, AdminReadOnlyGateway {
             NotifyRemoteLogOffsetsRequest request);
 
     /**
-     * Notify log offset of a kv snapshot.
+     * Notify snapshot-related offset state for a table bucket.
      *
      * @return notify snapshot offset response.
      */
@@ -182,4 +190,38 @@ public interface TabletServerGateway extends RpcGateway, AdminReadOnlyGateway {
     @RPC(api = ApiKeys.NOTIFY_LAKE_TABLE_OFFSET)
     CompletableFuture<NotifyLakeTableOffsetResponse> notifyLakeTableOffset(
             NotifyLakeTableOffsetRequest request);
+
+    /**
+     * Report position information from tiering writer.
+     *
+     * @return report position response
+     */
+    @RPC(api = ApiKeys.REPORT_POSITION)
+    CompletableFuture<ReportPositionResponse> reportPosition(ReportPositionRequest request);
+
+    /**
+     * Get LakeDv snapshot for physical DV materialization.
+     *
+     * @return lake dv snapshot
+     */
+    @RPC(api = ApiKeys.GET_LAKE_DV_SNAPSHOT)
+    CompletableFuture<GetLakeDvSnapshotResponse> getLakeDvSnapshot(
+            GetLakeDvSnapshotRequest request);
+
+    /**
+     * Get split-scoped LogDv snapshot for log split filtering.
+     *
+     * @return split-scoped log dv snapshot
+     */
+    @RPC(api = ApiKeys.GET_LOG_DV_SNAPSHOT)
+    CompletableFuture<GetLogDvSnapshotResponse> getLogDvSnapshot(GetLogDvSnapshotRequest request);
+
+    /**
+     * Get deletion vector data for union read.
+     *
+     * @return deletion vector data for union read
+     */
+    @RPC(api = ApiKeys.GET_DV_FOR_UNION_READ)
+    CompletableFuture<GetDvForUnionReadResponse> getDvForUnionRead(
+            GetDvForUnionReadRequest request);
 }

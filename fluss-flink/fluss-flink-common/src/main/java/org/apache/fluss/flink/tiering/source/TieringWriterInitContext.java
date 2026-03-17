@@ -24,6 +24,8 @@ import org.apache.fluss.metadata.TablePath;
 
 import javax.annotation.Nullable;
 
+import java.util.Map;
+
 /** The implementation of {@link WriterInitContext}. */
 public class TieringWriterInitContext implements WriterInitContext {
 
@@ -31,16 +33,28 @@ public class TieringWriterInitContext implements WriterInitContext {
     private final TableBucket tableBucket;
     @Nullable private final String partition;
     private final TableInfo tableInfo;
+    private final long splitStartOffset;
+    private final long snapshotId;
+    @Nullable private final Map<String, byte[]> lakeDvSnapshot;
+    @Nullable private final Map<Long, byte[]> logDvSnapshot;
 
     public TieringWriterInitContext(
             TablePath tablePath,
             TableBucket tableBucket,
             @Nullable String partition,
-            TableInfo tableInfo) {
+            TableInfo tableInfo,
+            long splitStartOffset,
+            long snapshotId,
+            @Nullable Map<String, byte[]> lakeDvSnapshot,
+            @Nullable Map<Long, byte[]> logDvSnapshot) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.partition = partition;
         this.tableInfo = tableInfo;
+        this.splitStartOffset = splitStartOffset;
+        this.snapshotId = snapshotId;
+        this.lakeDvSnapshot = lakeDvSnapshot;
+        this.logDvSnapshot = logDvSnapshot;
     }
 
     @Override
@@ -62,5 +76,27 @@ public class TieringWriterInitContext implements WriterInitContext {
     @Override
     public TableInfo tableInfo() {
         return tableInfo;
+    }
+
+    @Override
+    public long splitStartOffset() {
+        return splitStartOffset;
+    }
+
+    @Override
+    public long snapshotId() {
+        return snapshotId;
+    }
+
+    @Nullable
+    @Override
+    public Map<String, byte[]> lakeDvSnapshot() {
+        return lakeDvSnapshot;
+    }
+
+    @Nullable
+    @Override
+    public Map<Long, byte[]> logDvSnapshot() {
+        return logDvSnapshot;
     }
 }

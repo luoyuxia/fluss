@@ -409,6 +409,7 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                         tableBucket,
                         partitionName,
                         writeResult == null ? null : new TestingWriteResult(writeResult),
+                        0,
                         logEndOffset,
                         maxTimestamp,
                         numberOfWriteResults);

@@ -24,6 +24,8 @@ import org.apache.fluss.metadata.TablePath;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Unit tests for {@link TieringSplitState} . */
@@ -48,7 +50,16 @@ class TieringSplitStateTest {
 
         // verify conversion between TieringLogSplitState and TieringLogSplit
         TieringLogSplit tieringLogSplit =
-                new TieringLogSplit(tablePath, tableBucket, "partition1", 100L, 200L, 20);
+                new TieringLogSplit(
+                        tablePath,
+                        tableBucket,
+                        "partition1",
+                        100L,
+                        200L,
+                        20,
+                        false,
+                        Map.of("file-1.parquet", new byte[] {1, 2, 3}),
+                        Map.of(1000L, new byte[] {4, 5, 6}));
         TieringSplitState tieringLogSplitState = new TieringSplitState(tieringLogSplit);
         assertThat(tieringLogSplitState.toSourceSplit()).isEqualTo(tieringLogSplit);
     }

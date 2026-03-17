@@ -18,28 +18,51 @@
 package org.apache.fluss.lake.iceberg.tiering;
 
 import org.apache.fluss.lake.iceberg.maintenance.RewriteDataFileResult;
+import org.apache.fluss.lake.writer.PositionReportableWriteResult;
 
 import org.apache.iceberg.io.WriteResult;
 
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.util.List;
+import java.util.Map;
 
 /** The write result of Iceberg lake writer to pass to committer to commit. */
-public class IcebergWriteResult implements Serializable {
+public class IcebergWriteResult implements Serializable, PositionReportableWriteResult {
 
     private static final long serialVersionUID = 1L;
 
-    // the normal result of tiering writing to iceberg
     private final WriteResult writeResult;
-
-    // the rewrite result
     @Nullable private final RewriteDataFileResult rewriteDataFileResult;
+    @Nullable private final Map<String, List<long[]>> positionReport;
+    private final long baseSnapshotId;
+    @Nullable private final List<String> materializedDvFiles;
 
     public IcebergWriteResult(
             WriteResult writeResult, @Nullable RewriteDataFileResult rewriteDataFileResult) {
+        this(writeResult, rewriteDataFileResult, null, -1L, null);
+    }
+
+    public IcebergWriteResult(
+            WriteResult writeResult,
+            @Nullable RewriteDataFileResult rewriteDataFileResult,
+            @Nullable Map<String, List<long[]>> positionReport,
+            long baseSnapshotId) {
+        this(writeResult, rewriteDataFileResult, positionReport, baseSnapshotId, null);
+    }
+
+    public IcebergWriteResult(
+            WriteResult writeResult,
+            @Nullable RewriteDataFileResult rewriteDataFileResult,
+            @Nullable Map<String, List<long[]>> positionReport,
+            long baseSnapshotId,
+            @Nullable List<String> materializedDvFiles) {
         this.writeResult = writeResult;
         this.rewriteDataFileResult = rewriteDataFileResult;
+        this.positionReport = positionReport;
+        this.baseSnapshotId = baseSnapshotId;
+        this.materializedDvFiles = materializedDvFiles;
     }
 
     public WriteResult getWriteResult() {
@@ -52,6 +75,22 @@ public class IcebergWriteResult implements Serializable {
     }
 
     @Override
+    @Nullable
+    public Map<String, List<long[]>> getPositionReport() {
+        return positionReport;
+    }
+
+    public long getBaseSnapshotId() {
+        return baseSnapshotId;
+    }
+
+    @Override
+    @Nullable
+    public List<String> getMaterializedDvFiles() {
+        return materializedDvFiles;
+    }
+
+    @Override
     public String toString() {
         return "IcebergWriteResult{"
                 + "dataFiles="
@@ -60,6 +99,12 @@ public class IcebergWriteResult implements Serializable {
                 + writeResult.deleteFiles().length
                 + (rewriteDataFileResult != null
                         ? (", rewriteDataFiles=" + rewriteDataFileResult)
+                        : "")
+                + (positionReport != null
+                        ? (", dvPositionReportSize=" + positionReport.size())
+                        : "")
+                + (materializedDvFiles != null
+                        ? (", materializedDvFiles=" + materializedDvFiles.size())
                         : "")
                 + '}';
     }

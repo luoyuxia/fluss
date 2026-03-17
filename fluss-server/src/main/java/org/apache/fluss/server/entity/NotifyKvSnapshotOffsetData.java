@@ -18,18 +18,28 @@
 package org.apache.fluss.server.entity;
 
 import org.apache.fluss.metadata.TableBucket;
-import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsRequest;
+import org.apache.fluss.rpc.messages.NotifyKvSnapshotOffsetRequest;
 
-/** The data for request {@link NotifyRemoteLogOffsetsRequest}. */
+import javax.annotation.Nullable;
+
+/** The data for request {@link NotifyKvSnapshotOffsetRequest}. */
 public class NotifyKvSnapshotOffsetData {
     private final TableBucket tableBucket;
-    private final long minRetainOffset;
+    @Nullable private final Long minRetainOffset;
+    @Nullable private final Long dvReadableSnapshotId;
+    @Nullable private final Long dvReadableTieredOffset;
     private final int coordinatorEpoch;
 
     public NotifyKvSnapshotOffsetData(
-            TableBucket tableBucket, long minRetainOffset, int coordinatorEpoch) {
+            TableBucket tableBucket,
+            @Nullable Long minRetainOffset,
+            @Nullable Long dvReadableSnapshotId,
+            @Nullable Long dvReadableTieredOffset,
+            int coordinatorEpoch) {
         this.tableBucket = tableBucket;
         this.minRetainOffset = minRetainOffset;
+        this.dvReadableSnapshotId = dvReadableSnapshotId;
+        this.dvReadableTieredOffset = dvReadableTieredOffset;
         this.coordinatorEpoch = coordinatorEpoch;
     }
 
@@ -37,8 +47,20 @@ public class NotifyKvSnapshotOffsetData {
         return tableBucket;
     }
 
-    public long getMinRetainOffset() {
+    public @Nullable Long getMinRetainOffset() {
         return minRetainOffset;
+    }
+
+    public @Nullable Long getDvReadableSnapshotId() {
+        return dvReadableSnapshotId;
+    }
+
+    public @Nullable Long getDvReadableTieredOffset() {
+        return dvReadableTieredOffset;
+    }
+
+    public boolean hasDvReadableSwitch() {
+        return dvReadableSnapshotId != null && dvReadableTieredOffset != null;
     }
 
     public int getCoordinatorEpoch() {
@@ -47,11 +69,15 @@ public class NotifyKvSnapshotOffsetData {
 
     @Override
     public String toString() {
-        return "NotifyRemoteLogOffsetsData{"
+        return "NotifyKvSnapshotOffsetData{"
                 + "tableBucket="
                 + tableBucket
                 + ", minRetainOffset="
                 + minRetainOffset
+                + ", dvReadableSnapshotId="
+                + dvReadableSnapshotId
+                + ", dvReadableTieredOffset="
+                + dvReadableTieredOffset
                 + ", coordinatorEpoch="
                 + coordinatorEpoch
                 + '}';

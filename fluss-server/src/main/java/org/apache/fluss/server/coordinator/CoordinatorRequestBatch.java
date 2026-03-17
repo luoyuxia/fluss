@@ -102,9 +102,9 @@ public class CoordinatorRequestBatch {
     // a map from tablet server to notify remote log offsets request.
     private final Map<Integer, NotifyRemoteLogOffsetsRequest> notifyRemoteLogOffsetsRequestMap =
             new HashMap<>();
-    // a map from tablet server to notify kv snapshot offset request.
-    private final Map<Integer, NotifyKvSnapshotOffsetRequest> notifyKvSnapshotOffsetRequestMap =
-            new HashMap<>();
+    // a map from tablet server to notify kv snapshot offset requests.
+    private final Map<Integer, List<NotifyKvSnapshotOffsetRequest>>
+            notifyKvSnapshotOffsetRequestMap = new HashMap<>();
 
     private final Map<Integer, Map<TableBucket, PbNotifyLakeTableOffsetReqForBucket>>
             notifyLakeTableOffsetRequestMap = new HashMap<>();
@@ -373,14 +373,28 @@ public class CoordinatorRequestBatch {
 
     public void addNotifyKvSnapshotOffsetRequestForTabletServers(
             List<Integer> tabletServers, TableBucket tableBucket, long minRetainOffset) {
+        addNotifyKvSnapshotOffsetRequestForTabletServers(
+                tabletServers, tableBucket, minRetainOffset, null, null);
+    }
+
+    public void addNotifyKvSnapshotOffsetRequestForTabletServers(
+            List<Integer> tabletServers,
+            TableBucket tableBucket,
+            @Nullable Long minRetainOffset,
+            @Nullable Long dvReadableSnapshotId,
+            @Nullable Long dvReadableTieredOffset) {
         tabletServers.stream()
                 .filter(s -> s >= 0)
                 .forEach(
                         id ->
-                                notifyKvSnapshotOffsetRequestMap.put(
-                                        id,
-                                        makeNotifyKvSnapshotOffsetRequest(
-                                                tableBucket, minRetainOffset)));
+                                notifyKvSnapshotOffsetRequestMap
+                                        .computeIfAbsent(id, key -> new ArrayList<>())
+                                        .add(
+                                                makeNotifyKvSnapshotOffsetRequest(
+                                                        tableBucket,
+                                                        minRetainOffset,
+                                                        dvReadableSnapshotId,
+                                                        dvReadableTieredOffset)));
     }
 
     public void addNotifyLakeTableOffsetRequestForTableServers(
@@ -578,22 +592,25 @@ public class CoordinatorRequestBatch {
     }
 
     public void sendNotifyKvSnapshotOffsetRequest(int coordinatorEpoch) {
-        for (Map.Entry<Integer, NotifyKvSnapshotOffsetRequest> notifySnapshotOffsetRequestEntry :
+        for (Map.Entry<Integer, List<NotifyKvSnapshotOffsetRequest>> entry :
                 notifyKvSnapshotOffsetRequestMap.entrySet()) {
-            Integer serverId = notifySnapshotOffsetRequestEntry.getKey();
-            NotifyKvSnapshotOffsetRequest notifySnapshotOffsetRequest =
-                    notifySnapshotOffsetRequestEntry.getValue();
-            notifySnapshotOffsetRequest.setCoordinatorEpoch(coordinatorEpoch);
-            coordinatorChannelManager.sendNotifyKvSnapshotOffsetRequest(
-                    serverId,
-                    notifySnapshotOffsetRequest,
-                    (response, throwable) -> {
-                        if (throwable != null) {
-                            LOG.warn("Failed to send notify snapshot offset request.", throwable);
-                        } else {
-                            LOG.debug("Notify snapshot offset for server {} success.", serverId);
-                        }
-                    });
+            Integer serverId = entry.getKey();
+            for (NotifyKvSnapshotOffsetRequest request : entry.getValue()) {
+                request.setCoordinatorEpoch(coordinatorEpoch);
+                coordinatorChannelManager.sendNotifyKvSnapshotOffsetRequest(
+                        serverId,
+                        request,
+                        (response, throwable) -> {
+                            if (throwable != null) {
+                                LOG.warn(
+                                        "Failed to send notify snapshot offset request.",
+                                        throwable);
+                            } else {
+                                LOG.debug(
+                                        "Notify snapshot offset for server {} success.", serverId);
+                            }
+                        });
+            }
         }
         notifyKvSnapshotOffsetRequestMap.clear();
     }
@@ -667,10 +684,8 @@ public class CoordinatorRequestBatch {
                                                     : partitionId,
                                             kvEntry.getValue());
                         }
-                        // table
                         partitionMetadataList.add(partitionMetadata);
                     }
-                    // no bucket metadata, use empty metadata list
                     TableInfo tableInfo = getTableInfo(tableId);
                     if (tableInfo != null) {
                         tableMetadataList.add(
@@ -678,8 +693,6 @@ public class CoordinatorRequestBatch {
                     }
                 });
 
-        // TODO Todo Distinguish which tablet servers need to be updated instead of sending all live
-        // tablet servers.
         return makeUpdateMetadataRequest(
                 coordinatorContext.getCoordinatorServerInfo(),
                 new HashSet<>(coordinatorContext.getLiveTabletServers().values()),
@@ -696,11 +709,6 @@ public class CoordinatorRequestBatch {
                 return TableInfo.of(
                         DELETED_TABLE_PATH, tableId, 0, EMPTY_TABLE_DESCRIPTOR, -1L, -1L);
             } else {
-                // it may happen that the table is dropped, but the partition still exists
-                // when coordinator restarts, it won't consider it as deleted table,
-                // and will still send partition bucket metadata to tablet server after startup,
-                // which will fail into this code patch, not throw exception, just return null.
-                // TODO: FIX ME, it shouldn't come into here
                 return null;
             }
         } else {

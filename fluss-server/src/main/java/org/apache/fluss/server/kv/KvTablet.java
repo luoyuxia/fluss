@@ -46,10 +46,12 @@ import org.apache.fluss.row.PaddingRow;
 import org.apache.fluss.row.arrow.ArrowWriterPool;
 import org.apache.fluss.row.arrow.ArrowWriterProvider;
 import org.apache.fluss.row.encode.ValueDecoder;
+import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementUpdater;
+import org.apache.fluss.server.kv.dv.DvManager;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.TruncateReason;
 import org.apache.fluss.server.kv.rocksdb.RocksDBKv;
@@ -85,7 +87,9 @@ import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
@@ -100,6 +104,7 @@ import static org.apache.fluss.utils.concurrent.LockUtils.inWriteLock;
 public final class KvTablet {
     private static final Logger LOG = LoggerFactory.getLogger(KvTablet.class);
     private static final long ROW_COUNT_DISABLED = -1;
+    private static final String DV_ROCKSDB_DIR = "dv-rocksdb";
 
     private final PhysicalTablePath physicalPath;
     private final TableBucket tableBucket;
@@ -125,6 +130,10 @@ public final class KvTablet {
     private final RowMerger overwriteRowMerger;
     private final ArrowCompressionInfo arrowCompressionInfo;
     private final AutoIncrementManager autoIncrementManager;
+
+    // DV (Deletion Vector) support
+    private final boolean dvEnabled;
+    @Nullable private final DvManager dvManager;
 
     private final SchemaGetter schemaGetter;
 
@@ -162,7 +171,9 @@ public final class KvTablet {
             SchemaGetter schemaGetter,
             ChangelogImage changelogImage,
             @Nullable RocksDBStatistics rocksDBStatistics,
-            AutoIncrementManager autoIncrementManager) {
+            AutoIncrementManager autoIncrementManager,
+            boolean dvEnabled)
+            throws IOException {
         this.physicalPath = physicalPath;
         this.tableBucket = tableBucket;
         this.logTablet = logTablet;
@@ -184,6 +195,8 @@ public final class KvTablet {
         this.changelogImage = changelogImage;
         this.rocksDBStatistics = rocksDBStatistics;
         this.autoIncrementManager = autoIncrementManager;
+        this.dvEnabled = dvEnabled;
+        this.dvManager = dvEnabled ? new DvManager(new File(kvTabletDir, DV_ROCKSDB_DIR)) : null;
         // disable row count for WAL image mode.
         this.rowCount = changelogImage == ChangelogImage.WAL ? ROW_COUNT_DISABLED : 0L;
     }
@@ -203,7 +216,8 @@ public final class KvTablet {
             SchemaGetter schemaGetter,
             ChangelogImage changelogImage,
             RateLimiter sharedRateLimiter,
-            AutoIncrementManager autoIncrementManager)
+            AutoIncrementManager autoIncrementManager,
+            boolean dvEnabled)
             throws IOException {
         RocksDBKv kv = buildRocksDBKv(serverConf, kvTabletDir, sharedRateLimiter);
 
@@ -236,7 +250,8 @@ public final class KvTablet {
                 schemaGetter,
                 changelogImage,
                 rocksDBStatistics,
-                autoIncrementManager);
+                autoIncrementManager,
+                dvEnabled);
     }
 
     private static RocksDBKv buildRocksDBKv(
@@ -402,6 +417,9 @@ public final class KvTablet {
                     // get offset to track the offset corresponded to the kv record
                     long logEndOffsetOfPrevBatch = logTablet.localLogEndOffset();
 
+                    List<Long> deletedRowIds =
+                            dvEnabled ? new ArrayList<>() : Collections.emptyList();
+
                     try {
                         processKvRecords(
                                 kvRecords,
@@ -410,7 +428,8 @@ public final class KvTablet {
                                 currentAutoIncrementUpdater,
                                 walBuilder,
                                 latestSchemaRow,
-                                logEndOffsetOfPrevBatch);
+                                logEndOffsetOfPrevBatch,
+                                deletedRowIds);
 
                         // There will be a situation that these batches of kvRecordBatch have not
                         // generated any CDC logs, for example, when client attempts to delete
@@ -429,6 +448,8 @@ public final class KvTablet {
                         if (logAppendInfo.duplicated()) {
                             kvPreWriteBuffer.truncateTo(
                                     logEndOffsetOfPrevBatch, TruncateReason.DUPLICATED);
+                        } else if (dvEnabled && !deletedRowIds.isEmpty()) {
+                            dvManager.handleChangelogSynced(deletedRowIds);
                         }
                         return logAppendInfo;
                     } catch (Throwable t) {
@@ -464,7 +485,8 @@ public final class KvTablet {
             AutoIncrementUpdater autoIncrementUpdater,
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
-            long startLogOffset)
+            long startLogOffset,
+            List<Long> deletedRowIds)
             throws Exception {
         long logOffset = startLogOffset;
 
@@ -487,7 +509,8 @@ public final class KvTablet {
                                 valueDecoder,
                                 walBuilder,
                                 latestSchemaRow,
-                                logOffset);
+                                logOffset,
+                                deletedRowIds);
             } else {
                 logOffset =
                         processUpsert(
@@ -498,7 +521,8 @@ public final class KvTablet {
                                 valueDecoder,
                                 walBuilder,
                                 latestSchemaRow,
-                                logOffset);
+                                logOffset,
+                                deletedRowIds);
             }
         }
     }
@@ -509,7 +533,8 @@ public final class KvTablet {
             ValueDecoder valueDecoder,
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
-            long logOffset)
+            long logOffset,
+            List<Long> deletedRowIds)
             throws Exception {
         DeleteBehavior deleteBehavior = currentMerger.deleteBehavior();
         if (deleteBehavior == DeleteBehavior.IGNORE) {
@@ -529,7 +554,10 @@ public final class KvTablet {
             return logOffset;
         }
 
-        BinaryValue oldValue = valueDecoder.decodeValue(oldValueBytes);
+        BinaryValue oldValue = decodeStoredValue(valueDecoder, oldValueBytes);
+        if (dvEnabled) {
+            deletedRowIds.add(ValueEncoder.extractRowId(oldValueBytes));
+        }
         BinaryValue newValue = currentMerger.delete(oldValue);
 
         // if newValue is null, it means the row should be deleted
@@ -548,13 +576,15 @@ public final class KvTablet {
             ValueDecoder valueDecoder,
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
-            long logOffset)
+            long logOffset,
+            List<Long> deletedRowIds)
             throws Exception {
         // Optimization: IN WAL mode，when using DefaultRowMerger (full update, not partial update)
         // and there is no auto-increment column, we can skip fetching old value for better
         // performance since the result always reflects the new value. In this case, both INSERT and
         // UPDATE will produce UPDATE_AFTER.
-        if (changelogImage == ChangelogImage.WAL
+        if (!dvEnabled
+                && changelogImage == ChangelogImage.WAL
                 && !autoIncrementUpdater.hasAutoIncrement()
                 && currentMerger instanceof DefaultRowMerger) {
             return applyUpdate(key, null, currentValue, walBuilder, latestSchemaRow, logOffset);
@@ -571,7 +601,10 @@ public final class KvTablet {
                     autoIncrementUpdater);
         }
 
-        BinaryValue oldValue = valueDecoder.decodeValue(oldValueBytes);
+        BinaryValue oldValue = decodeStoredValue(valueDecoder, oldValueBytes);
+        if (dvEnabled) {
+            deletedRowIds.add(ValueEncoder.extractRowId(oldValueBytes));
+        }
         BinaryValue newValue = currentMerger.merge(oldValue, currentValue);
 
         if (newValue == oldValue) {
@@ -604,7 +637,7 @@ public final class KvTablet {
             throws Exception {
         BinaryValue newValue = autoIncrementUpdater.updateAutoIncrementColumns(currentValue);
         walBuilder.append(ChangeType.INSERT, latestSchemaRow.replaceRow(newValue.row));
-        kvPreWriteBuffer.insert(key, newValue.encodeValue(), logOffset);
+        kvPreWriteBuffer.insert(key, encodeValueForStorage(newValue, logOffset), logOffset);
         return logOffset + 1;
     }
 
@@ -618,14 +651,32 @@ public final class KvTablet {
             throws Exception {
         if (changelogImage == ChangelogImage.WAL) {
             walBuilder.append(ChangeType.UPDATE_AFTER, latestSchemaRow.replaceRow(newValue.row));
-            kvPreWriteBuffer.update(key, newValue.encodeValue(), logOffset);
+            kvPreWriteBuffer.update(key, encodeValueForStorage(newValue, logOffset), logOffset);
             return logOffset + 1;
         } else {
             walBuilder.append(ChangeType.UPDATE_BEFORE, latestSchemaRow.replaceRow(oldValue.row));
             walBuilder.append(ChangeType.UPDATE_AFTER, latestSchemaRow.replaceRow(newValue.row));
-            kvPreWriteBuffer.update(key, newValue.encodeValue(), logOffset + 1);
+            kvPreWriteBuffer.update(
+                    key, encodeValueForStorage(newValue, logOffset + 1), logOffset + 1);
             return logOffset + 2;
         }
+    }
+
+    private BinaryValue decodeStoredValue(ValueDecoder valueDecoder, byte[] valueBytes) {
+        return dvEnabled
+                ? valueDecoder.decodeDvValue(valueBytes)
+                : valueDecoder.decodeValue(valueBytes);
+    }
+
+    private byte[] encodeValueForStorage(BinaryValue value, long rowId) {
+        if (!dvEnabled) {
+            return value.encodeValue();
+        }
+        return ValueEncoder.encodeValueWithRowId(rowId, value.schemaId, value.row);
+    }
+
+    boolean isDvEnabled() {
+        return dvEnabled;
     }
 
     private WalBuilder createWalBuilder(int schemaId, RowType rowType) throws Exception {
@@ -763,6 +814,75 @@ public final class KvTablet {
                 serverMetricGroup.kvFlushLatencyHistogram());
     }
 
+    public boolean reportPosition(
+            Map<String, List<long[]>> positionReport,
+            long splitLastTieredOffset,
+            long splitLatestOffset,
+            List<String> materializedDvFiles,
+            long actualSnapshotId) {
+        if (!dvEnabled || dvManager == null) {
+            throw new InvalidTableException(
+                    String.format(
+                            "Deletion Vector is not enabled for table '%s'.", getTablePath()));
+        }
+
+        return dvManager.handlePositionReport(
+                positionReport,
+                splitLastTieredOffset,
+                splitLatestOffset,
+                materializedDvFiles,
+                actualSnapshotId);
+    }
+
+    public Map<String, byte[]> snapshotLakeDv() {
+        return inReadLock(
+                kvLock,
+                () -> {
+                    rocksDBKv.checkIfRocksDBClosed();
+                    if (!dvEnabled || dvManager == null) {
+                        throw new InvalidTableException(
+                                String.format(
+                                        "Deletion Vector is not enabled for table '%s'.",
+                                        getTablePath()));
+                    }
+                    return dvManager.snapshotLakeDv();
+                });
+    }
+
+    public Map<Long, byte[]> snapshotLogDv(long startOffset, long endOffset) {
+        return inReadLock(
+                kvLock,
+                () -> {
+                    rocksDBKv.checkIfRocksDBClosed();
+                    if (!dvEnabled || dvManager == null) {
+                        throw new InvalidTableException(
+                                String.format(
+                                        "Deletion Vector is not enabled for table '%s'.",
+                                        getTablePath()));
+                    }
+                    return dvManager.snapshotLogDv(startOffset, endOffset);
+                });
+    }
+
+    public DvManager.DvReadResult getDvForUnionRead(
+            long requestedSnapshotId, @Nullable List<String> dataFiles) {
+        return inReadLock(
+                kvLock,
+                () -> {
+                    rocksDBKv.checkIfRocksDBClosed();
+                    if (!dvEnabled || dvManager == null) {
+                        throw new InvalidTableException(
+                                String.format(
+                                        "Deletion Vector is not enabled for table '%s'.",
+                                        getTablePath()));
+                    }
+                    return dvManager.getDvForUnionRead(
+                            requestedSnapshotId,
+                            dataFiles == null ? Collections.emptyList() : dataFiles,
+                            logTablet.localLogEndOffset());
+                });
+    }
+
     public void close() throws Exception {
         LOG.info("close kv tablet {} for table {}.", tableBucket, physicalPath);
         inWriteLock(
@@ -773,6 +893,9 @@ public final class KvTablet {
                     }
                     // Note: RocksDB metrics lifecycle is managed by TableMetricGroup
                     // No need to close it here
+                    if (dvManager != null) {
+                        dvManager.close();
+                    }
                     if (rocksDBKv != null) {
                         rocksDBKv.close();
                     }
@@ -815,5 +938,11 @@ public final class KvTablet {
     @VisibleForTesting
     public RocksDBKv getRocksDBKv() {
         return rocksDBKv;
+    }
+
+    @VisibleForTesting
+    @Nullable
+    public DvManager getDvManager() {
+        return dvManager;
     }
 }

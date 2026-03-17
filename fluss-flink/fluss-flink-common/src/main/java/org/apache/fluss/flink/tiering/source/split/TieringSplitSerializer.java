@@ -27,6 +27,8 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * A serializer for the {@link TieringSplit}.
@@ -40,6 +42,9 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
     public static final TieringSplitSerializer INSTANCE = new TieringSplitSerializer();
 
     private static final int VERSION_0 = 0;
+    private static final int VERSION_1 = 1;
+    private static final int VERSION_2 = 2;
+    private static final int VERSION_3 = 3;
 
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
@@ -47,7 +52,7 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
     private static final byte TIERING_SNAPSHOT_SPLIT_FLAG = 1;
     private static final byte TIERING_LOG_SPLIT_FLAG = 2;
 
-    private static final int CURRENT_VERSION = VERSION_0;
+    private static final int CURRENT_VERSION = VERSION_3;
 
     @Override
     public int getVersion() {
@@ -61,19 +66,14 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
         byte splitKind = split.splitKind();
         out.writeByte(splitKind);
 
-        // write table path
         TablePath tablePath = split.getTablePath();
         out.writeUTF(tablePath.getDatabaseName());
         out.writeUTF(tablePath.getTableName());
 
-        // write table id
         TableBucket tableBucket = split.getTableBucket();
         out.writeLong(tableBucket.getTableId());
-
-        // write bucket
         out.writeInt(tableBucket.getBucket());
 
-        // write partition
         if (split.getTableBucket().getPartitionId() != null) {
             out.writeBoolean(true);
             out.writeLong(split.getTableBucket().getPartitionId());
@@ -82,24 +82,19 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
             out.writeBoolean(false);
         }
 
-        // write number of splits
         out.writeInt(split.getNumberOfSplits());
-        // write skipCurrentRound
         out.writeBoolean(split.shouldSkipCurrentRound());
         if (split.isTieringSnapshotSplit()) {
-            // Snapshot split
             TieringSnapshotSplit tieringSnapshotSplit = split.asTieringSnapshotSplit();
-            // write snapshot id
             out.writeLong(tieringSnapshotSplit.getSnapshotId());
-            // write log offset of snapshot
             out.writeLong(tieringSnapshotSplit.getLogOffsetOfSnapshot());
+            writeStringByteMap(out, tieringSnapshotSplit.getLakeDvSnapshot());
         } else {
-            // Log split
             TieringLogSplit tieringLogSplit = split.asTieringLogSplit();
-            // write starting offset
             out.writeLong(tieringLogSplit.getStartingOffset());
-            // write stopping offset
             out.writeLong(tieringLogSplit.getStoppingOffset());
+            writeStringByteMap(out, tieringLogSplit.getLakeDvSnapshot());
+            writeLongByteMap(out, tieringLogSplit.getLogDvSnapshot());
         }
 
         final byte[] result = out.getCopyOfBuffer();
@@ -109,25 +104,23 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
 
     @Override
     public TieringSplit deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION_0) {
+        if (version != VERSION_0
+                && version != VERSION_1
+                && version != VERSION_2
+                && version != VERSION_3) {
             throw new IOException("Unknown version " + version);
         }
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
 
         byte splitKind = in.readByte();
 
-        // deserialize table path
         String databaseName = in.readUTF();
         String tableName = in.readUTF();
         TablePath tablePath = new TablePath(databaseName, tableName);
 
-        // deserialize table id
         long tableId = in.readLong();
-
-        // deserialize table bucket
         int bucketId = in.readInt();
 
-        // deserialize table partition
         Long partitionId = null;
         String partitionName = null;
         if (in.readBoolean()) {
@@ -136,15 +129,13 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
         }
         TableBucket tableBucket = new TableBucket(tableId, partitionId, bucketId);
 
-        // deserialize number of splits
         int numberOfSplits = in.readInt();
         boolean skipCurrentRound = in.readBoolean();
 
         if (splitKind == TIERING_SNAPSHOT_SPLIT_FLAG) {
-            // deserialize snapshot id
             long snapshotId = in.readLong();
-            // deserialize log offset of snapshot
             long logOffsetOfSnapshot = in.readLong();
+            Map<String, byte[]> lakeDvSnapshot = readStringByteMap(in);
             return new TieringSnapshotSplit(
                     tablePath,
                     tableBucket,
@@ -152,12 +143,19 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                     snapshotId,
                     logOffsetOfSnapshot,
                     numberOfSplits,
-                    skipCurrentRound);
+                    skipCurrentRound,
+                    lakeDvSnapshot);
         } else {
-            // deserialize starting offset
             long startingOffset = in.readLong();
-            // deserialize starting offset
             long stoppingOffset = in.readLong();
+            Map<String, byte[]> lakeDvSnapshot = null;
+            if (version >= VERSION_3) {
+                lakeDvSnapshot = readStringByteMap(in);
+            }
+            Map<Long, byte[]> logDvSnapshot = null;
+            if (version >= VERSION_2) {
+                logDvSnapshot = readLongByteMap(in);
+            }
             return new TieringLogSplit(
                     tablePath,
                     tableBucket,
@@ -165,7 +163,74 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                     startingOffset,
                     stoppingOffset,
                     numberOfSplits,
-                    skipCurrentRound);
+                    skipCurrentRound,
+                    lakeDvSnapshot,
+                    logDvSnapshot);
         }
+    }
+
+    private static void writeStringByteMap(
+            DataOutputSerializer out, Map<String, byte[]> stringByteMap) throws IOException {
+        if (stringByteMap != null) {
+            out.writeBoolean(true);
+            out.writeInt(stringByteMap.size());
+            for (Map.Entry<String, byte[]> entry : stringByteMap.entrySet()) {
+                out.writeUTF(entry.getKey());
+                out.writeInt(entry.getValue().length);
+                out.write(entry.getValue());
+            }
+        } else {
+            out.writeBoolean(false);
+        }
+    }
+
+    private static Map<String, byte[]> readStringByteMap(DataInputDeserializer in)
+            throws IOException {
+        Map<String, byte[]> stringByteMap = null;
+        boolean hasStringByteMap = in.readBoolean();
+        if (hasStringByteMap) {
+            int mapSize = in.readInt();
+            stringByteMap = new HashMap<>(mapSize);
+            for (int i = 0; i < mapSize; i++) {
+                String key = in.readUTF();
+                int valueLength = in.readInt();
+                byte[] value = new byte[valueLength];
+                in.readFully(value);
+                stringByteMap.put(key, value);
+            }
+        }
+        return stringByteMap;
+    }
+
+    private static void writeLongByteMap(DataOutputSerializer out, Map<Long, byte[]> longByteMap)
+            throws IOException {
+        if (longByteMap != null) {
+            out.writeBoolean(true);
+            out.writeInt(longByteMap.size());
+            for (Map.Entry<Long, byte[]> entry : longByteMap.entrySet()) {
+                out.writeLong(entry.getKey());
+                out.writeInt(entry.getValue().length);
+                out.write(entry.getValue());
+            }
+        } else {
+            out.writeBoolean(false);
+        }
+    }
+
+    private static Map<Long, byte[]> readLongByteMap(DataInputDeserializer in) throws IOException {
+        Map<Long, byte[]> longByteMap = null;
+        boolean hasLongByteMap = in.readBoolean();
+        if (hasLongByteMap) {
+            int mapSize = in.readInt();
+            longByteMap = new HashMap<>(mapSize);
+            for (int i = 0; i < mapSize; i++) {
+                long key = in.readLong();
+                int valueLength = in.readInt();
+                byte[] value = new byte[valueLength];
+                in.readFully(value);
+                longByteMap.put(key, value);
+            }
+        }
+        return longByteMap;
     }
 }

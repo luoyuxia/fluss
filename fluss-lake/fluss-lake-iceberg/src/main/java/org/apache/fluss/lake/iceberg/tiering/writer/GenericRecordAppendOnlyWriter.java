@@ -55,6 +55,15 @@ public class GenericRecordAppendOnlyWriter extends BaseTaskWriter<Record> {
         currentWriter.write(record);
     }
 
+    public String currentFilePath() {
+        CharSequence currentPath = currentWriter.currentPath();
+        return currentPath == null ? null : currentPath.toString();
+    }
+
+    public long currentFileRowCount() {
+        return currentWriter.currentRows();
+    }
+
     @Override
     public void close() throws IOException {
         currentWriter.close();

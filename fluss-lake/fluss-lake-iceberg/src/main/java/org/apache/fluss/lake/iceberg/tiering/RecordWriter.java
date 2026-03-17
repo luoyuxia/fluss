@@ -26,6 +26,8 @@ import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.TaskWriter;
 import org.apache.iceberg.io.WriteResult;
 
+import java.io.IOException;
+
 /** A base interface to write {@link LogRecord} to Iceberg. */
 public abstract class RecordWriter implements AutoCloseable {
 
@@ -55,7 +57,7 @@ public abstract class RecordWriter implements AutoCloseable {
     }
 
     @Override
-    public void close() throws Exception {
+    public void close() throws IOException {
         if (taskWriter != null) {
             taskWriter.close();
         }

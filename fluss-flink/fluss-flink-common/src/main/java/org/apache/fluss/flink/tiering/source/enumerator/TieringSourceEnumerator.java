@@ -20,6 +20,7 @@ package org.apache.fluss.flink.tiering.source.enumerator;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
+import org.apache.fluss.client.FlussConnection;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.config.Configuration;
@@ -150,7 +151,9 @@ public class TieringSourceEnumerator
         this.coordinatorGateway =
                 GatewayClientProxy.createGatewayProxy(
                         metadataUpdater::getCoordinatorServer, rpcClient, CoordinatorGateway.class);
-        this.splitGenerator = new TieringSplitGenerator(flussAdmin);
+        this.splitGenerator =
+                new TieringSplitGenerator(
+                        flussAdmin, ((FlussConnection) connection).getMetadataUpdater());
 
         LOG.info("Starting register Tiering Service to Fluss Coordinator...");
         try {

@@ -42,6 +42,11 @@ public class TaskWriterFactory {
 
     public static TaskWriter<Record> createTaskWriter(
             Table table, @Nullable String partition, int bucket) {
+        return createTaskWriter(table, partition, bucket, false);
+    }
+
+    public static TaskWriter<Record> createTaskWriter(
+            Table table, @Nullable String partition, int bucket, boolean forceAppendOnly) {
         Schema schema = table.schema();
         int[] equalityFieldIds =
                 schema.identifierFieldIds().stream().mapToInt(Integer::intValue).toArray();
@@ -58,7 +63,7 @@ public class TaskWriterFactory {
                         .format(format)
                         .build();
 
-        if (equalityFieldIds.length == 0) {
+        if (forceAppendOnly || equalityFieldIds.length == 0) {
             FileAppenderFactory<Record> fileAppenderFactory =
                     new GenericAppenderFactory(schema, table.spec());
             return new GenericRecordAppendOnlyWriter(

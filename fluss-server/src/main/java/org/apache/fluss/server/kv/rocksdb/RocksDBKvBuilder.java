@@ -139,7 +139,7 @@ public class RocksDBKvBuilder {
     // ------------------------------------------------------------------------
 
     @VisibleForTesting
-    static void ensureRocksDBIsLoaded(String tempDirectory) throws IOException {
+    public static void ensureRocksDBIsLoaded(String tempDirectory) throws IOException {
         ensureRocksDBIsLoaded(tempDirectory, NativeLibraryLoader::getInstance);
     }
 

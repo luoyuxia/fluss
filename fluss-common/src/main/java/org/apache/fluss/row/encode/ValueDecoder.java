@@ -28,6 +28,7 @@ import org.apache.fluss.types.DataType;
 
 import java.util.Map;
 
+import static org.apache.fluss.row.encode.ValueEncoder.ROW_ID_LENGTH;
 import static org.apache.fluss.row.encode.ValueEncoder.SCHEMA_ID_LENGTH;
 import static org.apache.fluss.utils.MapUtils.newConcurrentHashMap;
 
@@ -65,6 +66,35 @@ public class ValueDecoder {
         BinaryRow row =
                 rowDecoder.decode(
                         memorySegment, SCHEMA_ID_LENGTH, valueBytes.length - SCHEMA_ID_LENGTH);
+        return new BinaryValue(schemaId, row);
+    }
+
+    /**
+     * Decode the value bytes in deletion vector mode and return the schema id and the row encoded
+     * in the value bytes. The format is: [RowId (8 bytes)][schemaId (2 bytes)][BinaryRow].
+     *
+     * @param valueBytes the value bytes
+     * @return the binary value containing schema id and row
+     */
+    public BinaryValue decodeDvValue(byte[] valueBytes) {
+        MemorySegment memorySegment = MemorySegment.wrap(valueBytes);
+        short schemaId = memorySegment.getShort(ROW_ID_LENGTH);
+
+        RowDecoder rowDecoder =
+                rowDecoders.computeIfAbsent(
+                        schemaId,
+                        (id) -> {
+                            Schema schema = schemaGetter.getSchema(schemaId);
+                            return RowDecoder.create(
+                                    kvFormat,
+                                    schema.getRowType().getChildren().toArray(new DataType[0]));
+                        });
+
+        BinaryRow row =
+                rowDecoder.decode(
+                        memorySegment,
+                        ROW_ID_LENGTH + SCHEMA_ID_LENGTH,
+                        valueBytes.length - ROW_ID_LENGTH - SCHEMA_ID_LENGTH);
         return new BinaryValue(schemaId, row);
     }
 }

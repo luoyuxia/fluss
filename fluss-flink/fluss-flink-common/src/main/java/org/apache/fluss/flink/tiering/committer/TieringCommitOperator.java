@@ -19,8 +19,10 @@ package org.apache.fluss.flink.tiering.committer;
 
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
+import org.apache.fluss.client.FlussConnection;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
@@ -32,9 +34,14 @@ import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
+import org.apache.fluss.lake.writer.PositionReportableWriteResult;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.PbFilePositionEntries;
+import org.apache.fluss.rpc.messages.PbRowPosition;
+import org.apache.fluss.rpc.messages.ReportPositionRequest;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
@@ -243,6 +250,8 @@ public class TieringCommitOperator<WriteResult, Committable>
                             FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, lakeBucketTieredOffsetsFile);
             LakeCommitResult lakeCommitResult =
                     lakeCommitter.commit(committable, snapshotProperties);
+            reportPositionIfNeeded(
+                    committableWriteResults, lakeCommitResult.getCommittedSnapshotId());
             // commit to fluss
             flussTableLakeSnapshotCommitter.commit(
                     tableId,
@@ -252,6 +261,72 @@ public class TieringCommitOperator<WriteResult, Committable>
                     logEndOffsets,
                     logMaxTieredTimestamps);
             return committable;
+        }
+    }
+
+    private void reportPositionIfNeeded(
+            List<TableBucketWriteResult<WriteResult>> committableWriteResults,
+            long actualSnapshotId)
+            throws Exception {
+        MetadataUpdater metadataUpdater = ((FlussConnection) connection).getMetadataUpdater();
+        for (TableBucketWriteResult<WriteResult> tableBucketWriteResult : committableWriteResults) {
+            WriteResult writeResult = tableBucketWriteResult.writeResult();
+            if (!(writeResult instanceof PositionReportableWriteResult)) {
+                continue;
+            }
+
+            PositionReportableWriteResult positionWriteResult =
+                    (PositionReportableWriteResult) writeResult;
+            Map<String, List<long[]>> positionReport = positionWriteResult.getPositionReport();
+            if (positionReport == null
+                    || positionReport.isEmpty()
+//                    || tableBucketWriteResult.splitStartOffset() < 0
+                    || tableBucketWriteResult.logEndOffset()
+                            <= tableBucketWriteResult.splitStartOffset()) {
+                continue;
+            }
+
+            TableBucket tableBucket = tableBucketWriteResult.tableBucket();
+            int leader = metadataUpdater.leaderFor(tableBucketWriteResult.tablePath(), tableBucket);
+            TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(leader);
+            if (gateway == null) {
+                throw new IllegalStateException(
+                        String.format("Server %s is not found in metadata cache.", leader));
+            }
+
+            ReportPositionRequest request =
+                    new ReportPositionRequest()
+                            .setTableId(tableBucket.getTableId())
+                            .setBucketId(tableBucket.getBucket())
+                            .setSplitLastTieredOffset(tableBucketWriteResult.splitStartOffset() - 1)
+                            .setSplitLatestOffset(tableBucketWriteResult.logEndOffset() - 1)
+                            .setActualSnapshotId(actualSnapshotId);
+            if (tableBucket.getPartitionId() != null) {
+                request.setPartitionId(tableBucket.getPartitionId());
+            }
+
+            List<PbFilePositionEntries> filePositionEntries =
+                    new ArrayList<>(positionReport.size());
+            for (Map.Entry<String, List<long[]>> entry : positionReport.entrySet()) {
+                PbFilePositionEntries filePositionEntriesForFile =
+                        new PbFilePositionEntries().setFilePath(entry.getKey());
+                List<PbRowPosition> rowPositions = new ArrayList<>(entry.getValue().size());
+                for (long[] rowPosition : entry.getValue()) {
+                    rowPositions.add(
+                            new PbRowPosition()
+                                    .setRowId(rowPosition[0])
+                                    .setRowPosition((int) rowPosition[1]));
+                }
+                filePositionEntriesForFile.addAllRowPositions(rowPositions);
+                filePositionEntries.add(filePositionEntriesForFile);
+            }
+            request.addAllFilePositionEntries(filePositionEntries);
+
+            List<String> materializedDvFiles = positionWriteResult.getMaterializedDvFiles();
+            if (materializedDvFiles != null && !materializedDvFiles.isEmpty()) {
+                request.addAllMaterializedDvFiles(materializedDvFiles);
+            }
+            gateway.reportPosition(request).get();
         }
     }
 

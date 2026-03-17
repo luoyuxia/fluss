@@ -27,14 +27,20 @@ import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.GetDatabaseInfoRequest;
 import org.apache.fluss.rpc.messages.GetDatabaseInfoResponse;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadRequest;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadResponse;
 import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenRequest;
 import org.apache.fluss.rpc.messages.GetFileSystemSecurityTokenResponse;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataRequest;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataResponse;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetLakeSnapshotRequest;
 import org.apache.fluss.rpc.messages.GetLakeSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsRequest;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsResponse;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLogDvSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetTableInfoRequest;
 import org.apache.fluss.rpc.messages.GetTableInfoResponse;
 import org.apache.fluss.rpc.messages.GetTableSchemaRequest;
@@ -73,6 +79,8 @@ import org.apache.fluss.rpc.messages.ProduceLogRequest;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.messages.PutKvResponse;
+import org.apache.fluss.rpc.messages.ReportPositionRequest;
+import org.apache.fluss.rpc.messages.ReportPositionResponse;
 import org.apache.fluss.rpc.messages.StopReplicaRequest;
 import org.apache.fluss.rpc.messages.StopReplicaResponse;
 import org.apache.fluss.rpc.messages.TableExistsRequest;
@@ -168,6 +176,29 @@ public class TestingTabletGatewayService extends TestingGatewayService
     @Override
     public CompletableFuture<NotifyLakeTableOffsetResponse> notifyLakeTableOffset(
             NotifyLakeTableOffsetRequest request) {
+        return null;
+    }
+
+    @Override
+    public CompletableFuture<ReportPositionResponse> reportPosition(ReportPositionRequest request) {
+        return null;
+    }
+
+    @Override
+    public CompletableFuture<GetLakeDvSnapshotResponse> getLakeDvSnapshot(
+            GetLakeDvSnapshotRequest request) {
+        return null;
+    }
+
+    @Override
+    public CompletableFuture<GetLogDvSnapshotResponse> getLogDvSnapshot(
+            GetLogDvSnapshotRequest request) {
+        return null;
+    }
+
+    @Override
+    public CompletableFuture<GetDvForUnionReadResponse> getDvForUnionRead(
+            GetDvForUnionReadRequest request) {
         return null;
     }
 

@@ -154,4 +154,9 @@ public class TableConfig {
     public long getAutoIncrementCacheSize() {
         return config.get(ConfigOptions.TABLE_AUTO_INCREMENT_CACHE_SIZE);
     }
+
+    /** Whether deletion vector is enabled. */
+    public boolean isDvEnabled() {
+        return config.get(ConfigOptions.TABLE_DV_ENABLED);
+    }
 }

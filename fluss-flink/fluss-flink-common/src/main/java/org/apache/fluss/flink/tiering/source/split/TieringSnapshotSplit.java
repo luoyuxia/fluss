@@ -22,6 +22,8 @@ import org.apache.fluss.metadata.TablePath;
 
 import javax.annotation.Nullable;
 
+import java.util.Arrays;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -38,6 +40,9 @@ public class TieringSnapshotSplit extends TieringSplit {
     /** The log offset corresponding to the primary key table bucket snapshot finished. */
     private final long logOffsetOfSnapshot;
 
+    /** The LakeDv snapshot for tiering. Map of file_path to serialized RoaringBitmap bytes. */
+    @Nullable private final Map<String, byte[]> lakeDvSnapshot;
+
     public TieringSnapshotSplit(
             TablePath tablePath,
             TableBucket tableBucket,
@@ -52,7 +57,8 @@ public class TieringSnapshotSplit extends TieringSplit {
                 snapshotId,
                 logOffsetOfSnapshot,
                 numberOfSplits,
-                false);
+                false,
+                null);
     }
 
     public TieringSnapshotSplit(
@@ -63,9 +69,30 @@ public class TieringSnapshotSplit extends TieringSplit {
             long logOffsetOfSnapshot,
             int numberOfSplits,
             boolean skipCurrentRound) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                snapshotId,
+                logOffsetOfSnapshot,
+                numberOfSplits,
+                skipCurrentRound,
+                null);
+    }
+
+    public TieringSnapshotSplit(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            long snapshotId,
+            long logOffsetOfSnapshot,
+            int numberOfSplits,
+            boolean skipCurrentRound,
+            @Nullable Map<String, byte[]> lakeDvSnapshot) {
         super(tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound);
         this.snapshotId = snapshotId;
         this.logOffsetOfSnapshot = logOffsetOfSnapshot;
+        this.lakeDvSnapshot = lakeDvSnapshot;
     }
 
     @Override
@@ -79,6 +106,11 @@ public class TieringSnapshotSplit extends TieringSplit {
 
     public long getLogOffsetOfSnapshot() {
         return logOffsetOfSnapshot;
+    }
+
+    @Nullable
+    public Map<String, byte[]> getLakeDvSnapshot() {
+        return lakeDvSnapshot;
     }
 
     @Override
@@ -99,6 +131,8 @@ public class TieringSnapshotSplit extends TieringSplit {
                 + snapshotId
                 + ", logOffsetOfSnapshot="
                 + logOffsetOfSnapshot
+                + ", lakeDvSnapshot="
+                + lakeDvSnapshot
                 + '}';
     }
 
@@ -111,7 +145,8 @@ public class TieringSnapshotSplit extends TieringSplit {
                 snapshotId,
                 logOffsetOfSnapshot,
                 numberOfSplits,
-                skipCurrentRound);
+                skipCurrentRound,
+                lakeDvSnapshot);
     }
 
     @Override
@@ -123,11 +158,46 @@ public class TieringSnapshotSplit extends TieringSplit {
             return false;
         }
         TieringSnapshotSplit that = (TieringSnapshotSplit) object;
-        return snapshotId == that.snapshotId && logOffsetOfSnapshot == that.logOffsetOfSnapshot;
+        return snapshotId == that.snapshotId
+                && logOffsetOfSnapshot == that.logOffsetOfSnapshot
+                && byteMapEquals(lakeDvSnapshot, that.lakeDvSnapshot);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), snapshotId, logOffsetOfSnapshot);
+        return Objects.hash(
+                super.hashCode(),
+                snapshotId,
+                logOffsetOfSnapshot,
+                byteMapHashCode(lakeDvSnapshot));
+    }
+
+    private static <K> boolean byteMapEquals(
+            @Nullable Map<K, byte[]> left, @Nullable Map<K, byte[]> right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null || left.size() != right.size()) {
+            return false;
+        }
+        for (Map.Entry<K, byte[]> entry : left.entrySet()) {
+            if (!right.containsKey(entry.getKey())
+                    || !Arrays.equals(entry.getValue(), right.get(entry.getKey()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static <K> int byteMapHashCode(@Nullable Map<K, byte[]> map) {
+        if (map == null) {
+            return 0;
+        }
+        int result = 1;
+        for (Map.Entry<K, byte[]> entry : map.entrySet()) {
+            result = 31 * result + Objects.hashCode(entry.getKey());
+            result = 31 * result + Arrays.hashCode(entry.getValue());
+        }
+        return result;
     }
 }

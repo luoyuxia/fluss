@@ -77,6 +77,7 @@ import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.entity.UserContext;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
+import org.apache.fluss.server.kv.KvTablet;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
 import org.apache.fluss.server.kv.snapshot.DefaultSnapshotContext;
 import org.apache.fluss.server.kv.snapshot.SnapshotContext;
@@ -976,11 +977,23 @@ public class ReplicaManager {
                     validateAndApplyCoordinatorEpoch(
                             notifyKvSnapshotOffsetData.getCoordinatorEpoch(),
                             "notifyKvSnapshotOffset");
-                    // update the snapshot offset.
                     TableBucket tb = notifyKvSnapshotOffsetData.getTableBucket();
-                    LogTablet logTablet = getReplicaOrException(tb).getLogTablet();
-                    logTablet.updateMinRetainOffset(
-                            notifyKvSnapshotOffsetData.getMinRetainOffset());
+                    Replica replica = getReplicaOrException(tb);
+                    LogTablet logTablet = replica.getLogTablet();
+                    if (notifyKvSnapshotOffsetData.getMinRetainOffset() != null) {
+                        logTablet.updateMinRetainOffset(
+                                notifyKvSnapshotOffsetData.getMinRetainOffset());
+                    }
+                    if (notifyKvSnapshotOffsetData.hasDvReadableSwitch()) {
+                        KvTablet kvTablet = replica.getKvTablet();
+                        if (kvTablet != null && kvTablet.getDvManager() != null) {
+                            kvTablet.getDvManager()
+                                    .handleReadableSwitch(
+                                            notifyKvSnapshotOffsetData.getDvReadableSnapshotId(),
+                                            notifyKvSnapshotOffsetData.getDvReadableTieredOffset(),
+                                            Collections.emptyList());
+                        }
+                    }
                     responseCallback.accept(new NotifyKvSnapshotOffsetResponse());
                 });
     }

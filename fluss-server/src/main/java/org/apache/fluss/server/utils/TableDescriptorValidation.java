@@ -116,6 +116,7 @@ public class TableDescriptorValidation {
         checkMergeEngine(tableConf, hasPrimaryKey, schema);
         checkDeleteBehavior(tableConf, hasPrimaryKey);
         checkTieredLog(tableConf);
+        checkDvConfiguration(tableConf, hasPrimaryKey);
         checkPartition(tableConf, tableDescriptor.getPartitionKeys(), schema.getRowType());
         checkSystemColumns(schema.getRowType());
     }
@@ -461,6 +462,22 @@ public class TableDescriptorValidation {
                                     mergeEngine));
                 }
                 // For AGGREGATION, ALLOW is permitted (removes entire record)
+            }
+        }
+    }
+
+    private static void checkDvConfiguration(Configuration tableConf, boolean hasPrimaryKey) {
+        boolean dvEnabled = tableConf.get(ConfigOptions.TABLE_DV_ENABLED);
+        if (dvEnabled) {
+            if (!hasPrimaryKey) {
+                throw new InvalidTableException(
+                        "Deletion Vector can only be enabled for primary key tables.");
+            }
+            ChangelogImage changelogImage = tableConf.get(ConfigOptions.TABLE_CHANGELOG_IMAGE);
+            if (changelogImage != ChangelogImage.FULL) {
+                throw new InvalidTableException(
+                        "Deletion Vector requires FULL changelog mode for primary key tables. "
+                                + "Please set 'table.changelog.image' to 'FULL'.");
             }
         }
     }

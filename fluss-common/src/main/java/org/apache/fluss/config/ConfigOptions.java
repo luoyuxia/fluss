@@ -1941,6 +1941,21 @@ public class ConfigOptions {
                                     + "In the future, more kinds of data lake format will be supported, such as DeltaLake or Hudi.");
 
     // ------------------------------------------------------------------------
+    //  ConfigOptions for deletion vector
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<Boolean> TABLE_DV_ENABLED =
+            key("table.dv.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to enable Deletion Vector (DV) for primary key tables. "
+                                    + "When enabled, updates and deletes will use deletion vectors "
+                                    + "instead of equality delete files for better read performance. "
+                                    + "This requires FULL changelog mode and Iceberg format-version=3. "
+                                    + "Only applicable to primary key tables. Disabled by default.");
+
+    // ------------------------------------------------------------------------
     //  ConfigOptions for tiering service
     // ------------------------------------------------------------------------
 

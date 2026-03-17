@@ -45,6 +45,8 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -76,6 +78,10 @@ public class IcebergLakeCommitter implements LakeCommitter<IcebergWriteResult, I
         // Aggregate all write results into a single committable
         IcebergCommittable.Builder builder = IcebergCommittable.builder();
 
+        // Aggregate DV information
+        Map<String, List<long[]>> aggregatedPositionReport = null;
+        long baseSnapshotId = -1;
+
         for (IcebergWriteResult result : icebergWriteResults) {
             WriteResult writeResult = result.getWriteResult();
 
@@ -87,11 +93,48 @@ public class IcebergLakeCommitter implements LakeCommitter<IcebergWriteResult, I
             for (DeleteFile deleteFile : writeResult.deleteFiles()) {
                 builder.addDeleteFile(deleteFile);
             }
+            for (DeleteFile rewrittenDeleteFile : writeResult.rewrittenDeleteFiles()) {
+                builder.addRewrittenDeleteFile(rewrittenDeleteFile);
+            }
 
             RewriteDataFileResult rewriteDataFileResult = result.rewriteDataFileResult();
             if (rewriteDataFileResult != null) {
                 builder.addRewriteDataFileResult(rewriteDataFileResult);
             }
+
+            // Aggregate DV information from IcebergWriteResult
+            if (result.getPositionReport() != null) {
+                if (aggregatedPositionReport == null) {
+                    aggregatedPositionReport = new HashMap<>();
+                }
+                for (Map.Entry<String, List<long[]>> entry :
+                        result.getPositionReport().entrySet()) {
+                    aggregatedPositionReport
+                            .computeIfAbsent(entry.getKey(), k -> new ArrayList<>())
+                            .addAll(entry.getValue());
+                }
+            }
+            if (result.getBaseSnapshotId() > 0) {
+                baseSnapshotId = result.getBaseSnapshotId();
+            }
+        }
+
+        // Set DV information to builder
+        if (aggregatedPositionReport != null) {
+            builder.positionReport(aggregatedPositionReport);
+        }
+        if (baseSnapshotId > 0) {
+            builder.baseSnapshotId(baseSnapshotId);
+        }
+        if (icebergWriteResults.stream()
+                .anyMatch(result -> result.getMaterializedDvFiles() != null)) {
+            List<String> aggregatedMaterializedDvFiles = new ArrayList<>();
+            for (IcebergWriteResult result : icebergWriteResults) {
+                if (result.getMaterializedDvFiles() != null) {
+                    aggregatedMaterializedDvFiles.addAll(result.getMaterializedDvFiles());
+                }
+            }
+            builder.materializedDvFiles(aggregatedMaterializedDvFiles);
         }
 
         return builder.build();
@@ -106,7 +149,10 @@ public class IcebergLakeCommitter implements LakeCommitter<IcebergWriteResult, I
             icebergTable.refresh();
 
             SnapshotUpdate<?> snapshotUpdate;
-            if (committable.getDeleteFiles().isEmpty()) {
+            // In DV mode, always use RowDelta with validateFromSnapshot
+            boolean isDvMode = committable.getPositionReport() != null;
+
+            if (committable.getDeleteFiles().isEmpty() && !isDvMode) {
                 // Simple append-only case: only data files, no delete files or compaction
                 AppendFiles appendFiles = icebergTable.newAppend();
                 committable.getDataFiles().forEach(appendFiles::appendFile);
@@ -121,10 +167,20 @@ public class IcebergLakeCommitter implements LakeCommitter<IcebergWriteResult, I
                  files added along with the delete files to be concurrently removed, so there is
                  no need to validate the files referenced by the position delete files that are
                  being committed.
+
+                 In DV mode, we use validateFromSnapshot to ensure consistency with the base
+                 snapshot when committing deletion vectors.
                 */
                 RowDelta rowDelta = icebergTable.newRowDelta();
                 committable.getDataFiles().forEach(rowDelta::addRows);
                 committable.getDeleteFiles().forEach(rowDelta::addDeletes);
+                committable.getRewrittenDeleteFiles().forEach(rowDelta::removeDeletes);
+
+                // Add validateFromSnapshot in DV mode
+                if (committable.getBaseSnapshotId() > 0) {
+                    rowDelta.validateFromSnapshot(committable.getBaseSnapshotId());
+                }
+
                 snapshotUpdate = rowDelta;
             }
 

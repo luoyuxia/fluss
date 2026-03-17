@@ -228,8 +228,13 @@ public class KvRecoverHelper {
                                     // e.g, arrow vs. compacted, thus needs a conversion here.
                                     BinaryRow row = toKvRow(logRow);
                                     value =
-                                            ValueEncoder.encodeValue(
-                                                    currentSchemaId.shortValue(), row);
+                                            kvTablet.isDvEnabled()
+                                                    ? ValueEncoder.encodeValueWithRowId(
+                                                            logRecord.logOffset(),
+                                                            currentSchemaId.shortValue(),
+                                                            row)
+                                                    : ValueEncoder.encodeValue(
+                                                            currentSchemaId.shortValue(), row);
                                 }
                                 resumeRecordConsumer.accept(
                                         new KeyValueAndLogOffset(

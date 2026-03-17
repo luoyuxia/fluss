@@ -17,10 +17,10 @@
 
 package org.apache.fluss.lake.iceberg.tiering;
 
-import org.apache.fluss.lake.iceberg.maintenance.IcebergRewriteDataFiles;
 import org.apache.fluss.lake.iceberg.maintenance.RewriteDataFileResult;
 import org.apache.fluss.lake.iceberg.tiering.writer.AppendOnlyTaskWriter;
 import org.apache.fluss.lake.iceberg.tiering.writer.DeltaTaskWriter;
+import org.apache.fluss.lake.iceberg.tiering.writer.DvTaskWriter;
 import org.apache.fluss.lake.iceberg.tiering.writer.TaskWriterFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.lake.writer.WriterInitContext;
@@ -29,12 +29,10 @@ import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 
 import org.apache.iceberg.Table;
-import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.TaskWriter;
 import org.apache.iceberg.io.WriteResult;
-import org.apache.iceberg.util.PropertyUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,6 +57,7 @@ public class IcebergLakeWriter implements LakeWriter<IcebergWriteResult> {
     private final Catalog icebergCatalog;
     private final Table icebergTable;
     private final RecordWriter recordWriter;
+    private final WriterInitContext writerInitContext;
 
     @Nullable private final ExecutorService compactionExecutor;
     @Nullable private CompletableFuture<RewriteDataFileResult> compactionFuture;
@@ -68,8 +67,7 @@ public class IcebergLakeWriter implements LakeWriter<IcebergWriteResult> {
             throws IOException {
         this.icebergCatalog = icebergCatalogProvider.get();
         this.icebergTable = getTable(writerInitContext.tablePath());
-
-        // Create a record writer
+        this.writerInitContext = writerInitContext;
         this.recordWriter = createRecordWriter(writerInitContext);
 
         if (writerInitContext.tableInfo().getTableConfig().isDataLakeAutoCompaction()) {
@@ -83,16 +81,20 @@ public class IcebergLakeWriter implements LakeWriter<IcebergWriteResult> {
         }
     }
 
-    private RecordWriter createRecordWriter(WriterInitContext writerInitContext) {
+    private RecordWriter createRecordWriter(WriterInitContext writerInitContext)
+            throws IOException {
         List<Integer> equalityFieldIds =
                 new ArrayList<>(icebergTable.schema().identifierFieldIds());
         TaskWriter<Record> taskWriter =
                 TaskWriterFactory.createTaskWriter(
                         icebergTable,
                         writerInitContext.partition(),
-                        writerInitContext.tableBucket().getBucket());
+                        writerInitContext.tableBucket().getBucket(),
+                        writerInitContext.tableInfo().getTableConfig().isDvEnabled());
         if (equalityFieldIds.isEmpty()) {
             return new AppendOnlyTaskWriter(icebergTable, writerInitContext, taskWriter);
+        } else if (writerInitContext.tableInfo().getTableConfig().isDvEnabled()) {
+            return new DvTaskWriter(icebergTable, writerInitContext, taskWriter);
         } else {
             return new DeltaTaskWriter(icebergTable, writerInitContext, taskWriter);
         }
@@ -116,6 +118,23 @@ public class IcebergLakeWriter implements LakeWriter<IcebergWriteResult> {
             if (compactionFuture != null) {
                 rewriteDataFileResult = compactionFuture.get();
             }
+
+            if (recordWriter instanceof DvTaskWriter) {
+                DvTaskWriter dvTaskWriter = (DvTaskWriter) recordWriter;
+                IcebergDeletionVectorMaterializer.MaterializationResult materializationResult =
+                        IcebergDeletionVectorMaterializer.materialize(
+                                icebergTable,
+                                writerInitContext.tableBucket().getBucket(),
+                                writeResult,
+                                writerInitContext.lakeDvSnapshot());
+                return new IcebergWriteResult(
+                        materializationResult.writeResult(),
+                        rewriteDataFileResult,
+                        dvTaskWriter.getPositionReport(),
+                        materializationResult.baseSnapshotId(),
+                        materializationResult.materializedDvFiles());
+            }
+
             return new IcebergWriteResult(writeResult, rewriteDataFileResult);
         } catch (Exception e) {
             throw new IOException("Failed to complete Iceberg write.", e);
@@ -131,63 +150,52 @@ public class IcebergLakeWriter implements LakeWriter<IcebergWriteResult> {
 
             if (compactionExecutor != null) {
                 compactionExecutor.shutdown();
-                if (!compactionExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
-                    LOG.warn("Fail to close compactionExecutor.");
+                if (!compactionExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
+                    compactionExecutor.shutdownNow();
                 }
             }
 
             if (recordWriter != null) {
                 recordWriter.close();
             }
-            if (icebergCatalog != null && icebergCatalog instanceof Closeable) {
+
+            if (icebergCatalog instanceof Closeable) {
                 ((Closeable) icebergCatalog).close();
             }
-        } catch (Exception e) {
-            throw new IOException("Failed to close IcebergLakeWriter.", e);
-        }
-    }
-
-    private Table getTable(TablePath tablePath) throws IOException {
-        try {
-            return icebergCatalog.loadTable(toIceberg(tablePath));
-        } catch (Exception e) {
-            throw new IOException("Failed to get table " + tablePath + " in Iceberg.", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while closing IcebergLakeWriter.", e);
         }
     }
 
     private void scheduleCompaction(WriterInitContext writerInitContext) {
-        compactionFuture =
-                CompletableFuture.supplyAsync(
-                        () -> {
-                            try {
-                                Table table = icebergTable;
-                                IcebergRewriteDataFiles rewriter =
-                                        new IcebergRewriteDataFiles(
-                                                        table,
-                                                        writerInitContext.partition(),
-                                                        writerInitContext.tableBucket())
-                                                .targetSizeInBytes(compactionTargetSize(table));
-                                return rewriter.execute();
-                            } catch (Exception e) {
-                                LOG.info("Fail to compact iceberg data files.", e);
-                                // Swallow and return null to avoid failing the write path
-                                return null;
-                            }
-                        },
-                        compactionExecutor);
+        //        compactionFuture =
+        //                CompletableFuture.supplyAsync(
+        //                        () -> {
+        //                            try {
+        //                                long targetSizeInBytes =
+        //                                        PropertyUtil.propertyAsLong(
+        //                                                icebergTable.properties(),
+        //                                                TableProperties.MIN_FILE_GROUP_SIZE_BYTES,
+        //
+        // TableProperties.MIN_FILE_GROUP_SIZE_BYTES_DEFAULT);
+        //                                return new IcebergRewriteDataFiles(
+        //                                                icebergTable,
+        //                                                writerInitContext.partition(),
+        //                                                writerInitContext.tableBucket())
+        //                                        .targetSizeInBytes(minInputFiles)
+        //                                        .execute();
+        //                            } catch (Exception e) {
+        //                                throw new RuntimeException(
+        //                                        "Failed to compact Iceberg table: "
+        //                                                + writerInitContext.tablePath(),
+        //                                        e);
+        //                            }
+        //                        },
+        //                        compactionExecutor);
     }
 
-    private static long compactionTargetSize(Table icebergTable) {
-        long splitSize =
-                PropertyUtil.propertyAsLong(
-                        icebergTable.properties(),
-                        TableProperties.SPLIT_SIZE,
-                        TableProperties.SPLIT_SIZE_DEFAULT);
-        long targetFileSize =
-                PropertyUtil.propertyAsLong(
-                        icebergTable.properties(),
-                        TableProperties.WRITE_TARGET_FILE_SIZE_BYTES,
-                        TableProperties.WRITE_TARGET_FILE_SIZE_BYTES_DEFAULT);
-        return Math.min(splitSize, targetFileSize);
+    private Table getTable(TablePath tablePath) {
+        return icebergCatalog.loadTable(toIceberg(tablePath));
     }
 }

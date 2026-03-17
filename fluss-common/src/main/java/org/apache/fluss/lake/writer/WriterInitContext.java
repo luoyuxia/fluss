@@ -62,4 +62,26 @@ public interface WriterInitContext {
      * @return the Fluss table info
      */
     TableInfo tableInfo();
+
+    /** Returns the source split starting offset, or {@code -1} if unavailable. */
+    default long splitStartOffset() {
+        return -1L;
+    }
+
+    /** Returns the snapshot id for snapshot-based tiering splits, or {@code -1} if unavailable. */
+    default long snapshotId() {
+        return -1L;
+    }
+
+    /** Returns the LakeDv snapshot for materialization, or {@code null} if unavailable. */
+    @Nullable
+    default java.util.Map<String, byte[]> lakeDvSnapshot() {
+        return null;
+    }
+
+    /** Returns the split-scoped LogDv snapshot for log split filtering, or {@code null}. */
+    @Nullable
+    default java.util.Map<Long, byte[]> logDvSnapshot() {
+        return null;
+    }
 }

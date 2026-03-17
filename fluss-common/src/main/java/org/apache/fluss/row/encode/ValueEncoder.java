@@ -24,6 +24,7 @@ import org.apache.fluss.utils.UnsafeUtils;
 public class ValueEncoder {
 
     public static final int SCHEMA_ID_LENGTH = 2;
+    public static final int ROW_ID_LENGTH = 8;
 
     /**
      * Encode the {@code row} with a {@code schemaId} to a byte array value to be expected persisted
@@ -37,5 +38,51 @@ public class ValueEncoder {
         UnsafeUtils.putShort(values, 0, schemaId);
         row.copyTo(values, SCHEMA_ID_LENGTH);
         return values;
+    }
+
+    /**
+     * Encode the {@code row} with a {@code schemaId} and {@code rowId} to a byte array value for
+     * deletion vector mode. The format is: [RowId (8 bytes)][schemaId (2 bytes)][BinaryRow].
+     *
+     * @param rowId the row id to encode
+     * @param schemaId the schema id of the row
+     * @param row the row to encode
+     */
+    public static byte[] encodeValueWithRowId(long rowId, short schemaId, BinaryRow row) {
+        byte[] values = new byte[ROW_ID_LENGTH + SCHEMA_ID_LENGTH + row.getSizeInBytes()];
+        UnsafeUtils.putLong(values, 0, rowId);
+        UnsafeUtils.putShort(values, ROW_ID_LENGTH, schemaId);
+        row.copyTo(values, ROW_ID_LENGTH + SCHEMA_ID_LENGTH);
+        return values;
+    }
+
+    /**
+     * Extract the row id from the value bytes in deletion vector mode.
+     *
+     * @param value the value bytes
+     * @return the row id
+     */
+    public static long extractRowId(byte[] value) {
+        return UnsafeUtils.getLong(value, 0);
+    }
+
+    /**
+     * Extract the schema id from the value bytes in deletion vector mode. The schema id is located
+     * after the 8-byte row id.
+     *
+     * @param value the value bytes
+     * @return the schema id
+     */
+    public static short extractSchemaIdFromDvValue(byte[] value) {
+        return UnsafeUtils.getShort(value, ROW_ID_LENGTH);
+    }
+
+    /**
+     * Get the offset of the binary row data in the value bytes for deletion vector mode.
+     *
+     * @return the offset of the binary row data
+     */
+    public static int extractValueBytesOffset() {
+        return ROW_ID_LENGTH + SCHEMA_ID_LENGTH;
     }
 }

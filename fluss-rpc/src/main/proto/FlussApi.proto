@@ -359,12 +359,16 @@ message CommitKvSnapshotResponse {
 }
 
 // notify the log offset about kv snapshot
+// Coordinator-to-tablet notification for snapshot-related offset state.
+// It is used for both KV snapshot retention and DV readable switch.
 message NotifyKvSnapshotOffsetRequest {
   required int64 table_id = 1;
   optional int64 partition_id = 2;
   required int32 bucket_id = 3;
   required int32 coordinator_epoch = 4;
-  required int64 min_retain_offset = 5;
+  optional int64 min_retain_offset = 5;
+  optional int64 dv_readable_snapshot_id = 6;
+  optional int64 dv_readable_tiered_offset = 7;
 }
 
 message NotifyKvSnapshotOffsetResponse {
@@ -1230,4 +1234,85 @@ message PbTableStatsRespForBucket {
   // Per-column statistics, keyed by column index.
   // Only populated when target_columns is specified in the request.
   // repeated PbColumnStats column_stats = 10;
+}
+
+// ------------------------------------------------------------------------------------------
+// Deletion Vector
+// ------------------------------------------------------------------------------------------
+
+// Position report from Tiering Writer to TabletServer
+message ReportPositionRequest {
+  required int64 table_id = 1;
+  optional int64 partition_id = 2;
+  required int32 bucket_id = 3;
+  repeated PbFilePositionEntries file_position_entries = 4;
+  required int64 split_last_tiered_offset = 6;
+  required int64 split_latest_offset = 7;
+  repeated string materialized_dv_files = 8;
+  required int64 actual_snapshot_id = 9;
+}
+
+message ReportPositionResponse {
+}
+
+message PbFilePositionEntries {
+  required string file_path = 1;
+  repeated PbRowPosition row_positions = 2;
+}
+
+message PbRowPosition {
+  required int64 row_id = 1;
+  required int32 row_position = 2;
+}
+
+// Get LakeDv snapshot for tiering split generation
+message GetLakeDvSnapshotRequest {
+  required int64 table_id = 1;
+  optional int64 partition_id = 2;
+  required int32 bucket_id = 3;
+}
+
+message GetLakeDvSnapshotResponse {
+  repeated PbLakeDvEntry lake_dv_entries = 1;
+  required int64 log_high_watermark = 2;
+}
+
+message PbLakeDvEntry {
+  required string file_path = 1;
+  required bytes del_bitmap = 2;
+}
+
+// Get LogDv snapshot for a tiering log split
+message GetLogDvSnapshotRequest {
+  required int64 table_id = 1;
+  optional int64 partition_id = 2;
+  required int32 bucket_id = 3;
+  required int64 start_offset = 4;
+  required int64 end_offset = 5;
+}
+
+message GetLogDvSnapshotResponse {
+  repeated PbLogDvEntry log_dv_entries = 1;
+}
+
+// Union Read DV request/response
+message GetDvForUnionReadRequest {
+  required int64 table_id = 1;
+  optional int64 partition_id = 2;
+  required int32 bucket_id = 3;
+  required int64 requested_snapshot_id = 4;
+  repeated string data_files = 5;
+}
+
+message GetDvForUnionReadResponse {
+  repeated PbLakeDvEntry lake_dv = 1;
+  repeated PbLogDvEntry log_dv = 2;
+  required int64 log_end_offset = 3;
+  optional int64 current_readable_snapshot = 4;
+  optional bool is_stale = 5;
+}
+
+message PbLogDvEntry {
+  required int64 base_offset = 1;
+  required bytes del_bits = 2;
 }

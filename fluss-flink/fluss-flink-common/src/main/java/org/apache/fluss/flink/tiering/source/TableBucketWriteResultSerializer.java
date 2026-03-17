@@ -33,7 +33,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
 
-    private static final int CURRENT_VERSION = 1;
+    private static final int CURRENT_VERSION = 3;
 
     private final org.apache.fluss.lake.serializer.SimpleVersionedSerializer<WriteResult>
             writeResultSerializer;
@@ -73,6 +73,9 @@ public class TableBucketWriteResultSerializer<WriteResult>
 
         // serialize write result
         WriteResult writeResult = tableBucketWriteResult.writeResult();
+        if (CURRENT_VERSION >= 3) {
+            out.writeInt(writeResult == null ? -1 : writeResultSerializer.getVersion());
+        }
         if (writeResult == null) {
             // write -1 to mark write result as null
             out.writeInt(-1);
@@ -81,6 +84,9 @@ public class TableBucketWriteResultSerializer<WriteResult>
             out.writeInt(serializeBytes.length);
             out.write(serializeBytes);
         }
+
+        // serialize split start offset
+        out.writeLong(tableBucketWriteResult.splitStartOffset());
 
         // serialize log end offset
         out.writeLong(tableBucketWriteResult.logEndOffset());
@@ -99,7 +105,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
     @Override
     public TableBucketWriteResult<WriteResult> deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != CURRENT_VERSION) {
+        if (version <= 0 || version > CURRENT_VERSION) {
             throw new IOException("Unknown version " + version);
         }
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
@@ -120,16 +126,18 @@ public class TableBucketWriteResultSerializer<WriteResult>
         TableBucket tableBucket = new TableBucket(tableId, partitionId, bucketId);
 
         // deserialize write result
-        int writeResultLength = in.readInt();
         WriteResult writeResult;
+        int writeResultVersion = version >= 3 ? in.readInt() : -1;
+        int writeResultLength = in.readInt();
         if (writeResultLength >= 0) {
             byte[] writeResultBytes = new byte[writeResultLength];
             in.readFully(writeResultBytes);
-            writeResult = writeResultSerializer.deserialize(version, writeResultBytes);
+            writeResult = deserializeWriteResult(version, writeResultVersion, writeResultBytes);
         } else {
             writeResult = null;
         }
 
+        long splitStartOffset = version >= 2 ? in.readLong() : -1L;
         // deserialize log end offset
         long logEndOffset = in.readLong();
         // deserialize max timestamp
@@ -141,8 +149,50 @@ public class TableBucketWriteResultSerializer<WriteResult>
                 tableBucket,
                 partitionName,
                 writeResult,
+                splitStartOffset,
                 logEndOffset,
                 maxTimestamp,
                 numberOfWriteResults);
+    }
+
+    private WriteResult deserializeWriteResult(
+            int serializerVersion, int embeddedWriteResultVersion, byte[] writeResultBytes)
+            throws IOException {
+        if (embeddedWriteResultVersion >= 0) {
+            return writeResultSerializer.deserialize(embeddedWriteResultVersion, writeResultBytes);
+        }
+
+        IOException firstIo = null;
+        RuntimeException firstRuntime = null;
+        int currentWriteResultVersion = writeResultSerializer.getVersion();
+        try {
+            return writeResultSerializer.deserialize(currentWriteResultVersion, writeResultBytes);
+        } catch (IOException e) {
+            firstIo = e;
+        } catch (RuntimeException e) {
+            firstRuntime = e;
+        }
+
+        if (serializerVersion != currentWriteResultVersion) {
+            try {
+                return writeResultSerializer.deserialize(serializerVersion, writeResultBytes);
+            } catch (IOException | RuntimeException fallback) {
+                if (firstIo != null) {
+                    fallback.addSuppressed(firstIo);
+                }
+                if (firstRuntime != null) {
+                    fallback.addSuppressed(firstRuntime);
+                }
+                if (fallback instanceof IOException) {
+                    throw (IOException) fallback;
+                }
+                throw new IOException("Failed to deserialize nested write result.", fallback);
+            }
+        }
+
+        if (firstIo != null) {
+            throw firstIo;
+        }
+        throw new IOException("Failed to deserialize nested write result.", firstRuntime);
     }
 }

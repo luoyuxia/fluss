@@ -273,7 +273,8 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                                     schemaGetter,
                                     tableConfig.getChangelogImage(),
                                     sharedRocksDBRateLimiter,
-                                    autoIncrementManager);
+                                    autoIncrementManager,
+                                    tableConfig.isDvEnabled());
                     currentKvs.put(tableBucket, tablet);
 
                     LOG.info(
@@ -390,7 +391,8 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                         schemaGetter,
                         tableConfig.getChangelogImage(),
                         sharedRocksDBRateLimiter,
-                        autoIncrementManager);
+                        autoIncrementManager,
+                        tableConfig.isDvEnabled());
         if (this.currentKvs.containsKey(tableBucket)) {
             throw new IllegalStateException(
                     String.format(

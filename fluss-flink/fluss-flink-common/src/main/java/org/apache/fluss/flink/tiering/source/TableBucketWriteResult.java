@@ -45,6 +45,10 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
     // will be null when no any data write, such as for tiering an empty log split
     @Nullable private final WriteResult writeResult;
 
+    // the starting offset of the split that produced this write result.
+    // -1 means the write result is not produced from a log split.
+    private final long splitStartOffset;
+
     // the end offset of tiering, should be the last tiered record's offset + 1
     private final long logEndOffset;
 
@@ -62,6 +66,7 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
             TableBucket tableBucket,
             @Nullable String partitionName,
             @Nullable WriteResult writeResult,
+            long splitStartOffset,
             long logEndOffset,
             long maxTimestamp,
             int numberOfWriteResults) {
@@ -69,6 +74,7 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
         this.tableBucket = tableBucket;
         this.partitionName = partitionName;
         this.writeResult = writeResult;
+        this.splitStartOffset = splitStartOffset;
         this.logEndOffset = logEndOffset;
         this.maxTimestamp = maxTimestamp;
         this.numberOfWriteResults = numberOfWriteResults;
@@ -94,6 +100,10 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
 
     public int numberOfWriteResults() {
         return numberOfWriteResults;
+    }
+
+    public long splitStartOffset() {
+        return splitStartOffset;
     }
 
     public long logEndOffset() {

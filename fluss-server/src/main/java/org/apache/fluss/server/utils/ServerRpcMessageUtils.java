@@ -1553,19 +1553,36 @@ public class ServerRpcMessageUtils {
                         request.getTableId(),
                         request.hasPartitionId() ? request.getPartitionId() : null,
                         request.getBucketId()),
-                request.getMinRetainOffset(),
+                request.hasMinRetainOffset() ? request.getMinRetainOffset() : null,
+                request.hasDvReadableSnapshotId() ? request.getDvReadableSnapshotId() : null,
+                request.hasDvReadableTieredOffset() ? request.getDvReadableTieredOffset() : null,
                 request.getCoordinatorEpoch());
     }
 
     public static NotifyKvSnapshotOffsetRequest makeNotifyKvSnapshotOffsetRequest(
             TableBucket tableBucket, long minRetainOffset) {
+        return makeNotifyKvSnapshotOffsetRequest(tableBucket, minRetainOffset, null, null);
+    }
+
+    public static NotifyKvSnapshotOffsetRequest makeNotifyKvSnapshotOffsetRequest(
+            TableBucket tableBucket,
+            @Nullable Long minRetainOffset,
+            @Nullable Long dvReadableSnapshotId,
+            @Nullable Long dvReadableTieredOffset) {
         NotifyKvSnapshotOffsetRequest request = new NotifyKvSnapshotOffsetRequest();
         if (tableBucket.getPartitionId() != null) {
             request.setPartitionId(tableBucket.getPartitionId());
         }
-        request.setTableId(tableBucket.getTableId())
-                .setBucketId(tableBucket.getBucket())
-                .setMinRetainOffset(minRetainOffset);
+        request.setTableId(tableBucket.getTableId()).setBucketId(tableBucket.getBucket());
+        if (minRetainOffset != null) {
+            request.setMinRetainOffset(minRetainOffset);
+        }
+        if (dvReadableSnapshotId != null) {
+            request.setDvReadableSnapshotId(dvReadableSnapshotId);
+        }
+        if (dvReadableTieredOffset != null) {
+            request.setDvReadableTieredOffset(dvReadableTieredOffset);
+        }
         return request;
     }
 

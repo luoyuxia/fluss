@@ -299,6 +299,12 @@ public final class TableDescriptor implements Serializable {
                 customProperties);
     }
 
+    /** Check if Deletion Vector is enabled for this table. */
+    public boolean isDvEnabled() {
+        String dvEnabled = properties.get(ConfigOptions.TABLE_DV_ENABLED.key());
+        return dvEnabled != null && Boolean.parseBoolean(dvEnabled);
+    }
+
     public Optional<String> getComment() {
         return Optional.ofNullable(comment);
     }
