@@ -54,6 +54,11 @@ public class IcebergSplit implements LakeSplit, Serializable {
     }
 
     @Override
+    public String dataFilePath() {
+        return fileScanTask.file().location();
+    }
+
+    @Override
     public String toString() {
         return "IcebergSplit{"
                 + "task="

@@ -139,6 +139,11 @@ public class DvManager implements AutoCloseable {
                 return false;
             }
 
+            if (currentReadableSnapshotId < 0) {
+                handleInitialBuild(positionReport, actualSnapshotId, splitLatestOffset);
+                return true;
+            }
+
             for (Map.Entry<String, List<long[]>> entry : positionReport.entrySet()) {
                 String filePath = entry.getKey();
                 int fileId = fileDict.getOrCreateFileId(filePath);

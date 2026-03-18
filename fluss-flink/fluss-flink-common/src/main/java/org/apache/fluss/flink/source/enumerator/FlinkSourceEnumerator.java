@@ -744,6 +744,8 @@ public class FlinkSourceEnumerator
                     new LakeSplitGenerator(
                             tableInfo,
                             flussAdmin,
+                            ((org.apache.fluss.client.FlussConnection) connection)
+                                    .getMetadataUpdater(),
                             lakeSource,
                             bucketOffsetsRetriever,
                             stoppingOffsetsInitializer,

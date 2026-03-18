@@ -65,17 +65,13 @@ public class BoundedSplitReader implements AutoCloseable {
     /** Read next batch of data. Return null when no data is available. */
     @Nullable
     public CloseableIterator<RecordAndPos> readBatch() throws IOException {
-        // pool a RecordAndPosBatch, pool size is 1, the underlying implementation does not allow
-        // multiple batches to be read at the same time
         RecordAndPosBatch recordAndPosBatch = pollRecordAndPosBatch();
-        // the batch is in flight, return empty to avoid multiple batches to be read
         if (recordAndPosBatch == null) {
             return CloseableIterator.emptyIterator();
         }
 
         CloseableIterator<ScanRecord> nextBatch = poll();
         if (nextBatch == null) {
-            // no any records, add the RecordAndPosBatch back
             recordAndPosBatchPool.add(recordAndPosBatch);
             return null;
         } else {
@@ -95,32 +91,24 @@ public class BoundedSplitReader implements AutoCloseable {
 
     private CloseableIterator<ScanRecord> poll() throws IOException {
         CloseableIterator<ScanRecord> nextBatch = null;
-        // may skip records
         while (toSkip > 0) {
-            // pool a batch of records
             nextBatch = pollBatch();
-            // no more records, but still need to skip records
             if (nextBatch == null) {
                 throw new RuntimeException(
                         String.format(
                                 "Skip more than the number of total records, has skipped %d record(s), but remain %s record(s) to skip.",
                                 currentReadRecordsCount, toSkip));
             }
-            // skip
             while (toSkip > 0 && nextBatch.hasNext()) {
                 nextBatch.next();
                 toSkip--;
                 currentReadRecordsCount++;
             }
         }
-        // if any batch remains while skipping, return the batch
         if (nextBatch != null && nextBatch.hasNext()) {
             return nextBatch;
         } else {
-            // otherwise pool next batch
-            nextBatch = pollBatch();
-            // return null if the new batch has no more records
-            return nextBatch;
+            return pollBatch();
         }
     }
 
@@ -153,6 +141,9 @@ public class BoundedSplitReader implements AutoCloseable {
 
         @Override
         public ScanRecord next() {
+            if (rowIterator instanceof ScanRecordIterator) {
+                return ((ScanRecordIterator) rowIterator).nextScanRecord();
+            }
             return new ScanRecord(rowIterator.next());
         }
 
@@ -195,9 +186,7 @@ public class BoundedSplitReader implements AutoCloseable {
 
         @Override
         public void close() {
-            // close the records
             records.close();
-            // add the RecordAndPosBatch back
             recordAndPosBatchPool.add(this);
         }
     }

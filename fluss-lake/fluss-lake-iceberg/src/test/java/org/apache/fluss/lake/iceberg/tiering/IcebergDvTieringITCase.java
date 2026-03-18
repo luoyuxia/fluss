@@ -17,10 +17,6 @@
 
 package org.apache.fluss.lake.iceberg.tiering;
 
-import org.apache.flink.core.execution.JobClient;
-import org.apache.flink.table.api.EnvironmentSettings;
-import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.types.Row;
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.writer.TableWriter;
 import org.apache.fluss.client.table.writer.UpsertWriter;
@@ -34,6 +30,11 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.types.DataTypes;
+
+import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.types.Row;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.io.CloseableIterable;
 import org.junit.jupiter.api.Test;
@@ -82,8 +83,7 @@ class IcebergDvTieringITCase extends FlinkIcebergTieringTestBase {
                     () -> {
                         assertThat(hasDeleteFiles(tablePath)).isTrue();
                         assertThat(currentRecordsByKey(tablePath))
-                                .containsExactlyInAnyOrderEntriesOf(
-                                        Map.of(1, "a_2", 4, "d"));
+                                .containsExactlyInAnyOrderEntriesOf(Map.of(1, "a_2", 4, "d"));
                     });
 
             jobClient.cancel().get();
@@ -96,8 +96,14 @@ class IcebergDvTieringITCase extends FlinkIcebergTieringTestBase {
                             batchTEnv.executeSql("select * from " + tableName).collect());
             assertThat(unionReadResults)
                     .containsExactlyInAnyOrder(Row.of(4, "d_2"), Row.of(5, "e"));
+
+            System.out.println(FLUSS_CLUSTER_EXTENSION.getClientConfig());
+            System.out.println(warehousePath);
+
+            Thread.sleep(500_000_000);
+
         } finally {
-//            jobClient.cancel().get();
+            //            jobClient.cancel().get();
         }
     }
 

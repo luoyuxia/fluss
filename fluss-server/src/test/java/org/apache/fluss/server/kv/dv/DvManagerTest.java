@@ -38,6 +38,29 @@ class DvManagerTest {
     @TempDir private File tempDir;
 
     @Test
+    void testFirstPositionReportBuildsInitialReadableSnapshot() throws Exception {
+        try (DvManager dvManager = new DvManager(tempDir)) {
+            Map<String, List<long[]>> positionReport = new HashMap<>();
+            positionReport.put(
+                    "file-a.parquet", Arrays.asList(new long[] {1L, 3L}, new long[] {2L, 7L}));
+
+            assertThat(
+                            dvManager.handlePositionReport(
+                                    positionReport, -1L, 2L, Collections.emptyList(), 10L))
+                    .isTrue();
+
+            Integer fileId = dvManager.getFileDict().getFileId("file-a.parquet");
+            assertThat(fileId).isNotNull();
+            FilePos filePos = dvManager.getRowPosIndex().get(1L);
+            assertThat(filePos).isNotNull();
+            assertThat(filePos.getFileId()).isEqualTo(fileId);
+            assertThat(filePos.getRowPosition()).isEqualTo(3);
+            assertThat(dvManager.getCurrentReadableSnapshotId()).isEqualTo(10L);
+            assertThat(dvManager.getCurrentReadableSnapshotTieredOffset()).isEqualTo(2L);
+        }
+    }
+
+    @Test
     void testHandlePositionReportAndUnionRead() throws Exception {
         try (DvManager dvManager = new DvManager(tempDir)) {
             Map<String, List<long[]>> initialBuild = new HashMap<>();

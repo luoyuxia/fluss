@@ -18,7 +18,8 @@
 
 package org.apache.fluss.lake.iceberg.source;
 
-import org.apache.fluss.lake.source.RecordReader;
+import org.apache.fluss.lake.source.PositionedRecord;
+import org.apache.fluss.lake.source.PositionedRecordReader;
 import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.GenericRecord;
 import org.apache.fluss.record.LogRecord;
@@ -26,6 +27,7 @@ import org.apache.fluss.row.ProjectedRow;
 import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
@@ -52,59 +54,104 @@ import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
  * <p>Refer to {@link org.apache.iceberg.data.GenericReader#open(FileScanTask)} and {@link
  * org.apache.iceberg.Scan#ignoreResiduals()} for details.
  */
-public class IcebergRecordReader implements RecordReader {
-    protected IcebergRecordAsFlussRecordIterator iterator;
-    protected @Nullable int[][] project;
-    protected Types.StructType struct;
+public class IcebergRecordReader implements PositionedRecordReader {
+
+    private final FileScanTask fileScanTask;
+    private final Table table;
+    protected final @Nullable int[][] project;
 
     public IcebergRecordReader(FileScanTask fileScanTask, Table table, @Nullable int[][] project) {
-        TableScan tableScan = table.newScan();
-        if (project != null) {
-            tableScan = applyProject(tableScan, project);
-        }
-        IcebergGenericReader reader = new IcebergGenericReader(tableScan, true);
-        struct = tableScan.schema().asStruct();
-        this.iterator = new IcebergRecordAsFlussRecordIterator(reader.open(fileScanTask), struct);
+        this.fileScanTask = fileScanTask;
+        this.table = table;
+        this.project = project;
     }
 
     @Override
     public CloseableIterator<LogRecord> read() throws IOException {
-        return iterator;
+        OpenedReader openedReader = openReader();
+        return new IcebergRecordAsFlussRecordIterator(openedReader.records, openedReader.struct);
+    }
+
+    @Override
+    public CloseableIterator<PositionedRecord> readWithPosition() throws IOException {
+        OpenedReader openedReader = openReader();
+        return new IcebergPositionedRecordIterator(openedReader.records, openedReader.struct);
+    }
+
+    private OpenedReader openReader() {
+        TableScan tableScan = createTableScan();
+        IcebergGenericReader reader = new IcebergGenericReader(tableScan, true);
+        return new OpenedReader(reader.open(fileScanTask), tableScan.schema().asStruct());
+    }
+
+    private TableScan createTableScan() {
+        int[][] effectiveProject = project != null ? project : allDataFieldProject(table.schema());
+        return applyProject(table.newScan(), effectiveProject);
+    }
+
+    private int[][] allDataFieldProject(Schema schema) {
+        Types.StructType structType = schema.asStruct();
+        List<int[]> projects = new ArrayList<>();
+        for (int i = 0; i < structType.fields().size(); i++) {
+            String fieldName = structType.fields().get(i).name();
+            if (!OFFSET_COLUMN_NAME.equals(fieldName) && !TIMESTAMP_COLUMN_NAME.equals(fieldName)) {
+                projects.add(new int[] {i});
+            }
+        }
+        return projects.toArray(new int[0][]);
     }
 
     private TableScan applyProject(TableScan tableScan, int[][] projects) {
         Types.StructType structType = tableScan.schema().asStruct();
-        List<Types.NestedField> cols = new ArrayList<>(projects.length + 2);
+        List<Types.NestedField> cols = new ArrayList<>(projects.length + 3);
 
-        for (int[] project : projects) {
-            cols.add(structType.fields().get(project[0]));
+        for (int[] projectedField : projects) {
+            cols.add(structType.fields().get(projectedField[0]));
         }
 
         cols.add(structType.field(OFFSET_COLUMN_NAME));
         cols.add(structType.field(TIMESTAMP_COLUMN_NAME));
+        cols.add(MetadataColumns.ROW_POSITION);
         return tableScan.project(new Schema(cols));
+    }
+
+    private static GenericRecord toGenericRecord(
+            Record icebergRecord,
+            ProjectedRow projectedRow,
+            IcebergRecordAsFlussRow icebergRecordAsFlussRow,
+            int logOffsetColIndex,
+            int timestampColIndex) {
+        long offset = icebergRecord.get(logOffsetColIndex, Long.class);
+        long timestamp =
+                icebergRecord
+                        .get(timestampColIndex, OffsetDateTime.class)
+                        .toInstant()
+                        .toEpochMilli();
+        return new GenericRecord(
+                offset,
+                timestamp,
+                ChangeType.INSERT,
+                projectedRow.replaceRow(
+                        icebergRecordAsFlussRow.replaceIcebergRecord(icebergRecord)));
     }
 
     /** Iterator for iceberg record as fluss record. */
     public static class IcebergRecordAsFlussRecordIterator implements CloseableIterator<LogRecord> {
 
         private final org.apache.iceberg.io.CloseableIterator<Record> icebergRecordIterator;
-
         private final ProjectedRow projectedRow;
         private final IcebergRecordAsFlussRow icebergRecordAsFlussRow;
-
         private final int logOffsetColIndex;
         private final int timestampColIndex;
 
         public IcebergRecordAsFlussRecordIterator(
-                CloseableIterable<Record> icebergRecordIterator, Types.StructType struct) {
-            this.icebergRecordIterator = icebergRecordIterator.iterator();
-            this.logOffsetColIndex = struct.fields().indexOf(struct.field(OFFSET_COLUMN_NAME));
-            this.timestampColIndex = struct.fields().indexOf(struct.field(TIMESTAMP_COLUMN_NAME));
-
-            int[] project = IntStream.range(0, struct.fields().size() - 2).toArray();
-            projectedRow = ProjectedRow.from(project);
-            icebergRecordAsFlussRow = new IcebergRecordAsFlussRow();
+                CloseableIterable<Record> icebergRecordIterable, Types.StructType struct) {
+            this.icebergRecordIterator = icebergRecordIterable.iterator();
+            this.logOffsetColIndex = struct.fields().size() - 3;
+            this.timestampColIndex = struct.fields().size() - 2;
+            int[] project = IntStream.range(0, struct.fields().size() - 3).toArray();
+            this.projectedRow = ProjectedRow.from(project);
+            this.icebergRecordAsFlussRow = new IcebergRecordAsFlussRow();
         }
 
         @Override
@@ -123,20 +170,72 @@ public class IcebergRecordReader implements RecordReader {
 
         @Override
         public LogRecord next() {
-            Record icebergRecord = icebergRecordIterator.next();
-            long offset = icebergRecord.get(logOffsetColIndex, Long.class);
-            long timestamp =
-                    icebergRecord
-                            .get(timestampColIndex, OffsetDateTime.class)
-                            .toInstant()
-                            .toEpochMilli();
+            return toGenericRecord(
+                    icebergRecordIterator.next(),
+                    projectedRow,
+                    icebergRecordAsFlussRow,
+                    logOffsetColIndex,
+                    timestampColIndex);
+        }
+    }
 
-            return new GenericRecord(
-                    offset,
-                    timestamp,
-                    ChangeType.INSERT,
-                    projectedRow.replaceRow(
-                            icebergRecordAsFlussRow.replaceIcebergRecord(icebergRecord)));
+    /** Iterator for iceberg record as fluss positioned record. */
+    public static class IcebergPositionedRecordIterator
+            implements CloseableIterator<PositionedRecord> {
+
+        private final org.apache.iceberg.io.CloseableIterator<Record> icebergRecordIterator;
+        private final ProjectedRow projectedRow;
+        private final IcebergRecordAsFlussRow icebergRecordAsFlussRow;
+        private final int logOffsetColIndex;
+        private final int timestampColIndex;
+        private final int rowPositionColIndex;
+
+        public IcebergPositionedRecordIterator(
+                CloseableIterable<Record> icebergRecordIterable, Types.StructType struct) {
+            this.icebergRecordIterator = icebergRecordIterable.iterator();
+            this.logOffsetColIndex = struct.fields().size() - 3;
+            this.timestampColIndex = struct.fields().size() - 2;
+            this.rowPositionColIndex = struct.fields().size() - 1;
+            int[] project = IntStream.range(0, struct.fields().size() - 3).toArray();
+            this.projectedRow = ProjectedRow.from(project);
+            this.icebergRecordAsFlussRow = new IcebergRecordAsFlussRow();
+        }
+
+        @Override
+        public void close() {
+            try {
+                icebergRecordIterator.close();
+            } catch (Exception e) {
+                throw new RuntimeException("Fail to close iterator.", e);
+            }
+        }
+
+        @Override
+        public boolean hasNext() {
+            return icebergRecordIterator.hasNext();
+        }
+
+        @Override
+        public PositionedRecord next() {
+            Record icebergRecord = icebergRecordIterator.next();
+            return new PositionedRecord(
+                    toGenericRecord(
+                            icebergRecord,
+                            projectedRow,
+                            icebergRecordAsFlussRow,
+                            logOffsetColIndex,
+                            timestampColIndex),
+                    icebergRecord.get(rowPositionColIndex, Long.class));
+        }
+    }
+
+    private static class OpenedReader {
+        private final CloseableIterable<Record> records;
+        private final Types.StructType struct;
+
+        private OpenedReader(CloseableIterable<Record> records, Types.StructType struct) {
+            this.records = records;
+            this.struct = struct;
         }
     }
 }

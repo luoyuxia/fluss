@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.kv.dv;
 
+import org.apache.fluss.utils.DataFilePathUtils;
+
 import org.rocksdb.RocksDBException;
 import org.rocksdb.RocksIterator;
 
@@ -96,7 +98,8 @@ public class FileDict {
      */
     public int getOrCreateFileId(String filePath) {
         Objects.requireNonNull(filePath, "filePath cannot be null");
-        byte[] filePathBytes = filePath.getBytes(StandardCharsets.UTF_8);
+        String normalizedFilePath = DataFilePathUtils.normalizeDataFilePath(filePath);
+        byte[] filePathBytes = normalizedFilePath.getBytes(StandardCharsets.UTF_8);
 
         // Try to get existing file ID
         byte[] forwardKey = new byte[1 + filePathBytes.length];
@@ -124,7 +127,8 @@ public class FileDict {
 
             return fileId;
         } catch (RocksDBException e) {
-            throw new RuntimeException("Failed to get or create file ID for: " + filePath, e);
+            throw new RuntimeException(
+                    "Failed to get or create file ID for: " + normalizedFilePath, e);
         }
     }
 
@@ -136,7 +140,8 @@ public class FileDict {
      */
     public Integer getFileId(String filePath) {
         Objects.requireNonNull(filePath, "filePath cannot be null");
-        byte[] filePathBytes = filePath.getBytes(StandardCharsets.UTF_8);
+        String normalizedFilePath = DataFilePathUtils.normalizeDataFilePath(filePath);
+        byte[] filePathBytes = normalizedFilePath.getBytes(StandardCharsets.UTF_8);
         byte[] forwardKey = new byte[1 + filePathBytes.length];
         forwardKey[0] = FORWARD_PREFIX;
         System.arraycopy(filePathBytes, 0, forwardKey, 1, filePathBytes.length);
@@ -145,7 +150,7 @@ public class FileDict {
             byte[] value = dvRocksDB.get(dvRocksDB.getFileDictCfHandle(), forwardKey);
             return value == null ? null : decodeFileId(value);
         } catch (RocksDBException e) {
-            throw new RuntimeException("Failed to get file ID for: " + filePath, e);
+            throw new RuntimeException("Failed to get file ID for: " + normalizedFilePath, e);
         }
     }
 

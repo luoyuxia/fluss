@@ -280,7 +280,7 @@ public class TieringCommitOperator<WriteResult, Committable>
             Map<String, List<long[]>> positionReport = positionWriteResult.getPositionReport();
             if (positionReport == null
                     || positionReport.isEmpty()
-//                    || tableBucketWriteResult.splitStartOffset() < 0
+                    //                    || tableBucketWriteResult.splitStartOffset() < 0
                     || tableBucketWriteResult.logEndOffset()
                             <= tableBucketWriteResult.splitStartOffset()) {
                 continue;

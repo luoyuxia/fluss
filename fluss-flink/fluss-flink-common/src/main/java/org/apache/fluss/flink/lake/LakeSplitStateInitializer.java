@@ -17,8 +17,12 @@
 
 package org.apache.fluss.flink.lake;
 
+import org.apache.fluss.flink.lake.split.DvAwareFlussLogSplit;
+import org.apache.fluss.flink.lake.split.DvAwareLakeSnapshotSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotSplit;
+import org.apache.fluss.flink.lake.state.DvAwareFlussLogSplitState;
+import org.apache.fluss.flink.lake.state.DvAwareLakeSnapshotSplitState;
 import org.apache.fluss.flink.lake.state.LakeSnapshotAndFlussLogSplitState;
 import org.apache.fluss.flink.lake.state.LakeSnapshotSplitState;
 import org.apache.fluss.flink.source.split.SourceSplitBase;
@@ -30,6 +34,10 @@ public class LakeSplitStateInitializer {
     public static SourceSplitState initializedState(SourceSplitBase split) {
         if (split instanceof LakeSnapshotSplit) {
             return new LakeSnapshotSplitState((LakeSnapshotSplit) split);
+        } else if (split instanceof DvAwareLakeSnapshotSplit) {
+            return new DvAwareLakeSnapshotSplitState((DvAwareLakeSnapshotSplit) split);
+        } else if (split instanceof DvAwareFlussLogSplit) {
+            return new DvAwareFlussLogSplitState((DvAwareFlussLogSplit) split);
         } else if (split instanceof LakeSnapshotAndFlussLogSplit) {
             return new LakeSnapshotAndFlussLogSplitState((LakeSnapshotAndFlussLogSplit) split);
         } else {

@@ -19,6 +19,8 @@ package org.apache.fluss.lake.source;
 
 import org.apache.fluss.annotation.PublicEvolving;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 
 /**
@@ -55,4 +57,16 @@ public interface LakeSplit {
      *     belong to a specific partition in non-partitioned table.
      */
     List<String> partition();
+
+    /**
+     * Returns the physical data file path backing this split when applicable.
+     *
+     * <p>This is primarily used by DV-aware union read planning to associate query-time LakeDv
+     * entries with specific lake splits. Lake backends that are not file-based can keep the default
+     * {@code null} implementation.
+     */
+    @Nullable
+    default String dataFilePath() {
+        return null;
+    }
 }

@@ -17,6 +17,8 @@
 
 package org.apache.fluss.lake.iceberg.tiering;
 
+import org.apache.fluss.utils.DataFilePathUtils;
+
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
@@ -62,11 +64,19 @@ final class IcebergDeletionVectorMaterializer {
 
         Map<String, DataFileContext> dataFilesByPath =
                 collectDataFiles(icebergTable, baseSnapshotId, writeResult.dataFiles());
+        Map<String, String> normalizedDataFilePaths = new LinkedHashMap<>(dataFilesByPath.size());
+        for (String dataFilePath : dataFilesByPath.keySet()) {
+            normalizedDataFilePaths.put(
+                    DataFilePathUtils.normalizeDataFilePath(dataFilePath), dataFilePath);
+        }
         Map<String, LinkedHashSet<Long>> deletePositionsByFile = new LinkedHashMap<>();
 
         if (lakeDvSnapshot != null) {
             for (Map.Entry<String, byte[]> entry : lakeDvSnapshot.entrySet()) {
-                if (!dataFilesByPath.containsKey(entry.getKey())) {
+                String actualDataFilePath =
+                        normalizedDataFilePaths.get(
+                                DataFilePathUtils.normalizeDataFilePath(entry.getKey()));
+                if (actualDataFilePath == null) {
                     continue;
                 }
                 deserializeBitmap(entry.getValue())
@@ -74,7 +84,7 @@ final class IcebergDeletionVectorMaterializer {
                                 (int pos) ->
                                         deletePositionsByFile
                                                 .computeIfAbsent(
-                                                        entry.getKey(),
+                                                        actualDataFilePath,
                                                         key -> new LinkedHashSet<>())
                                                 .add((long) pos));
             }

@@ -18,6 +18,8 @@
 package org.apache.fluss.flink.lake;
 
 import org.apache.fluss.client.table.scanner.ScanRecord;
+import org.apache.fluss.flink.lake.state.DvAwareFlussLogSplitState;
+import org.apache.fluss.flink.lake.state.DvAwareLakeSnapshotSplitState;
 import org.apache.fluss.flink.lake.state.LakeSnapshotAndFlussLogSplitState;
 import org.apache.fluss.flink.lake.state.LakeSnapshotSplitState;
 import org.apache.fluss.flink.source.reader.RecordAndPos;
@@ -43,23 +45,29 @@ public class LakeRecordRecordEmitter<OUT> {
         if (splitState instanceof LakeSnapshotSplitState) {
             ((LakeSnapshotSplitState) splitState).setRecordsToSkip(recordAndPos.readRecordsCount());
             sourceOutputFunc.accept(recordAndPos.record(), sourceOutput);
+        } else if (splitState instanceof DvAwareLakeSnapshotSplitState) {
+            ((DvAwareLakeSnapshotSplitState) splitState)
+                    .setRecordsToSkip(recordAndPos.readRecordsCount());
+            sourceOutputFunc.accept(recordAndPos.record(), sourceOutput);
+        } else if (splitState instanceof DvAwareFlussLogSplitState) {
+            DvAwareFlussLogSplitState logSplitState = (DvAwareFlussLogSplitState) splitState;
+            ScanRecord scanRecord = recordAndPos.record();
+            if (scanRecord.logOffset() >= 0) {
+                logSplitState.setNextOffset(scanRecord.logOffset() + 1);
+            }
+            sourceOutputFunc.accept(scanRecord, sourceOutput);
         } else if (splitState instanceof LakeSnapshotAndFlussLogSplitState) {
             LakeSnapshotAndFlussLogSplitState lakeSnapshotAndFlussLogSplitState =
                     (LakeSnapshotAndFlussLogSplitState) splitState;
 
-            // set current split index
             lakeSnapshotAndFlussLogSplitState.setCurrentLakeSplitIndex(
                     recordAndPos.getCurrentSplitIndex());
-
-            // set records to skip to state
             if (recordAndPos.readRecordsCount() > 0) {
                 lakeSnapshotAndFlussLogSplitState.setRecordsToSkip(recordAndPos.readRecordsCount());
             }
 
             ScanRecord scanRecord = recordAndPos.record();
             if (scanRecord.logOffset() >= 0) {
-                // record is with a valid offset, means it's in incremental phase,
-                // update the log offset
                 lakeSnapshotAndFlussLogSplitState.setNextLogOffset(scanRecord.logOffset() + 1);
             }
             sourceOutputFunc.accept(recordAndPos.record(), sourceOutput);

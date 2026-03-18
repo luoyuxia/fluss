@@ -2005,56 +2005,50 @@ public class CoordinatorEventProcessor implements EventProcessor {
             CompletableFuture<CommitLakeTableSnapshotResponse> callback) {
         CommitLakeTableSnapshotsData commitLakeTableSnapshotsData =
                 commitLakeTableSnapshotEvent.getCommitLakeTableSnapshotsData();
-        ioExecutor.execute(
-                () -> {
-                    try {
-                        CommitLakeTableSnapshotResponse response =
-                                new CommitLakeTableSnapshotResponse();
-                        Set<Long> failedTableIds = new HashSet<>();
-                        for (Map.Entry<Long, CommitLakeTableSnapshotsData.CommitLakeTableSnapshot>
-                                entry :
-                                        commitLakeTableSnapshotsData
-                                                .getCommitLakeTableSnapshotByTableId()
-                                                .entrySet()) {
-                            PbCommitLakeTableSnapshotRespForTable tableResp =
-                                    response.addTableResp();
-                            long tableId = entry.getKey();
-                            tableResp.setTableId(tableId);
-                            try {
-                                CommitLakeTableSnapshotsData.CommitLakeTableSnapshot snapshot =
-                                        entry.getValue();
-                                if (snapshot.getLakeSnapshotMetadata() == null) {
-                                    throw new FlussRuntimeException(
-                                            "Lake snapshot metadata is null for table " + tableId);
-                                }
-                                lakeTableHelper.registerLakeTableSnapshotV2(
-                                        tableId,
-                                        snapshot.getLakeSnapshotMetadata(),
-                                        snapshot.getEarliestSnapshotIDToKeep());
-                            } catch (Exception e) {
-                                failedTableIds.add(tableId);
-                                ApiError error = ApiError.fromThrowable(e);
-                                tableResp.setError(error.error().code(), error.message());
-                            }
-                        }
-                        notifyLakeTableOffsets(
-                                commitLakeTableSnapshotsData.getLakeTableSnapshot(),
-                                commitLakeTableSnapshotsData.getTableMaxTieredTimestamps(),
-                                failedTableIds);
-                        commitLakeTableSnapshotsData
-                                .getCommitLakeTableSnapshotByTableId()
-                                .keySet()
-                                .stream()
-                                .filter(tableId -> !failedTableIds.contains(tableId))
-                                .forEach(
-                                        tableId ->
-                                                coordinatorEventManager.put(
-                                                        new ReadableSnapshotUpdatedEvent(tableId)));
-                        callback.complete(response);
-                    } catch (Exception e) {
-                        callback.completeExceptionally(e);
+        //        ioExecutor.execute(
+        //                () -> {
+        //
+        //                });
+        //        Binder Error: read_fluss: stale DV response is not handled in this PoC yet
+        try {
+            CommitLakeTableSnapshotResponse response = new CommitLakeTableSnapshotResponse();
+            Set<Long> failedTableIds = new HashSet<>();
+            for (Map.Entry<Long, CommitLakeTableSnapshotsData.CommitLakeTableSnapshot> entry :
+                    commitLakeTableSnapshotsData.getCommitLakeTableSnapshotByTableId().entrySet()) {
+                PbCommitLakeTableSnapshotRespForTable tableResp = response.addTableResp();
+                long tableId = entry.getKey();
+                tableResp.setTableId(tableId);
+                try {
+                    CommitLakeTableSnapshotsData.CommitLakeTableSnapshot snapshot =
+                            entry.getValue();
+                    if (snapshot.getLakeSnapshotMetadata() == null) {
+                        throw new FlussRuntimeException(
+                                "Lake snapshot metadata is null for table " + tableId);
                     }
-                });
+                    lakeTableHelper.registerLakeTableSnapshotV2(
+                            tableId,
+                            snapshot.getLakeSnapshotMetadata(),
+                            snapshot.getEarliestSnapshotIDToKeep());
+                } catch (Exception e) {
+                    failedTableIds.add(tableId);
+                    ApiError error = ApiError.fromThrowable(e);
+                    tableResp.setError(error.error().code(), error.message());
+                }
+            }
+            notifyLakeTableOffsets(
+                    commitLakeTableSnapshotsData.getLakeTableSnapshot(),
+                    commitLakeTableSnapshotsData.getTableMaxTieredTimestamps(),
+                    failedTableIds);
+            commitLakeTableSnapshotsData.getCommitLakeTableSnapshotByTableId().keySet().stream()
+                    .filter(tableId -> !failedTableIds.contains(tableId))
+                    .forEach(
+                            tableId ->
+                                    coordinatorEventManager.put(
+                                            new ReadableSnapshotUpdatedEvent(tableId)));
+            callback.complete(response);
+        } catch (Exception e) {
+            callback.completeExceptionally(e);
+        }
     }
 
     private ControlledShutdownResponse tryProcessControlledShutdown(

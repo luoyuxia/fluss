@@ -20,7 +20,10 @@ package org.apache.fluss.flink.lake;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.initializer.OffsetsInitializer;
 import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
+import org.apache.fluss.flink.lake.split.DvAwareFlussLogSplit;
+import org.apache.fluss.flink.lake.split.DvAwareLakeSnapshotSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotSplit;
 import org.apache.fluss.flink.source.split.LogSplit;
@@ -30,6 +33,14 @@ import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
+import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadRequest;
+import org.apache.fluss.rpc.messages.GetDvForUnionReadResponse;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetLakeDvSnapshotResponse;
+import org.apache.fluss.rpc.messages.PbLakeDvEntry;
+import org.apache.fluss.rpc.messages.PbLogDvEntry;
+import org.apache.fluss.utils.DataFilePathUtils;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import javax.annotation.Nullable;
@@ -55,6 +66,7 @@ public class LakeSplitGenerator {
     private final TableInfo tableInfo;
     private final Admin flussAdmin;
     private final OffsetsInitializer.BucketOffsetsRetriever bucketOffsetsRetriever;
+    private final MetadataUpdater metadataUpdater;
     private final OffsetsInitializer stoppingOffsetInitializer;
     private final int bucketCount;
     private final Supplier<Set<PartitionInfo>> listPartitionSupplier;
@@ -64,6 +76,7 @@ public class LakeSplitGenerator {
     public LakeSplitGenerator(
             TableInfo tableInfo,
             Admin flussAdmin,
+            MetadataUpdater metadataUpdater,
             LakeSource<LakeSplit> lakeSource,
             OffsetsInitializer.BucketOffsetsRetriever bucketOffsetsRetriever,
             OffsetsInitializer stoppingOffsetInitializer,
@@ -71,6 +84,7 @@ public class LakeSplitGenerator {
             Supplier<Set<PartitionInfo>> listPartitionSupplier) {
         this.tableInfo = tableInfo;
         this.flussAdmin = flussAdmin;
+        this.metadataUpdater = metadataUpdater;
         this.lakeSource = lakeSource;
         this.bucketOffsetsRetriever = bucketOffsetsRetriever;
         this.stoppingOffsetInitializer = stoppingOffsetInitializer;
@@ -259,11 +273,12 @@ public class LakeSplitGenerator {
                         new TableBucket(tableInfo.getTableId(), partitionId, bucket);
                 Long snapshotLogOffset = tableBucketSnapshotLogOffset.get(tableBucket);
                 Long stoppingOffset = bucketEndOffset.get(bucket);
-                splits.add(
+                splits.addAll(
                         generateSplitForPrimaryKeyTableBucket(
                                 lakeSplits != null ? lakeSplits.get(bucket) : null,
                                 tableBucket,
                                 partitionName,
+                                tableBucketSnapshotLogOffset,
                                 snapshotLogOffset,
                                 stoppingOffset));
             }
@@ -289,21 +304,245 @@ public class LakeSplitGenerator {
         return splits;
     }
 
-    private SourceSplitBase generateSplitForPrimaryKeyTableBucket(
+    private List<SourceSplitBase> generateSplitForPrimaryKeyTableBucket(
             @Nullable List<LakeSplit> lakeSplits,
             TableBucket tableBucket,
             @Nullable String partitionName,
+            Map<TableBucket, Long> tableBucketSnapshotLogOffset,
             @Nullable Long snapshotLogOffset,
             long stoppingOffset) {
-        // no snapshot data for this bucket or no a corresponding log offset in this bucket,
-        // can only scan from change log
-        if (snapshotLogOffset == null || snapshotLogOffset < 0) {
-            return new LakeSnapshotAndFlussLogSplit(
-                    tableBucket, partitionName, null, EARLIEST_OFFSET, stoppingOffset);
+        if (!tableInfo.getTableConfig().isDvEnabled()) {
+            if (snapshotLogOffset == null || snapshotLogOffset < 0) {
+                return Collections.singletonList(
+                        new LakeSnapshotAndFlussLogSplit(
+                                tableBucket, partitionName, null, EARLIEST_OFFSET, stoppingOffset));
+            }
+
+            return Collections.singletonList(
+                    new LakeSnapshotAndFlussLogSplit(
+                            tableBucket,
+                            partitionName,
+                            lakeSplits,
+                            snapshotLogOffset,
+                            stoppingOffset));
         }
 
-        return new LakeSnapshotAndFlussLogSplit(
-                tableBucket, partitionName, lakeSplits, snapshotLogOffset, stoppingOffset);
+        long requestedReadableSnapshotId =
+                tableBucketSnapshotLogOffset.isEmpty() ? -1L : getRequestedReadableSnapshotId();
+        long effectiveStartingOffset =
+                snapshotLogOffset == null || snapshotLogOffset < 0
+                        ? EARLIEST_OFFSET
+                        : snapshotLogOffset;
+
+        UnionReadDvContext unionReadDvContext =
+                fetchUnionReadDvContext(
+                        tableBucket, requestedReadableSnapshotId, lakeSplits, stoppingOffset);
+
+        return createDvAwarePrimaryKeySplits(
+                lakeSplits,
+                tableBucket,
+                partitionName,
+                effectiveStartingOffset,
+                unionReadDvContext);
+    }
+
+    private List<SourceSplitBase> createDvAwarePrimaryKeySplits(
+            @Nullable List<LakeSplit> lakeSplits,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            long startingOffset,
+            UnionReadDvContext unionReadDvContext) {
+        List<SourceSplitBase> splits = new ArrayList<>();
+        if (lakeSplits != null) {
+            int splitIndex = 0;
+            for (LakeSplit lakeSplit : lakeSplits) {
+                splits.add(
+                        new DvAwareLakeSnapshotSplit(
+                                tableBucket,
+                                partitionName,
+                                lakeSplit,
+                                splitIndex++,
+                                0L,
+                                unionReadDvContext.lakeDvSnapshot));
+            }
+        }
+
+        if (unionReadDvContext.logEndOffset == NO_STOPPING_OFFSET
+                || startingOffset < unionReadDvContext.logEndOffset) {
+            splits.add(
+                    new DvAwareFlussLogSplit(
+                            tableBucket,
+                            partitionName,
+                            startingOffset,
+                            unionReadDvContext.logEndOffset,
+                            unionReadDvContext.logDvSnapshot));
+        }
+        return splits;
+    }
+
+    private long getRequestedReadableSnapshotId() {
+        try {
+            return flussAdmin
+                    .getReadableLakeSnapshot(tableInfo.getTablePath())
+                    .get()
+                    .getSnapshotId();
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to get readable snapshot id for table %s",
+                            tableInfo.getTablePath()),
+                    ExceptionUtils.stripCompletionException(e));
+        }
+    }
+
+    private UnionReadDvContext fetchUnionReadDvContext(
+            TableBucket tableBucket,
+            long requestedReadableSnapshotId,
+            @Nullable List<LakeSplit> lakeSplits,
+            long fallbackStoppingOffset) {
+        if (requestedReadableSnapshotId < 0) {
+            return new UnionReadDvContext(
+                    fallbackStoppingOffset, -1L, Collections.emptyMap(), Collections.emptyMap());
+        }
+
+        try {
+            int leader = metadataUpdater.leaderFor(tableInfo.getTablePath(), tableBucket);
+            TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(leader);
+            if (gateway == null) {
+                throw new IllegalStateException(
+                        String.format("Server %s is not found in metadata cache.", leader));
+            }
+
+            List<String> referencedDataFiles = collectReferencedDataFiles(lakeSplits);
+            GetDvForUnionReadRequest request =
+                    new GetDvForUnionReadRequest()
+                            .setTableId(tableBucket.getTableId())
+                            .setBucketId(tableBucket.getBucket())
+                            .setRequestedSnapshotId(requestedReadableSnapshotId)
+                            .addAllDataFiles(referencedDataFiles);
+            if (tableBucket.getPartitionId() != null) {
+                request.setPartitionId(tableBucket.getPartitionId());
+            }
+
+            GetDvForUnionReadResponse response = gateway.getDvForUnionRead(request).get();
+            if (response.hasIsStale() && response.isIsStale()) {
+                Map<String, byte[]> fallbackLakeDvSnapshot =
+                        referencedDataFiles.isEmpty()
+                                ? Collections.emptyMap()
+                                : fetchLakeDvSnapshot(tableBucket, referencedDataFiles);
+                return new UnionReadDvContext(
+                        response.getLogEndOffset(),
+                        response.hasCurrentReadableSnapshot()
+                                ? response.getCurrentReadableSnapshot()
+                                : requestedReadableSnapshotId,
+                        fallbackLakeDvSnapshot,
+                        Collections.emptyMap());
+            }
+
+            Map<String, byte[]> lakeDvSnapshot = new LinkedHashMap<>();
+            for (int i = 0; i < response.getLakeDvsCount(); i++) {
+                PbLakeDvEntry entry = response.getLakeDvAt(i);
+                lakeDvSnapshot.put(
+                        DataFilePathUtils.normalizeDataFilePath(entry.getFilePath()),
+                        entry.getDelBitmap());
+            }
+            if (lakeDvSnapshot.isEmpty() && !referencedDataFiles.isEmpty()) {
+                lakeDvSnapshot.putAll(fetchLakeDvSnapshot(tableBucket, referencedDataFiles));
+            }
+            Map<Long, byte[]> logDvSnapshot = new LinkedHashMap<>();
+            for (int i = 0; i < response.getLogDvsCount(); i++) {
+                PbLogDvEntry entry = response.getLogDvAt(i);
+                logDvSnapshot.put(entry.getBaseOffset(), entry.getDelBits());
+            }
+            return new UnionReadDvContext(
+                    response.getLogEndOffset(),
+                    requestedReadableSnapshotId,
+                    lakeDvSnapshot,
+                    logDvSnapshot);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to get DV context for table %s bucket %s",
+                            tableInfo.getTablePath(), tableBucket),
+                    ExceptionUtils.stripCompletionException(e));
+        }
+    }
+
+    private Map<String, byte[]> fetchLakeDvSnapshot(
+            TableBucket tableBucket, List<String> referencedDataFiles) {
+        try {
+            int leader = metadataUpdater.leaderFor(tableInfo.getTablePath(), tableBucket);
+            TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(leader);
+            if (gateway == null) {
+                throw new IllegalStateException(
+                        String.format("Server %s is not found in metadata cache.", leader));
+            }
+
+            GetLakeDvSnapshotRequest request =
+                    new GetLakeDvSnapshotRequest()
+                            .setTableId(tableBucket.getTableId())
+                            .setBucketId(tableBucket.getBucket());
+            if (tableBucket.getPartitionId() != null) {
+                request.setPartitionId(tableBucket.getPartitionId());
+            }
+
+            GetLakeDvSnapshotResponse response = gateway.getLakeDvSnapshot(request).get();
+            if (response.getLakeDvEntriesCount() == 0) {
+                return Collections.emptyMap();
+            }
+
+            java.util.Set<String> referencedFileSet =
+                    referencedDataFiles.stream()
+                            .map(DataFilePathUtils::normalizeDataFilePath)
+                            .collect(Collectors.toSet());
+            Map<String, byte[]> lakeDvSnapshot = new LinkedHashMap<>();
+            for (PbLakeDvEntry entry : response.getLakeDvEntriesList()) {
+                String normalizedFilePath =
+                        DataFilePathUtils.normalizeDataFilePath(entry.getFilePath());
+                if (referencedFileSet.contains(normalizedFilePath)) {
+                    lakeDvSnapshot.put(normalizedFilePath, entry.getDelBitmap());
+                }
+            }
+            return lakeDvSnapshot;
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    String.format(
+                            "Failed to fetch LakeDv snapshot fallback for table %s bucket %s",
+                            tableInfo.getTablePath(), tableBucket),
+                    ExceptionUtils.stripCompletionException(e));
+        }
+    }
+
+    private List<String> collectReferencedDataFiles(@Nullable List<LakeSplit> lakeSplits) {
+        if (lakeSplits == null || lakeSplits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<String> dataFiles = new ArrayList<>(lakeSplits.size());
+        for (LakeSplit lakeSplit : lakeSplits) {
+            String dataFilePath = lakeSplit.dataFilePath();
+            if (dataFilePath != null) {
+                dataFiles.add(DataFilePathUtils.normalizeDataFilePath(dataFilePath));
+            }
+        }
+        return dataFiles;
+    }
+
+    private static final class UnionReadDvContext {
+        private final long logEndOffset;
+        private final long currentReadableSnapshotId;
+        private final Map<String, byte[]> lakeDvSnapshot;
+        private final Map<Long, byte[]> logDvSnapshot;
+
+        private UnionReadDvContext(
+                long logEndOffset,
+                long currentReadableSnapshotId,
+                Map<String, byte[]> lakeDvSnapshot,
+                Map<Long, byte[]> logDvSnapshot) {
+            this.logEndOffset = logEndOffset;
+            this.currentReadableSnapshotId = currentReadableSnapshotId;
+            this.lakeDvSnapshot = lakeDvSnapshot;
+            this.logDvSnapshot = logDvSnapshot;
+        }
     }
 
     private List<SourceSplitBase> generateNoPartitionedTableSplit(

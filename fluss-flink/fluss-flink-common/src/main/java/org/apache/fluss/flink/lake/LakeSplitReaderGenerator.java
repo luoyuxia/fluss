@@ -19,9 +19,13 @@ package org.apache.fluss.flink.lake;
 
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.scanner.batch.BatchScanner;
+import org.apache.fluss.flink.lake.reader.DvAwareFlussLogSplitScanner;
+import org.apache.fluss.flink.lake.reader.DvAwareLakeSnapshotSplitScanner;
 import org.apache.fluss.flink.lake.reader.LakeSnapshotAndLogSplitScanner;
 import org.apache.fluss.flink.lake.reader.LakeSnapshotScanner;
 import org.apache.fluss.flink.lake.reader.SeekableLakeSnapshotSplitScanner;
+import org.apache.fluss.flink.lake.split.DvAwareFlussLogSplit;
+import org.apache.fluss.flink.lake.split.DvAwareLakeSnapshotSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotSplit;
 import org.apache.fluss.flink.source.reader.BoundedSplitReader;
@@ -31,6 +35,7 @@ import org.apache.fluss.lake.source.LakeSplit;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.Queue;
 
@@ -52,19 +57,19 @@ public class LakeSplitReaderGenerator {
     }
 
     public void addSplit(SourceSplitBase split, Queue<SourceSplitBase> boundedSplits) {
-        if (split instanceof LakeSnapshotSplit) {
+        if (split instanceof LakeSnapshotSplit
+                || split instanceof DvAwareLakeSnapshotSplit
+                || split instanceof DvAwareFlussLogSplit) {
             boundedSplits.add(split);
         } else if (split instanceof LakeSnapshotAndFlussLogSplit) {
             LakeSnapshotAndFlussLogSplit lakeSnapshotAndFlussLogSplit =
                     (LakeSnapshotAndFlussLogSplit) split;
-            boolean isStreaming = ((LakeSnapshotAndFlussLogSplit) split).isStreaming();
-            // if is streaming and lake split not finished, add to it
+            boolean isStreaming = lakeSnapshotAndFlussLogSplit.isStreaming();
             if (isStreaming) {
                 if (!lakeSnapshotAndFlussLogSplit.isLakeSplitFinished()) {
                     boundedSplits.add(split);
                 }
             } else {
-                // otherwise, in batch mode, always add it
                 boundedSplits.add(split);
             }
         } else {
@@ -80,6 +85,14 @@ public class LakeSplitReaderGenerator {
                     new LakeSnapshotScanner(lakeSource, lakeSnapshotSplit);
             return new BoundedSplitReader(
                     lakeSnapshotScanner, lakeSnapshotSplit.getRecordsToSkip());
+        } else if (split instanceof DvAwareLakeSnapshotSplit) {
+            DvAwareLakeSnapshotSplit dvAwareLakeSnapshotSplit = (DvAwareLakeSnapshotSplit) split;
+            return new BoundedSplitReader(
+                    new DvAwareLakeSnapshotSplitScanner(lakeSource, dvAwareLakeSnapshotSplit),
+                    dvAwareLakeSnapshotSplit.getRecordsToSkip());
+        } else if (split instanceof DvAwareFlussLogSplit) {
+            DvAwareFlussLogSplit dvAwareFlussLogSplit = (DvAwareFlussLogSplit) split;
+            return new BoundedSplitReader(getBatchScanner(dvAwareFlussLogSplit), 0L);
         } else if (split instanceof LakeSnapshotAndFlussLogSplit) {
             LakeSnapshotAndFlussLogSplit lakeSplit = (LakeSnapshotAndFlussLogSplit) split;
             return new BoundedSplitReader(getBatchScanner(lakeSplit), lakeSplit.getRecordsToSkip());
@@ -106,5 +119,13 @@ public class LakeSplitReaderGenerator {
                             table, lakeSource, lakeSplit, projectedFields);
         }
         return lakeBatchScanner;
+    }
+
+    private BatchScanner getBatchScanner(DvAwareFlussLogSplit logSplit) {
+        try {
+            return new DvAwareFlussLogSplitScanner(table, logSplit, projectedFields);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to create DV-aware log scanner.", e);
+        }
     }
 }

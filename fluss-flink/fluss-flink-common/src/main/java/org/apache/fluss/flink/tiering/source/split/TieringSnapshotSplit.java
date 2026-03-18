@@ -166,10 +166,7 @@ public class TieringSnapshotSplit extends TieringSplit {
     @Override
     public int hashCode() {
         return Objects.hash(
-                super.hashCode(),
-                snapshotId,
-                logOffsetOfSnapshot,
-                byteMapHashCode(lakeDvSnapshot));
+                super.hashCode(), snapshotId, logOffsetOfSnapshot, byteMapHashCode(lakeDvSnapshot));
     }
 
     private static <K> boolean byteMapEquals(
