@@ -58,6 +58,16 @@ class IcebergDvTieringITCase extends FlinkIcebergTieringTestBase {
     private static final String DEFAULT_DB = "fluss";
     private static final String CATALOG_NAME = "test_iceberg_lake";
 
+
+    @Test
+    void t1() throws Exception {
+
+        System.out.println(FLUSS_CLUSTER_EXTENSION.getClientConfig());
+        System.out.println(warehousePath);
+
+        Thread.sleep(900_000_000);
+    }
+
     @Test
     void testDvFilesGeneratedDuringTiering() throws Exception {
         StreamTableEnvironment batchTEnv = createBatchTableEnv();

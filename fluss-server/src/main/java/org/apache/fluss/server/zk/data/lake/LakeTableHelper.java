@@ -21,6 +21,7 @@ package org.apache.fluss.server.zk.data.lake;
 import org.apache.fluss.fs.FSDataOutputStream;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.zk.ZooKeeperClient;
@@ -133,14 +134,38 @@ public class LakeTableHelper {
                     List<LakeTable.LakeSnapshotMetadata> previousMetadatas,
                     LakeTable.LakeSnapshotMetadata newSnapshotMetadata,
                     @Nullable Long earliestSnapshotIDToKeep) {
-        // Scenario 1: No retention boundary or no history -> Keep only latest
-        if (earliestSnapshotIDToKeep == null || previousMetadatas.isEmpty()) {
+        if (previousMetadatas.isEmpty()) {
             return new Tuple2<>(
                     Collections.singletonList(newSnapshotMetadata),
                     new ArrayList<>(previousMetadatas));
         }
 
-        // Scenario 2: Find the split point based on position (
+        for (LakeTable.LakeSnapshotMetadata previousMetadata : previousMetadatas) {
+            if (previousMetadata.getSnapshotId() == newSnapshotMetadata.getSnapshotId()) {
+                LOG.info(
+                        "Ignore duplicate lake snapshot {} when registering lake table metadata.",
+                        newSnapshotMetadata.getSnapshotId());
+                return new Tuple2<>(
+                        new ArrayList<>(previousMetadatas),
+                        Collections.singletonList(newSnapshotMetadata));
+            }
+        }
+
+        // Scenario 1: No retention boundary -> Keep only latest.
+        if (earliestSnapshotIDToKeep == null) {
+            return new Tuple2<>(
+                    Collections.singletonList(newSnapshotMetadata),
+                    new ArrayList<>(previousMetadatas));
+        }
+
+        // Scenario 2: Infinite retention -> append the new snapshot.
+        if (earliestSnapshotIDToKeep.equals(LakeCommitResult.KEEP_ALL_PREVIOUS)) {
+            List<LakeTable.LakeSnapshotMetadata> kept = new ArrayList<>(previousMetadatas);
+            kept.add(newSnapshotMetadata);
+            return new Tuple2<>(kept, Collections.emptyList());
+        }
+
+        // Scenario 3: Find the split point based on position (
         // not compare snapshot id directly for non-monotonic IDs, like iceberg)
         int splitIndex = -1;
         for (int i = 0; i < previousMetadatas.size(); i++) {
@@ -150,11 +175,15 @@ public class LakeTableHelper {
             }
         }
 
-        // If ID not found, play safe: keep everything
+        // If the retention boundary is gone already, this request is stale.
         if (splitIndex == -1) {
-            List<LakeTable.LakeSnapshotMetadata> kept = new ArrayList<>(previousMetadatas);
-            kept.add(newSnapshotMetadata);
-            return new Tuple2<>(kept, Collections.emptyList());
+            LOG.info(
+                    "Ignore stale lake snapshot {} because retention boundary {} is no longer present.",
+                    newSnapshotMetadata.getSnapshotId(),
+                    earliestSnapshotIDToKeep);
+            return new Tuple2<>(
+                    new ArrayList<>(previousMetadatas),
+                    Collections.singletonList(newSnapshotMetadata));
         }
 
         List<LakeTable.LakeSnapshotMetadata> toDiscard =

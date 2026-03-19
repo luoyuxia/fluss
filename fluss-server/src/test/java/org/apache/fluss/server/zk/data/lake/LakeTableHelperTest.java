@@ -250,6 +250,57 @@ class LakeTableHelperTest {
                 .containsExactly(4L, 5L, 6L);
     }
 
+    @Test
+    void testIgnoreStaleSnapshotThatWouldRollbackReadableState(@TempDir Path tempDir)
+            throws Exception {
+        LakeTableHelper lakeTableHelper = new LakeTableHelper(zookeeperClient, tempDir.toString());
+        long tableId = 1L;
+        TablePath tablePath = TablePath.of("test_db", "stale_snapshot_test");
+
+        zookeeperClient.registerTable(tablePath, createTableReg(tableId));
+        FileSystem fs = LocalFileSystem.getSharedInstance();
+
+        FsPath path10 = storeOffsetFile(lakeTableHelper, tablePath, tableId, 100L);
+        LakeTable.LakeSnapshotMetadata meta10 =
+                new LakeTable.LakeSnapshotMetadata(10L, path10, path10);
+        lakeTableHelper.registerLakeTableSnapshotV2(
+                tableId, meta10, LakeCommitResult.KEEP_ALL_PREVIOUS);
+
+        FsPath path20 = storeOffsetFile(lakeTableHelper, tablePath, tableId, 200L);
+        LakeTable.LakeSnapshotMetadata meta20 =
+                new LakeTable.LakeSnapshotMetadata(20L, path20, path20);
+        lakeTableHelper.registerLakeTableSnapshotV2(
+                tableId, meta20, LakeCommitResult.KEEP_ALL_PREVIOUS);
+
+        FsPath path30 = storeOffsetFile(lakeTableHelper, tablePath, tableId, 300L);
+        LakeTable.LakeSnapshotMetadata meta30 =
+                new LakeTable.LakeSnapshotMetadata(30L, path30, path30);
+        lakeTableHelper.registerLakeTableSnapshotV2(tableId, meta30, 20L);
+
+        assertThat(zookeeperClient.getLakeTable(tableId).get().getLakeSnapshotMetadatas())
+                .extracting(LakeTable.LakeSnapshotMetadata::getSnapshotId)
+                .containsExactly(20L, 30L);
+        assertThat(fs.exists(path10)).isFalse();
+
+        FsPath stalePath25 = storeOffsetFile(lakeTableHelper, tablePath, tableId, 250L);
+        LakeTable.LakeSnapshotMetadata staleMeta25 =
+                new LakeTable.LakeSnapshotMetadata(25L, stalePath25, stalePath25);
+
+        lakeTableHelper.registerLakeTableSnapshotV2(tableId, staleMeta25, 10L);
+
+        assertThat(zookeeperClient.getLakeTable(tableId).get().getLakeSnapshotMetadatas())
+                .extracting(LakeTable.LakeSnapshotMetadata::getSnapshotId)
+                .containsExactly(20L, 30L);
+        assertThat(
+                        zookeeperClient
+                                .getLakeTable(tableId)
+                                .get()
+                                .getOrReadLatestReadableTableSnapshot()
+                                .getSnapshotId())
+                .isEqualTo(30L);
+        assertThat(fs.exists(stalePath25)).isFalse();
+    }
+
     /** Helper to store offset files and return the FsPath. */
     private FsPath storeOffsetFile(
             LakeTableHelper helper, TablePath path, long tableId, long offset) throws Exception {

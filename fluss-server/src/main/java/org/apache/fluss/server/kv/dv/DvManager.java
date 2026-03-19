@@ -76,6 +76,24 @@ public class DvManager implements AutoCloseable {
         this.fileDict = new FileDict(dvRocksDB);
     }
 
+    private void logDvDebug(String stage, String message) {
+        LOG.info("[dv debug] stage={} {}", stage, message);
+    }
+
+    private void logRowDebug(long rowId, String stage, String message) {
+        LOG.info("[dv debug] stage={} rowId={} {}", stage, rowId, message);
+    }
+
+    private String describeFilePos(FilePos filePos) {
+        String filePath = fileDict.getFilePath(filePos.getFileId());
+        return "fileId="
+                + filePos.getFileId()
+                + ", rowPos="
+                + filePos.getRowPosition()
+                + ", filePath="
+                + filePath;
+    }
+
     /**
      * Handle changelog synced entries. For each old RowId from -U/-D records: 1. Check RowPosIndex
      * and pendingRowPos for the oldRowId 2. If found in either, mark the corresponding file
@@ -88,12 +106,17 @@ public class DvManager implements AutoCloseable {
         dvLock.writeLock().lock();
         try {
             for (long oldRowId : deletedRowIds) {
+                logRowDebug(oldRowId, "handleChangelogSynced", "received delete record");
                 // Step 1: Check RowPosIndex
                 FilePos filePos = rowPosIndex.get(oldRowId);
                 if (filePos != null) {
                     // Found in RowPosIndex: mark deleted in LakeDv, remove from RowPosIndex
                     lakeDv.markDeleted(filePos.getFileId(), filePos.getRowPosition());
                     rowPosIndex.delete(oldRowId);
+                    logRowDebug(
+                            oldRowId,
+                            "handleChangelogSynced",
+                            "deleted from rowPosIndex -> lakeDv, " + describeFilePos(filePos));
                 } else {
                     // Check pendingRowPos
                     FilePos pendingFilePos = rowPosIndex.getPending(oldRowId);
@@ -102,13 +125,23 @@ public class DvManager implements AutoCloseable {
                         lakeDv.markDeleted(
                                 pendingFilePos.getFileId(), pendingFilePos.getRowPosition());
                         rowPosIndex.deletePending(oldRowId);
+                        logRowDebug(
+                                oldRowId,
+                                "handleChangelogSynced",
+                                "deleted from pendingRowPos -> lakeDv, "
+                                        + describeFilePos(pendingFilePos));
                     } else {
                         // Not found in either: add to PendingDeletes
                         pendingDeletes.add(oldRowId);
+                        logRowDebug(
+                                oldRowId,
+                                "handleChangelogSynced",
+                                "not found in rowPosIndex/pendingRowPos -> pendingDeletes");
                     }
                 }
                 // Step 2: Mark in LogDv
                 logDv.markDeleted(oldRowId);
+                logRowDebug(oldRowId, "handleChangelogSynced", "marked deleted in logDv");
             }
         } finally {
             dvLock.writeLock().unlock();
@@ -135,11 +168,36 @@ public class DvManager implements AutoCloseable {
 
         dvLock.writeLock().lock();
         try {
+            logDvDebug(
+                    "handlePositionReport",
+                    "actualSnapshotId="
+                            + actualSnapshotId
+                            + ", splitLastTieredOffset="
+                            + splitLastTieredOffset
+                            + ", splitLatestOffset="
+                            + splitLatestOffset
+                            + ", currentReadableSnapshotId="
+                            + currentReadableSnapshotId
+                            + ", currentReadableSnapshotTieredOffset="
+                            + currentReadableSnapshotTieredOffset
+                            + ", files="
+                            + positionReport.size()
+                            + ", materializedDvFiles="
+                            + (materializedDvFiles == null ? 0 : materializedDvFiles.size()));
             if (splitLatestOffset <= currentReadableSnapshotTieredOffset) {
+                logDvDebug(
+                        "handlePositionReport",
+                        "rejected expired report: splitLatestOffset="
+                                + splitLatestOffset
+                                + ", currentReadableSnapshotTieredOffset="
+                                + currentReadableSnapshotTieredOffset);
                 return false;
             }
 
             if (currentReadableSnapshotId < 0) {
+                logDvDebug(
+                        "handlePositionReport",
+                        "delegating to initial build for snapshotId=" + actualSnapshotId);
                 handleInitialBuild(positionReport, actualSnapshotId, splitLatestOffset);
                 return true;
             }
@@ -155,18 +213,45 @@ public class DvManager implements AutoCloseable {
 
                     if (pendingDeletes.contains(rowId)) {
                         lakeDv.markDeleted(fileId, rowPos);
+                        logRowDebug(
+                                rowId,
+                                "handlePositionReport",
+                                "pendingDeletes hit -> markDeleted, " + describeFilePos(filePos));
                     } else if (rowId > splitLastTieredOffset && rowId <= splitLatestOffset) {
                         rowPosIndex.putPending(rowId, filePos);
+                        logRowDebug(
+                                rowId,
+                                "handlePositionReport",
+                                "current split row -> putPending, " + describeFilePos(filePos));
                     } else {
                         FilePos existingPos = rowPosIndex.get(rowId);
                         if (existingPos != null) {
                             rowPosIndex.putPending(rowId, filePos);
+                            logRowDebug(
+                                    rowId,
+                                    "handlePositionReport",
+                                    "rowPosIndex already has old position -> putPending new position, old="
+                                            + describeFilePos(existingPos)
+                                            + ", new="
+                                            + describeFilePos(filePos));
                         } else {
                             FilePos pendingPos = rowPosIndex.getPending(rowId);
                             if (pendingPos != null) {
                                 rowPosIndex.putPending(rowId, filePos);
+                                logRowDebug(
+                                        rowId,
+                                        "handlePositionReport",
+                                        "pendingRowPos already has position -> overwrite pending, old="
+                                                + describeFilePos(pendingPos)
+                                                + ", new="
+                                                + describeFilePos(filePos));
                             } else {
                                 lakeDv.markDeleted(fileId, rowPos);
+                                logRowDebug(
+                                        rowId,
+                                        "handlePositionReport",
+                                        "no rowPos found -> markDeleted in lakeDv, "
+                                                + describeFilePos(filePos));
                             }
                         }
                     }
@@ -183,6 +268,10 @@ public class DvManager implements AutoCloseable {
                     }
                 }
                 snapshotBitmap = filteredSnapshot;
+                logDvDebug(
+                        "handlePositionReport",
+                        "filtered snapshotBitmap to materialized files, remainingEntries="
+                                + snapshotBitmap.size());
             }
 
             return true;
@@ -203,6 +292,20 @@ public class DvManager implements AutoCloseable {
             long newReadableSnapshotId, long newTieredOffset, List<Integer> oldFileIds) {
         dvLock.writeLock().lock();
         try {
+            logDvDebug(
+                    "handleReadableSwitch",
+                    "currentReadableSnapshotId="
+                            + currentReadableSnapshotId
+                            + ", newReadableSnapshotId="
+                            + newReadableSnapshotId
+                            + ", currentTieredOffset="
+                            + currentReadableSnapshotTieredOffset
+                            + ", newTieredOffset="
+                            + newTieredOffset
+                            + ", oldFileIds="
+                            + (oldFileIds == null ? 0 : oldFileIds.size())
+                            + ", snapshotBitmapEntries="
+                            + (snapshotBitmap == null ? 0 : snapshotBitmap.size()));
             // Step a: Migrate pendingRowPos to RowPosIndex
             rowPosIndex.migratePendingToIndex();
 
@@ -222,6 +325,9 @@ public class DvManager implements AutoCloseable {
             // Step e: Apply bitmap diff cleanup
             if (snapshotBitmap != null && !snapshotBitmap.isEmpty()) {
                 lakeDv.applyBitmapDiff(snapshotBitmap);
+                logDvDebug(
+                        "handleReadableSwitch",
+                        "applied snapshotBitmap diff entries=" + snapshotBitmap.size());
                 snapshotBitmap = null;
             }
 
@@ -245,6 +351,14 @@ public class DvManager implements AutoCloseable {
             Map<String, List<long[]>> positionReport, long snapshotId, long tieredOffset) {
         dvLock.writeLock().lock();
         try {
+            logDvDebug(
+                    "handleInitialBuild",
+                    "snapshotId="
+                            + snapshotId
+                            + ", tieredOffset="
+                            + tieredOffset
+                            + ", files="
+                            + positionReport.size());
             // Write all positions directly to RowPosIndex
             for (Map.Entry<String, List<long[]>> entry : positionReport.entrySet()) {
                 String filePath = entry.getKey();
@@ -255,6 +369,10 @@ public class DvManager implements AutoCloseable {
                     int rowPos = (int) rowPosition[1];
                     FilePos filePos = FilePos.of(fileId, rowPos);
                     rowPosIndex.put(rowId, filePos);
+                    logRowDebug(
+                            rowId,
+                            "handleInitialBuild",
+                            "write initial row position, " + describeFilePos(filePos));
                 }
             }
 
@@ -278,7 +396,23 @@ public class DvManager implements AutoCloseable {
             long requestedSnapshotId, List<String> dataFiles, long logEndOffset) {
         dvLock.readLock().lock();
         try {
+            logDvDebug(
+                    "getDvForUnionRead",
+                    "requestedSnapshotId="
+                            + requestedSnapshotId
+                            + ", currentReadableSnapshotId="
+                            + currentReadableSnapshotId
+                            + ", dataFiles="
+                            + dataFiles.size()
+                            + ", logEndOffset="
+                            + logEndOffset
+                            + ", currentReadableSnapshotTieredOffset="
+                            + currentReadableSnapshotTieredOffset);
             if (requestedSnapshotId != currentReadableSnapshotId) {
+                logDvDebug(
+                        "getDvForUnionRead",
+                        "return stale response, currentReadableSnapshotId="
+                                + currentReadableSnapshotId);
                 return new DvReadResult(
                         new LinkedHashMap<>(),
                         new LinkedHashMap<>(),
@@ -291,14 +425,27 @@ public class DvManager implements AutoCloseable {
             for (String filePath : dataFiles) {
                 Integer fileId = fileDict.getFileId(filePath);
                 if (fileId == null) {
+                    logDvDebug(
+                            "getDvForUnionRead", "skip file without fileId, filePath=" + filePath);
                     continue;
                 }
 
                 RoaringBitmap bitmap = lakeDv.getDeletedBitmap(fileId);
                 if (bitmap.isEmpty()) {
+                    logDvDebug(
+                            "getDvForUnionRead",
+                            "empty lakeDv bitmap, fileId=" + fileId + ", filePath=" + filePath);
                     continue;
                 }
 
+                logDvDebug(
+                        "getDvForUnionRead",
+                        "include lakeDv bitmap, fileId="
+                                + fileId
+                                + ", cardinality="
+                                + bitmap.getCardinality()
+                                + ", filePath="
+                                + filePath);
                 bitmap.runOptimize();
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 DataOutputStream dos = new DataOutputStream(baos);
@@ -382,6 +529,7 @@ public class DvManager implements AutoCloseable {
         dvLock.writeLock().lock();
         try {
             Map<Integer, RoaringBitmap> allEntries = lakeDv.getAllEntries();
+            logDvDebug("snapshotLakeDv", "lakeDv entries before snapshot=" + allEntries.size());
             // Store snapshot bitmap for later diff cleanup
             this.snapshotBitmap = new HashMap<>();
             for (Map.Entry<Integer, RoaringBitmap> entry : allEntries.entrySet()) {
@@ -393,6 +541,14 @@ public class DvManager implements AutoCloseable {
                 String filePath = fileDict.getFilePath(entry.getKey());
                 if (filePath != null) {
                     RoaringBitmap bitmap = entry.getValue();
+                    logDvDebug(
+                            "snapshotLakeDv",
+                            "snapshot fileId="
+                                    + entry.getKey()
+                                    + ", cardinality="
+                                    + bitmap.getCardinality()
+                                    + ", filePath="
+                                    + filePath);
                     bitmap.runOptimize();
                     ByteArrayOutputStream baos = new ByteArrayOutputStream();
                     DataOutputStream dos = new DataOutputStream(baos);

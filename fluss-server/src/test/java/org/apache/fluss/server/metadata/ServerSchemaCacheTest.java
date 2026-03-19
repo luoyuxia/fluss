@@ -104,6 +104,27 @@ public class ServerSchemaCacheTest {
     }
 
     @Test
+    void testIgnoreIllegalAndRollbackSchemaUpdates() {
+        ServerSchemaCache manager =
+                new ServerSchemaCache(new TestingMetadataManager(Collections.emptyList()));
+
+        SchemaGetter schemaGetter =
+                manager.subscribeWithInitialSchema(
+                        DATA1_TABLE_ID, DATA1_TABLE_PATH, (short) 1, DATA1_SCHEMA);
+
+        manager.updateLatestSchema(DATA1_TABLE_ID, (short) 0, DATA2_SCHEMA);
+        assertThat(schemaGetter.getLatestSchemaInfo()).isEqualTo(new SchemaInfo(DATA1_SCHEMA, 1));
+
+        manager.updateLatestSchema(DATA1_TABLE_ID, (short) 2, DATA2_SCHEMA);
+        assertThat(schemaGetter.getLatestSchemaInfo()).isEqualTo(new SchemaInfo(DATA2_SCHEMA, 2));
+
+        manager.updateLatestSchema(DATA1_TABLE_ID, (short) 1, DATA1_SCHEMA);
+        assertThat(schemaGetter.getLatestSchemaInfo()).isEqualTo(new SchemaInfo(DATA2_SCHEMA, 2));
+        assertThat(schemaGetter.getSchema(1)).isEqualTo(DATA1_SCHEMA);
+        assertThat(schemaGetter.getSchema(2)).isEqualTo(DATA2_SCHEMA);
+    }
+
+    @Test
     void testUnsubscribeSchemaChange() {
         ServerSchemaCache manager =
                 new ServerSchemaCache(new TestingMetadataManager(Collections.emptyList()));

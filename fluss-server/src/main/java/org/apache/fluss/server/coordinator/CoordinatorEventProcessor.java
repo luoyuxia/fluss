@@ -1827,18 +1827,18 @@ public class CoordinatorEventProcessor implements EventProcessor {
             return;
         }
 
-        boolean hasNewSwitch = false;
-        for (TableBucket tableBucket : bucketLogEndOffsets.keySet()) {
-            long lastReadableSnapshotId =
-                    lastReadableSnapshotByBucket.getOrDefault(tableBucket, -1L);
-            if (lastReadableSnapshotId < readableSnapshotId) {
-                hasNewSwitch = true;
-                break;
-            }
-        }
-        if (!hasNewSwitch) {
-            return;
-        }
+        boolean hasNewSwitch = true;
+        //        for (TableBucket tableBucket : bucketLogEndOffsets.keySet()) {
+        //            long lastReadableSnapshotId =
+        //                    lastReadableSnapshotByBucket.getOrDefault(tableBucket, -1L);
+        //            if (lastReadableSnapshotId < readableSnapshotId) {
+        //                hasNewSwitch = true;
+        //                break;
+        //            }
+        //        }
+        //        if (!hasNewSwitch) {
+        //            return;
+        //        }
 
         coordinatorRequestBatch.newBatch();
         for (Map.Entry<TableBucket, Long> entry : bucketLogEndOffsets.entrySet()) {

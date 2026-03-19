@@ -213,7 +213,7 @@ public class TabletServerMetadataCache implements ServerMetadataCache {
                             if (removedTableId != null) {
                                 bucketMetadataMapForTables.remove(removedTableId);
                             }
-                        } else if (tablePath == DELETED_TABLE_PATH) {
+                        } else if (DELETED_TABLE_PATH.equals(tablePath)) {
                             serverMetadataSnapshot
                                     .getTablePath(tableId)
                                     .ifPresent(tableIdByPath::remove);

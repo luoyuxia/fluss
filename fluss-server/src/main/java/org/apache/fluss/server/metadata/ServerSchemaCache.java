@@ -76,6 +76,9 @@ public class ServerSchemaCache {
     }
 
     public void updateLatestSchema(long tableId, short schemaId, Schema schema) {
+        if (schemaId <= 0) {
+            return;
+        }
         // only update if tablePath is subscribed.
         subscriberCounters.computeIfPresent(
                 tableId,
@@ -112,17 +115,21 @@ public class ServerSchemaCache {
     }
 
     private void updateSchema(long tableId, int schemaId, Schema schema) {
+        final boolean[] shouldCache = new boolean[1];
         latestSchemaByTableId.compute(
                 tableId,
                 (key, oldValue) -> {
                     if (oldValue == null || oldValue.getSchemaId() < schemaId) {
+                        shouldCache[0] = true;
                         return new SchemaInfo(schema, schemaId);
                     } else {
                         return oldValue;
                     }
                 });
 
-        schemaCache.put(new TableSchemaKey(tableId, schemaId), schema);
+        if (shouldCache[0]) {
+            schemaCache.put(new TableSchemaKey(tableId, schemaId), schema);
+        }
     }
 
     @VisibleForTesting
