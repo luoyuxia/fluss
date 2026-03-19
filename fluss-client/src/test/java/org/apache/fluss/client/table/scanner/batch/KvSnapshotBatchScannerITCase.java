@@ -25,6 +25,8 @@ import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.scanner.RemoteFileDownloader;
 import org.apache.fluss.client.table.writer.UpsertWriter;
 import org.apache.fluss.client.write.HashBucketAssigner;
+import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
@@ -122,6 +124,22 @@ class KvSnapshotBatchScannerITCase extends ClientToServerITCaseBase {
         FLUSS_CLUSTER_EXTENSION.triggerAndWaitSnapshots(expectedRowByBuckets.keySet());
 
         // test read snapshot
+        testSnapshotRead(tablePath, expectedRowByBuckets);
+    }
+
+    @Test
+    void testScanDvEnabledSnapshot() throws Exception {
+        TablePath tablePath = TablePath.of(DEFAULT_DB, "test-dv-table-snapshot");
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder(DEFAULT_TABLE_DESCRIPTOR)
+                        .property(ConfigOptions.TABLE_DV_ENABLED, true)
+                        .property(ConfigOptions.TABLE_CHANGELOG_IMAGE, ChangelogImage.FULL)
+                        .build();
+        long tableId = createTable(tablePath, tableDescriptor, true);
+
+        Map<TableBucket, List<InternalRow>> expectedRowByBuckets = putRows(tableId, tablePath, 10);
+        FLUSS_CLUSTER_EXTENSION.triggerAndWaitSnapshots(expectedRowByBuckets.keySet());
+
         testSnapshotRead(tablePath, expectedRowByBuckets);
     }
 

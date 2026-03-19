@@ -59,6 +59,7 @@ class SnapshotFilesReader implements CloseableIterator<InternalRow> {
     private final Schema targetSchema;
     private final SchemaGetter schemaGetter;
     private final ValueDecoder valueDecoder;
+    private final boolean dvEnabled;
     @Nullable private final int[] projectedFields;
     private RocksIteratorWrapper rocksIteratorWrapper;
 
@@ -77,6 +78,7 @@ class SnapshotFilesReader implements CloseableIterator<InternalRow> {
     SnapshotFilesReader(
             KvFormat kvFormat,
             Path rocksDbPath,
+            boolean dvEnabled,
             @Nullable int[] projectedFields,
             int targetSchemaId,
             Schema targetSchema,
@@ -86,6 +88,7 @@ class SnapshotFilesReader implements CloseableIterator<InternalRow> {
         this.targetSchema = targetSchema;
         this.schemaGetter = schemaGetter;
         this.valueDecoder = new ValueDecoder(schemaGetter, kvFormat);
+        this.dvEnabled = dvEnabled;
         this.projectedFields = projectedFields;
         closeableRegistry = new CloseableRegistry();
         try {
@@ -165,7 +168,8 @@ class SnapshotFilesReader implements CloseableIterator<InternalRow> {
         byte[] value = rocksIteratorWrapper.value();
         rocksIteratorWrapper.next();
 
-        BinaryValue originValue = valueDecoder.decodeValue(value);
+        BinaryValue originValue =
+                dvEnabled ? valueDecoder.decodeDvValue(value) : valueDecoder.decodeValue(value);
         InternalRow originRow = originValue.row;
         if (targetSchemaId != originValue.schemaId) {
             int[] indexMapping =

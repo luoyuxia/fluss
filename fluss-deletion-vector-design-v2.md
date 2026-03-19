@@ -129,11 +129,11 @@ RowId 到 FilePos 的映射，用于根据 RowId 快速定位一行数据在 Ice
 
 **pendingRowPos**：
 
-新 snapshot 提交后、成为 DV-readable 之前，新文件中行的位置不能直接写入 RowPosIndex（否则 §6.2 会将删除标记打到新文件而非当前 readable snapshot 的文件上，见下方说明）。这些位置暂存在 **pendingRowPos** 中，等待 readable snapshot 前移时再原子迁移到 RowPosIndex（见 §8.2 Step 3）。
+新 snapshot 提交后、成为 DV-readable 之前，新文件中行的位置不能直接写入 RowPosIndex（否则 §6.2 会将删除标记打到新文件而非当前 readable snapshot 的文件上，见下方说明）。这些位置暂存在 **pendingRowPos** 中，等待 readable snapshot 前移时再原子迁移到 RowPosIndex（见 §8.2 步骤 3）。
 
 pendingRowPos 是一个扁平结构（`RowId → FilePos`），不按 snapshotId 分组。这依赖于以下保证：**S_{n+1} 的 position report 不会在 S_n 的 readable 切换完成之前到达**。因此在任何时刻，pendingRowPos 中的条目都属于同一个 snapshot——当前已提交但尚未 readable 的最新 snapshot。同一个 RowId 在新 snapshot 到达时直接覆盖旧值即可。
 
-> **为什么 RowPosIndex 不能提前写入新 snapshot 的位置**：假设 readable snapshot S_old 中 rowId=R 位于 file_A:pos5。新 snapshot S_new 到达但尚未 readable，§8.2 Step 1 将 RowPosIndex[R] 覆盖为 file_B:pos7。此时对 R 来了一个 delete，§6.2 查 RowPosIndex 命中 file_B:pos7，在 LakeDv 中标记 file_B 而非 file_A。但 union read 仍然读 S_old（只扫 file_A），file_A:pos5 没有任何屏蔽标记——旧行重新暴露，删除失效。
+> **为什么 RowPosIndex 不能提前写入新 snapshot 的位置**：假设 readable snapshot S_old 中 rowId=R 位于 file_A:pos5。新 snapshot S_new 到达但尚未 readable，§8.2 步骤 1 将 RowPosIndex[R] 覆盖为 file_B:pos7。此时对 R 来了一个 delete，§6.2 查 RowPosIndex 命中 file_B:pos7，在 LakeDv 中标记 file_B 而非 file_A。但 union read 仍然读 S_old（只扫 file_A），file_A:pos5 没有任何屏蔽标记——旧行重新暴露，删除失效。
 
 **存储方案**：
 
@@ -200,16 +200,32 @@ Tiering commit S3 完成（offset 120）
 
 ### 3.6 DV-Readable Snapshot
 
-并非每个 Iceberg snapshot 都可以立即用于 union read。一个 snapshot 被标记为 **DV-readable** 需要满足：该 snapshot 对应的所有 bucket 的 TabletServer 都已完成 DV 元数据处理（RowPosIndex 更新、LakeDv 对齐）。
+并非每个 Iceberg snapshot 都可以立即用于 union read。本文中的 **DV-readable snapshot** 指的是：CoordinatorServer 已对外发布、允许 client 发起 union read 的**目标 snapshot**。注意，这不等价于“所有 TabletServer 都已经完成本地 readable switch”。在短暂窗口内，CoordinatorServer 可能已经对外发布 `S_new`，但部分 TabletServer 仍停留在 `S_old`；client 仍然应该以 `S_new` 作为目标 snapshot 继续重试，直到这些 TabletServer 完成切换。
 
-流程：Tiering Writer 提交新 snapshot 后，各 TabletServer 处理完本 bucket 的 DV 元数据，通知 CoordinatorServer。CoordinatorServer 收齐所有 bucket 的通知后，将该 snapshot 标记为 DV-readable（更新 LakeTableZNode）。此后 union read 客户端才会切换到这个 snapshot。
+流程：Tiering Writer 提交新 snapshot 后，TieringService 先通知各 TabletServer 处理本 bucket 的 DV 元数据。各 TabletServer 处理完成后，向 TieringService 发送 **ready ack**。TieringService 收齐所有 bucket 的 ready ack 后，向 CoordinatorServer 提交“该 snapshot 可发布为 DV-readable”的通知；CoordinatorServer 将该 snapshot 标记为 DV-readable（更新 LakeTableZNode），并对外发布。
+此时 client 可以开始以该 snapshot 作为目标 snapshot 发起 union read。随后 CoordinatorServer 再通知各 TabletServer 执行 readable switch。各 TabletServer 完成 readable switch 后，向 TieringService 发送 **switched ack**。
+只有当 CoordinatorServer 收齐所有 bucket 的 switched ack 后，才允许生成下一轮 tiering split。
 
-在 snapshot 从"已提交"到"DV-readable"的窗口内，union read 仍然读旧的 readable snapshot，因此 TabletServer 必须保留旧 snapshot 对应的 LakeDv，直到新 snapshot 成为 DV-readable 后才能清理。
+在 snapshot 从“已提交”到“所有 TabletServer 都完成 readable switch”的窗口内，部分 TabletServer 仍可能返回旧的 `currentReadableSnapshot`。这不会影响正确性：client 不回退到旧 snapshot，而是继续对目标 snapshot 重试；
+TabletServer 完成切换后，请求自然收敛成功。在此窗口内，TabletServer 必须保留旧 snapshot 对应的 LakeDv，直到本地完成 readable switch 后才能清理。
+
+**CoordinatorServer barrier 机制**：
+
+- **Phase 1 / ready**：TieringService 先发起本轮 bucket 级 DV 元数据处理。TabletServer 完成 §7.3 的 position report 处理、`snapshotBitmap` 过滤后，向 TieringService 发送 ready ack，表示"本 bucket 的 DV 元数据已就绪，但尚未完成 readable switch"。
+- **Phase 2 / publish + switch**：TieringService 收齐 ready ack 后，向 CoordinatorServer 提交发布请求；CoordinatorServer 将该 snapshot 标记为 DV-readable 并对外发布。随后 CoordinatorServer 通知所有 TabletServer 执行 §8.2 步骤 3 的 readable switch。TabletServer 完成 `pendingRowPos → RowPosIndex` 迁移、oldFiles 清理、PendingDeletes 清理和 LakeDv 差集清理后，返回 switched ack 给 TieringService。
+- **Phase 3 / next split gate**：TieringService 只有在收齐所有 bucket 的 switched ack 后，才允许生成下一轮 split。
+
+**单飞 / 强取消语义**：
+
+- **单飞约束**：同一 tiering split 在任意时刻最多只允许一个有效 attempt。
+- **显式失败后才重试**：retry 只能在 CoordinatorServer **明确宣告**当前 attempt 失败后启动；超时、网络抖动或短暂无响应都不能直接触发新的 attempt。
+- **强取消语义**：被 CoordinatorServer 宣告失败的旧 attempt 必须被强制取消；取消后不得再向任何 TabletServer 发送 `positionReport`、ready ack 或 switched ack 相关请求。
+- **设计取舍**：系统依赖上述协议保证，因此 TabletServer 不额外基于 `actualSnapshotId` 做 attempt 校验；对 position report 的拒绝主要依赖结构性过期检查。`actualSnapshotId` 保留用于 ready ack / switched ack 关联和排障。
 
 **时序保证**：
 
-1. S_{n+1} 的 position report 不会在 S_n 的 readable 切换完成之前到达 TabletServer。这一保证使得 pendingRowPos 可以采用扁平结构（不需要按 snapshotId 分组）。
-2. Split n+1 的生成不会在 readable switch n 之前发生。这一保证使得 LakeDv 差集清理所用的 `snapshotBitmap` 只需保留一份（不需要按 snapshotId 分组）。
+1. S_{n+1} 的 position report 不会在 S_n 的 readable 切换完成之前到达 TabletServer。这一保证由 CoordinatorServer 的两阶段 ack barrier 提供，使得 pendingRowPos 可以采用扁平结构（不需要按 snapshotId 分组）。
+2. Split n+1 的生成不会在 readable switch n 之前发生。这一保证同样由 CoordinatorServer 的两阶段 ack barrier 提供，使得 LakeDv 差集清理所用的 `snapshotBitmap` 只需保留一份（不需要按 snapshotId 分组）。
 
 ---
 
@@ -272,7 +288,7 @@ Tiering 写入 Iceberg data file 时，除了用户数据列外，还写入以�
 >
 > 因此：**阻止该表的 DV-readable snapshot 前移**，直到问题解决。具体措施：
 > 1. 上报 metric `external_compaction_invalid_files`，日志中明确报错原因。
-> 2. 该 bucket 的 DV 完成通知**不发送给 CoordinatorServer**，阻止新 snapshot 成为 DV-readable。
+> 2. 该 bucket 的 ready ack / switched ack **都不发送给 TieringService**，从而阻止 TieringService 向 CoordinatorServer 提交 DV-readable 发布请求。
 > 3. Union read 继续使用旧的 readable snapshot（旧 LakeDv 覆盖旧文件，数据正确但陈旧）。
 > 4. 运维修复后（重新执行保留系统列的 compaction，或回滚到包含系统列的 snapshot），Tiering Service 重新扫描并上报，DV-readable 恢复前移。
 
@@ -329,8 +345,8 @@ DvRocksDB 包含一个读写锁（记为 **dvLock**），用于保护 PendingDel
 | 持锁路径                         | 章节                      | 加锁步骤            | 操作                                                                            |
 |------------------------------|-------------------------|-----------------|-------------------------------------------------------------------------------|
 | Changelog 同步成功               | §6.2 步骤 3-5             | 步骤 3 获取，步骤 5 释放 | 读写 RowPosIndex、pendingRowPos、PendingDeletes、LakeDv                            |
-| Position 上报（含外部 compaction） | §7.3 步骤 1-7             | 步骤 1 获取，步骤 7 释放 | 读写 pendingRowPos、PendingDeletes（只读不删）、RowPosIndex（只读）、LakeDv；WriteBatch 原子提交 |
-| Readable 切换                     | §8.2 Step 3              | 整段在 writeLock 下执行   | 读写 RowPosIndex、pendingRowPos、PendingDeletes、LakeDv                            |
+| Position 上报（含外部 compaction） | §7.3                     | 整段在 writeLock 下执行   | 读写 pendingRowPos、PendingDeletes（只读不删）、RowPosIndex（只读）、LakeDv；WriteBatch 原子提交 |
+| Readable 切换                     | §8.2 步骤 3              | 整段在 writeLock 下执行   | 读写 RowPosIndex、pendingRowPos、PendingDeletes、LakeDv                            |
 
 - **dvLock.readLock()**：Union Read（§10 步骤 4）获取读锁，确保读取 LakeDv 时不会与上述写路径并发。多个 union read 可以同时持有读锁。
 
@@ -342,7 +358,7 @@ DvRocksDB 包含一个读写锁（记为 **dvLock**），用于保护 PendingDel
 
 **幂等机制：天然幂等 + 结构性过期检查**：
 
-Position 上报（§7.3）的处理过程是**天然幂等**的——所有操作（pendingRowPos 写入、LakeDv bitmap set、PendingDeletes 检查）在重复执行时产生相同结果。关键在于 §7.3 step 4 **不移除** PendingDeletes 条目：重试时条目仍在，做出相同判断。PendingDeletes 的清理推迟到 readable 切换时统一执行（见 §8.2 Step 3）。
+Position 上报（§7.3）的处理过程是**天然幂等**的——所有操作（pendingRowPos 写入、LakeDv bitmap set、PendingDeletes 检查）在重复执行时产生相同结果。关键在于 §7.3 步骤 4 **不移除** PendingDeletes 条目：重试时条目仍在，做出相同判断。PendingDeletes 的清理推迟到 readable 切换时统一执行（见 §8.2 步骤 3）。
 
 Position 上报（§7.3 步骤 0）通过**结构性过期检查**拦截过期请求：如果 `splitOffsetRange.latest_offset <= currentReadableSnapshotTieredOffset`，说明 readable snapshot 已前移到该 split 之后，该 split 的 position 数据已被后续 snapshot 处理（§8.2）覆盖或取代，直接拒绝。此检查仅依赖当前 readable snapshot 的 tiered offset，无需额外持久化标记。
 
@@ -378,16 +394,16 @@ TabletServer (轻量元数据维护)              Tiering Writer (Flink, 重 I/O
 
 **Tiering Writer 侧（重 I/O 操作）**：
 
-- 读 changelog，将 `+I`/`+U` 写入 Iceberg data file，记录每行的 position。
-- 遇到 `-U`/`-D` 时，区分两种情况：被删除的行在本轮 split 内（`oldRowId > last_tiered_offset`）→ 从本地 positionReport 查 position，生成本地 DV；被删除的行在旧 Iceberg 数据中（`oldRowId <= last_tiered_offset`）→ 跳过，已包含在 LakeDv 快照中。
-- Commit 时，将 LakeDv 快照 + 本地 DV 合并物化为 Puffin DV 文件，与 data file 一起提交到 Iceberg。
+- 读 changelog，先用 split-scoped `logDvSnapshot` 过滤本轮已被删除的 RowId，再将存活的 `+I`/`+U` 写入 Iceberg data file，并记录每行的 position。
+- `-U`/`-D` 不再由 Tiering Writer 自己根据 `oldRowId` 推导 position；跨 split 的删除已经沉淀在 LakeDv 快照里，同 split 内先写后删的行也已经在 `logDvSnapshot` 过滤阶段被跳过。
+- Commit 时，只需将 LakeDv 快照物化为 Puffin DV 文件，与 data file 一起提交到 Iceberg。
 - Commit 成功后，上报新写入行的 position 映射给 TabletServer。
 
 **这样分工的好处**：
 
 1. **Union read 实时生效**：TabletServer 侧的 LakeDv 在 `-U/-D` 到达时立即更新，union read 不需要等待下一轮 tiering commit 就能跳过 Iceberg 中已删除的行。
 2. **Iceberg 写入不在 Fluss Cluster 关键路径上**：Puffin 文件生成和 Iceberg commit 这类重 I/O 操作由 Tiering Writer（Flink job）执行，TabletServer 只做轻量的本地 RocksDB 读写。
-3. **Tiering Writer 无需 RPC 查 RowPosIndex**：跨 split 的删除信息通过 LakeDv 快照随 split 下发；同 split 内的删除信息在 writer 本地 positionReport 中直接查到。两种情况都不需要 RPC 反查 TabletServer。
+3. **Tiering Writer 无需 RPC 查 RowPosIndex**：跨 split 的删除信息通过 LakeDv 快照随 split 下发；同 split 内先写后删的行通过 `logDvSnapshot` 在写前直接过滤。整个 writer 路径都不需要 RPC 反查 TabletServer。
 
 ---
 
@@ -471,28 +487,20 @@ Tiering Writer 收到 tiering split 后的处理流程：
 
 ```
 1. 读 changelog (last_tiered_offset, latest_offset]
-2. 按记录类型分流：
-   ├── +I/+U:
-   │     ├── 写入 Iceberg data file（Parquet）
-   │     └── 记录 (RowId, file, row_position) 到内存中的 positionReport
-   │
-   └── -U/-D:
-         ├── 从 value 首部提取 oldRowId
-         └── 判断 oldRowId 是否在本轮 split 范围内：
-               ├── oldRowId > last_tiered_offset（本轮新写入后又删除）:
-               │     → 从 positionReport 中查到 oldRowId 的 (file, row_position)
-               │     → 加入本地 intra-split DV（localDv）
-               │
-               └── oldRowId <= last_tiered_offset（删除的是已在 Iceberg 中的旧行）:
-                     → 跳过，该删除已包含在 LakeDv 快照中
+2. 先 apply split-scoped `logDvSnapshot`：
+   ├── `+I/+U` 的 RowId 如果命中 `logDvSnapshot`，说明该行已在本轮 changelog 中被删除 → 直接跳过，不写 data file
+   └── 未命中的 `+I/+U` 才写入 Iceberg data file（Parquet），并记录 `(RowId, file, row_position)` 到内存中的 `positionReport`
 
-3. 生成 Puffin DV 文件：
+3. `-U/-D` 不直接生成本地 DV：
+   ├── 跨 split 的删除已经体现在 `lakeDvSnapshot` 中
+   └── 同 split 内先写后删的情况已经由步骤 2 的 `logDvSnapshot` 过滤掉
+
+4. 生成 Puffin DV 文件：
    ├── 读取当前 Iceberg table state，获取 currentFiles 集合和 baseSnapshotId
    ├── 过滤 lakeDvSnapshot：仅保留 currentFiles 中仍存在的文件（见下方 lakeDvSnapshot 过时保护）
-   ├── 将过滤后的 lakeDvSnapshot 序列化为 Puffin 文件（覆盖 Iceberg 中旧行的删除）
-   └── 将 localDv 也合并到 Puffin 文件中（覆盖本轮新写入后又删除的行）
+   └── 将过滤后的 lakeDvSnapshot 序列化为 Puffin 文件（覆盖 Iceberg 中旧行的删除）
 
-4. Commit（见下方 Commit 验证与冲突处理）:
+5. Commit（见下方 Commit 验证与冲突处理）:
    ├── RowDelta rowDelta = table.newRowDelta()
    ├── rowDelta.validateFromSnapshot(baseSnapshotId)
    ├── rowDelta.validateDataFilesExist(lakeDvReferencedFiles)  // LakeDv 引用的已有文件
@@ -500,14 +508,12 @@ Tiering Writer 收到 tiering split 后的处理流程：
    ├── rowDelta.addDeletes(dvFiles)
    ├── rowDelta.commit()   // 失败则 abort，见冲突处理
    └── 上报给 TabletServer：
-         ├── positionReport → 更新 RowPosIndex（被 localDv 标记删除的行不需要上报）
-         ├── locallyDeletedRowIds → 清理 PendingDeletes 中对应的条目
-         └── materializedDvFiles → 实际物化的 DV 文件列表（过滤后的 lakeDvSnapshot keys）
+         ├── positionReport → 更新 RowPosIndex
+         ├── materializedDvFiles → 实际物化的 DV 文件列表（过滤后的 lakeDvSnapshot keys）
+         └── 不需要额外上报同 split 内删除列表
 ```
 
-> **同 split 内先写后删的处理**：当同一轮 tiering split 中，一行数据先被 `+I`/`+U` 写入新 data file，随后又被 `-U`/`-D` 删除时，LakeDv 快照不包含这种情况（因为该行从未在之前的 Iceberg 快照中出现）。Tiering Writer 通过检查 `oldRowId > last_tiered_offset` 识别出这是本轮内部的删除，从自己的 positionReport 中查到 position，生成本地 DV。
->
-> 判断依据：`oldRowId` 就是被删除行对应的 `+I`/`+U` 的 log offset。如果 `oldRowId > last_tiered_offset`，说明这条 `+I`/`+U` 也在当前 split 范围 `(last_tiered_offset, latest_offset]` 内，是本轮刚写入的。
+> **同 split 内先写后删的处理**：当同一轮 tiering split 中，一行数据先被 `+I`/`+U` 写入，随后又被 `-U`/`-D` 删除时，Tiering Writer 不需要再根据 `oldRowId` 判断该删除是否属于当前 split。只要 split 下发的 `logDvSnapshot` 已经覆盖这轮 changelog 中的删除，writer 在写 `+I`/`+U` 之前先检查其 RowId 是否命中 `logDvSnapshot`；命中则直接跳过。这样最终写入 Iceberg 的天然就是“apply 过本轮 log DV 后的存活数据”，不会再遇到“oldRowId 是否在本轮 split 范围内”的判断问题。
 
 > **lakeDvSnapshot 过时保护**：从 split 生成到 commit 之间可能发生外部 compaction，导致 lakeDvSnapshot 中引用的文件已被替换或删除。Tiering Writer 在生成 Puffin DV 前，**必须读取当前 Iceberg table state 的文件集合，过滤 lakeDvSnapshot**，仅为当前仍存在的文件生成 Puffin DV。
 >
@@ -520,22 +526,21 @@ Tiering Writer 收到 tiering split 后的处理流程：
 > 引入 LakeDv 物化后，这一假设不再成立：Puffin DV 中的 position delete 会指向 **历史 snapshot 中的已有 data file**（而非本次 commit 新增的文件），这些文件可能在 split 生成到 commit 之间被外部 compaction 替换。改造后的 commit 逻辑必须：
 >
 > 1. **`validateFromSnapshot(baseSnapshotId)`**：以 step 3 读取 table state 时的 snapshot 为基准，检测 commit 时是否有并发修改（TOCTOU 安全网）。
-> 2. **`validateDataFilesExist(lakeDvReferencedFiles)`**：显式校验 Puffin DV 引用的已有 data file 在提交时仍存在。`lakeDvReferencedFiles` 是过滤后的 lakeDvSnapshot 中引用的文件集合（不包括本次 commit 新增的 data file——那些由 localDv 覆盖，不存在并发删除风险）。
+> 2. **`validateDataFilesExist(lakeDvReferencedFiles)`**：显式校验 Puffin DV 引用的已有 data file 在提交时仍存在。`lakeDvReferencedFiles` 是过滤后的 lakeDvSnapshot 中引用的文件集合（不包括本次 commit 新增的 data file；本次新增文件只承载步骤 2 过滤后仍存活的数据）。
 > 3. **冲突处理**：如果 commit 因 `ValidationException` 失败（外部 compaction 在 step 3 读 table state 之后又替换了被引用的文件），当前 tiering 任务 **abort**——清理已生成的 Puffin DV 和 data file。下一轮 tiering 重新生成 split（包含新的 lakeDvSnapshot，自然覆盖此轮失败的删除）。**LakeDv 中的逻辑删除标记不受影响**，union read 在下一轮物化前仍能通过 LakeDv 正确屏蔽旧行，不会出现数据重复。
 >
 > 过滤（step 3）作为**优化**减少无效 commit 的概率，`validateDataFilesExist` 作为**安全网**兜底过滤后到 commit 之间的 TOCTOU 竞态。两者配合确保不会向 Iceberg 提交指向已不存在文件的 position delete。
 
 ### 7.3 Position 上报
 
-Tiering Writer commit 成功后，通过 RPC 将 `positionReport` 和 `locallyDeletedRowIds` 上报给 TabletServer。
+Tiering Writer commit 成功后，通过 RPC 将 `positionReport` 和 `materializedDvFiles` 上报给 TabletServer。
 
 ```
 positionReport       = Map<file_path, List<(RowId, row_position)>>
                        // 包含本轮 tiering 新写入的行 + 外部 compaction 重写的行（见 §12.2）
-locallyDeletedRowIds = List<RowId>   // 同 split 内先写后删，被 localDv 处理的行
 splitOffsetRange     = (last_tiered_offset, latest_offset]  // 用于结构性过期检查 + RowId 范围区分
 materializedDvFiles  = List<file_path>  // 实际物化了 DV 的文件（过滤后的 lakeDvSnapshot keys）
-actualSnapshotId     = long  // Iceberg commit 返回的实际 snapshot id（用于 DV 完成通知）
+actualSnapshotId     = long  // Iceberg commit 返回的实际 snapshot id（用于 ready ack / switched ack 关联与排障）
 ```
 
 TabletServer 收到后：
@@ -551,20 +556,19 @@ TabletServer 收到后：
      - **RowId ∉ splitOffsetRange**（外部 compaction 重写的已有行，见 §12）：查 RowPosIndex 和 pendingRowPos：
        - **查到了**（RowPosIndex 或 pendingRowPos 中）：该行存活，将新的 `{file_id, row_position}` 写入 **pendingRowPos**（覆盖旧位置）。
        - **都查不到**：该行已在 changelog 同步成功流程中被删除（§6.2 已从 RowPosIndex/pendingRowPos 中移除），实际已不存在。将 `row_position` 加入 LakeDv 中该文件的 `del_bitmap`。
-   RowPosIndex 始终不变——它表示当前 readable snapshot 的位置，待 readable 切换时再迁移（见 §8.2 Step 3）。
-5. 遍历 `locallyDeletedRowIds`，从 PendingDeletes 中移除对应条目。
-6. **将步骤 2-5 的所有 DvRocksDB 修改（pendingRowPos、LakeDv、PendingDeletes）通过同一个 RocksDB WriteBatch 原子提交**
-7. **释放 dvLock.writeLock()**
-8. 用 `materializedDvFiles` 过滤 `snapshotBitmap`：仅保留 `materializedDvFiles` 中包含的文件条目（见 §13.3），移除未物化的文件。
-9. **步骤 8 完成后**，才可发送该 bucket 的 DV 完成通知（见 §8.2 Step 2）。
+   RowPosIndex 始终不变——它表示当前 readable snapshot 的位置，待 readable 切换时再迁移（见 §8.2 步骤 3）。
+5. **将步骤 2-4 的所有 DvRocksDB 修改（pendingRowPos、LakeDv）通过同一个 RocksDB WriteBatch 原子提交**
+6. **释放 dvLock.writeLock()**
+7. 用 `materializedDvFiles` 过滤 `snapshotBitmap`：仅保留 `materializedDvFiles` 中包含的文件条目（见 §13.3），移除未物化的文件。
+8. **步骤 7 完成后**，才可发送该 bucket 的 ready ack（见 §8.2 步骤 2）。
 
-> **实现约束：DV 完成通知必须在步骤 8 之后发送**。如果在步骤 8 之前就通知 CoordinatorServer，CoordinatorServer 可能已收齐所有 bucket 的通知并触发 DV-readable 前移和 §13.3 差集清理。此时 `snapshotBitmap` 中尚未过滤未物化文件，差集运算会错误地清除 LakeDv 中尚未物化的删除标记——不影响正确性（多屏蔽不会导致旧行复活），但浪费存储且可能干扰后续 union read 的性能。
+> **实现约束：ready ack 必须在步骤 7 之后发送**。如果在步骤 7 之前就通知 CoordinatorServer，CoordinatorServer 可能过早将 snapshot 标记为 DV-readable 并触发 §13.3 差集清理。此时 `snapshotBitmap` 中尚未过滤未物化文件，差集运算会错误地清除 LakeDv 中尚未物化的删除标记——不影响正确性（多屏蔽不会导致旧行复活），但浪费存储且可能干扰后续 union read 的性能。
 >
-> **步骤 8 失败策略**：如果步骤 8 失败，**不得发送 DV 完成通知**。实现上应原地重试；若重试仍失败，记录错误日志并放弃本轮通知。该 bucket 的 DV 完成通知缺失会阻止 CoordinatorServer 将新 snapshot 标记为 DV-readable，union read 继续使用旧的 readable snapshot——数据正确但陈旧，不会导致旧行复活。下一轮 tiering 的 position report 会重新触发整个流程。
+> **步骤 8 失败策略**：如果步骤 8 失败，**不得发送 ready ack**。实现上应原地重试；若重试仍失败，记录错误日志并等待 CoordinatorServer **显式宣告当前 attempt 失败** 后再触发新的 retry。该 bucket 的 ready ack 缺失会阻止 CoordinatorServer 将新 snapshot 标记为 DV-readable，union read 继续使用旧的 readable snapshot——数据正确但陈旧，不会导致旧行复活。
 
 > **为什么用 RowId 范围区分新写入行和重写行**：RowId 就是 `+I`/`+U` 的 log offset。`splitOffsetRange = (last_tiered_offset, latest_offset]` 恰好是本轮 tiering 处理的 changelog 范围。如果 RowId ∈ splitOffsetRange，说明该行的 `+I`/`+U` 在本轮 split 中，是新写入 Iceberg 的数据，此前从未出现在任何 Iceberg 快照中——"都查不到"是正常的（首次入 Iceberg），应写入 pendingRowPos。如果 RowId ∉ splitOffsetRange，说明该行来自更早的 tiering，是外部 compaction 从旧文件重写到新文件的已有行——"都查不到"意味着该行已被 §6.2 删除，应标记 LakeDv。
 >
-> 这一统一逻辑也覆盖了外部 compaction 场景（原 §8.2 Step 1），无需单独处理路径。
+> 这一统一逻辑也覆盖了外部 compaction 场景（原 §8.2 步骤 1），无需单独处理路径。
 
 > **外部 compaction 行的并发正确性**：dvLock.writeLock() 保证外部 compaction 行的处理与 §6.2（changelog 同步）串行化。两种执行顺序都正确：
 > - §6.2 先执行：RowPosIndex/pendingRowPos 已删除 rowId，LakeDv 已标记旧文件。§7.3 查不到 rowId（"都查不到"分支），在 LakeDv 中标记新文件（幂等）。
@@ -616,12 +620,12 @@ newFiles 中每行的 position 由 Tiering Service 扫描并上报（外部 comp
         │     （RowId ∈ splitOffsetRange → 新行，写 pendingRowPos）
         │     （RowId ∉ splitOffsetRange → 重写行，检查存活状态）
         │
-        └── readable 切换时（Step 3）：
+        └── readable 切换时（步骤 3）：
               原子迁移 pendingRowPos → RowPosIndex
               + 清理 oldFiles + 清理 PendingDeletes
 ```
 
-**Step 1 — newFiles 处理（由 §7.3 统一执行）**：
+**步骤 1 — newFiles 处理（由 §7.3 统一执行）**：
 
 newFiles 中的行与本轮 tiering 新写入的行通过同一个 positionReport RPC 上报给 TabletServer，由 §7.3 的统一逻辑处理。§7.3 步骤 4 使用 RowId 范围自动区分两种行：
 
@@ -630,15 +634,15 @@ newFiles 中的行与本轮 tiering 新写入的行通过同一个 positionRepor
 
 并发正确性由 §7.3 的 dvLock.writeLock() 保证（见 §5.1 及 §7.3 末尾的并发分析）。
 
-**Step 2 — 通知 CoordinatorServer**：
+**步骤 2 — ready ack 到 CoordinatorServer**：
 
-该 bucket 的 DV 完成通知**必须在 §7.3 步骤 8-9 完成之后发送**——即 `snapshotBitmap` 已完成对未物化文件的过滤。
+该 bucket 的 ready ack **必须在 §7.3 步骤 8 完成之后发送给 TieringService**——即 `snapshotBitmap` 已完成对未物化文件的过滤。
 
-CoordinatorServer 收齐所有 bucket 的 DV 完成通知后，将 s3 设置为 DV 可读（更新 LakeTableZNode）。Client 即可在读 s3 时使用 DV。
+TieringService 收齐所有 bucket 的 ready ack 后，向 CoordinatorServer 提交将 s3 发布为 DV-readable 的请求；CoordinatorServer 更新 LakeTableZNode，并向所有相关 TabletServer 下发 readable switch 通知。此后 client 可以开始以 s3 作为目标 snapshot 发起 union read；尚未完成 switch 的 TabletServer 可能暂时返回 stale snapshot error，client 按 §10 的规则对同一个 s3 重试即可。
 
-**Step 3 — Readable 切换（在 readable snapshot 前移时执行）**：
+**步骤 3 — Readable 切换（在 readable snapshot 前移时执行）**：
 
-oldFiles 的清理和 RowPosIndex 的更新**不在新 snapshot 到达时执行**，而是推迟到 CoordinatorServer 将新 snapshot 标记为 DV-readable 并通知 TabletServer 之后。清理操作在 dvLock.writeLock() 下执行，与 union read 的 dvLock.readLock() 互斥。union read 在 readLock 临界区内校验 `requestedSnapshotId == currentReadableSnapshot`（见 §10 步骤 5），确保不会读到已被清理的旧 LakeDv。
+oldFiles 的清理和 RowPosIndex 的更新**不在新 snapshot 到达时执行**，而是推迟到 CoordinatorServer 将新 snapshot 标记为 DV-readable、并由 CoordinatorServer 下发 readable switch 通知之后。TabletServer 完成 readable switch 后，必须向 TieringService 返回 switched ack；TieringService 只有在收齐所有 switched ack 后，才允许下一轮 split 生成。清理操作在 dvLock.writeLock() 下执行，与 union read 的 dvLock.readLock() 互斥。union read 在 readLock 临界区内校验 `requestedSnapshotId == currentReadableSnapshot`（见 §10 步骤 5），确保不会读到已被清理的旧 LakeDv。
 
 当 readable snapshot 从 S_old 前移到 S_new 时：
 
@@ -661,7 +665,7 @@ oldFiles = snapshot_files(S_old) - snapshot_files(S_new)
 
 > **为什么必须在 readable 切换时才迁移 RowPosIndex**：RowPosIndex 是 §6.2 处理 `-U/-D` 时查找行物理位置的主要来源。如果 RowPosIndex 提前更新到新 snapshot 的位置，但 union read 仍在读旧 readable snapshot 的文件，§6.2 会将删除标记打到新文件上而非旧文件上——旧 readable snapshot 中的行漏删，重新暴露。推迟到 readable 切换时迁移，确保 RowPosIndex 始终与 union read 读取的 snapshot 一致。
 >
-> **窗口期内的删除**：在 Step 1（处理 newFiles）到 Step 3（readable 切换）之间，如果有 `-U/-D` 到达，§6.2 会同时检查 RowPosIndex（旧 readable snapshot 位置）和 pendingRowPos（新 snapshot 位置），在 LakeDv 中同时标记两个文件的删除。这保证了：
+> **窗口期内的删除**：在步骤 1（处理 newFiles）到步骤 3（readable 切换）之间，如果有 `-U/-D` 到达，§6.2 会同时检查 RowPosIndex（旧 readable snapshot 位置）和 pendingRowPos（新 snapshot 位置），在 LakeDv 中同时标记两个文件的删除。这保证了：
 > - union read 在窗口期内读 S_old → LakeDv 中有 S_old 文件的标记 ✓
 > - readable 切换后 union read 读 S_new → LakeDv 中有 S_new 文件的标记 ✓
 
@@ -694,8 +698,8 @@ oldFiles = snapshot_files(S_old) - snapshot_files(S_new)
 |------|------|--------|
 | **Writer 类** | `GenericRecordDeltaWriter` (equality delta) | 新的 `DvTaskWriter`，只做 append |
 | **DELETE 输出** | Equality delete file | Puffin DV file（来自 LakeDv 快照） |
-| **DV 信息来源** | Writer 自己处理 `-U`/`-D` | LakeDv 快照（跨 split）+ 本地 positionReport（同 split 内） |
-| **WriteResult** | `{dataFiles, deleteFiles}` | `{dataFiles, dvFiles, positionReport, locallyDeletedRowIds, materializedDvFiles}` |
+| **DV 信息来源** | Writer 自己处理 `-U`/`-D` | LakeDv 快照 + split-scoped `logDvSnapshot` 过滤 |
+| **WriteResult** | `{dataFiles, deleteFiles}` | `{dataFiles, dvFiles, positionReport, materializedDvFiles}` |
 | **Commit** | `RowDelta.addDeletes(eqDeleteFile)` 无校验 | `RowDelta` + `validateFromSnapshot` + `validateDataFilesExist`（见 §7.2） |
 | **Iceberg 版本** | v2 | v3 |
 
@@ -725,12 +729,12 @@ committable.getDeleteFiles().forEach(rowDelta::addDeletes);
 
 ### 9.4 Tiering Writer 不查 RowPosIndex
 
-Tiering Writer 不通过 RPC 查 TabletServer 的 RowPosIndex。DV 信息来自两个来源：
+Tiering Writer 不通过 RPC 查 TabletServer 的 RowPosIndex。DV 相关信息来自两个来源：
 
-1. **跨 split 的删除**（`oldRowId <= last_tiered_offset`，被删的行在之前的 Iceberg 快照中）：TabletServer 在 changelog 同步成功时已查过 RowPosIndex 并将结果沉淀到 LakeDv 中，随后删除了 RowPosIndex 条目。生成 tiering split 时快照 LakeDv，随 split 下发。Tiering Writer 直接将快照序列化为 Puffin DV 文件。
-2. **同 split 内的删除**（`oldRowId > last_tiered_offset`，被删的行在本轮刚写入）：Tiering Writer 自己刚写过该行，position 在本地 positionReport 中，直接查到。
+1. **LakeDv 快照**：承载跨 split 的删除。TabletServer 在 changelog 同步成功时已查过 RowPosIndex 并将结果沉淀到 LakeDv 中。生成 tiering split 时快照 LakeDv，随 split 下发。Tiering Writer 直接将快照序列化为 Puffin DV 文件。
+2. **split-scoped `logDvSnapshot`**：承载本轮 split 内已经发生的删除。Tiering Writer 在写 `+I`/`+U` 前先 apply 这份快照，命中的 RowId 直接跳过，因此最终写入的数据天然已经扣除了同 split 内先写后删的行。
 
-两种情况都不需要 RPC 反查 TabletServer。
+整个 writer 路径都不需要 RPC 反查 TabletServer。
 
 ---
 
@@ -742,7 +746,9 @@ Client 通过 DV 进行 union read 的完整流程：
 2. Fluss list 该 snapshot 下的 datafile list
 3. **获取 KvTablet 读锁**
 4. **获取 dvLock.readLock()**（见 §5.1，保证 LakeDv 不会被 §7.3/§8.2 并发修改）
-5. **Snapshot 一致性校验**：检查 `requestedSnapshotId == currentReadableSnapshot`。如果不匹配（readable 已前移），释放两把锁，返回 **stale snapshot error**（附带 `currentReadableSnapshot`），client 用新 snapshotId 重试。
+5. **Snapshot 一致性校验**：检查 `requestedSnapshotId == currentReadableSnapshot`。如果不匹配，释放两把锁，返回 **stale snapshot error**（附带 `currentReadableSnapshot`）。
+   - 若 `requestedSnapshotId < currentReadableSnapshot`：说明 TabletServer 已切到更新的 readable snapshot，client 刷新到更新 snapshotId 后重试。
+   - 若 `requestedSnapshotId > currentReadableSnapshot`：说明 CoordinatorServer 已对外发布了更新的目标 snapshot，但该 TabletServer 尚未完成 readable switch。client **保持原来的 `requestedSnapshotId` 不变**，对同一个目标 snapshot 做退避重试，**不得回退到旧 snapshot**。
 6. 获取当前 `logEndOffset`
 7. 从 LakeDv 中获取 datafile list 对应的 lakeDv
 8. 从 LogDv 中获取当前 snapshot 的 start offset 到 `logEndOffset` 的 logDv
@@ -752,11 +758,14 @@ Client 通过 DV 进行 union read 的完整流程：
 
 > **加锁的原因**：
 > - **KvTablet 读锁**：与 §6.2（changelog 同步成功）互斥，保证 LakeDv/LogDv 与 logEndOffset 的一致性。§6.2 在 KvTablet 写锁内先更新 DV 再更新 log_hw，读锁确保 union read 不会看到 log_hw 已更新但 DV 尚未更新的中间状态。
-> - **dvLock.readLock()**：与 §7.3（position 上报）、§8.2 Step 1（处理新 snapshot）和 §8.2 Step 3（readable 切换 + 清理）互斥。这些路径持 dvLock.writeLock()，因此 readLock 保证 union read 在读取 LakeDv 期间，不会有并发的 LakeDv 修改或清理。
+> - **dvLock.readLock()**：与 §7.3（position 上报）、§8.2 步骤 1（处理新 snapshot）和 §8.2 步骤 3（readable 切换 + 清理）互斥。这些路径持 dvLock.writeLock()，因此 readLock 保证 union read 在读取 LakeDv 期间，不会有并发的 LakeDv 修改或清理。
 
-> **Snapshot 一致性校验的必要性**：Client 获取 `requestedSnapshotId`（步骤 1）和 TabletServer 读取 LakeDv（步骤 7）之间存在 TOCTOU 窗口。在此窗口内，Coordinator 可能已将 readable 前移到 S_new 并触发 §8.2 Step 3 清理。如果不做校验，TabletServer 可能返回已被清理过的 LakeDv（缺少 S_old 文件的屏蔽标记），client 按 S_old 读取旧文件时，已删除的行会重新暴露。
+> **Snapshot 一致性校验的必要性**：Client 获取 `requestedSnapshotId`（步骤 1）和 TabletServer 读取 LakeDv（步骤 7）之间存在 TOCTOU 窗口。在此窗口内，可能出现两种方向的偏差：
+> - Coordinator 已发布 `S_new`，但该 TabletServer 还停留在 `S_old`；
+> - 该 TabletServer 已切到 `S_new`，但 client 仍拿着更旧的 snapshotId。
+>   如果不做校验，TabletServer 可能返回与目标 snapshot 不一致的 LakeDv：要么 client 按 `S_old` 读取时拿到了已经为 `S_new` 清理过的 LakeDv，要么 client 按 `S_new` 读取时却拿到了仍对应 `S_old` 的 LakeDv，都会破坏屏蔽语义。
 >
-> 将校验放在 dvLock.readLock() 临界区内确保：一旦校验通过，Step 3 cleanup 无法并发执行（需要 writeLock），LakeDv 在整个读取过程中保持与 `requestedSnapshotId` 一致。校验失败时，client 刷新 snapshotId 重试，开销极低（readable 前移频率远低于 union read 频率，绝大多数请求直接通过）。
+> 将校验放在 dvLock.readLock() 临界区内确保：一旦校验通过，步骤 3 的 cleanup 无法并发执行（需要 writeLock），LakeDv 在整个读取过程中保持与 `requestedSnapshotId` 一致。校验失败时，client 按上面的双向规则收敛：要么刷新到更新 snapshotId，要么保持当前目标 snapshotId 重试；无论哪种情况，都不回退到更旧的目标 snapshot。
 
 **Client 侧处理**：
 
@@ -818,13 +827,13 @@ DvRocksDB 定期做 checkpoint，将 SST 文件上传到远程存储。做 check
       - **RowId ≤ restoreTieredOffset**（`restoreSnapshot` 中的已有行，被后续 tiering 或 compaction 重写到新文件）：
         - 查 RowPosIndex：**找到** → 行存活，写入 pendingRowPos（覆盖旧位置）。
         - **找不到** → 行已被删除（changelog replay 已从 RowPosIndex 中移除），标记 LakeDv。
-   d. 重建完成后，向 CoordinatorServer 上报本 bucket 对 `targetSnapshot` 的 **ready** 状态。
-   e. **不在本地执行 readable 切换**。只有 CoordinatorServer 确认所有 bucket 都 ready 后，才触发全局 readable switch（§8.2 Step 3），各 TabletServer 收到通知后执行 pendingRowPos → RowPosIndex 迁移和 oldFiles 清理。
-   f. **snapshotBitmap 处理**：恢复场景下 `snapshotBitmap` 未被填充（正常流程中由 §7.1 步骤 3 快照、§7.3 步骤 8 过滤），readable 切换时**跳过 §13.3 的 bitmap 差集清理**。LakeDv 中可能残留已物化到 Iceberg DV 的冗余条目，但不影响正确性——union read 同时 apply Iceberg DV 和 LakeDv，重复标记是幂等的。冗余条目在下一轮正常 tiering 中消除：§7.1 步骤 3 快照 LakeDv 时会完整捕获冗余 bits 到 `snapshotBitmap`，Tiering Writer 物化后，§8.2 Step 3 的差集运算（`当前 bitmap AND NOT snapshotBitmap`）精确移除这些 bits。
+   d. 重建完成后，向 TieringService 发送本 bucket 对 `targetSnapshot` 的 **ready ack**。
+   e. **不在本地执行 readable 切换**。只有 TieringService 收齐所有 bucket 的 ready ack、并由 CoordinatorServer 对外发布该 targetSnapshot 为 DV-readable 后，CoordinatorServer 才触发全局 readable switch（§8.2 步骤 3），各 TabletServer 收到通知后执行 pendingRowPos → RowPosIndex 迁移和 oldFiles 清理。
+   f. **snapshotBitmap 处理**：恢复场景下 `snapshotBitmap` 未被填充（正常流程中由 §7.1 步骤 3 快照、§7.3 步骤 8 过滤），readable 切换时**跳过 §13.3 的 bitmap 差集清理**。LakeDv 中可能残留已物化到 Iceberg DV 的冗余条目，但不影响正确性——union read 同时 apply Iceberg DV 和 LakeDv，重复标记是幂等的。冗余条目在下一轮正常 tiering 中消除：§7.1 步骤 3 快照 LakeDv 时会完整捕获冗余 bits 到 `snapshotBitmap`，Tiering Writer 物化后，§8.2 步骤 3 的差集运算（`当前 bitmap AND NOT snapshotBitmap`）精确移除这些 bits。
 
 ### 11.3 Checkpoint 策略建议
 
-- **触发时机**：建议在每次 readable snapshot 前移（§8.2 Step 3）完成后触发一次 DvRocksDB checkpoint。此时 RowPosIndex 已通过 pendingRowPos 迁移反映最新 readable snapshot 的状态，checkpoint 保存的 RowPosIndex 是一致的。这也确保恢复时需要重放的 changelog 量最小、需要重新扫描的 Iceberg 文件最少。
+- **触发时机**：建议在每次 readable snapshot 前移（§8.2 步骤 3）完成后触发一次 DvRocksDB checkpoint。此时 RowPosIndex 已通过 pendingRowPos 迁移反映最新 readable snapshot 的状态，checkpoint 保存的 RowPosIndex 是一致的。这也确保恢复时需要重放的 changelog 量最小、需要重新扫描的 Iceberg 文件最少。
 - **降级策略**：如果 checkpoint 失败，记录日志并在下一次 readable snapshot 前移时重试。不影响正常写入和查询。恢复时会从更早的 checkpoint 开始，重放更多 changelog 并可能需要扫描更多 Iceberg 文件，但不影响正确性。
 
 ---
@@ -909,7 +918,7 @@ LakeDv 从 TabletServer 的逻辑删除标记物化为 Iceberg 中的物理 Dele
 
 > **为什么不能在 commit 成功时就清理**：tiering commit 成功后，新 snapshot（如 S2）的 Puffin DV 已包含了 LakeDv 快照中的删除。但此时 S2 还没有被 CoordinatorServer 标记为 DV-readable（需要等收齐所有 bucket 的通知）。在这个窗口内，union read 客户端拿到的仍是旧的 readable snapshot S1。如果 TabletServer 已经清理了 LakeDv，那么 S1 中被删除的行既没有物理 DV（S1 本身没有 Puffin DV），也没有逻辑 LakeDv 屏蔽——旧行会重新暴露出来，查询结果错误。
 
-**清理流程**：CoordinatorServer 收齐所有 bucket 的 DV 完成通知后，将新 snapshot 设为 DV-readable，然后通知各 TabletServer 执行 LakeDv 清理。
+**清理流程**：TieringService 收齐所有 bucket 的 ready ack 后，向 CoordinatorServer 提交将新 snapshot 发布为 DV-readable 的请求；CoordinatorServer 完成对外发布后，通知各 TabletServer 执行 readable switch 与 LakeDv 清理；待 TieringService 收齐 switched ack 后，才放行下一轮 split。
 
 **清理方式：bitmap 差集**。
 
@@ -1091,9 +1100,9 @@ TabletServer 收到 commit 成功通知后：
 - 用上报的 position 写入 **pendingRowPos**：`4 → {file_B, pos0}`
 - **暂不更新 RowPosIndex，暂不清理 LakeDv**（S2 尚未成为 DV-readable）
 
-CoordinatorServer 收齐所有 bucket 通知后，将 S2 设为 DV-readable。
+TieringService 收齐所有 bucket 的 ready ack 后，向 CoordinatorServer 提交将 S2 发布为 DV-readable 的请求；CoordinatorServer 完成对外发布。
 
-TabletServer 收到 DV-readable 通知后（§8.2 Step 3）：
+TabletServer 收到 DV-readable 通知后（§8.2 步骤 3）：
 - **迁移 pendingRowPos → RowPosIndex**：`4 → {file_B, pos0}` 写入 RowPosIndex
 - 对 LakeDv 执行 bitmap 差集清理（`file_A: {0, 2}` 已物化到 S2 的 Iceberg DV）
 - 此时 union read 已切换到 S2，S2 自带物理 DV，LakeDv 清理安全
@@ -1121,7 +1130,7 @@ LogDv: 清理 offset < S2_start_offset 的条目
 | **LogDv** | Range-based bitmap，按固定 offset 间隔分段 |
 | **存储** | DvRocksDB 独立于 KvTablet RocksDB，六个列族（RowPosIndex、PendingRowPos、LogDv、LakeDv、FileDict、PendingDeletes）；dvLock（ReadWriteLock）序列化写路径 + 保护读路径；position 上报天然幂等（PendingDeletes 不在处理时移除）+ 结构性过期检查拦截过期请求；PendingDeletes 在 readable 切换时统一清理 |
 | **架构分工** | TabletServer 维护轻量元数据 + 快照 LakeDv；Tiering Writer 写 data file + 物化 Puffin DV |
-| **DV 物化** | LakeDv 快照覆盖跨 split 删除；同 split 内先写后删由 Writer 本地 positionReport 处理；commit 前过滤已被外部 compaction 替换的文件 + `validateDataFilesExist` 兜底；未物化的删除由 LakeDv 保底 |
+| **DV 物化** | LakeDv 快照覆盖跨 split 删除；同 split 内先写后删通过 `logDvSnapshot` 写前过滤；commit 前过滤已被外部 compaction 替换的文件 + `validateDataFilesExist` 兜底；未物化的删除由 LakeDv 保底 |
 | **Commit 验证** | IcebergLakeCommitter 从无校验改为 `validateFromSnapshot` + `validateDataFilesExist`；冲突时 abort 下轮重试 |
 | **Position 构建** | Writer 上报（默认）+ Tiering Service 扫描外部 compaction 文件（兜底）；§7.3 统一处理路径（RowId 范围区分新写入行 vs 重写行）；PendingDeletes 解决 position report 与删除操作的时序间隙 |
 | **Changelog 格式** | `-U`/`-D` 的 value 首部携带 oldRowId（8 bytes） |
@@ -1230,7 +1239,7 @@ offset=59: DELETE key(RowId=30) → §6.2: LakeDv[file_A] += {2}, 删 RowPosInde
 
 ### 恢复流程
 
-**Step 1**：加载 checkpoint
+**步骤 1**：加载 checkpoint
 
 ```
 RowPosIndex = {10→file_A:pos0, 20→file_A:pos1, 30→file_A:pos2}
@@ -1238,7 +1247,7 @@ LakeDv = {}
 snapshotBitmap = empty
 ```
 
-**Step 2-3**：从 offset=56 重放 changelog
+**步骤 2-3**：从 offset=56 重放 changelog
 
 ```
 offset=56: -D(oldRowId=10) → RowPosIndex[10]=file_A:pos0 ✓
@@ -1259,7 +1268,7 @@ LakeDv = {file_A: {0, 1, 2}}   ← bits {0,1} 冗余（已在 S3 Iceberg DV 中�
 snapshotBitmap = empty
 ```
 
-**Step 4**：targetSnapshot = S3
+**步骤 4**：targetSnapshot = S3
 
 ```
 newFiles = {file_B}（S3 新增的 data file）
@@ -1274,7 +1283,7 @@ restoreTieredOffset = snapshotStartLogOffset - 1 = 50
 **Readable switch 到 S3**（CoordinatorServer 触发）：
 
 ```
-§8.2 Step 3:
+§8.2 步骤 3:
   1. 迁移 pendingRowPos → RowPosIndex: {58→file_B:pos0}
   2. 清空 pendingRowPos
   3. oldFiles = {} （file_A 在 S2 和 S3 中都存在）
@@ -1324,7 +1333,7 @@ materializedDvFiles = [file_A]
 snapshotBitmap = {file_A: {0, 1, 2}}
 ```
 
-**Readable switch 到 S4**（§8.2 Step 3）：
+**Readable switch 到 S4**（§8.2 步骤 3）：
 
 ```
 差集清理：
@@ -1349,4 +1358,4 @@ snapshotBitmap = {file_A: {0, 1, 2}}
 
 1. **`snapshotBitmap` 完整捕获**：§7.1 快照 LakeDv 时，冗余 bits 和有效 bits 一视同仁，全部进入 `snapshotBitmap`。
 2. **物化幂等安全**：Tiering Writer 物化 `lakeDvSnapshot` 时，冗余 bits 的 Puffin DV 是已有 Iceberg DV 的超集，Iceberg 处理时幂等。
-3. **差集精确清除**：§8.2 Step 3 的 `当前 bitmap AND NOT snapshotBitmap` 运算精确移除所有已物化 bits（含冗余），保留快照之后新增的未物化 bits。
+3. **差集精确清除**：§8.2 步骤 3 的 `当前 bitmap AND NOT snapshotBitmap` 运算精确移除所有已物化 bits（含冗余），保留快照之后新增的未物化 bits。
