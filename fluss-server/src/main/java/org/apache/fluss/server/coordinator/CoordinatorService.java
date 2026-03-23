@@ -180,6 +180,8 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.UncheckedIOException;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -192,8 +194,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
 
 import static org.apache.fluss.config.ConfigOptions.CURRENT_KV_FORMAT_VERSION;
 import static org.apache.fluss.config.FlussConfigUtils.isTableStorageConfig;
@@ -869,9 +869,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         finishTable.getTableId(),
                         finishTable.getTieringEpoch(),
                         forceFinishedTableId.contains(finishTable.getTableId()));
-                if (!forceFinishedTableId.contains(finishTable.getTableId())) {
-                    maybeMarkBootstrapComplete(finishTable.getTableId());
-                }
             } catch (Throwable e) {
                 pbHeartbeatRespForTable.setError(ApiError.fromThrowable(e).toErrorResponse());
             }
@@ -976,17 +973,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             return tableInfo.getPartitionKeys().get(0) + "=" + "bootstrap";
         }
         return "bootstrap";
-    }
-
-    private void maybeMarkBootstrapComplete(long tableId) {
-        BootstrapUpgradeState bootstrapUpgradeState =
-                bootstrapUpgradeStateManager.get(tableId).orElse(null);
-        if (bootstrapUpgradeState == null
-                || bootstrapUpgradeState.getStatus() != BootstrapUpgradeStatus.IN_PROGRESS) {
-            return;
-        }
-        bootstrapUpgradeStateManager.markComplete(
-                tableId, bootstrapUpgradeState.getHoldPartition());
     }
 
     @Override

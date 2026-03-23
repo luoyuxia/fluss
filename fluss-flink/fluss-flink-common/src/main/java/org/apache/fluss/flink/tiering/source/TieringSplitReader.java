@@ -64,8 +64,12 @@ import javax.annotation.Nullable;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Arrays;
@@ -570,7 +574,8 @@ public class TieringSplitReader<WriteResult>
                     }
                 }
             }
-            bootstrapSstWriter.flush();
+            String bootstrapArtifactPath = bootstrapSstWriter.flush();
+            return finishCurrentBootstrapSnapshotSplit(snapshotSplit, bootstrapArtifactPath);
         } catch (Exception e) {
             throw new IOException(
                     String.format(
@@ -578,8 +583,6 @@ public class TieringSplitReader<WriteResult>
                             snapshotSplit.splitId(), snapshotSplit.getTablePath()),
                     e);
         }
-
-        return finishCurrentSnapshotSplit();
     }
 
     private LakeSource<LakeSplit> createBootstrapLakeSource() {
@@ -613,6 +616,10 @@ public class TieringSplitReader<WriteResult>
     }
 
     private void closeCurrentSnapshotSplit() throws IOException {
+        if (currentSnapshotSplitReader == null) {
+            currentSnapshotSplit = null;
+            return;
+        }
         try {
             currentSnapshotSplitReader.close();
         } catch (Exception e) {
@@ -735,6 +742,54 @@ public class TieringSplitReader<WriteResult>
                 numberOfSplits);
     }
 
+    private TableBucketWriteResult<WriteResult> toTableBucketWriteResult(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            @Nullable WriteResult writeResult,
+            long endLogOffset,
+            long maxTimestamp,
+            int numberOfSplits,
+            @Nullable String bootstrapArtifactPath) {
+        return new TableBucketWriteResult<>(
+                tablePath,
+                tableBucket,
+                partitionName,
+                writeResult,
+                endLogOffset,
+                maxTimestamp,
+                numberOfSplits,
+                bootstrapArtifactPath);
+    }
+
+    private TableBucketWriteResultWithSplitIds finishCurrentBootstrapSnapshotSplit(
+            TieringSnapshotSplit snapshotSplit, @Nullable String bootstrapArtifactPath)
+            throws IOException {
+        TableBucket tableBucket = snapshotSplit.getTableBucket();
+        String splitId = currentTableSplitsByBucket.remove(tableBucket).splitId();
+        TableBucketWriteResult<WriteResult> writeResult =
+                toTableBucketWriteResult(
+                        snapshotSplit.getTablePath(),
+                        tableBucket,
+                        snapshotSplit.getPartitionName(),
+                        null,
+                        snapshotSplit.getLogOffsetOfSnapshot(),
+                        UNKNOWN_BUCKET_TIMESTAMP,
+                        checkNotNull(currentTableNumberOfSplits),
+                        bootstrapArtifactPath);
+        LOG.info(
+                "Finish bootstrap tier bucket {} for table {}, split: {}, artifact={}.",
+                tableBucket,
+                currentTablePath,
+                splitId,
+                bootstrapArtifactPath);
+        closeCurrentSnapshotSplit();
+        mayFinishCurrentTable();
+        return new TableBucketWriteResultWithSplitIds(
+                Collections.singletonMap(tableBucket, writeResult),
+                Collections.singletonMap(tableBucket, splitId));
+    }
+
     private class TableBucketWriteResultWithSplitIds
             implements RecordsWithSplitIds<TableBucketWriteResult<WriteResult>> {
 
@@ -847,9 +902,9 @@ public class TieringSplitReader<WriteResult>
             latestValuesByKey.put(key, ValueEncoder.encodeValue(schemaId, binaryRow));
         }
 
-        private void flush() throws IOException {
+        private @Nullable String flush() throws IOException {
             if (latestValuesByKey.isEmpty()) {
-                return;
+                return null;
             }
             Path sstPath = prepareSstPath();
             RocksDB.loadLibrary();
@@ -880,13 +935,16 @@ public class TieringSplitReader<WriteResult>
             } catch (Exception e) {
                 throw new IOException("Failed to write bootstrap SST file.", e);
             }
+            Path manifestPath = writeManifest(sstPath);
             LOG.info(
-                    "Bootstrap SST generated from reader: table={}, bucket={}, partition={}, path={}, kvCount={}.",
+                    "Bootstrap SST generated from reader: table={}, bucket={}, partition={}, sstPath={}, manifestPath={}, kvCount={}.",
                     tableInfo.getTablePath(),
                     split.getTableBucket(),
                     split.getPartitionName(),
                     sstPath,
+                    manifestPath,
                     latestValuesByKey.size());
+            return manifestPath.toString();
         }
 
         private Path prepareSstPath() throws IOException {
@@ -911,6 +969,82 @@ public class TieringSplitReader<WriteResult>
                             "bucket-" + split.getTableBucket().getBucket());
             Files.createDirectories(outputDir);
             return outputDir.resolve("bootstrap-" + UUID.randomUUID() + ".sst");
+        }
+
+        private Path writeManifest(Path sstPath) throws IOException {
+            long sstSizeBytes = Files.size(sstPath);
+            String sha256 = sha256Hex(sstPath);
+            long nowMs = System.currentTimeMillis();
+            Path manifestPath =
+                    sstPath.resolveSibling(sstPath.getFileName().toString() + ".manifest.json");
+
+            String partition = split.getPartitionName() == null ? "" : split.getPartitionName();
+            String json =
+                    "{\n"
+                            + "  \"version\": 1,\n"
+                            + "  \"tableId\": "
+                            + split.getTableBucket().getTableId()
+                            + ",\n"
+                            + "  \"tablePath\": \""
+                            + escapeJson(tableInfo.getTablePath().toString())
+                            + "\",\n"
+                            + "  \"partition\": \""
+                            + escapeJson(partition)
+                            + "\",\n"
+                            + "  \"bucket\": "
+                            + split.getTableBucket().getBucket()
+                            + ",\n"
+                            + "  \"sourceSnapshotId\": "
+                            + split.getSnapshotId()
+                            + ",\n"
+                            + "  \"sstPath\": \""
+                            + escapeJson(sstPath.toString())
+                            + "\",\n"
+                            + "  \"sstSizeBytes\": "
+                            + sstSizeBytes
+                            + ",\n"
+                            + "  \"rowCount\": "
+                            + latestValuesByKey.size()
+                            + ",\n"
+                            + "  \"sha256\": \""
+                            + sha256
+                            + "\",\n"
+                            + "  \"createdAtMs\": "
+                            + nowMs
+                            + "\n"
+                            + "}\n";
+            Files.writeString(manifestPath, json);
+            return manifestPath;
+        }
+
+        private static String sha256Hex(Path file) throws IOException {
+            MessageDigest digest;
+            try {
+                digest = MessageDigest.getInstance("SHA-256");
+            } catch (NoSuchAlgorithmException e) {
+                throw new IOException("SHA-256 algorithm is unavailable.", e);
+            }
+            byte[] buffer = new byte[8192];
+            try (InputStream in = Files.newInputStream(file);
+                    DigestInputStream digestStream = new DigestInputStream(in, digest)) {
+                while (digestStream.read(buffer) >= 0) {
+                    // read fully for digest
+                }
+            }
+            return toHex(digest.digest());
+        }
+
+        private static String toHex(byte[] bytes) {
+            StringBuilder builder = new StringBuilder(bytes.length * 2);
+            for (byte b : bytes) {
+                builder.append(Character.forDigit((b >> 4) & 0xF, 16));
+                builder.append(Character.forDigit(b & 0xF, 16));
+            }
+            return builder.toString();
+        }
+
+        private static String escapeJson(String value) {
+            return value.replace("\\", "\\\\").replace("\"", "\\\"");
         }
 
         private static String sanitizePathSegment(String value) {

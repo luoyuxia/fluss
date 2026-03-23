@@ -46,6 +46,9 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -53,6 +56,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.lake.committer.LakeCommitter.FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY;
@@ -79,6 +83,11 @@ public class TieringCommitOperator<WriteResult, Committable>
                 TableBucketWriteResult<WriteResult>, CommittableMessage<Committable>> {
 
     private static final long serialVersionUID = 1L;
+    private static final String BOOTSTRAP_ARTIFACTS_PROPERTY = "fluss.bootstrap.artifacts";
+    private static final String BOOTSTRAP_COMMIT_MANIFEST_PROPERTY =
+            "fluss.bootstrap.commit-manifest";
+    private static final String BOOTSTRAP_SST_OUTPUT_DIR_KEY =
+            "table.datalake.bootstrap.sst.output-dir";
 
     private final Configuration flussConfig;
     private final Configuration lakeTieringConfig;
@@ -168,6 +177,19 @@ public class TieringCommitOperator<WriteResult, Committable>
             TablePath tablePath,
             List<TableBucketWriteResult<WriteResult>> committableWriteResults)
             throws Exception {
+        List<TableBucketWriteResult<WriteResult>> bootstrapArtifactResults =
+                committableWriteResults.stream()
+                        .filter(result -> result.bootstrapArtifactPath() != null)
+                        .collect(Collectors.toList());
+
+        Map<TableBucket, String> bootstrapArtifacts =
+                bootstrapArtifactResults.stream()
+                        .collect(
+                                Collectors.toMap(
+                                        TableBucketWriteResult::tableBucket,
+                                        TableBucketWriteResult::bootstrapArtifactPath,
+                                        (left, right) -> right));
+
         // filter out non-null write result
         committableWriteResults =
                 committableWriteResults.stream()
@@ -179,6 +201,18 @@ public class TieringCommitOperator<WriteResult, Committable>
         // empty, means all write result is null, which is a empty commit,
         // return null to skip the empty commit
         if (committableWriteResults.isEmpty()) {
+            if (!bootstrapArtifactResults.isEmpty()) {
+                TableInfo currentTableInfo = admin.getTableInfo(tablePath).get();
+                String bootstrapCommitManifest =
+                        commitBootstrapArtifacts(
+                                tableId, tablePath, currentTableInfo, bootstrapArtifactResults);
+                LOG.info(
+                        "Bootstrap artifact commit finished for table {}, table path {}, commit manifest {}.",
+                        tableId,
+                        tablePath,
+                        bootstrapCommitManifest);
+                return null;
+            }
             LOG.info(
                     "Commit tiering write results is empty for table {}, table path {}",
                     tableId,
@@ -238,9 +272,20 @@ public class TieringCommitOperator<WriteResult, Committable>
                             tableId, tablePath, logEndOffsets);
 
             // record the lake snapshot bucket offsets file to snapshot property
-            Map<String, String> snapshotProperties =
-                    Collections.singletonMap(
-                            FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, lakeBucketTieredOffsetsFile);
+            Map<String, String> snapshotProperties = new HashMap<>();
+            snapshotProperties.put(
+                    FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, lakeBucketTieredOffsetsFile);
+            if (!bootstrapArtifacts.isEmpty()) {
+                snapshotProperties.put(
+                        BOOTSTRAP_ARTIFACTS_PROPERTY, encodeBootstrapArtifacts(bootstrapArtifacts));
+                String bootstrapCommitManifest =
+                        writeBootstrapCommitManifest(
+                                tableId,
+                                tablePath,
+                                admin.getTableInfo(tablePath).get(),
+                                bootstrapArtifactResults);
+                snapshotProperties.put(BOOTSTRAP_COMMIT_MANIFEST_PROPERTY, bootstrapCommitManifest);
+            }
             LakeCommitResult lakeCommitResult =
                     lakeCommitter.commit(committable, snapshotProperties);
             // commit to fluss
@@ -253,6 +298,91 @@ public class TieringCommitOperator<WriteResult, Committable>
                     logMaxTieredTimestamps);
             return committable;
         }
+    }
+
+    private String encodeBootstrapArtifacts(Map<TableBucket, String> bootstrapArtifacts) {
+        return bootstrapArtifacts.entrySet().stream()
+                .map(entry -> String.format("%s|%s", entry.getKey().toString(), entry.getValue()))
+                .collect(Collectors.joining(";"));
+    }
+
+    private String commitBootstrapArtifacts(
+            long tableId,
+            TablePath tablePath,
+            TableInfo tableInfo,
+            List<TableBucketWriteResult<WriteResult>> bootstrapArtifactResults)
+            throws IOException {
+        String commitManifestPath =
+                writeBootstrapCommitManifest(
+                        tableId, tablePath, tableInfo, bootstrapArtifactResults);
+        LOG.info(
+                "Bootstrap artifacts committed by committer: table={}, tablePath={}, manifest={}.",
+                tableId,
+                tablePath,
+                commitManifestPath);
+        return commitManifestPath;
+    }
+
+    private String writeBootstrapCommitManifest(
+            long tableId,
+            TablePath tablePath,
+            TableInfo tableInfo,
+            List<TableBucketWriteResult<WriteResult>> bootstrapArtifactResults)
+            throws IOException {
+        String outputRoot =
+                tableInfo.getCustomProperties().toMap().get(BOOTSTRAP_SST_OUTPUT_DIR_KEY);
+        if (outputRoot == null || outputRoot.trim().isEmpty()) {
+            outputRoot = System.getProperty("java.io.tmpdir") + "/fluss-bootstrap-sst";
+        }
+        Path commitDir = Path.of(outputRoot, "table-" + tableId, "commits");
+        Files.createDirectories(commitDir);
+        Path manifestPath =
+                commitDir.resolve(
+                        "bootstrap-commit-"
+                                + System.currentTimeMillis()
+                                + "-"
+                                + UUID.randomUUID()
+                                + ".manifest.json");
+
+        String artifactsJson =
+                bootstrapArtifactResults.stream()
+                        .map(
+                                result ->
+                                        String.format(
+                                                "{\"bucket\":\"%s\",\"partition\":\"%s\",\"manifestPath\":\"%s\"}",
+                                                escapeJson(result.tableBucket().toString()),
+                                                escapeJson(
+                                                        result.partitionName() == null
+                                                                ? ""
+                                                                : result.partitionName()),
+                                                escapeJson(result.bootstrapArtifactPath())))
+                        .collect(Collectors.joining(","));
+
+        String json =
+                "{\n"
+                        + "  \"version\": 1,\n"
+                        + "  \"tableId\": "
+                        + tableId
+                        + ",\n"
+                        + "  \"tablePath\": \""
+                        + escapeJson(tablePath.toString())
+                        + "\",\n"
+                        + "  \"artifactCount\": "
+                        + bootstrapArtifactResults.size()
+                        + ",\n"
+                        + "  \"createdAtMs\": "
+                        + System.currentTimeMillis()
+                        + ",\n"
+                        + "  \"artifacts\": ["
+                        + artifactsJson
+                        + "]\n"
+                        + "}\n";
+        Files.writeString(manifestPath, json);
+        return manifestPath.toString();
+    }
+
+    private static String escapeJson(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     @Nullable

@@ -33,7 +33,9 @@ public class TableBucketWriteResultSerializer<WriteResult>
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
 
-    private static final int CURRENT_VERSION = 1;
+    private static final int VERSION_1 = 1;
+    private static final int VERSION_2 = 2;
+    private static final int CURRENT_VERSION = VERSION_2;
 
     private final org.apache.fluss.lake.serializer.SimpleVersionedSerializer<WriteResult>
             writeResultSerializer;
@@ -91,6 +93,14 @@ public class TableBucketWriteResultSerializer<WriteResult>
         // serialize number of write results
         out.writeInt(tableBucketWriteResult.numberOfWriteResults());
 
+        // serialize bootstrap artifact path
+        if (tableBucketWriteResult.bootstrapArtifactPath() != null) {
+            out.writeBoolean(true);
+            out.writeUTF(tableBucketWriteResult.bootstrapArtifactPath());
+        } else {
+            out.writeBoolean(false);
+        }
+
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -99,7 +109,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
     @Override
     public TableBucketWriteResult<WriteResult> deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != CURRENT_VERSION) {
+        if (version != VERSION_1 && version != VERSION_2) {
             throw new IOException("Unknown version " + version);
         }
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
@@ -136,6 +146,10 @@ public class TableBucketWriteResultSerializer<WriteResult>
         long maxTimestamp = in.readLong();
         // deserialize number of write results
         int numberOfWriteResults = in.readInt();
+        String bootstrapArtifactPath = null;
+        if (version >= VERSION_2 && in.readBoolean()) {
+            bootstrapArtifactPath = in.readUTF();
+        }
         return new TableBucketWriteResult<>(
                 tablePath,
                 tableBucket,
@@ -143,6 +157,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
                 writeResult,
                 logEndOffset,
                 maxTimestamp,
-                numberOfWriteResults);
+                numberOfWriteResults,
+                bootstrapArtifactPath);
     }
 }

@@ -21,17 +21,23 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.LakeTieringTaskType;
+import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.Schema;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
+import org.apache.fluss.metadata.TablePartition;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.gateway.AdminGateway;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
+import org.apache.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
 import org.apache.fluss.rpc.messages.LakeTieringHeartbeatRequest;
 import org.apache.fluss.rpc.messages.LakeTieringHeartbeatResponse;
+import org.apache.fluss.rpc.messages.PbLakeTableSnapshotInfo;
 import org.apache.fluss.rpc.messages.PbLakeTieringTableInfo;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.server.zk.data.BootstrapUpgradeState;
 import org.apache.fluss.server.zk.data.BootstrapUpgradeStatus;
+import org.apache.fluss.server.zk.data.PartitionAssignment;
 import org.apache.fluss.types.DataTypes;
 
 import org.junit.jupiter.api.BeforeAll;
@@ -126,7 +132,7 @@ class BootstrapUpgradeLifecycleITCase {
     }
 
     @Test
-    void testBootstrapCompleteFallsBackToNormalTieringTask() throws Exception {
+    void testHeartbeatFinishDoesNotMarkBootstrapComplete() throws Exception {
         TablePath tablePath = TablePath.of("fluss", "test_bootstrap_complete_fallback");
         createBootstrapLakeTable(tablePath, "dt=2026-03-27", Duration.ofMillis(100));
 
@@ -154,27 +160,25 @@ class BootstrapUpgradeLifecycleITCase {
         assertThat(finishResponse.getFinishedTableRespsList()).hasSize(1);
         assertThat(finishResponse.getFinishedTableRespAt(0).hasError()).isFalse();
 
-        BootstrapUpgradeState completeState =
-                waitValue(
-                        () ->
-                                FLUSS_CLUSTER_EXTENSION
-                                        .getZooKeeperClient()
-                                        .getBootstrapUpgradeState(tableId)
-                                        .filter(
-                                                s ->
-                                                        s.getStatus()
-                                                                == BootstrapUpgradeStatus.COMPLETE),
-                        Duration.ofMinutes(1),
-                        "Fail to wait bootstrap-upgrade state to become COMPLETE.");
-        assertThat(completeState.getHoldPartition()).isEqualTo("dt=2026-03-27");
+        BootstrapUpgradeState stateAfterFinish =
+                FLUSS_CLUSTER_EXTENSION
+                        .getZooKeeperClient()
+                        .getBootstrapUpgradeState(tableId)
+                        .orElseThrow(
+                                () ->
+                                        new AssertionError(
+                                                "Bootstrap-upgrade state should exist after finish heartbeat."));
+        assertThat(stateAfterFinish.getStatus()).isEqualTo(BootstrapUpgradeStatus.IN_PROGRESS);
+        assertThat(stateAfterFinish.getHoldPartition()).isEqualTo("dt=2026-03-27");
 
-        PbLakeTieringTableInfo normalTask =
+        PbLakeTieringTableInfo reassignedBootstrapTask =
                 waitValue(
                         () -> requestTableFor(tableId),
                         Duration.ofMinutes(1),
-                        "Fail to wait normal tiering task after bootstrap completion.");
-        assertThat(normalTask.getTaskType()).isEqualTo(LakeTieringTaskType.NORMAL_TIERING.code());
-        assertThat(normalTask.hasHoldPartition()).isFalse();
+                        "Fail to wait bootstrap tiering task after finish heartbeat.");
+        assertThat(reassignedBootstrapTask.getTaskType())
+                .isEqualTo(LakeTieringTaskType.BOOTSTRAP_UPGRADE.code());
+        assertThat(reassignedBootstrapTask.getHoldPartition()).isEqualTo("dt=2026-03-27");
     }
 
     @Test
@@ -470,6 +474,68 @@ class BootstrapUpgradeLifecycleITCase {
                 .isEqualTo(assignedTask.getTieringEpoch() + 1);
     }
 
+    @Test
+    void testCommitSnapshotCompletesBootstrapAndCreatesPartitionWithLeader() throws Exception {
+        TablePath tablePath = TablePath.of("fluss", "test_bootstrap_commit_cutover_partition");
+        String holdPartition = "dt=2026-04-01";
+        createPartitionedBootstrapLakeTable(tablePath, holdPartition, Duration.ofMinutes(5));
+
+        AdminGateway adminGateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
+        long tableId =
+                adminGateway.getTableInfo(newGetTableInfoRequest(tablePath)).get().getTableId();
+
+        waitValue(
+                () -> requestTableFor(tableId),
+                Duration.ofMinutes(1),
+                "Fail to wait bootstrap task before snapshot commit.");
+
+        CommitLakeTableSnapshotRequest commitRequest = new CommitLakeTableSnapshotRequest();
+        PbLakeTableSnapshotInfo tableSnapshot = commitRequest.addTablesReq();
+        tableSnapshot.setTableId(tableId);
+        tableSnapshot.setSnapshotId(1L);
+        coordinatorGateway.commitLakeTableSnapshot(commitRequest).get();
+
+        BootstrapUpgradeState completeState =
+                waitValue(
+                        () ->
+                                FLUSS_CLUSTER_EXTENSION
+                                        .getZooKeeperClient()
+                                        .getBootstrapUpgradeState(tableId)
+                                        .filter(
+                                                state ->
+                                                        state.getStatus()
+                                                                == BootstrapUpgradeStatus.COMPLETE),
+                        Duration.ofMinutes(1),
+                        "Fail to wait bootstrap-upgrade state to become COMPLETE after commit.");
+        assertThat(completeState.getHoldPartition()).isEqualTo(holdPartition);
+
+        String partitionName =
+                ResolvedPartitionSpec.fromPartitionQualifiedName(holdPartition).getPartitionName();
+        TablePartition tablePartition =
+                waitValue(
+                        () ->
+                                FLUSS_CLUSTER_EXTENSION
+                                        .getZooKeeperClient()
+                                        .getPartition(tablePath, partitionName),
+                        Duration.ofMinutes(1),
+                        "Fail to wait hold partition created by bootstrap cutover.");
+        long partitionId = tablePartition.getPartitionId();
+
+        PartitionAssignment partitionAssignment =
+                waitValue(
+                        () ->
+                                FLUSS_CLUSTER_EXTENSION
+                                        .getZooKeeperClient()
+                                        .getPartitionAssignment(partitionId),
+                        Duration.ofMinutes(1),
+                        "Fail to wait partition assignment created for hold partition.");
+        for (int bucketId : partitionAssignment.getBucketAssignments().keySet()) {
+            TableBucket tableBucket = new TableBucket(tableId, partitionId, bucketId);
+            assertThat(FLUSS_CLUSTER_EXTENSION.waitLeaderAndIsrReady(tableBucket).leader())
+                    .isGreaterThanOrEqualTo(0);
+        }
+    }
+
     private static Optional<PbLakeTieringTableInfo> requestTableFor(long expectedTableId)
             throws Exception {
         LakeTieringHeartbeatRequest heartbeatRequest = new LakeTieringHeartbeatRequest();
@@ -507,6 +573,26 @@ class BootstrapUpgradeLifecycleITCase {
                         .schema(Schema.newBuilder().column("f1", DataTypes.INT()).build())
                         .property("table.datalake.enabled", "true")
                         .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, freshness)
+                        .build();
+        adminGateway.createTable(newCreateTableRequest(tablePath, tableDescriptor, false)).get();
+    }
+
+    private static void createPartitionedBootstrapLakeTable(
+            TablePath tablePath, String holdPartition, Duration freshness) throws Exception {
+        AdminGateway adminGateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(
+                                Schema.newBuilder()
+                                        .column("f1", DataTypes.INT())
+                                        .column("dt", DataTypes.STRING())
+                                        .build())
+                        .distributedBy(3)
+                        .partitionedBy("dt")
+                        .property("table.datalake.enabled", "true")
+                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, freshness)
+                        .customProperty("table.datalake.bootstrap.enabled", "true")
+                        .customProperty("table.datalake.bootstrap.cutover-partition", holdPartition)
                         .build();
         adminGateway.createTable(newCreateTableRequest(tablePath, tableDescriptor, false)).get();
     }

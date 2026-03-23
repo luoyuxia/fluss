@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.cluster.ServerType;
+import org.apache.fluss.cluster.TabletServerInfo;
 import org.apache.fluss.cluster.rebalance.RebalancePlanForBucket;
 import org.apache.fluss.cluster.rebalance.RebalanceProgress;
 import org.apache.fluss.cluster.rebalance.RebalanceStatus;
@@ -41,6 +42,7 @@ import org.apache.fluss.exception.TabletServerNotAvailableException;
 import org.apache.fluss.exception.UnknownServerException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
 import org.apache.fluss.metadata.PhysicalTablePath;
+import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.SchemaInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableBucketReplica;
@@ -158,6 +160,7 @@ import static org.apache.fluss.server.coordinator.statemachine.ReplicaState.Repl
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeAdjustIsrResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeListRebalanceProgressResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeRebalanceResponse;
+import static org.apache.fluss.server.utils.TableAssignmentUtils.generateAssignment;
 import static org.apache.fluss.utils.concurrent.FutureUtils.completeFromCallable;
 
 /** An implementation for {@link EventProcessor}. */
@@ -450,7 +453,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
         for (Tuple2<TableInfo, Long> lakeTable : lakeTables) {
             TableInfo tableInfo = lakeTable.f0;
             long tableId = tableInfo.getTableId();
-            Optional<BootstrapUpgradeState> bootstrapState = bootstrapUpgradeStateManager.get(tableId);
+            Optional<BootstrapUpgradeState> bootstrapState =
+                    bootstrapUpgradeStateManager.get(tableId);
             if (bootstrapState.isPresent()) {
                 if (bootstrapState.get().getStatus() == BootstrapUpgradeStatus.IN_PROGRESS) {
                     lakeTableTieringManager.enqueueTable(tableId);
@@ -1990,6 +1994,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 // this involves IO operation (ZK), so we do it in ioExecutor
                                 lakeTableHelper.registerLakeTableSnapshotV1(
                                         tableId, lakeTableSnapshotEntry.getValue());
+                                maybeCompleteBootstrapUpgrade(tableId);
                             } catch (Exception e) {
                                 failedTableIds.add(tableId);
                                 ApiError error = ApiError.fromThrowable(e);
@@ -2052,6 +2057,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                         tableId,
                                         snapshot.getLakeSnapshotMetadata(),
                                         snapshot.getEarliestSnapshotIDToKeep());
+                                maybeCompleteBootstrapUpgrade(tableId);
                             } catch (Exception e) {
                                 failedTableIds.add(tableId);
                                 ApiError error = ApiError.fromThrowable(e);
@@ -2067,6 +2073,69 @@ public class CoordinatorEventProcessor implements EventProcessor {
                         callback.completeExceptionally(e);
                     }
                 });
+    }
+
+    private void maybeCompleteBootstrapUpgrade(long tableId) {
+        BootstrapUpgradeState bootstrapUpgradeState =
+                bootstrapUpgradeStateManager.get(tableId).orElse(null);
+        if (bootstrapUpgradeState == null
+                || bootstrapUpgradeState.getStatus() != BootstrapUpgradeStatus.IN_PROGRESS) {
+            return;
+        }
+
+        String holdPartition = bootstrapUpgradeState.getHoldPartition();
+        TableInfo tableInfo = coordinatorContext.getTableInfoById(tableId);
+        TablePath tablePath = tableInfo.getTablePath();
+
+        if (tableInfo.isPartitioned()) {
+            ensureBootstrapHoldPartitionExists(tableId, tableInfo, holdPartition);
+        }
+
+        bootstrapUpgradeStateManager.markComplete(tableId, holdPartition);
+        LOG.info(
+                "Bootstrap upgrade is marked COMPLETE for table {} ({}) via commitLakeTableSnapshot.",
+                tableId,
+                tablePath);
+    }
+
+    private void ensureBootstrapHoldPartitionExists(
+            long tableId, TableInfo tableInfo, String holdPartition) {
+        ResolvedPartitionSpec resolvedPartitionSpec =
+                parseBootstrapHoldPartition(tableInfo, holdPartition);
+        String partitionName = resolvedPartitionSpec.getPartitionName();
+        if (metadataManager.getPartitions(tableInfo.getTablePath()).contains(partitionName)) {
+            return;
+        }
+
+        int replicaFactor = tableInfo.getTableConfig().getReplicationFactor();
+        TabletServerInfo[] servers = serverMetadataCache.getLiveServers();
+        Map<Integer, BucketAssignment> bucketAssignments =
+                generateAssignment(tableInfo.getNumBuckets(), replicaFactor, servers)
+                        .getBucketAssignments();
+        PartitionAssignment partitionAssignment =
+                new PartitionAssignment(tableId, bucketAssignments);
+
+        metadataManager.createPartition(
+                tableInfo.getTablePath(),
+                tableId,
+                partitionAssignment,
+                resolvedPartitionSpec,
+                true);
+        LOG.info(
+                "Created bootstrap hold partition {} (partitionName={}) for table {}.",
+                holdPartition,
+                partitionName,
+                tableInfo.getTablePath());
+    }
+
+    private ResolvedPartitionSpec parseBootstrapHoldPartition(
+            TableInfo tableInfo, String holdPartition) {
+        try {
+            return ResolvedPartitionSpec.fromPartitionQualifiedName(holdPartition);
+        } catch (Exception ignored) {
+            return ResolvedPartitionSpec.fromPartitionName(
+                    tableInfo.getPartitionKeys(), holdPartition);
+        }
     }
 
     private ControlledShutdownResponse tryProcessControlledShutdown(
