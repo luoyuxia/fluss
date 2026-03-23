@@ -17,6 +17,7 @@
 
 package org.apache.fluss.flink.tiering.source.split;
 
+import org.apache.fluss.metadata.LakeTieringTaskType;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 
@@ -52,7 +53,8 @@ public class TieringSnapshotSplit extends TieringSplit {
                 snapshotId,
                 logOffsetOfSnapshot,
                 numberOfSplits,
-                false);
+                false,
+                LakeTieringTaskType.NORMAL_TIERING);
     }
 
     public TieringSnapshotSplit(
@@ -63,7 +65,27 @@ public class TieringSnapshotSplit extends TieringSplit {
             long logOffsetOfSnapshot,
             int numberOfSplits,
             boolean skipCurrentRound) {
-        super(tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound);
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                snapshotId,
+                logOffsetOfSnapshot,
+                numberOfSplits,
+                skipCurrentRound,
+                LakeTieringTaskType.NORMAL_TIERING);
+    }
+
+    public TieringSnapshotSplit(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            long snapshotId,
+            long logOffsetOfSnapshot,
+            int numberOfSplits,
+            boolean skipCurrentRound,
+            LakeTieringTaskType taskType) {
+        super(tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound, taskType);
         this.snapshotId = snapshotId;
         this.logOffsetOfSnapshot = logOffsetOfSnapshot;
     }
@@ -111,7 +133,8 @@ public class TieringSnapshotSplit extends TieringSplit {
                 snapshotId,
                 logOffsetOfSnapshot,
                 numberOfSplits,
-                skipCurrentRound);
+                skipCurrentRound,
+                taskType);
     }
 
     @Override

@@ -52,7 +52,6 @@ public class PaimonLakeWriter implements LakeWriter<PaimonWriteResult> {
                         writerInitContext.tableInfo().getTableConfig().isDataLakeAutoCompaction());
 
         List<String> partitionKeys = fileStoreTable.partitionKeys();
-
         this.recordWriter =
                 fileStoreTable.primaryKeys().isEmpty()
                         ? new AppendOnlyWriter(

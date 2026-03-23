@@ -17,6 +17,7 @@
 
 package org.apache.fluss.flink.tiering.source.split;
 
+import org.apache.fluss.metadata.LakeTieringTaskType;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 
@@ -40,6 +41,7 @@ public abstract class TieringSplit implements SourceSplit {
 
     // the total number of splits in one round of tiering
     protected final int numberOfSplits;
+    protected final LakeTieringTaskType taskType;
 
     /**
      * Indicates whether to skip tiering data for this split in the current round of tiering. When
@@ -53,6 +55,22 @@ public abstract class TieringSplit implements SourceSplit {
             @Nullable String partitionName,
             int numberOfSplits,
             boolean skipCurrentRound) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                numberOfSplits,
+                skipCurrentRound,
+                LakeTieringTaskType.NORMAL_TIERING);
+    }
+
+    public TieringSplit(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            int numberOfSplits,
+            boolean skipCurrentRound,
+            LakeTieringTaskType taskType) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.partitionName = partitionName;
@@ -63,6 +81,7 @@ public abstract class TieringSplit implements SourceSplit {
         }
         this.numberOfSplits = numberOfSplits;
         this.skipCurrentRound = skipCurrentRound;
+        this.taskType = taskType;
     }
 
     /** Checks whether this split is a primary key table split to tier. */
@@ -116,6 +135,10 @@ public abstract class TieringSplit implements SourceSplit {
         return numberOfSplits;
     }
 
+    public LakeTieringTaskType getTaskType() {
+        return taskType;
+    }
+
     protected static String toSplitId(String splitPrefix, TableBucket tableBucket) {
         if (tableBucket.getPartitionId() != null) {
             return splitPrefix
@@ -154,12 +177,13 @@ public abstract class TieringSplit implements SourceSplit {
                 && Objects.equals(tableBucket, that.tableBucket)
                 && Objects.equals(partitionName, that.partitionName)
                 && numberOfSplits == that.numberOfSplits
-                && skipCurrentRound == that.skipCurrentRound;
+                && skipCurrentRound == that.skipCurrentRound
+                && taskType == that.taskType;
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
-                tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound);
+                tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound, taskType);
     }
 }

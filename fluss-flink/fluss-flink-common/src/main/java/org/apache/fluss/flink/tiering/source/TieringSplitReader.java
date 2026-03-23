@@ -28,25 +28,47 @@ import org.apache.fluss.flink.source.reader.RecordAndPos;
 import org.apache.fluss.flink.tiering.source.split.TieringLogSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSnapshotSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
+import org.apache.fluss.flink.utils.LakeSourceUtils;
+import org.apache.fluss.lake.source.LakeSource;
+import org.apache.fluss.lake.source.LakeSplit;
+import org.apache.fluss.lake.source.Planner;
+import org.apache.fluss.lake.source.RecordReader;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
+import org.apache.fluss.metadata.LakeTieringTaskType;
+import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.ChangeType;
+import org.apache.fluss.record.LogRecord;
+import org.apache.fluss.row.BinaryRow;
+import org.apache.fluss.row.encode.KeyEncoder;
+import org.apache.fluss.row.encode.ValueEncoder;
+import org.apache.fluss.row.serializer.RowSerializer;
+import org.apache.fluss.types.DataType;
 import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
+import org.rocksdb.EnvOptions;
+import org.rocksdb.Options;
+import org.rocksdb.RocksDB;
+import org.rocksdb.SstFileWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -55,6 +77,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -90,6 +113,7 @@ public class TieringSplitReader<WriteResult>
 
     @Nullable private Long currentTableId;
     @Nullable private TablePath currentTablePath;
+    @Nullable private LakeTieringTaskType currentTableTaskType;
     @Nullable private LogScanner currentLogScanner;
     @Nullable private Table currentTable;
 
@@ -158,6 +182,9 @@ public class TieringSplitReader<WriteResult>
                 return forSnapshotSplitRecords(
                         currentSnapshotSplit.getTableBucket(), recordIterator);
             }
+        } else if (currentSnapshotSplit != null
+                && currentSnapshotSplit.getTaskType() == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
+            return forBootstrapSnapshotSplit(currentSnapshotSplit);
         } else {
             if (currentLogScanner != null) {
                 // force to complete records
@@ -211,6 +238,12 @@ public class TieringSplitReader<WriteResult>
     }
 
     private void addSplitToCurrentTable(TieringSplit split) {
+        if (currentTableTaskType != null && currentTableTaskType != split.getTaskType()) {
+            throw new IllegalStateException(
+                    String.format(
+                            "Mixed task types are not allowed in one table round: current=%s, incoming=%s, table=%s.",
+                            currentTableTaskType, split.getTaskType(), split.getTablePath()));
+        }
         this.currentTableSplitsByBucket.put(split.getTableBucket(), split);
         if (split.isTieringSnapshotSplit()) {
             this.currentPendingSnapshotSplits.add((TieringSnapshotSplit) split);
@@ -229,6 +262,10 @@ public class TieringSplitReader<WriteResult>
         if (nextSnapshotSplit != null) {
             Table table = getOrMoveToTable(nextSnapshotSplit);
             currentSnapshotSplit = nextSnapshotSplit;
+            if (nextSnapshotSplit.getTaskType() == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
+                // Bootstrap-upgrade snapshot split reads from lake snapshot source directly.
+                return;
+            }
             currentSnapshotSplitReader =
                     new BoundedSplitReader(
                             table.newScan()
@@ -263,6 +300,7 @@ public class TieringSplitReader<WriteResult>
             currentTable = connection.getTable(tablePath);
             currentTablePath = tablePath;
             currentTableId = split.getTableBucket().getTableId();
+            currentTableTaskType = split.getTaskType();
             currentTableNumberOfSplits = split.getNumberOfSplits();
             TableInfo currentTableInfo = checkNotNull(currentTable).getTableInfo();
             // check currentTable's id for the table path is same with table id of the tiering
@@ -420,7 +458,8 @@ public class TieringSplitReader<WriteResult>
                                     currentTablePath,
                                     bucket,
                                     partitionName,
-                                    currentTable.getTableInfo()));
+                                    currentTable.getTableInfo(),
+                                    currentTableSplitsByBucket.get(bucket).getTaskType()));
             lakeWriters.put(bucket, lakeWriter);
         }
         return lakeWriter;
@@ -510,6 +549,65 @@ public class TieringSplitReader<WriteResult>
         return emptyTableBucketWriteResultWithSplitIds();
     }
 
+    private TableBucketWriteResultWithSplitIds forBootstrapSnapshotSplit(
+            TieringSnapshotSplit snapshotSplit) throws IOException {
+        LakeSource<LakeSplit> lakeSource = createBootstrapLakeSource();
+        BootstrapSstWriter bootstrapSstWriter =
+                new BootstrapSstWriter(checkNotNull(currentTable).getTableInfo(), snapshotSplit);
+        try {
+            Planner<LakeSplit> planner = lakeSource.createPlanner(snapshotSplit::getSnapshotId);
+            List<LakeSplit> lakeSplits = planner.plan();
+            for (LakeSplit lakeSplit : lakeSplits) {
+                if (!matchesBootstrapBucket(snapshotSplit, lakeSplit)) {
+                    continue;
+                }
+                RecordReader recordReader =
+                        lakeSource.createRecordReader(
+                                (LakeSource.ReaderContext<LakeSplit>) () -> lakeSplit);
+                try (CloseableIterator<LogRecord> recordIterator = recordReader.read()) {
+                    while (recordIterator.hasNext()) {
+                        bootstrapSstWriter.write(recordIterator.next());
+                    }
+                }
+            }
+            bootstrapSstWriter.flush();
+        } catch (Exception e) {
+            throw new IOException(
+                    String.format(
+                            "Failed to process bootstrap snapshot split %s for table %s.",
+                            snapshotSplit.splitId(), snapshotSplit.getTablePath()),
+                    e);
+        }
+
+        return finishCurrentSnapshotSplit();
+    }
+
+    private LakeSource<LakeSplit> createBootstrapLakeSource() {
+        TableInfo tableInfo = checkNotNull(currentTable).getTableInfo();
+        LakeSource<LakeSplit> lakeSource =
+                LakeSourceUtils.createLakeSource(
+                        checkNotNull(currentTablePath), tableInfo.getCustomProperties().toMap());
+        if (lakeSource == null) {
+            throw new IllegalStateException(
+                    String.format(
+                            "Lake source is unavailable for bootstrap-upgrade table %s.",
+                            currentTablePath));
+        }
+        return lakeSource;
+    }
+
+    private boolean matchesBootstrapBucket(
+            TieringSnapshotSplit snapshotSplit, LakeSplit lakeSplit) {
+        if (lakeSplit.bucket() != snapshotSplit.getTableBucket().getBucket()) {
+            return false;
+        }
+        String targetPartitionName = snapshotSplit.getPartitionName();
+        if (targetPartitionName == null) {
+            return lakeSplit.partition().isEmpty();
+        }
+        return targetPartitionName.equals(String.join("$", lakeSplit.partition()));
+    }
+
     private TableBucketWriteResultWithSplitIds emptyTableBucketWriteResultWithSplitIds() {
         return new TableBucketWriteResultWithSplitIds();
     }
@@ -547,6 +645,7 @@ public class TieringSplitReader<WriteResult>
         // before switch to a new table, mark all as empty or null
         currentTableId = null;
         currentTablePath = null;
+        currentTableTaskType = null;
         currentTableNumberOfSplits = null;
         currentPendingSnapshotSplits.clear();
         currentTableStoppingOffsets.clear();
@@ -697,6 +796,150 @@ public class TieringSplitReader<WriteResult>
         public LogOffsetAndTimestamp(long logOffset, long timestamp) {
             this.logOffset = logOffset;
             this.timestamp = timestamp;
+        }
+    }
+
+    /** Writes bootstrap-upgrade records into one SST artifact for a split. */
+    private static final class BootstrapSstWriter {
+        private static final String BOOTSTRAP_SST_OUTPUT_DIR_KEY =
+                "table.datalake.bootstrap.sst.output-dir";
+
+        private final TableInfo tableInfo;
+        private final TieringSnapshotSplit split;
+        private final RowSerializer rowSerializer;
+        private final KeyEncoder primaryKeyEncoder;
+        private final short schemaId;
+        private final Map<ByteArrayWrapper, byte[]> latestValuesByKey;
+
+        private BootstrapSstWriter(TableInfo tableInfo, TieringSnapshotSplit split) {
+            if (!tableInfo.hasPrimaryKey()) {
+                throw new IllegalArgumentException(
+                        String.format(
+                                "Bootstrap-upgrade SST generation requires primary-key table, but got %s.",
+                                tableInfo.getTablePath()));
+            }
+            this.tableInfo = tableInfo;
+            this.split = split;
+            DataType[] rowFieldTypes =
+                    tableInfo.getSchema().getColumns().stream()
+                            .map(Schema.Column::getDataType)
+                            .toArray(DataType[]::new);
+            this.rowSerializer =
+                    new RowSerializer(rowFieldTypes, BinaryRow.BinaryRowFormat.COMPACTED);
+            this.primaryKeyEncoder =
+                    KeyEncoder.ofPrimaryKeyEncoder(
+                            tableInfo.getRowType(),
+                            tableInfo.getPhysicalPrimaryKeys(),
+                            tableInfo.getTableConfig(),
+                            tableInfo.isDefaultBucketKey());
+            this.schemaId = (short) tableInfo.getSchemaId();
+            this.latestValuesByKey = new HashMap<>();
+        }
+
+        private void write(LogRecord record) {
+            byte[] keyBytes = primaryKeyEncoder.encodeKey(record.getRow());
+            ByteArrayWrapper key = new ByteArrayWrapper(keyBytes);
+            if (record.getChangeType() == ChangeType.DELETE) {
+                latestValuesByKey.remove(key);
+                return;
+            }
+            BinaryRow binaryRow = rowSerializer.toBinaryRow(record.getRow());
+            latestValuesByKey.put(key, ValueEncoder.encodeValue(schemaId, binaryRow));
+        }
+
+        private void flush() throws IOException {
+            if (latestValuesByKey.isEmpty()) {
+                return;
+            }
+            Path sstPath = prepareSstPath();
+            RocksDB.loadLibrary();
+            try (EnvOptions envOptions = new EnvOptions();
+                    Options options = new Options();
+                    SstFileWriter sstFileWriter = new SstFileWriter(envOptions, options)) {
+                sstFileWriter.open(sstPath.toString());
+                latestValuesByKey.entrySet().stream()
+                        .sorted(
+                                (left, right) ->
+                                        Arrays.compareUnsigned(
+                                                left.getKey().bytes, right.getKey().bytes))
+                        .forEach(
+                                entry -> {
+                                    try {
+                                        sstFileWriter.put(entry.getKey().bytes, entry.getValue());
+                                    } catch (Exception e) {
+                                        throw new RuntimeException(e);
+                                    }
+                                });
+                sstFileWriter.finish();
+            } catch (RuntimeException e) {
+                Throwable cause = e.getCause();
+                if (cause instanceof Exception) {
+                    throw new IOException("Failed to write bootstrap SST file.", cause);
+                }
+                throw e;
+            } catch (Exception e) {
+                throw new IOException("Failed to write bootstrap SST file.", e);
+            }
+            LOG.info(
+                    "Bootstrap SST generated from reader: table={}, bucket={}, partition={}, path={}, kvCount={}.",
+                    tableInfo.getTablePath(),
+                    split.getTableBucket(),
+                    split.getPartitionName(),
+                    sstPath,
+                    latestValuesByKey.size());
+        }
+
+        private Path prepareSstPath() throws IOException {
+            String outputRoot =
+                    tableInfo.getCustomProperties().toMap().get(BOOTSTRAP_SST_OUTPUT_DIR_KEY);
+            if (outputRoot == null || outputRoot.trim().isEmpty()) {
+                outputRoot =
+                        System.getProperty("java.io.tmpdir")
+                                + File.separator
+                                + "fluss-bootstrap-sst";
+            }
+            String partitionSegment =
+                    sanitizePathSegment(
+                            split.getPartitionName() == null
+                                    ? "nopartition"
+                                    : split.getPartitionName());
+            Path outputDir =
+                    Path.of(
+                            outputRoot,
+                            "table-" + split.getTableBucket().getTableId(),
+                            "partition-" + partitionSegment,
+                            "bucket-" + split.getTableBucket().getBucket());
+            Files.createDirectories(outputDir);
+            return outputDir.resolve("bootstrap-" + UUID.randomUUID() + ".sst");
+        }
+
+        private static String sanitizePathSegment(String value) {
+            return value.replace(File.separatorChar, '_').replace('$', '_').replace('=', '_');
+        }
+
+        private static final class ByteArrayWrapper {
+            private final byte[] bytes;
+
+            private ByteArrayWrapper(byte[] bytes) {
+                this.bytes = bytes;
+            }
+
+            @Override
+            public boolean equals(Object o) {
+                if (this == o) {
+                    return true;
+                }
+                if (!(o instanceof ByteArrayWrapper)) {
+                    return false;
+                }
+                ByteArrayWrapper that = (ByteArrayWrapper) o;
+                return Arrays.equals(bytes, that.bytes);
+            }
+
+            @Override
+            public int hashCode() {
+                return Arrays.hashCode(bytes);
+            }
         }
     }
 }

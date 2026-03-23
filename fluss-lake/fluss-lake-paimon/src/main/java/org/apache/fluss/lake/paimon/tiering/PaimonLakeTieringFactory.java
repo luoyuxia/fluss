@@ -24,6 +24,7 @@ import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.lake.writer.WriterInitContext;
+import org.apache.fluss.metadata.LakeTieringTaskType;
 
 import java.io.IOException;
 
@@ -42,6 +43,19 @@ public class PaimonLakeTieringFactory
     @Override
     public LakeWriter<PaimonWriteResult> createLakeWriter(WriterInitContext writerInitContext)
             throws IOException {
+        if (writerInitContext.taskType() == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
+            return createBootstrapUpgradeLakeWriter(writerInitContext);
+        }
+        return createNormalTieringLakeWriter(writerInitContext);
+    }
+
+    private LakeWriter<PaimonWriteResult> createNormalTieringLakeWriter(
+            WriterInitContext writerInitContext) throws IOException {
+        return new PaimonLakeWriter(paimonCatalogProvider, writerInitContext);
+    }
+
+    private LakeWriter<PaimonWriteResult> createBootstrapUpgradeLakeWriter(
+            WriterInitContext writerInitContext) throws IOException {
         return new PaimonLakeWriter(paimonCatalogProvider, writerInitContext);
     }
 

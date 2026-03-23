@@ -448,8 +448,7 @@ public class TieringSourceEnumerator
         return lakeTieringInfo;
     }
 
-    private void generateTieringSplits(TieringTaskInfo tieringTable)
-            throws FlinkRuntimeException {
+    private void generateTieringSplits(TieringTaskInfo tieringTable) throws FlinkRuntimeException {
         if (tieringTable == null) {
             return;
         }
@@ -462,10 +461,19 @@ public class TieringSourceEnumerator
         try {
             TablePath tablePath = tieringTable.tablePath;
             final TableInfo tableInfo = flussAdmin.getTableInfo(tablePath).get();
+            if (tieringTable.taskType == LakeTieringTaskType.BOOTSTRAP_UPGRADE
+                    && (tieringTable.holdPartition == null
+                            || tieringTable.holdPartition.trim().isEmpty())) {
+                throw new FlinkRuntimeException(
+                        String.format(
+                                "Bootstrap task for table %s is missing hold partition.",
+                                tieringTable.tablePath));
+            }
             List<TieringSplit> tieringSplits =
                     populateNumberOfTieringSplits(
                             splitGenerator.generateTableSplits(
                                     tableInfo,
+                                    tieringTable.taskType,
                                     tieringTable.taskType == LakeTieringTaskType.BOOTSTRAP_UPGRADE
                                             ? tieringTable.holdPartition
                                             : null));

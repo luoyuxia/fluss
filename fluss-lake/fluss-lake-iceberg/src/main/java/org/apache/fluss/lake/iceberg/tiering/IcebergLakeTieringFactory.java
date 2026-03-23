@@ -24,6 +24,7 @@ import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.lake.writer.WriterInitContext;
+import org.apache.fluss.metadata.LakeTieringTaskType;
 
 import java.io.IOException;
 
@@ -42,6 +43,20 @@ public class IcebergLakeTieringFactory
     @Override
     public LakeWriter<IcebergWriteResult> createLakeWriter(WriterInitContext writerInitContext)
             throws IOException {
+        if (writerInitContext.taskType() == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
+            return createBootstrapUpgradeLakeWriter(writerInitContext);
+        }
+        return createNormalTieringLakeWriter(writerInitContext);
+    }
+
+    private LakeWriter<IcebergWriteResult> createNormalTieringLakeWriter(
+            WriterInitContext writerInitContext) throws IOException {
+        return new IcebergLakeWriter(icebergCatalogProvider, writerInitContext);
+    }
+
+    private LakeWriter<IcebergWriteResult> createBootstrapUpgradeLakeWriter(
+            WriterInitContext writerInitContext) throws IOException {
+        // Keep writer implementation reusable for now; task type already reaches writer context.
         return new IcebergLakeWriter(icebergCatalogProvider, writerInitContext);
     }
 

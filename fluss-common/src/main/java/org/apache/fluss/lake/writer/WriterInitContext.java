@@ -18,6 +18,7 @@
 package org.apache.fluss.lake.writer;
 
 import org.apache.fluss.annotation.PublicEvolving;
+import org.apache.fluss.metadata.LakeTieringTaskType;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -62,4 +63,14 @@ public interface WriterInitContext {
      * @return the Fluss table info
      */
     TableInfo tableInfo();
+
+    /**
+     * Returns the task type for this writer initialization.
+     *
+     * <p>The default value keeps backward compatibility with existing lake implementations that are
+     * unaware of bootstrap execution semantics.
+     */
+    default LakeTieringTaskType taskType() {
+        return LakeTieringTaskType.NORMAL_TIERING;
+    }
 }

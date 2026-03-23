@@ -18,6 +18,7 @@
 package org.apache.fluss.flink.tiering.source;
 
 import org.apache.fluss.lake.writer.WriterInitContext;
+import org.apache.fluss.metadata.LakeTieringTaskType;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -31,16 +32,27 @@ public class TieringWriterInitContext implements WriterInitContext {
     private final TableBucket tableBucket;
     @Nullable private final String partition;
     private final TableInfo tableInfo;
+    private final LakeTieringTaskType taskType;
 
     public TieringWriterInitContext(
             TablePath tablePath,
             TableBucket tableBucket,
             @Nullable String partition,
             TableInfo tableInfo) {
+        this(tablePath, tableBucket, partition, tableInfo, LakeTieringTaskType.NORMAL_TIERING);
+    }
+
+    public TieringWriterInitContext(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partition,
+            TableInfo tableInfo,
+            LakeTieringTaskType taskType) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.partition = partition;
         this.tableInfo = tableInfo;
+        this.taskType = taskType;
     }
 
     @Override
@@ -62,5 +74,10 @@ public class TieringWriterInitContext implements WriterInitContext {
     @Override
     public TableInfo tableInfo() {
         return tableInfo;
+    }
+
+    @Override
+    public LakeTieringTaskType taskType() {
+        return taskType;
     }
 }
