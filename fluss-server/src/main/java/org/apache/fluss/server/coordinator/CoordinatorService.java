@@ -45,6 +45,7 @@ import org.apache.fluss.lake.lakestorage.LakeCatalog;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.DeleteBehavior;
+import org.apache.fluss.metadata.LakeTieringTaskType;
 import org.apache.fluss.metadata.MergeEngineType;
 import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
@@ -158,6 +159,8 @@ import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.CoordinatorMetadataProvider;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.server.zk.data.BootstrapUpgradeState;
+import org.apache.fluss.server.zk.data.BootstrapUpgradeStatus;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.PartitionAssignment;
 import org.apache.fluss.server.zk.data.TableAssignment;
@@ -165,7 +168,9 @@ import org.apache.fluss.server.zk.data.TableRegistration;
 import org.apache.fluss.server.zk.data.lake.LakeTable;
 import org.apache.fluss.server.zk.data.lake.LakeTableHelper;
 import org.apache.fluss.server.zk.data.producer.ProducerOffsets;
+import org.apache.fluss.utils.AutoPartitionStrategy;
 import org.apache.fluss.utils.IOUtils;
+import org.apache.fluss.utils.PartitionUtils;
 import org.apache.fluss.utils.concurrent.FutureUtils;
 import org.apache.fluss.utils.json.TableBucketOffsets;
 
@@ -187,6 +192,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 
 import static org.apache.fluss.config.ConfigOptions.CURRENT_KV_FORMAT_VERSION;
 import static org.apache.fluss.config.FlussConfigUtils.isTableStorageConfig;
@@ -217,6 +224,9 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 public final class CoordinatorService extends RpcServiceBase implements CoordinatorGateway {
 
     private static final Logger LOG = LoggerFactory.getLogger(CoordinatorService.class);
+    private static final String BOOTSTRAP_ENABLED_KEY = "table.datalake.bootstrap.enabled";
+    private static final String BOOTSTRAP_CUTOVER_PARTITION_KEY =
+            "table.datalake.bootstrap.cutover-partition";
 
     private final int defaultBucketNumber;
     private final int defaultReplicationFactor;
@@ -232,6 +242,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private final LakeTableHelper lakeTableHelper;
     private final ProducerOffsetsManager producerOffsetsManager;
     private final KvSnapshotLeaseManager kvSnapshotLeaseManager;
+    private final BootstrapUpgradeStateManager bootstrapUpgradeStateManager;
 
     public CoordinatorService(
             Configuration conf,
@@ -268,6 +279,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         this.ioExecutor = ioExecutor;
         this.lakeTableHelper =
                 new LakeTableHelper(zkClient, conf.getString(ConfigOptions.REMOTE_DATA_DIR));
+        this.bootstrapUpgradeStateManager = new BootstrapUpgradeStateManager(zkClient);
 
         // Initialize and start the producer snapshot manager
         this.producerOffsetsManager = new ProducerOffsetsManager(conf, zkClient);
@@ -857,6 +869,9 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         finishTable.getTableId(),
                         finishTable.getTieringEpoch(),
                         forceFinishedTableId.contains(finishTable.getTableId()));
+                if (!forceFinishedTableId.contains(finishTable.getTableId())) {
+                    maybeMarkBootstrapComplete(finishTable.getTableId());
+                }
             } catch (Throwable e) {
                 pbHeartbeatRespForTable.setError(ApiError.fromThrowable(e).toErrorResponse());
             }
@@ -865,14 +880,113 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         if (request.hasRequestTable() && request.isRequestTable()) {
             LakeTieringTableInfo lakeTieringTableInfo = lakeTableTieringManager.requestTable();
             if (lakeTieringTableInfo != null) {
+                LakeTieringTableInfo tieringTask = enrichTieringTask(lakeTieringTableInfo);
                 heartbeatResponse
                         .setTieringTable()
-                        .setTableId(lakeTieringTableInfo.tableId())
-                        .setTablePath(fromTablePath(lakeTieringTableInfo.tablePath()))
-                        .setTieringEpoch(lakeTieringTableInfo.tieringEpoch());
+                        .setTableId(tieringTask.tableId())
+                        .setTablePath(fromTablePath(tieringTask.tablePath()))
+                        .setTieringEpoch(tieringTask.tieringEpoch())
+                        .setTaskType(tieringTask.taskType().code());
+                if (tieringTask.holdPartition() != null) {
+                    heartbeatResponse
+                            .getTieringTable()
+                            .setHoldPartition(tieringTask.holdPartition());
+                }
             }
         }
         return CompletableFuture.completedFuture(heartbeatResponse);
+    }
+
+    private LakeTieringTableInfo enrichTieringTask(LakeTieringTableInfo lakeTieringTableInfo) {
+        try {
+            BootstrapUpgradeState bootstrapUpgradeState =
+                    bootstrapUpgradeStateManager.get(lakeTieringTableInfo.tableId()).orElse(null);
+            if (bootstrapUpgradeState == null) {
+                TableInfo tableInfo = metadataManager.getTable(lakeTieringTableInfo.tablePath());
+                if (!isBootstrapUpgradeEnabled(tableInfo)) {
+                    return lakeTieringTableInfo;
+                }
+
+                String holdPartition = resolveBootstrapHoldPartition(tableInfo);
+                LOG.warn(
+                        "Bootstrap state znode is missing for bootstrap-enabled table {} ({}). "
+                                + "Auto-initializing IN_PROGRESS state and dispatching bootstrap task.",
+                        tableInfo.getTableId(),
+                        tableInfo.getTablePath());
+                bootstrapUpgradeStateManager.initializeInProgress(
+                        lakeTieringTableInfo.tableId(), holdPartition);
+                return new LakeTieringTableInfo(
+                        lakeTieringTableInfo.tableId(),
+                        lakeTieringTableInfo.tablePath(),
+                        lakeTieringTableInfo.tieringEpoch(),
+                        LakeTieringTaskType.BOOTSTRAP_UPGRADE,
+                        holdPartition);
+            }
+            if (bootstrapUpgradeState.getStatus() != BootstrapUpgradeStatus.IN_PROGRESS) {
+                return lakeTieringTableInfo;
+            }
+            return new LakeTieringTableInfo(
+                    lakeTieringTableInfo.tableId(),
+                    lakeTieringTableInfo.tablePath(),
+                    lakeTieringTableInfo.tieringEpoch(),
+                    LakeTieringTaskType.BOOTSTRAP_UPGRADE,
+                    bootstrapUpgradeState.getHoldPartition());
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to load bootstrap-upgrade state for table {}. Falling back to normal tiering task.",
+                    lakeTieringTableInfo.tableId(),
+                    e);
+            return lakeTieringTableInfo;
+        }
+    }
+
+    private boolean isBootstrapUpgradeEnabled(TableInfo tableInfo) {
+        return Boolean.parseBoolean(
+                        tableInfo.getProperties().toMap().getOrDefault(BOOTSTRAP_ENABLED_KEY, null))
+                || Boolean.parseBoolean(
+                        tableInfo
+                                .getCustomProperties()
+                                .toMap()
+                                .getOrDefault(BOOTSTRAP_ENABLED_KEY, null));
+    }
+
+    private String resolveBootstrapHoldPartition(TableInfo tableInfo) {
+        String configuredCutoverPartition =
+                tableInfo.getProperties().toMap().get(BOOTSTRAP_CUTOVER_PARTITION_KEY);
+        if (configuredCutoverPartition == null || configuredCutoverPartition.isEmpty()) {
+            configuredCutoverPartition =
+                    tableInfo.getCustomProperties().toMap().get(BOOTSTRAP_CUTOVER_PARTITION_KEY);
+        }
+        if (configuredCutoverPartition != null && !configuredCutoverPartition.isEmpty()) {
+            return configuredCutoverPartition;
+        }
+
+        AutoPartitionStrategy autoPartitionStrategy =
+                tableInfo.getTableConfig().getAutoPartitionStrategy();
+        if (autoPartitionStrategy.isAutoPartitionEnabled()) {
+            String partitionValue =
+                    PartitionUtils.generateAutoPartitionTime(
+                            ZonedDateTime.now(ZoneId.of(autoPartitionStrategy.timeZone().getID())),
+                            0,
+                            autoPartitionStrategy.timeUnit());
+            return autoPartitionStrategy.key() + "=" + partitionValue;
+        }
+
+        if (!tableInfo.getPartitionKeys().isEmpty()) {
+            return tableInfo.getPartitionKeys().get(0) + "=" + "bootstrap";
+        }
+        return "bootstrap";
+    }
+
+    private void maybeMarkBootstrapComplete(long tableId) {
+        BootstrapUpgradeState bootstrapUpgradeState =
+                bootstrapUpgradeStateManager.get(tableId).orElse(null);
+        if (bootstrapUpgradeState == null
+                || bootstrapUpgradeState.getStatus() != BootstrapUpgradeStatus.IN_PROGRESS) {
+            return;
+        }
+        bootstrapUpgradeStateManager.markComplete(
+                tableId, bootstrapUpgradeState.getHoldPartition());
     }
 
     @Override

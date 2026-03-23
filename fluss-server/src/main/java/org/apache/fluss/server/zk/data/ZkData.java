@@ -592,6 +592,26 @@ public final class ZkData {
     }
 
     /**
+     * The znode for bootstrap-upgrade state of a table. The znode path is:
+     *
+     * <p>/tabletservers/tables/[tableId]/bootstrap-upgrade
+     */
+    public static final class BootstrapUpgradeZNode {
+        public static String path(long tableId) {
+            return TableIdZNode.path(tableId) + "/bootstrap-upgrade";
+        }
+
+        public static byte[] encode(BootstrapUpgradeState bootstrapUpgradeState) {
+            return JsonSerdeUtils.writeValueAsBytes(
+                    bootstrapUpgradeState, BootstrapUpgradeStateJsonSerde.INSTANCE);
+        }
+
+        public static BootstrapUpgradeState decode(byte[] json) {
+            return JsonSerdeUtils.readValue(json, BootstrapUpgradeStateJsonSerde.INSTANCE);
+        }
+    }
+
+    /**
      * The znode for lake table snapshot information. The znode path is:
      *
      * <p>/tabletservers/tables/[tableId]/laketable

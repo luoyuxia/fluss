@@ -41,6 +41,7 @@ import org.apache.fluss.server.zk.ZkAsyncRequest.ZkGetDataRequest;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkCheckExistsResponse;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkGetChildrenResponse;
 import org.apache.fluss.server.zk.ZkAsyncResponse.ZkGetDataResponse;
+import org.apache.fluss.server.zk.data.BootstrapUpgradeState;
 import org.apache.fluss.server.zk.data.BucketSnapshot;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
 import org.apache.fluss.server.zk.data.DatabaseRegistration;
@@ -55,6 +56,7 @@ import org.apache.fluss.server.zk.data.TableRegistration;
 import org.apache.fluss.server.zk.data.TabletServerRegistration;
 import org.apache.fluss.server.zk.data.ZkData;
 import org.apache.fluss.server.zk.data.ZkData.AclChangeNotificationNode;
+import org.apache.fluss.server.zk.data.ZkData.BootstrapUpgradeZNode;
 import org.apache.fluss.server.zk.data.ZkData.BucketIdsZNode;
 import org.apache.fluss.server.zk.data.ZkData.BucketRemoteLogsZNode;
 import org.apache.fluss.server.zk.data.ZkData.BucketSnapshotIdZNode;
@@ -1108,6 +1110,30 @@ public class ZooKeeperClient implements AutoCloseable {
             throws Exception {
         String path = BucketRemoteLogsZNode.path(tableBucket);
         return getOrEmpty(path).map(BucketRemoteLogsZNode::decode);
+    }
+
+    /** Upsert the bootstrap-upgrade state to Zk Node. */
+    public void upsertBootstrapUpgradeState(
+            long tableId, BootstrapUpgradeState bootstrapUpgradeState, boolean isUpdate)
+            throws Exception {
+        byte[] zkData = BootstrapUpgradeZNode.encode(bootstrapUpgradeState);
+        String zkPath = BootstrapUpgradeZNode.path(tableId);
+        if (isUpdate) {
+            zkClient.setData().forPath(zkPath, zkData);
+        } else {
+            zkClient.create().creatingParentsIfNeeded().forPath(zkPath, zkData);
+        }
+    }
+
+    /** Gets the bootstrap-upgrade state for the given table ID. */
+    public Optional<BootstrapUpgradeState> getBootstrapUpgradeState(long tableId) throws Exception {
+        String zkPath = BootstrapUpgradeZNode.path(tableId);
+        return getOrEmpty(zkPath).map(BootstrapUpgradeZNode::decode);
+    }
+
+    /** Deletes the bootstrap-upgrade state of a table. */
+    public void deleteBootstrapUpgradeState(long tableId) throws Exception {
+        zkClient.delete().forPath(BootstrapUpgradeZNode.path(tableId));
     }
 
     /** Upsert the {@link LakeTable} to Zk Node. */

@@ -57,6 +57,11 @@ public class TieringSplitGenerator {
     }
 
     public List<TieringSplit> generateTableSplits(TableInfo tableInfo) throws Exception {
+        return generateTableSplits(tableInfo, null);
+    }
+
+    public List<TieringSplit> generateTableSplits(
+            TableInfo tableInfo, @Nullable String holdPartition) throws Exception {
         TablePath tablePath = tableInfo.getTablePath();
         final BucketOffsetsRetriever bucketOffsetsRetriever =
                 new BucketOffsetsRetrieverImpl(flussAdmin, tablePath);
@@ -90,8 +95,18 @@ public class TieringSplitGenerator {
                                             PartitionInfo::getPartitionName));
 
             return generatePartitionTableSplit(
-                    tableInfo, partitionNameById, bucketOffsetsRetriever, lakeSnapshotInfo);
+                    tableInfo,
+                    partitionNameById,
+                    bucketOffsetsRetriever,
+                    lakeSnapshotInfo,
+                    holdPartition);
         } else {
+            if (holdPartition != null && !holdPartition.isEmpty()) {
+                LOG.warn(
+                        "Bootstrap hold partition {} is ignored for non-partitioned table {}.",
+                        holdPartition,
+                        tableInfo.getTablePath());
+            }
             // non-partitioned table
             return generateNonPartitionedTableSplit(
                     tableInfo, bucketOffsetsRetriever, lakeSnapshotInfo);
@@ -103,9 +118,13 @@ public class TieringSplitGenerator {
             TableInfo tableInfo,
             Map<Long, String> partitionNameById,
             BucketOffsetsRetriever bucketOffsetsRetriever,
-            @Nullable LakeSnapshot lakeSnapshotInfo) {
+            @Nullable LakeSnapshot lakeSnapshotInfo,
+            @Nullable String holdPartition) {
         List<TieringSplit> splits = new ArrayList<>();
-        for (Map.Entry<Long, String> partitionNameByIdEntry : partitionNameById.entrySet()) {
+        List<Map.Entry<Long, String>> partitionEntries =
+                resolveTargetPartitions(tableInfo, partitionNameById, holdPartition);
+
+        for (Map.Entry<Long, String> partitionNameByIdEntry : partitionEntries) {
             long partitionId = partitionNameByIdEntry.getKey();
             String partitionName = partitionNameByIdEntry.getValue();
             Map<Integer, Long> latestBucketsOffset =
@@ -131,11 +150,12 @@ public class TieringSplitGenerator {
                 }
             }
 
+            List<BucketTieringTask> bucketTieringTasks =
+                    planBucketTieringTasks(tableInfo, partitionId, partitionName);
             splits.addAll(
-                    generateTableSplit(
+                    generateSplitsForBucketTasks(
                             tableInfo,
-                            partitionId,
-                            partitionName,
+                            bucketTieringTasks,
                             lakeSnapshotInfo,
                             latestKvSnapshots,
                             latestBucketsOffset));
@@ -167,14 +187,18 @@ public class TieringSplitGenerator {
             }
         }
 
-        return generateTableSplit(
-                tableInfo, null, null, lakeSnapshotInfo, latestKvSnapshots, latestBucketsOffset);
+        List<BucketTieringTask> bucketTieringTasks = planBucketTieringTasks(tableInfo, null, null);
+        return generateSplitsForBucketTasks(
+                tableInfo,
+                bucketTieringTasks,
+                lakeSnapshotInfo,
+                latestKvSnapshots,
+                latestBucketsOffset);
     }
 
-    private List<TieringSplit> generateTableSplit(
+    private List<TieringSplit> generateSplitsForBucketTasks(
             TableInfo tableInfo,
-            @Nullable Long partitionId,
-            @Nullable String partitionName,
+            List<BucketTieringTask> bucketTieringTasks,
             @Nullable LakeSnapshot lakeSnapshotInfo,
             @Nullable KvSnapshots latestKvSnapshots,
             Map<Integer, Long> latestBucketsOffset) {
@@ -183,9 +207,10 @@ public class TieringSplitGenerator {
         if (tableInfo.hasPrimaryKey()) {
             // it's primary key table
             checkState(latestKvSnapshots != null);
-            for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {
+            for (BucketTieringTask bucketTask : bucketTieringTasks) {
+                int bucket = bucketTask.bucket();
                 TableBucket tableBucket =
-                        new TableBucket(tableInfo.getTableId(), partitionId, bucket);
+                        new TableBucket(tableInfo.getTableId(), bucketTask.partitionId(), bucket);
                 Long lastCommittedBucketOffset =
                         lakeSnapshotInfo != null
                                 ? lakeSnapshotInfo.getTableBucketsOffset().get(tableBucket)
@@ -203,7 +228,7 @@ public class TieringSplitGenerator {
                 generateSplitForPrimaryKeyTableBucket(
                                 tableInfo.getTablePath(),
                                 tableBucket,
-                                partitionName,
+                                bucketTask.partitionName(),
                                 latestSnapshotId,
                                 offsetOfLatestSnapshotId,
                                 lastCommittedBucketOffset,
@@ -213,9 +238,10 @@ public class TieringSplitGenerator {
 
         } else {
             // it's log table
-            for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {
+            for (BucketTieringTask bucketTask : bucketTieringTasks) {
+                int bucket = bucketTask.bucket();
                 TableBucket tableBucket =
-                        new TableBucket(tableInfo.getTableId(), partitionId, bucket);
+                        new TableBucket(tableInfo.getTableId(), bucketTask.partitionId(), bucket);
                 Long lastCommittedOffset =
                         lakeSnapshotInfo != null
                                 ? lakeSnapshotInfo.getTableBucketsOffset().get(tableBucket)
@@ -224,7 +250,7 @@ public class TieringSplitGenerator {
                 generateSplitForLogTableBucket(
                                 tableInfo.getTablePath(),
                                 tableBucket,
-                                partitionName,
+                                bucketTask.partitionName(),
                                 lastCommittedOffset,
                                 latestBucketOffset)
                         .ifPresent(splits::add);
@@ -338,5 +364,59 @@ public class TieringSplitGenerator {
                 latestBucketOffset,
                 tableBucket);
         return Optional.empty();
+    }
+
+    private List<Map.Entry<Long, String>> resolveTargetPartitions(
+            TableInfo tableInfo, Map<Long, String> partitionNameById, @Nullable String holdPartition) {
+        if (holdPartition == null || holdPartition.isEmpty()) {
+            return new ArrayList<>(partitionNameById.entrySet());
+        }
+        Optional<Map.Entry<Long, String>> bootstrapPartition =
+                partitionNameById.entrySet().stream()
+                        .filter(entry -> holdPartition.equals(entry.getValue()))
+                        .findFirst();
+        if (bootstrapPartition.isEmpty()) {
+            LOG.warn(
+                    "Bootstrap hold partition {} does not exist in table {}. Skip split generation in this round.",
+                    holdPartition,
+                    tableInfo.getTablePath());
+            return List.of();
+        }
+        return List.of(bootstrapPartition.get());
+    }
+
+    private List<BucketTieringTask> planBucketTieringTasks(
+            TableInfo tableInfo, @Nullable Long partitionId, @Nullable String partitionName) {
+        List<BucketTieringTask> tasks = new ArrayList<>(tableInfo.getNumBuckets());
+        for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {
+            tasks.add(new BucketTieringTask(partitionId, partitionName, bucket));
+        }
+        return tasks;
+    }
+
+    /** Bucket-level task abstraction used by split planning. */
+    private static class BucketTieringTask {
+        private final @Nullable Long partitionId;
+        private final @Nullable String partitionName;
+        private final int bucket;
+
+        private BucketTieringTask(
+                @Nullable Long partitionId, @Nullable String partitionName, int bucket) {
+            this.partitionId = partitionId;
+            this.partitionName = partitionName;
+            this.bucket = bucket;
+        }
+
+        private @Nullable Long partitionId() {
+            return partitionId;
+        }
+
+        private @Nullable String partitionName() {
+            return partitionName;
+        }
+
+        private int bucket() {
+            return bucket;
+        }
     }
 }

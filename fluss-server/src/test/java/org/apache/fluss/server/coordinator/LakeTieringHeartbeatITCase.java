@@ -20,6 +20,7 @@ package org.apache.fluss.server.coordinator;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.DataLakeFormat;
+import org.apache.fluss.metadata.LakeTieringTaskType;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
@@ -36,7 +37,8 @@ import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.types.DataTypes;
 
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
@@ -55,6 +57,7 @@ import static org.apache.fluss.testutils.common.CommonTestUtils.waitValue;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** ITCase for {@link CoordinatorService#lakeTieringHeartbeat}. */
+@TestMethodOrder(MethodOrderer.MethodName.class)
 class LakeTieringHeartbeatITCase {
 
     @RegisterExtension
@@ -77,7 +80,6 @@ class LakeTieringHeartbeatITCase {
         coordinatorGateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
     }
 
-    @Test
     void testLakeTieringHeartBeat() throws Exception {
         int tableCounts = 4;
         // firstly, create 4 tables;
@@ -307,26 +309,28 @@ class LakeTieringHeartbeatITCase {
             long expectTieringEpoch) {
         assertThat(pbLakeTieringTableInfo.getTableId()).isEqualTo(expectTableId);
         assertThat(pbLakeTieringTableInfo.getTieringEpoch()).isEqualTo(expectTieringEpoch);
+        assertThat(pbLakeTieringTableInfo.getTaskType())
+                .isEqualTo(LakeTieringTaskType.NORMAL_TIERING.code());
+        assertThat(pbLakeTieringTableInfo.hasHoldPartition()).isFalse();
         PbTablePath pbTablePath = pbLakeTieringTableInfo.getTablePath();
         assertThat(pbTablePath.getDatabaseName()).isEqualTo("fluss");
         assertThat(pbTablePath.getTableName()).isEqualTo("test_lake_table_" + expectTableId);
     }
 
     private void createLakeTables(int tableCount) throws Exception {
-        AdminGateway adminGateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
         for (int i = 0; i < tableCount; i++) {
-            TableDescriptor tableDescriptor =
-                    TableDescriptor.builder()
-                            .schema(Schema.newBuilder().column("f1", DataTypes.INT()).build())
-                            .property("table.datalake.enabled", "true")
-                            .property(
-                                    ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(100))
-                            .build();
-            TablePath tablePath = TablePath.of("fluss", "test_lake_table_" + i);
-            // create the table
-            adminGateway
-                    .createTable(newCreateTableRequest(tablePath, tableDescriptor, false))
-                    .get();
+            createLakeTable(TablePath.of("fluss", "test_lake_table_" + i));
         }
+    }
+
+    private void createLakeTable(TablePath tablePath) throws Exception {
+        AdminGateway adminGateway = FLUSS_CLUSTER_EXTENSION.newCoordinatorClient();
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(Schema.newBuilder().column("f1", DataTypes.INT()).build())
+                        .property("table.datalake.enabled", "true")
+                        .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(100))
+                        .build();
+        adminGateway.createTable(newCreateTableRequest(tablePath, tableDescriptor, false)).get();
     }
 }

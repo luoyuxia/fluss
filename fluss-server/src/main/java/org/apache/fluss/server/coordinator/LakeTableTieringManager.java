@@ -194,6 +194,36 @@ public class LakeTableTieringManager implements AutoCloseable {
                 });
     }
 
+    /**
+     * Enqueues an already-registered table into the pending tiering queue immediately. The table
+     * must be in {@code Scheduled} state.
+     *
+     * <p>This is used during coordinator restart to re-enqueue tables that have an active bootstrap
+     * upgrade (status {@code IN_PROGRESS}) so they can be dispatched without waiting for the
+     * freshness delay.
+     */
+    public void enqueueTable(long tableId) {
+        inLock(lock, () -> doHandleStateChange(tableId, TieringState.Pending));
+    }
+
+    /**
+     * Adds a new lake table and enqueues it into the unified pending tiering queue immediately.
+     *
+     * <p>This is used by bootstrap upgrade initialization to ensure the table can be picked up by
+     * the next heartbeat without waiting for freshness delay.
+     */
+    public void addNewLakeTableAndEnqueue(TableInfo tableInfo) {
+        inLock(
+                lock,
+                () -> {
+                    registerLakeTable(tableInfo, clock.milliseconds());
+                    doHandleStateChange(tableInfo.getTableId(), TieringState.New);
+                    // keep the state transition path consistent with normal scheduling.
+                    doHandleStateChange(tableInfo.getTableId(), TieringState.Scheduled);
+                    doHandleStateChange(tableInfo.getTableId(), TieringState.Pending);
+                });
+    }
+
     @GuardedBy("lock")
     private void registerLakeTable(TableInfo tableInfo, long lastTieredTime) {
         long tableId = tableInfo.getTableId();
@@ -458,6 +488,12 @@ public class LakeTableTieringManager implements AutoCloseable {
                 scheduleTableTiering(tableId);
                 break;
             case Pending:
+                // cancel delayed scheduling to avoid duplicate enqueue when explicitly moved to
+                // pending.
+                DelayedTiering delayedTiering = delayedTieringByTableId.remove(tableId);
+                if (delayedTiering != null) {
+                    delayedTiering.cancel();
+                }
                 // increase tiering epoch and initialize the heartbeat of the tiering table
                 tableTierEpoch.computeIfPresent(tableId, (t, v) -> v + 1);
                 pendingTieringTables.add(tableId);

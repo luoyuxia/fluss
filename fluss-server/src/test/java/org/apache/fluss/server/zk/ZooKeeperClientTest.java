@@ -32,6 +32,8 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePartition;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.entity.RegisterTableBucketLeadAndIsrInfo;
+import org.apache.fluss.server.zk.data.BootstrapUpgradeState;
+import org.apache.fluss.server.zk.data.BootstrapUpgradeStatus;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.BucketSnapshot;
 import org.apache.fluss.server.zk.data.CoordinatorAddress;
@@ -180,6 +182,26 @@ class ZooKeeperClientTest {
         // test delete
         zookeeperClient.deleteTableAssignment(tableId1);
         assertThat(zookeeperClient.getTableAssignment(tableId1)).isEmpty();
+    }
+
+    @Test
+    void testBootstrapUpgradeState() throws Exception {
+        long tableId = 11L;
+        BootstrapUpgradeState inProgressState =
+                new BootstrapUpgradeState(BootstrapUpgradeStatus.IN_PROGRESS, "dt=2026-03-23");
+
+        assertThat(zookeeperClient.getBootstrapUpgradeState(tableId)).isEmpty();
+
+        zookeeperClient.upsertBootstrapUpgradeState(tableId, inProgressState, false);
+        assertThat(zookeeperClient.getBootstrapUpgradeState(tableId)).contains(inProgressState);
+
+        BootstrapUpgradeState completedState =
+                new BootstrapUpgradeState(BootstrapUpgradeStatus.COMPLETE, "dt=2026-03-23");
+        zookeeperClient.upsertBootstrapUpgradeState(tableId, completedState, true);
+        assertThat(zookeeperClient.getBootstrapUpgradeState(tableId)).contains(completedState);
+
+        zookeeperClient.deleteBootstrapUpgradeState(tableId);
+        assertThat(zookeeperClient.getBootstrapUpgradeState(tableId)).isEmpty();
     }
 
     @Test

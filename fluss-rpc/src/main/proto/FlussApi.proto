@@ -1055,6 +1055,9 @@ message PbLakeTieringTableInfo {
   required int64 table_id = 1;
   required PbTablePath table_path = 2;
   required int64 tiering_epoch = 3;
+  // 0 = NORMAL_TIERING, 1 = BOOTSTRAP_UPGRADE
+  optional int32 task_type = 4;
+  optional string hold_partition = 5;
 }
 
 message PbHeartbeatReqForTable {

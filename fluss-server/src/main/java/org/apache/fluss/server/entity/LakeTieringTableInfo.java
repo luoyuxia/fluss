@@ -17,9 +17,14 @@
 
 package org.apache.fluss.server.entity;
 
+import org.apache.fluss.metadata.LakeTieringTaskType;
 import org.apache.fluss.metadata.TablePath;
 
+import javax.annotation.Nullable;
+
 import java.util.Objects;
+
+import static org.apache.fluss.metadata.LakeTieringTaskType.NORMAL_TIERING;
 
 /** The info for the table assigned from Coordinator to lake tiering service to do tiering. */
 public class LakeTieringTableInfo {
@@ -27,11 +32,24 @@ public class LakeTieringTableInfo {
     private final long tableId;
     private final TablePath tablePath;
     private final long tieringEpoch;
+    private final LakeTieringTaskType taskType;
+    private final @Nullable String holdPartition;
 
     public LakeTieringTableInfo(long tableId, TablePath tablePath, long tieringEpoch) {
+        this(tableId, tablePath, tieringEpoch, NORMAL_TIERING, null);
+    }
+
+    public LakeTieringTableInfo(
+            long tableId,
+            TablePath tablePath,
+            long tieringEpoch,
+            LakeTieringTaskType taskType,
+            @Nullable String holdPartition) {
         this.tableId = tableId;
         this.tablePath = tablePath;
         this.tieringEpoch = tieringEpoch;
+        this.taskType = taskType;
+        this.holdPartition = holdPartition;
     }
 
     public long tableId() {
@@ -46,6 +64,14 @@ public class LakeTieringTableInfo {
         return tieringEpoch;
     }
 
+    public LakeTieringTaskType taskType() {
+        return taskType;
+    }
+
+    public @Nullable String holdPartition() {
+        return holdPartition;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (o == null || getClass() != o.getClass()) {
@@ -54,12 +80,14 @@ public class LakeTieringTableInfo {
         LakeTieringTableInfo that = (LakeTieringTableInfo) o;
         return tableId == that.tableId
                 && tieringEpoch == that.tieringEpoch
-                && Objects.equals(tablePath, that.tablePath);
+                && taskType == that.taskType
+                && Objects.equals(tablePath, that.tablePath)
+                && Objects.equals(holdPartition, that.holdPartition);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(tableId, tablePath, tieringEpoch);
+        return Objects.hash(tableId, tablePath, tieringEpoch, taskType, holdPartition);
     }
 
     @Override
@@ -71,6 +99,11 @@ public class LakeTieringTableInfo {
                 + tablePath
                 + ", tieringEpoch="
                 + tieringEpoch
+                + ", taskType="
+                + taskType
+                + ", holdPartition='"
+                + holdPartition
+                + '\''
                 + '}';
     }
 }

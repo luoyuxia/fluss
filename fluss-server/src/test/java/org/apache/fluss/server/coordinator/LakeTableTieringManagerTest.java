@@ -261,6 +261,26 @@ class LakeTableTieringManagerTest {
         assertThat(tableTieringManager.requestTable()).isNull();
     }
 
+    @Test
+    void testEnqueueTableBypassesFreshnessDelay() {
+        long tableId1 = 1L;
+        TablePath tablePath1 = TablePath.of("db", "table1");
+        TableInfo tableInfo1 = createTableInfo(tableId1, tablePath1, Duration.ofMinutes(5));
+
+        // Init with lake tables simulates coordinator restart
+        tableTieringManager.initWithLakeTables(
+                Arrays.asList(Tuple2.of(tableInfo1, manualClock.milliseconds())));
+
+        // Without enqueueTable, the table would wait for the 5-minute freshness interval
+        assertThat(tableTieringManager.requestTable()).isNull();
+
+        // Enqueue immediately to simulate bootstrap re-enqueue on restart
+        tableTieringManager.enqueueTable(tableId1);
+
+        // Table should now be available without advancing time
+        assertRequestTable(tableId1, tablePath1, 1);
+    }
+
     private TableInfo createTableInfo(long tableId, TablePath tablePath, Duration freshness) {
         TableDescriptor tableDescriptor =
                 TableDescriptor.builder()

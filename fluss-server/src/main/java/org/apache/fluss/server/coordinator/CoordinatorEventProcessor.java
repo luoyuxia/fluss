@@ -106,6 +106,8 @@ import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.metrics.group.CoordinatorMetricGroup;
 import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
+import org.apache.fluss.server.zk.data.BootstrapUpgradeState;
+import org.apache.fluss.server.zk.data.BootstrapUpgradeStatus;
 import org.apache.fluss.server.zk.data.BucketAssignment;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.server.zk.data.PartitionAssignment;
@@ -118,6 +120,8 @@ import org.apache.fluss.server.zk.data.ZkData.PartitionIdsZNode;
 import org.apache.fluss.server.zk.data.ZkData.TableIdsZNode;
 import org.apache.fluss.server.zk.data.lake.LakeTableHelper;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
+import org.apache.fluss.utils.AutoPartitionStrategy;
+import org.apache.fluss.utils.PartitionUtils;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
@@ -127,6 +131,8 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
 import java.time.Duration;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -159,6 +165,9 @@ import static org.apache.fluss.utils.concurrent.FutureUtils.completeFromCallable
 public class CoordinatorEventProcessor implements EventProcessor {
 
     private static final Logger LOG = LoggerFactory.getLogger(CoordinatorEventProcessor.class);
+    private static final String BOOTSTRAP_ENABLED_KEY = "table.datalake.bootstrap.enabled";
+    private static final String BOOTSTRAP_CUTOVER_PARTITION_KEY =
+            "table.datalake.bootstrap.cutover-partition";
 
     private final ZooKeeperClient zooKeeperClient;
     private final ExecutorService ioExecutor;
@@ -180,6 +189,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private final RebalanceManager rebalanceManager;
     private final CompletedSnapshotStoreManager completedSnapshotStoreManager;
     private final LakeTableHelper lakeTableHelper;
+    private final BootstrapUpgradeStateManager bootstrapUpgradeStateManager;
 
     public CoordinatorEventProcessor(
             ZooKeeperClient zooKeeperClient,
@@ -246,6 +256,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.ioExecutor = ioExecutor;
         this.lakeTableHelper =
                 new LakeTableHelper(zooKeeperClient, conf.getString(ConfigOptions.REMOTE_DATA_DIR));
+        this.bootstrapUpgradeStateManager = new BootstrapUpgradeStateManager(zooKeeperClient);
     }
 
     public CoordinatorEventManager getCoordinatorEventManager() {
@@ -433,6 +444,30 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         autoPartitionManager.initAutoPartitionTables(autoPartitionTables);
         lakeTableTieringManager.initWithLakeTables(lakeTables);
+
+        // Re-enqueue bootstrap tables so they get dispatched immediately instead of waiting for
+        // freshness delay.
+        for (Tuple2<TableInfo, Long> lakeTable : lakeTables) {
+            TableInfo tableInfo = lakeTable.f0;
+            long tableId = tableInfo.getTableId();
+            Optional<BootstrapUpgradeState> bootstrapState = bootstrapUpgradeStateManager.get(tableId);
+            if (bootstrapState.isPresent()) {
+                if (bootstrapState.get().getStatus() == BootstrapUpgradeStatus.IN_PROGRESS) {
+                    lakeTableTieringManager.enqueueTable(tableId);
+                }
+                continue;
+            }
+
+            if (isBootstrapUpgradeEnabled(tableInfo)) {
+                LOG.warn(
+                        "Bootstrap state znode is missing for bootstrap-enabled table {} ({}). "
+                                + "Auto-initializing IN_PROGRESS state and enqueueing for recovery.",
+                        tableId,
+                        tableInfo.getTablePath());
+                initializeBootstrapUpgrade(tableInfo);
+                lakeTableTieringManager.enqueueTable(tableId);
+            }
+        }
 
         // load all assignment
         long start4loadAssignment = System.currentTimeMillis();
@@ -658,7 +693,12 @@ public class CoordinatorEventProcessor implements EventProcessor {
             autoPartitionManager.addAutoPartitionTable(tableInfo, true);
         }
         if (tableInfo.getTableConfig().isDataLakeEnabled()) {
-            lakeTableTieringManager.addNewLakeTable(tableInfo);
+            if (isBootstrapUpgradeEnabled(tableInfo)) {
+                initializeBootstrapUpgrade(tableInfo);
+                lakeTableTieringManager.addNewLakeTableAndEnqueue(tableInfo);
+            } else {
+                lakeTableTieringManager.addNewLakeTable(tableInfo);
+            }
         }
 
         if (!tableInfo.isPartitioned()) {
@@ -687,6 +727,50 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     null,
                     Collections.emptySet());
         }
+    }
+
+    private void initializeBootstrapUpgrade(TableInfo tableInfo) {
+        long tableId = tableInfo.getTableId();
+        String holdPartition = resolveBootstrapHoldPartition(tableInfo);
+        bootstrapUpgradeStateManager.initializeInProgress(tableId, holdPartition);
+    }
+
+    private boolean isBootstrapUpgradeEnabled(TableInfo tableInfo) {
+        return Boolean.parseBoolean(
+                        tableInfo.getProperties().toMap().getOrDefault(BOOTSTRAP_ENABLED_KEY, null))
+                || Boolean.parseBoolean(
+                        tableInfo
+                                .getCustomProperties()
+                                .toMap()
+                                .getOrDefault(BOOTSTRAP_ENABLED_KEY, null));
+    }
+
+    private String resolveBootstrapHoldPartition(TableInfo tableInfo) {
+        String configuredCutoverPartition =
+                tableInfo.getProperties().toMap().get(BOOTSTRAP_CUTOVER_PARTITION_KEY);
+        if (configuredCutoverPartition == null || configuredCutoverPartition.isEmpty()) {
+            configuredCutoverPartition =
+                    tableInfo.getCustomProperties().toMap().get(BOOTSTRAP_CUTOVER_PARTITION_KEY);
+        }
+        if (configuredCutoverPartition != null && !configuredCutoverPartition.isEmpty()) {
+            return configuredCutoverPartition;
+        }
+
+        AutoPartitionStrategy autoPartitionStrategy =
+                tableInfo.getTableConfig().getAutoPartitionStrategy();
+        if (autoPartitionStrategy.isAutoPartitionEnabled()) {
+            String partitionValue =
+                    PartitionUtils.generateAutoPartitionTime(
+                            ZonedDateTime.now(ZoneId.of(autoPartitionStrategy.timeZone().getID())),
+                            0,
+                            autoPartitionStrategy.timeUnit());
+            return autoPartitionStrategy.key() + "=" + partitionValue;
+        }
+
+        if (!tableInfo.getPartitionKeys().isEmpty()) {
+            return tableInfo.getPartitionKeys().get(0) + "=" + "bootstrap";
+        }
+        return "bootstrap";
     }
 
     private void processSchemaChange(SchemaChangeEvent schemaChangeEvent) {
@@ -768,9 +852,15 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         if (toEnableDataLake) {
             // if the table is lake table, we need to add it to lake table tiering manager
-            lakeTableTieringManager.addNewLakeTable(newTableInfo);
+            if (isBootstrapUpgradeEnabled(newTableInfo)) {
+                initializeBootstrapUpgrade(newTableInfo);
+                lakeTableTieringManager.addNewLakeTableAndEnqueue(newTableInfo);
+            } else {
+                lakeTableTieringManager.addNewLakeTable(newTableInfo);
+            }
         } else if (toDisableDataLake) {
             lakeTableTieringManager.removeLakeTable(newTableInfo.getTableId());
+            bootstrapUpgradeStateManager.deleteIfPresent(newTableInfo.getTableId());
         } else if (dataLakeEnabled) {
             // The table is still a lake table, check if freshness has changed
             Duration oldFreshness = oldTableInfo.getTableConfig().getDataLakeFreshness();
@@ -843,6 +933,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         }
         if (dropTableEvent.isDataLakeEnabled()) {
             lakeTableTieringManager.removeLakeTable(tableId);
+            bootstrapUpgradeStateManager.deleteIfPresent(tableId);
         }
 
         // send update metadata request.
