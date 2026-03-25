@@ -530,6 +530,7 @@ message CommitLakeTableSnapshotRequest {
   // end offsets, while readable_snapshot_file_path (if present) points to the file storing readable
   // log end offsets.
   repeated PbLakeTableSnapshotMetadata lake_table_snapshot_metadata = 2;
+  // Field 3 (bootstrap_artifact_metadata) removed - use CommitBootstrapArtifactsRequest instead.
 }
 
 message CommitLakeTableSnapshotResponse {
@@ -537,6 +538,20 @@ message CommitLakeTableSnapshotResponse {
 }
 
 message PbCommitLakeTableSnapshotRespForTable {
+  optional int32 error_code = 1;
+  optional string error_message = 2;
+  required int64 table_id = 3;
+}
+
+message CommitBootstrapArtifactsRequest {
+  repeated PbBootstrapArtifactMetadata bootstrap_artifact_metadata = 1;
+}
+
+message CommitBootstrapArtifactsResponse {
+  repeated PbCommitBootstrapArtifactsRespForTable table_resp = 1;
+}
+
+message PbCommitBootstrapArtifactsRespForTable {
   optional int32 error_code = 1;
   optional string error_message = 2;
   required int64 table_id = 3;
@@ -1058,6 +1073,10 @@ message PbLakeTieringTableInfo {
   // 0 = NORMAL_TIERING, 1 = BOOTSTRAP_UPGRADE
   optional int32 task_type = 4;
   optional string hold_partition = 5;
+  // The partition ID assigned to the hold partition (for bootstrap PK tables).
+  optional int64 hold_partition_id = 6;
+  // The remote data directory for remote KV storage.
+  optional string remote_data_dir = 7;
 }
 
 message PbHeartbeatReqForTable {
@@ -1141,6 +1160,21 @@ message PbLakeTableSnapshotMetadata {
   // 1. If set, the system will keep all snapshots in the range [earliest_snapshot_id_to_keep, current_snapshot_id].
   // 2. If not set, the system defaults to a "Single Snapshot Retention" policy, keeping only the snapshot specified in this request.
   optional int64 earliest_snapshot_id_to_keep = 5;
+  // Optional tiering epoch for fencing the success callback.
+  optional int64 tiering_epoch = 6;
+}
+
+message PbBootstrapArtifactMetadata {
+  required int64 table_id = 1;
+  optional int64 partition_id = 3;
+  required int32 bucket_id = 4;
+  optional string partition_name = 6;
+  // The total size of the SST file(s) in bytes.
+  optional int64 sst_size_bytes = 7;
+  // The number of rows in the SST file(s).
+  optional int64 row_count = 8;
+  // The snapshot location path where _METADATA JSON was written.
+  optional string snapshot_path = 10;
 }
 
 message PbLakeTableSnapshotInfo {

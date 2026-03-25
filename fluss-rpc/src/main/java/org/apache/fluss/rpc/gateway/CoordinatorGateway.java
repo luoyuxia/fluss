@@ -20,6 +20,8 @@ package org.apache.fluss.rpc.gateway;
 import org.apache.fluss.rpc.RpcGateway;
 import org.apache.fluss.rpc.messages.AdjustIsrRequest;
 import org.apache.fluss.rpc.messages.AdjustIsrResponse;
+import org.apache.fluss.rpc.messages.CommitBootstrapArtifactsRequest;
+import org.apache.fluss.rpc.messages.CommitBootstrapArtifactsResponse;
 import org.apache.fluss.rpc.messages.CommitKvSnapshotRequest;
 import org.apache.fluss.rpc.messages.CommitKvSnapshotResponse;
 import org.apache.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
@@ -103,6 +105,11 @@ public interface CoordinatorGateway extends RpcGateway, AdminGateway {
     @RPC(api = ApiKeys.COMMIT_LAKE_TABLE_SNAPSHOT)
     CompletableFuture<CommitLakeTableSnapshotResponse> commitLakeTableSnapshot(
             CommitLakeTableSnapshotRequest request);
+
+    /** Commit bootstrap artifacts from a bootstrap-upgrade task. */
+    @RPC(api = ApiKeys.COMMIT_BOOTSTRAP_ARTIFACTS)
+    CompletableFuture<CommitBootstrapArtifactsResponse> commitBootstrapArtifacts(
+            CommitBootstrapArtifactsRequest request);
 
     /** Report lake tiering heartbeats to Fluss for lake tiering service. */
     @RPC(api = ApiKeys.LAKE_TIERING_HEARTBEAT)

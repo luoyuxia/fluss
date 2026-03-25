@@ -36,6 +36,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -72,6 +73,15 @@ public class TieringSplitGenerator {
 
     public List<TieringSplit> generateTableSplits(
             TableInfo tableInfo, LakeTieringTaskType taskType, @Nullable String holdPartition)
+            throws Exception {
+        return generateTableSplits(tableInfo, taskType, holdPartition, null);
+    }
+
+    public List<TieringSplit> generateTableSplits(
+            TableInfo tableInfo,
+            LakeTieringTaskType taskType,
+            @Nullable String holdPartition,
+            @Nullable String remoteDataDir)
             throws Exception {
         TablePath tablePath = tableInfo.getTablePath();
         final BucketOffsetsRetriever bucketOffsetsRetriever =
@@ -111,7 +121,8 @@ public class TieringSplitGenerator {
                     partitionNameById,
                     bucketOffsetsRetriever,
                     lakeSnapshotInfo,
-                    holdPartition);
+                    holdPartition,
+                    remoteDataDir);
         } else {
             if (holdPartition != null && !holdPartition.isEmpty()) {
                 LOG.warn(
@@ -121,7 +132,7 @@ public class TieringSplitGenerator {
             }
             // non-partitioned table
             return generateNonPartitionedTableSplit(
-                    tableInfo, taskType, bucketOffsetsRetriever, lakeSnapshotInfo);
+                    tableInfo, taskType, bucketOffsetsRetriever, lakeSnapshotInfo, remoteDataDir);
         }
     }
 
@@ -132,7 +143,8 @@ public class TieringSplitGenerator {
             Map<Long, String> partitionNameById,
             BucketOffsetsRetriever bucketOffsetsRetriever,
             @Nullable LakeSnapshot lakeSnapshotInfo,
-            @Nullable String holdPartition) {
+            @Nullable String holdPartition,
+            @Nullable String remoteDataDir) {
         List<TieringSplit> splits = new ArrayList<>();
         List<Map.Entry<Long, String>> partitionEntries =
                 resolveTargetPartitions(tableInfo, partitionNameById, holdPartition);
@@ -172,7 +184,8 @@ public class TieringSplitGenerator {
                             bucketTieringTasks,
                             lakeSnapshotInfo,
                             latestKvSnapshots,
-                            latestBucketsOffset));
+                            latestBucketsOffset,
+                            remoteDataDir));
         }
         return splits;
     }
@@ -182,7 +195,8 @@ public class TieringSplitGenerator {
             TableInfo tableInfo,
             LakeTieringTaskType taskType,
             BucketOffsetsRetriever bucketOffsetsRetriever,
-            @Nullable LakeSnapshot lakeSnapshotInfo) {
+            @Nullable LakeSnapshot lakeSnapshotInfo,
+            @Nullable String remoteDataDir) {
         Map<Integer, Long> latestBucketsOffset =
                 bucketOffsetsRetriever.latestOffsets(
                         null,
@@ -209,7 +223,8 @@ public class TieringSplitGenerator {
                 bucketTieringTasks,
                 lakeSnapshotInfo,
                 latestKvSnapshots,
-                latestBucketsOffset);
+                latestBucketsOffset,
+                remoteDataDir);
     }
 
     private List<TieringSplit> generateSplitsForBucketTasks(
@@ -218,7 +233,8 @@ public class TieringSplitGenerator {
             List<BucketTieringTask> bucketTieringTasks,
             @Nullable LakeSnapshot lakeSnapshotInfo,
             @Nullable KvSnapshots latestKvSnapshots,
-            Map<Integer, Long> latestBucketsOffset) {
+            Map<Integer, Long> latestBucketsOffset,
+            @Nullable String remoteDataDir) {
         List<TieringSplit> splits = new ArrayList<>();
 
         if (taskType == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
@@ -244,7 +260,9 @@ public class TieringSplitGenerator {
                                 logOffsetOfSnapshot,
                                 0,
                                 false,
-                                taskType));
+                                taskType,
+                                -1L,
+                                remoteDataDir));
             }
             return splits;
         }
@@ -341,6 +359,17 @@ public class TieringSplitGenerator {
             } else {
                 // bucket with snapshot, read kv to latest snapshotId + latestOffsetOfSnapshot
                 checkState(latestOffsetOfSnapshot != null);
+                if (taskType == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
+                    return Optional.of(
+                            new TieringBootstrapSplit(
+                                    tablePath,
+                                    tableBucket,
+                                    partitionName,
+                                    latestSnapshotId,
+                                    0,
+                                    false,
+                                    -1L));
+                }
                 return Optional.of(
                         new TieringSnapshotSplit(
                                 tablePath,
@@ -348,9 +377,7 @@ public class TieringSplitGenerator {
                                 partitionName,
                                 latestSnapshotId,
                                 latestOffsetOfSnapshot,
-                                0,
-                                false,
-                                taskType));
+                                0));
             }
         } else {
             // the bucket has been tiered, read bounded log
@@ -439,6 +466,14 @@ public class TieringSplitGenerator {
                         .filter(entry -> holdPartition.equals(entry.getValue()))
                         .findFirst();
         if (bootstrapPartition.isEmpty()) {
+            if (partitionNameById.isEmpty()) {
+                LOG.info(
+                        "Bootstrap hold partition {} is not created in Fluss yet for table {}. "
+                                + "Generating bootstrap splits with a synthetic partition placeholder.",
+                        holdPartition,
+                        tableInfo.getTablePath());
+                return List.of(new AbstractMap.SimpleImmutableEntry<>(null, holdPartition));
+            }
             throw new FlinkRuntimeException(
                     String.format(
                             "Bootstrap hold partition %s does not exist in table %s.",

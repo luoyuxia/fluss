@@ -28,8 +28,11 @@ import org.apache.fluss.metrics.registry.MetricRegistry;
 import org.apache.fluss.rpc.GatewayClientProxy;
 import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
+import org.apache.fluss.rpc.messages.CommitBootstrapArtifactsRequest;
 import org.apache.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
+import org.apache.fluss.rpc.messages.PbBootstrapArtifactMetadata;
 import org.apache.fluss.rpc.messages.PbBucketOffset;
+import org.apache.fluss.rpc.messages.PbCommitBootstrapArtifactsRespForTable;
 import org.apache.fluss.rpc.messages.PbCommitLakeTableSnapshotRespForTable;
 import org.apache.fluss.rpc.messages.PbLakeTableOffsetForBucket;
 import org.apache.fluss.rpc.messages.PbLakeTableSnapshotInfo;
@@ -207,6 +210,27 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             Map<TableBucket, Long> logMaxTieredTimestamps,
             @Nullable Long earliestSnapshotIDToKeep)
             throws IOException {
+        commit(
+                tableId,
+                snapshotId,
+                lakeBucketTieredOffsetsPath,
+                readableLakeBucketTieredOffsetsPath,
+                logEndOffsets,
+                logMaxTieredTimestamps,
+                earliestSnapshotIDToKeep,
+                null);
+    }
+
+    void commit(
+            long tableId,
+            long snapshotId,
+            String lakeBucketTieredOffsetsPath,
+            @Nullable String readableLakeBucketTieredOffsetsPath,
+            Map<TableBucket, Long> logEndOffsets,
+            Map<TableBucket, Long> logMaxTieredTimestamps,
+            @Nullable Long earliestSnapshotIDToKeep,
+            @Nullable Long tieringEpoch)
+            throws IOException {
         try {
             CommitLakeTableSnapshotRequest request =
                     toCommitLakeTableSnapshotRequest(
@@ -216,7 +240,8 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                             readableLakeBucketTieredOffsetsPath,
                             logEndOffsets,
                             logMaxTieredTimestamps,
-                            earliestSnapshotIDToKeep);
+                            earliestSnapshotIDToKeep,
+                            tieringEpoch);
             List<PbCommitLakeTableSnapshotRespForTable> commitLakeTableSnapshotRespForTables =
                     coordinatorGateway.commitLakeTableSnapshot(request).get().getTableRespsList();
             checkState(commitLakeTableSnapshotRespForTables.size() == 1);
@@ -295,7 +320,8 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             @Nullable String readableBucketTieredOffsetsPath,
             Map<TableBucket, Long> logEndOffsets,
             Map<TableBucket, Long> logMaxTieredTimestamps,
-            @Nullable Long earliestSnapshotIDToKeep) {
+            @Nullable Long earliestSnapshotIDToKeep,
+            @Nullable Long tieringEpoch) {
         CommitLakeTableSnapshotRequest commitLakeTableSnapshotRequest =
                 new CommitLakeTableSnapshotRequest();
 
@@ -313,6 +339,9 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
         if (earliestSnapshotIDToKeep != null) {
             pbLakeTableSnapshotMetadata.setEarliestSnapshotIdToKeep(earliestSnapshotIDToKeep);
         }
+        if (tieringEpoch != null) {
+            pbLakeTableSnapshotMetadata.setTieringEpoch(tieringEpoch);
+        }
 
         // Add PbLakeTableSnapshotInfo for metrics reporting (to notify tablet servers about
         // synchronized log end offsets and max timestamps)
@@ -326,6 +355,47 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                             logMaxTieredTimestamps);
         }
         return commitLakeTableSnapshotRequest;
+    }
+
+    void commitBootstrapArtifacts(
+            long tableId,
+            Map<TableBucket, String> partitionNames,
+            Map<TableBucket, String> snapshotPaths)
+            throws IOException {
+        try {
+            CommitBootstrapArtifactsRequest request = new CommitBootstrapArtifactsRequest();
+            for (Map.Entry<TableBucket, String> entry : partitionNames.entrySet()) {
+                TableBucket tableBucket = entry.getKey();
+                PbBootstrapArtifactMetadata pbBootstrapArtifactMetadata =
+                        request.addBootstrapArtifactMetadata();
+                pbBootstrapArtifactMetadata.setTableId(tableId);
+                if (tableBucket.getPartitionId() != null) {
+                    pbBootstrapArtifactMetadata.setPartitionId(tableBucket.getPartitionId());
+                }
+                pbBootstrapArtifactMetadata.setBucketId(tableBucket.getBucket());
+                String partitionName = entry.getValue();
+                if (partitionName != null) {
+                    pbBootstrapArtifactMetadata.setPartitionName(partitionName);
+                }
+                // Set the snapshot path where _METADATA JSON was written.
+                String snapshotPath = snapshotPaths.get(tableBucket);
+                if (snapshotPath != null) {
+                    pbBootstrapArtifactMetadata.setSnapshotPath(snapshotPath);
+                }
+            }
+
+            List<PbCommitBootstrapArtifactsRespForTable> responses =
+                    coordinatorGateway.commitBootstrapArtifacts(request).get().getTableRespsList();
+            checkState(responses.size() == 1);
+            PbCommitBootstrapArtifactsRespForTable response = responses.get(0);
+            if (response.hasErrorCode()) {
+                throw ApiError.fromErrorMessage(response).exception();
+            }
+        } catch (Exception exception) {
+            throw new IOException(
+                    String.format("Fail to commit bootstrap artifacts for table %d.", tableId),
+                    ExceptionUtils.stripExecutionException(exception));
+        }
     }
 
     @VisibleForTesting

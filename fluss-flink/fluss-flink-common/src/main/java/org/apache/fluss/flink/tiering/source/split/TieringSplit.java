@@ -32,6 +32,7 @@ public abstract class TieringSplit implements SourceSplit {
 
     public static final byte TIERING_SNAPSHOT_SPLIT_FLAG = 1;
     public static final byte TIERING_LOG_SPLIT_FLAG = 2;
+    public static final byte TIERING_BOOTSTRAP_SPLIT_FLAG = 3;
 
     protected static final int UNKNOWN_NUMBER_OF_SPLITS = -1;
 
@@ -42,6 +43,8 @@ public abstract class TieringSplit implements SourceSplit {
     // the total number of splits in one round of tiering
     protected final int numberOfSplits;
     protected final LakeTieringTaskType taskType;
+    protected final long tieringEpoch;
+    @Nullable protected final String remoteDataDir;
 
     /**
      * Indicates whether to skip tiering data for this split in the current round of tiering. When
@@ -61,7 +64,8 @@ public abstract class TieringSplit implements SourceSplit {
                 partitionName,
                 numberOfSplits,
                 skipCurrentRound,
-                LakeTieringTaskType.NORMAL_TIERING);
+                LakeTieringTaskType.NORMAL_TIERING,
+                -1L);
     }
 
     public TieringSplit(
@@ -71,6 +75,44 @@ public abstract class TieringSplit implements SourceSplit {
             int numberOfSplits,
             boolean skipCurrentRound,
             LakeTieringTaskType taskType) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                numberOfSplits,
+                skipCurrentRound,
+                taskType,
+                -1L);
+    }
+
+    public TieringSplit(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            int numberOfSplits,
+            boolean skipCurrentRound,
+            LakeTieringTaskType taskType,
+            long tieringEpoch) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                numberOfSplits,
+                skipCurrentRound,
+                taskType,
+                tieringEpoch,
+                null);
+    }
+
+    public TieringSplit(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            int numberOfSplits,
+            boolean skipCurrentRound,
+            LakeTieringTaskType taskType,
+            long tieringEpoch,
+            @Nullable String remoteDataDir) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.partitionName = partitionName;
@@ -82,6 +124,8 @@ public abstract class TieringSplit implements SourceSplit {
         this.numberOfSplits = numberOfSplits;
         this.skipCurrentRound = skipCurrentRound;
         this.taskType = taskType;
+        this.tieringEpoch = tieringEpoch;
+        this.remoteDataDir = remoteDataDir;
     }
 
     /** Checks whether this split is a primary key table split to tier. */
@@ -97,6 +141,16 @@ public abstract class TieringSplit implements SourceSplit {
     /** Checks whether this split is a log split to tier. */
     public final boolean isTieringLogSplit() {
         return getClass() == TieringLogSplit.class;
+    }
+
+    /** Checks whether this split is a bootstrap-upgrade split. */
+    public final boolean isTieringBootstrapSplit() {
+        return getClass() == TieringBootstrapSplit.class;
+    }
+
+    /** Casts this split into a {@link TieringBootstrapSplit}. */
+    public TieringBootstrapSplit asTieringBootstrapSplit() {
+        return (TieringBootstrapSplit) this;
     }
 
     /**
@@ -126,6 +180,8 @@ public abstract class TieringSplit implements SourceSplit {
             return TIERING_SNAPSHOT_SPLIT_FLAG;
         } else if (isTieringLogSplit()) {
             return TIERING_LOG_SPLIT_FLAG;
+        } else if (isTieringBootstrapSplit()) {
+            return TIERING_BOOTSTRAP_SPLIT_FLAG;
         } else {
             throw new IllegalArgumentException("Unsupported split kind for " + getClass());
         }
@@ -137,6 +193,15 @@ public abstract class TieringSplit implements SourceSplit {
 
     public LakeTieringTaskType getTaskType() {
         return taskType;
+    }
+
+    public long getTieringEpoch() {
+        return tieringEpoch;
+    }
+
+    @Nullable
+    public String getRemoteDataDir() {
+        return remoteDataDir;
     }
 
     protected static String toSplitId(String splitPrefix, TableBucket tableBucket) {
@@ -178,12 +243,21 @@ public abstract class TieringSplit implements SourceSplit {
                 && Objects.equals(partitionName, that.partitionName)
                 && numberOfSplits == that.numberOfSplits
                 && skipCurrentRound == that.skipCurrentRound
-                && taskType == that.taskType;
+                && taskType == that.taskType
+                && tieringEpoch == that.tieringEpoch
+                && Objects.equals(remoteDataDir, that.remoteDataDir);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
-                tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound, taskType);
+                tablePath,
+                tableBucket,
+                partitionName,
+                numberOfSplits,
+                skipCurrentRound,
+                taskType,
+                tieringEpoch,
+                remoteDataDir);
     }
 }

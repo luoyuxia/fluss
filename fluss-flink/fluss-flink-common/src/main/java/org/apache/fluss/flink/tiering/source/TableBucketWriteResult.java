@@ -57,8 +57,11 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
     // for the round of tiering is finished
     private final int numberOfWriteResults;
 
-    // optional bootstrap artifact path (e.g. generated manifest/sst path)
-    @Nullable private final String bootstrapArtifactPath;
+    // whether this result is from a bootstrap upgrade (writing from lake to Fluss SST)
+    private final boolean bootstrap;
+
+    // the snapshot location path from the bootstrap SST writer, only present for bootstrap results
+    @Nullable private final String bootstrapSnapshotPath;
 
     public TableBucketWriteResult(
             TablePath tablePath,
@@ -76,6 +79,27 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
                 logEndOffset,
                 maxTimestamp,
                 numberOfWriteResults,
+                false);
+    }
+
+    public TableBucketWriteResult(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            @Nullable WriteResult writeResult,
+            long logEndOffset,
+            long maxTimestamp,
+            int numberOfWriteResults,
+            boolean bootstrap) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                writeResult,
+                logEndOffset,
+                maxTimestamp,
+                numberOfWriteResults,
+                bootstrap,
                 null);
     }
 
@@ -87,7 +111,8 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
             long logEndOffset,
             long maxTimestamp,
             int numberOfWriteResults,
-            @Nullable String bootstrapArtifactPath) {
+            boolean bootstrap,
+            @Nullable String bootstrapSnapshotPath) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.partitionName = partitionName;
@@ -95,7 +120,8 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
         this.logEndOffset = logEndOffset;
         this.maxTimestamp = maxTimestamp;
         this.numberOfWriteResults = numberOfWriteResults;
-        this.bootstrapArtifactPath = bootstrapArtifactPath;
+        this.bootstrap = bootstrap;
+        this.bootstrapSnapshotPath = bootstrapSnapshotPath;
     }
 
     public TablePath tablePath() {
@@ -128,8 +154,12 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
         return maxTimestamp;
     }
 
+    public boolean isBootstrap() {
+        return bootstrap;
+    }
+
     @Nullable
-    public String bootstrapArtifactPath() {
-        return bootstrapArtifactPath;
+    public String bootstrapSnapshotPath() {
+        return bootstrapSnapshotPath;
     }
 }

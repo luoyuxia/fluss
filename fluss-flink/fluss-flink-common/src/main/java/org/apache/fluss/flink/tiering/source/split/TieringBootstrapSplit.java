@@ -26,89 +26,23 @@ import javax.annotation.Nullable;
 import java.util.Objects;
 
 /**
- * The table split for tiering service. It's used to describe the snapshot data of a primary key
- * table bucket for normal tiering.
+ * A tiering split for bootstrap-upgrade tasks. It reads from a lake snapshot to generate bootstrap
+ * SST files for primary key table buckets.
  */
-public class TieringSnapshotSplit extends TieringSplit {
+public class TieringBootstrapSplit extends TieringSplit {
 
-    private static final String TIERING_SNAPSHOT_SPLIT_PREFIX = "tiering-snapshot-split-";
+    private static final String TIERING_BOOTSTRAP_SPLIT_PREFIX = "tiering-bootstrap-split-";
 
-    /** The snapshot id. It's used to identify the snapshot for a primary key table bucket. */
+    /** The lake snapshot id to read from. */
     private final long snapshotId;
 
-    /** The log offset corresponding to the primary key table bucket snapshot finished. */
-    private final long logOffsetOfSnapshot;
-
-    public TieringSnapshotSplit(
+    public TieringBootstrapSplit(
             TablePath tablePath,
             TableBucket tableBucket,
             @Nullable String partitionName,
             long snapshotId,
-            long logOffsetOfSnapshot,
-            int numberOfSplits) {
-        this(
-                tablePath,
-                tableBucket,
-                partitionName,
-                snapshotId,
-                logOffsetOfSnapshot,
-                numberOfSplits,
-                false);
-    }
-
-    public TieringSnapshotSplit(
-            TablePath tablePath,
-            TableBucket tableBucket,
-            @Nullable String partitionName,
-            long snapshotId,
-            long logOffsetOfSnapshot,
-            int numberOfSplits,
-            boolean skipCurrentRound) {
-        this(
-                tablePath,
-                tableBucket,
-                partitionName,
-                snapshotId,
-                logOffsetOfSnapshot,
-                numberOfSplits,
-                skipCurrentRound,
-                LakeTieringTaskType.NORMAL_TIERING,
-                -1L,
-                null);
-    }
-
-    public TieringSnapshotSplit(
-            TablePath tablePath,
-            TableBucket tableBucket,
-            @Nullable String partitionName,
-            long snapshotId,
-            long logOffsetOfSnapshot,
             int numberOfSplits,
             boolean skipCurrentRound,
-            LakeTieringTaskType taskType,
-            long tieringEpoch) {
-        this(
-                tablePath,
-                tableBucket,
-                partitionName,
-                snapshotId,
-                logOffsetOfSnapshot,
-                numberOfSplits,
-                skipCurrentRound,
-                taskType,
-                tieringEpoch,
-                null);
-    }
-
-    public TieringSnapshotSplit(
-            TablePath tablePath,
-            TableBucket tableBucket,
-            @Nullable String partitionName,
-            long snapshotId,
-            long logOffsetOfSnapshot,
-            int numberOfSplits,
-            boolean skipCurrentRound,
-            LakeTieringTaskType taskType,
             long tieringEpoch,
             @Nullable String remoteDataDir) {
         super(
@@ -117,29 +51,43 @@ public class TieringSnapshotSplit extends TieringSplit {
                 partitionName,
                 numberOfSplits,
                 skipCurrentRound,
-                taskType,
+                LakeTieringTaskType.BOOTSTRAP_UPGRADE,
                 tieringEpoch,
                 remoteDataDir);
         this.snapshotId = snapshotId;
-        this.logOffsetOfSnapshot = logOffsetOfSnapshot;
+    }
+
+    public TieringBootstrapSplit(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            long snapshotId,
+            int numberOfSplits,
+            boolean skipCurrentRound,
+            long tieringEpoch) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                snapshotId,
+                numberOfSplits,
+                skipCurrentRound,
+                tieringEpoch,
+                null);
     }
 
     @Override
     public String splitId() {
-        return toSplitId(TIERING_SNAPSHOT_SPLIT_PREFIX, this.tableBucket);
+        return toSplitId(TIERING_BOOTSTRAP_SPLIT_PREFIX, this.tableBucket);
     }
 
     public long getSnapshotId() {
         return snapshotId;
     }
 
-    public long getLogOffsetOfSnapshot() {
-        return logOffsetOfSnapshot;
-    }
-
     @Override
     public String toString() {
-        return "TieringSnapshotSplit{"
+        return "TieringBootstrapSplit{"
                 + "tablePath="
                 + tablePath
                 + ", tableBucket="
@@ -153,40 +101,36 @@ public class TieringSnapshotSplit extends TieringSplit {
                 + skipCurrentRound
                 + ", snapshotId="
                 + snapshotId
-                + ", logOffsetOfSnapshot="
-                + logOffsetOfSnapshot
                 + '}';
     }
 
     @Override
-    public TieringSnapshotSplit copy(int numberOfSplits) {
-        return new TieringSnapshotSplit(
+    public TieringBootstrapSplit copy(int numberOfSplits) {
+        return new TieringBootstrapSplit(
                 tablePath,
                 tableBucket,
                 partitionName,
                 snapshotId,
-                logOffsetOfSnapshot,
                 numberOfSplits,
                 skipCurrentRound,
-                taskType,
                 tieringEpoch,
                 remoteDataDir);
     }
 
     @Override
     public boolean equals(Object object) {
-        if (!(object instanceof TieringSnapshotSplit)) {
+        if (!(object instanceof TieringBootstrapSplit)) {
             return false;
         }
         if (!super.equals(object)) {
             return false;
         }
-        TieringSnapshotSplit that = (TieringSnapshotSplit) object;
-        return snapshotId == that.snapshotId && logOffsetOfSnapshot == that.logOffsetOfSnapshot;
+        TieringBootstrapSplit that = (TieringBootstrapSplit) object;
+        return snapshotId == that.snapshotId;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), snapshotId, logOffsetOfSnapshot);
+        return Objects.hash(super.hashCode(), snapshotId);
     }
 }

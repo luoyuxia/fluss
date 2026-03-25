@@ -797,8 +797,7 @@ public class MetadataManager {
         }
     }
 
-    private Optional<TablePartition> getOptionalTablePartition(
-            TablePath tablePath, String partitionName) {
+    Optional<TablePartition> getOptionalTablePartition(TablePath tablePath, String partitionName) {
         try {
             return zookeeperClient.getPartition(tablePath, partitionName);
         } catch (Exception e) {

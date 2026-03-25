@@ -35,7 +35,10 @@ public class TableBucketWriteResultSerializer<WriteResult>
 
     private static final int VERSION_1 = 1;
     private static final int VERSION_2 = 2;
-    private static final int CURRENT_VERSION = VERSION_2;
+    private static final int VERSION_3 = 3;
+    private static final int VERSION_4 = 4;
+    private static final int VERSION_5 = 5;
+    private static final int CURRENT_VERSION = VERSION_5;
 
     private final org.apache.fluss.lake.serializer.SimpleVersionedSerializer<WriteResult>
             writeResultSerializer;
@@ -93,10 +96,14 @@ public class TableBucketWriteResultSerializer<WriteResult>
         // serialize number of write results
         out.writeInt(tableBucketWriteResult.numberOfWriteResults());
 
-        // serialize bootstrap artifact path
-        if (tableBucketWriteResult.bootstrapArtifactPath() != null) {
+        // serialize bootstrap flag
+        out.writeBoolean(tableBucketWriteResult.isBootstrap());
+
+        // serialize bootstrap snapshot path (VERSION_5+)
+        String snapshotPath = tableBucketWriteResult.bootstrapSnapshotPath();
+        if (snapshotPath != null) {
             out.writeBoolean(true);
-            out.writeUTF(tableBucketWriteResult.bootstrapArtifactPath());
+            out.writeUTF(snapshotPath);
         } else {
             out.writeBoolean(false);
         }
@@ -109,7 +116,11 @@ public class TableBucketWriteResultSerializer<WriteResult>
     @Override
     public TableBucketWriteResult<WriteResult> deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != VERSION_1 && version != VERSION_2) {
+        if (version != VERSION_1
+                && version != VERSION_2
+                && version != VERSION_3
+                && version != VERSION_4
+                && version != VERSION_5) {
             throw new IOException("Unknown version " + version);
         }
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
@@ -146,9 +157,21 @@ public class TableBucketWriteResultSerializer<WriteResult>
         long maxTimestamp = in.readLong();
         // deserialize number of write results
         int numberOfWriteResults = in.readInt();
-        String bootstrapArtifactPath = null;
-        if (version >= VERSION_2 && in.readBoolean()) {
-            bootstrapArtifactPath = in.readUTF();
+        // skip legacy bootstrapArtifactPath (VERSION_2/3) and tieringEpoch (VERSION_3)
+        if (version >= VERSION_2 && version < VERSION_4) {
+            if (in.readBoolean()) {
+                in.readUTF(); // bootstrapArtifactPath
+            }
+        }
+        if (version == VERSION_3) {
+            in.readLong(); // tieringEpoch
+        }
+        // deserialize bootstrap flag (VERSION_4+)
+        boolean bootstrap = version >= VERSION_4 && in.readBoolean();
+        // deserialize bootstrap snapshot path (VERSION_5+)
+        String bootstrapSnapshotPath = null;
+        if (version >= VERSION_5 && in.readBoolean()) {
+            bootstrapSnapshotPath = in.readUTF();
         }
         return new TableBucketWriteResult<>(
                 tablePath,
@@ -158,6 +181,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
                 logEndOffset,
                 maxTimestamp,
                 numberOfWriteResults,
-                bootstrapArtifactPath);
+                bootstrap,
+                bootstrapSnapshotPath);
     }
 }

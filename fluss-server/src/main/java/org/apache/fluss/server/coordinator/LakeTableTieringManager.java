@@ -407,6 +407,10 @@ public class LakeTableTieringManager implements AutoCloseable {
                 });
     }
 
+    public void validateTieringEpoch(long tableId, long tieringEpoch) {
+        inLock(lock, () -> validateTieringServiceRequest(tableId, tieringEpoch));
+    }
+
     private void validateTieringServiceRequest(long tableId, long tieringEpoch) {
         Long currentEpoch = tableTierEpoch.get(tableId);
         // the table has been dropped, return false

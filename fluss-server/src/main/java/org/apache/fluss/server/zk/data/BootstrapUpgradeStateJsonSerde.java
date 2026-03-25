@@ -34,6 +34,7 @@ public class BootstrapUpgradeStateJsonSerde
     private static final String VERSION_KEY = "version";
     private static final String STATUS = "status";
     private static final String HOLD_PARTITION = "hold_partition";
+    private static final String HOLD_PARTITION_ID = "hold_partition_id";
 
     private static final int VERSION = 1;
 
@@ -44,13 +45,22 @@ public class BootstrapUpgradeStateJsonSerde
         generator.writeNumberField(VERSION_KEY, VERSION);
         generator.writeStringField(STATUS, bootstrapUpgradeState.getStatus().name());
         generator.writeStringField(HOLD_PARTITION, bootstrapUpgradeState.getHoldPartition());
+        if (bootstrapUpgradeState.getHoldPartitionId() != null) {
+            generator.writeNumberField(
+                    HOLD_PARTITION_ID, bootstrapUpgradeState.getHoldPartitionId());
+        }
         generator.writeEndObject();
     }
 
     @Override
     public BootstrapUpgradeState deserialize(JsonNode node) {
+        Long holdPartitionId = null;
+        if (node.has(HOLD_PARTITION_ID)) {
+            holdPartitionId = node.get(HOLD_PARTITION_ID).asLong();
+        }
         return new BootstrapUpgradeState(
                 BootstrapUpgradeStatus.valueOf(node.get(STATUS).asText()),
-                node.get(HOLD_PARTITION).asText());
+                node.get(HOLD_PARTITION).asText(),
+                holdPartitionId);
     }
 }

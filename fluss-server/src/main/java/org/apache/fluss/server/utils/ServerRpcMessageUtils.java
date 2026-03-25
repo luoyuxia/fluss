@@ -63,6 +63,7 @@ import org.apache.fluss.rpc.messages.AcquireKvSnapshotLeaseResponse;
 import org.apache.fluss.rpc.messages.AdjustIsrRequest;
 import org.apache.fluss.rpc.messages.AdjustIsrResponse;
 import org.apache.fluss.rpc.messages.AlterTableRequest;
+import org.apache.fluss.rpc.messages.CommitBootstrapArtifactsRequest;
 import org.apache.fluss.rpc.messages.CommitKvSnapshotRequest;
 import org.apache.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
 import org.apache.fluss.rpc.messages.CommitRemoteLogManifestRequest;
@@ -100,6 +101,7 @@ import org.apache.fluss.rpc.messages.PbAdjustIsrReqForTable;
 import org.apache.fluss.rpc.messages.PbAdjustIsrRespForBucket;
 import org.apache.fluss.rpc.messages.PbAdjustIsrRespForTable;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
+import org.apache.fluss.rpc.messages.PbBootstrapArtifactMetadata;
 import org.apache.fluss.rpc.messages.PbBucketMetadata;
 import org.apache.fluss.rpc.messages.PbBucketOffset;
 import org.apache.fluss.rpc.messages.PbCreateAclRespInfo;
@@ -170,6 +172,7 @@ import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.server.authorizer.AclCreateResult;
 import org.apache.fluss.server.authorizer.AclDeleteResult;
 import org.apache.fluss.server.entity.AdjustIsrResultForBucket;
+import org.apache.fluss.server.entity.BootstrapArtifact;
 import org.apache.fluss.server.entity.CommitLakeTableSnapshotsData;
 import org.apache.fluss.server.entity.CommitRemoteLogManifestData;
 import org.apache.fluss.server.entity.FetchReqInfo;
@@ -1640,7 +1643,8 @@ public class ServerRpcMessageUtils {
                     entry.getValue(),
                     tableBucketsMaxTimestamp.get(tableId),
                     null, // no metadata for V1
-                    LakeCommitResult.KEEP_LATEST); // V1: keep only latest snapshot
+                    LakeCommitResult.KEEP_LATEST,
+                    null); // V1: keep only latest snapshot
         }
 
         // Add V2 format snapshots (current)
@@ -1661,6 +1665,10 @@ public class ServerRpcMessageUtils {
                     pbLakeTableSnapshotMetadata.hasEarliestSnapshotIdToKeep()
                             ? pbLakeTableSnapshotMetadata.getEarliestSnapshotIdToKeep()
                             : null;
+            Long tieringEpoch =
+                    pbLakeTableSnapshotMetadata.hasTieringEpoch()
+                            ? pbLakeTableSnapshotMetadata.getTieringEpoch()
+                            : null;
 
             // If this table already exists in builder (from V1), update it; otherwise add new
             builder.addTableSnapshot(
@@ -1668,10 +1676,57 @@ public class ServerRpcMessageUtils {
                     lakeTableInfoByTableId.get(tableId), // may be null for V2-only
                     tableBucketsMaxTimestamp.get(tableId), // may be null
                     lakeSnapshotMetadata,
-                    earliestSnapshotIDToKeep);
+                    earliestSnapshotIDToKeep,
+                    tieringEpoch);
         }
 
         return builder.build();
+    }
+
+    /**
+     * Deserializes bootstrap artifact metadata from a {@link CommitBootstrapArtifactsRequest}.
+     *
+     * @return a map from table ID to a map of (TableBucket -> BootstrapArtifact)
+     */
+    public static Map<Long, Map<TableBucket, BootstrapArtifact>> getBootstrapArtifactsData(
+            CommitBootstrapArtifactsRequest request) {
+        Map<Long, Map<TableBucket, BootstrapArtifact>> result = new HashMap<>();
+        for (PbBootstrapArtifactMetadata pbBootstrapArtifactMetadata :
+                request.getBootstrapArtifactMetadatasList()) {
+            long tableId = pbBootstrapArtifactMetadata.getTableId();
+            Long partitionId =
+                    pbBootstrapArtifactMetadata.hasPartitionId()
+                            ? pbBootstrapArtifactMetadata.getPartitionId()
+                            : null;
+            TableBucket tableBucket =
+                    new TableBucket(
+                            tableId, partitionId, pbBootstrapArtifactMetadata.getBucketId());
+            long sstSizeBytes =
+                    pbBootstrapArtifactMetadata.hasSstSizeBytes()
+                            ? pbBootstrapArtifactMetadata.getSstSizeBytes()
+                            : 0L;
+            long rowCount =
+                    pbBootstrapArtifactMetadata.hasRowCount()
+                            ? pbBootstrapArtifactMetadata.getRowCount()
+                            : 0L;
+            // Read snapshot path from protobuf.
+            String snapshotPath =
+                    pbBootstrapArtifactMetadata.hasSnapshotPath()
+                            ? pbBootstrapArtifactMetadata.getSnapshotPath()
+                            : null;
+            result.computeIfAbsent(tableId, k -> new HashMap<>())
+                    .put(
+                            tableBucket,
+                            new BootstrapArtifact(
+                                    tableBucket,
+                                    pbBootstrapArtifactMetadata.hasPartitionName()
+                                            ? pbBootstrapArtifactMetadata.getPartitionName()
+                                            : null,
+                                    sstSizeBytes,
+                                    rowCount,
+                                    snapshotPath));
+        }
+        return result;
     }
 
     public static TableBucketOffsets toTableBucketOffsets(PbTableOffsets pbTableOffsets) {

@@ -27,6 +27,9 @@ import org.apache.fluss.flink.metrics.FlinkMetricRegistry;
 import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
 import org.apache.fluss.flink.tiering.event.FinishedTieringEvent;
 import org.apache.fluss.flink.tiering.event.TieringReachMaxDurationEvent;
+import org.apache.fluss.flink.tiering.source.split.TieringBootstrapSplit;
+import org.apache.fluss.flink.tiering.source.split.TieringLogSplit;
+import org.apache.fluss.flink.tiering.source.split.TieringSnapshotSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import org.apache.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
@@ -426,6 +429,12 @@ public class TieringSourceEnumerator
                                 taskType,
                                 tieringTable.hasHoldPartition()
                                         ? tieringTable.getHoldPartition()
+                                        : null,
+                                tieringTable.hasHoldPartitionId()
+                                        ? tieringTable.getHoldPartitionId()
+                                        : null,
+                                tieringTable.hasRemoteDataDir()
+                                        ? tieringTable.getRemoteDataDir()
                                         : null);
                 LOG.info(
                         "Tiering task requested: table={}, epoch={}, taskType={}, holdPartition={}.",
@@ -476,7 +485,9 @@ public class TieringSourceEnumerator
                                     tieringTable.taskType,
                                     tieringTable.taskType == LakeTieringTaskType.BOOTSTRAP_UPGRADE
                                             ? tieringTable.holdPartition
-                                            : null));
+                                            : null,
+                                    tieringTable.remoteDataDir),
+                            tieringTable.tieringEpoch);
             // shuffle tiering split to avoid splits tiering skew
             // after introduce tiering max duration
             Collections.shuffle(tieringSplits);
@@ -520,26 +531,73 @@ public class TieringSourceEnumerator
         private final TablePath tablePath;
         private final LakeTieringTaskType taskType;
         private final @Nullable String holdPartition;
+        private final @Nullable Long holdPartitionId;
+        private final @Nullable String remoteDataDir;
 
         private TieringTaskInfo(
                 long tableId,
                 long tieringEpoch,
                 TablePath tablePath,
                 LakeTieringTaskType taskType,
-                @Nullable String holdPartition) {
+                @Nullable String holdPartition,
+                @Nullable Long holdPartitionId,
+                @Nullable String remoteDataDir) {
             this.tableId = tableId;
             this.tieringEpoch = tieringEpoch;
             this.tablePath = tablePath;
             this.taskType = taskType;
             this.holdPartition = holdPartition;
+            this.holdPartitionId = holdPartitionId;
+            this.remoteDataDir = remoteDataDir;
         }
     }
 
-    private List<TieringSplit> populateNumberOfTieringSplits(List<TieringSplit> tieringSplits) {
+    private List<TieringSplit> populateNumberOfTieringSplits(
+            List<TieringSplit> tieringSplits, long tieringEpoch) {
         int numberOfSplits = tieringSplits.size();
         return tieringSplits.stream()
-                .map(split -> split.copy(numberOfSplits))
+                .map(split -> copyWithEpoch(split.copy(numberOfSplits), tieringEpoch))
                 .collect(Collectors.toList());
+    }
+
+    private TieringSplit copyWithEpoch(TieringSplit split, long tieringEpoch) {
+        if (split.isTieringBootstrapSplit()) {
+            TieringBootstrapSplit bootstrapSplit = split.asTieringBootstrapSplit();
+            return new TieringBootstrapSplit(
+                    bootstrapSplit.getTablePath(),
+                    bootstrapSplit.getTableBucket(),
+                    bootstrapSplit.getPartitionName(),
+                    bootstrapSplit.getSnapshotId(),
+                    bootstrapSplit.getNumberOfSplits(),
+                    bootstrapSplit.shouldSkipCurrentRound(),
+                    tieringEpoch);
+        }
+
+        if (split.isTieringSnapshotSplit()) {
+            TieringSnapshotSplit snapshotSplit = split.asTieringSnapshotSplit();
+            return new TieringSnapshotSplit(
+                    snapshotSplit.getTablePath(),
+                    snapshotSplit.getTableBucket(),
+                    snapshotSplit.getPartitionName(),
+                    snapshotSplit.getSnapshotId(),
+                    snapshotSplit.getLogOffsetOfSnapshot(),
+                    snapshotSplit.getNumberOfSplits(),
+                    snapshotSplit.shouldSkipCurrentRound(),
+                    snapshotSplit.getTaskType(),
+                    tieringEpoch);
+        }
+
+        TieringLogSplit logSplit = split.asTieringLogSplit();
+        return new TieringLogSplit(
+                logSplit.getTablePath(),
+                logSplit.getTableBucket(),
+                logSplit.getPartitionName(),
+                logSplit.getStartingOffset(),
+                logSplit.getStoppingOffset(),
+                logSplit.getNumberOfSplits(),
+                logSplit.shouldSkipCurrentRound(),
+                logSplit.getTaskType(),
+                tieringEpoch);
     }
 
     @Override

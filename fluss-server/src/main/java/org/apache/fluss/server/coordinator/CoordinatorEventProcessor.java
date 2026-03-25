@@ -21,7 +21,6 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.cluster.ServerType;
-import org.apache.fluss.cluster.TabletServerInfo;
 import org.apache.fluss.cluster.rebalance.RebalancePlanForBucket;
 import org.apache.fluss.cluster.rebalance.RebalanceProgress;
 import org.apache.fluss.cluster.rebalance.RebalanceStatus;
@@ -41,6 +40,7 @@ import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.exception.TabletServerNotAvailableException;
 import org.apache.fluss.exception.UnknownServerException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
+import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.SchemaInfo;
@@ -52,11 +52,13 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.messages.AddServerTagResponse;
 import org.apache.fluss.rpc.messages.AdjustIsrResponse;
 import org.apache.fluss.rpc.messages.CancelRebalanceResponse;
+import org.apache.fluss.rpc.messages.CommitBootstrapArtifactsResponse;
 import org.apache.fluss.rpc.messages.CommitKvSnapshotResponse;
 import org.apache.fluss.rpc.messages.CommitLakeTableSnapshotResponse;
 import org.apache.fluss.rpc.messages.CommitRemoteLogManifestResponse;
 import org.apache.fluss.rpc.messages.ControlledShutdownResponse;
 import org.apache.fluss.rpc.messages.ListRebalanceProgressResponse;
+import org.apache.fluss.rpc.messages.PbCommitBootstrapArtifactsRespForTable;
 import org.apache.fluss.rpc.messages.PbCommitLakeTableSnapshotRespForTable;
 import org.apache.fluss.rpc.messages.RebalanceResponse;
 import org.apache.fluss.rpc.messages.RemoveServerTagResponse;
@@ -65,6 +67,7 @@ import org.apache.fluss.server.coordinator.event.AccessContextEvent;
 import org.apache.fluss.server.coordinator.event.AddServerTagEvent;
 import org.apache.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
 import org.apache.fluss.server.coordinator.event.CancelRebalanceEvent;
+import org.apache.fluss.server.coordinator.event.CommitBootstrapArtifactsEvent;
 import org.apache.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
@@ -97,11 +100,13 @@ import org.apache.fluss.server.coordinator.statemachine.ReplicaLeaderElection.Re
 import org.apache.fluss.server.coordinator.statemachine.ReplicaStateMachine;
 import org.apache.fluss.server.coordinator.statemachine.TableBucketStateMachine;
 import org.apache.fluss.server.entity.AdjustIsrResultForBucket;
+import org.apache.fluss.server.entity.BootstrapArtifact;
 import org.apache.fluss.server.entity.CommitLakeTableSnapshotsData;
 import org.apache.fluss.server.entity.CommitRemoteLogManifestData;
 import org.apache.fluss.server.entity.DeleteReplicaResultForBucket;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
+import org.apache.fluss.server.kv.snapshot.CompletedSnapshotHandle;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshotStore;
 import org.apache.fluss.server.metadata.CoordinatorMetadataCache;
 import org.apache.fluss.server.metadata.ServerInfo;
@@ -160,7 +165,6 @@ import static org.apache.fluss.server.coordinator.statemachine.ReplicaState.Repl
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeAdjustIsrResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeListRebalanceProgressResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeRebalanceResponse;
-import static org.apache.fluss.server.utils.TableAssignmentUtils.generateAssignment;
 import static org.apache.fluss.utils.concurrent.FutureUtils.completeFromCallable;
 
 /** An implementation for {@link EventProcessor}. */
@@ -193,6 +197,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
     private final CompletedSnapshotStoreManager completedSnapshotStoreManager;
     private final LakeTableHelper lakeTableHelper;
     private final BootstrapUpgradeStateManager bootstrapUpgradeStateManager;
+    @Nullable private final String remoteDataDir;
 
     public CoordinatorEventProcessor(
             ZooKeeperClient zooKeeperClient,
@@ -260,6 +265,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         this.lakeTableHelper =
                 new LakeTableHelper(zooKeeperClient, conf.getString(ConfigOptions.REMOTE_DATA_DIR));
         this.bootstrapUpgradeStateManager = new BootstrapUpgradeStateManager(zooKeeperClient);
+        this.remoteDataDir = conf.getOptional(ConfigOptions.REMOTE_DATA_DIR).orElse(null);
     }
 
     public CoordinatorEventManager getCoordinatorEventManager() {
@@ -644,6 +650,11 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     (CommitLakeTableSnapshotEvent) event;
             tryProcessCommitLakeTableSnapshot(
                     commitLakeTableSnapshotEvent, commitLakeTableSnapshotEvent.getRespCallback());
+        } else if (event instanceof CommitBootstrapArtifactsEvent) {
+            CommitBootstrapArtifactsEvent commitBootstrapArtifactsEvent =
+                    (CommitBootstrapArtifactsEvent) event;
+            handleCommitBootstrapArtifacts(
+                    commitBootstrapArtifactsEvent, commitBootstrapArtifactsEvent.getRespCallback());
         } else if (event instanceof ControlledShutdownEvent) {
             ControlledShutdownEvent controlledShutdownEvent = (ControlledShutdownEvent) event;
             completeFromCallable(
@@ -887,6 +898,24 @@ public class CoordinatorEventProcessor implements EventProcessor {
         }
 
         long tableId = createPartitionEvent.getTableId();
+
+        // Skip activation for bootstrap hold partition still in progress.
+        // The partition metadata is created early (in enrichTieringTask) so the tiering
+        // service can construct remote SST paths, but activation must be deferred until
+        // CompletedSnapshot is registered. The partition will be activated explicitly
+        // after bootstrap completion via maybeCompleteBootstrapUpgrade().
+        Optional<BootstrapUpgradeState> bootstrapState = bootstrapUpgradeStateManager.get(tableId);
+        if (bootstrapState.isPresent()
+                && bootstrapState.get().getStatus() == BootstrapUpgradeStatus.IN_PROGRESS
+                && bootstrapState.get().getHoldPartitionId() != null
+                && bootstrapState.get().getHoldPartitionId() == partitionId) {
+            LOG.info(
+                    "Deferring activation for bootstrap partition {} (table {}) "
+                            + "- bootstrap still IN_PROGRESS.",
+                    partitionId,
+                    tableId);
+            return;
+        }
         TablePath tablePath = createPartitionEvent.getTablePath();
         String partitionName = createPartitionEvent.getPartitionName();
         PartitionAssignment partitionAssignment = createPartitionEvent.getPartitionAssignment();
@@ -2053,6 +2082,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                     throw new FlussRuntimeException(
                                             "Lake snapshot metadata is null for table " + tableId);
                                 }
+                                if (snapshot.getTieringEpoch() != null) {
+                                    lakeTableTieringManager.validateTieringEpoch(
+                                            tableId, snapshot.getTieringEpoch());
+                                }
                                 lakeTableHelper.registerLakeTableSnapshotV2(
                                         tableId,
                                         snapshot.getLakeSnapshotMetadata(),
@@ -2075,6 +2108,81 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 });
     }
 
+    private void handleCommitBootstrapArtifacts(
+            CommitBootstrapArtifactsEvent commitBootstrapArtifactsEvent,
+            CompletableFuture<CommitBootstrapArtifactsResponse> callback) {
+        Map<Long, Map<TableBucket, BootstrapArtifact>> bootstrapArtifactsByTableId =
+                commitBootstrapArtifactsEvent.getBootstrapArtifactsByTableId();
+        ioExecutor.execute(
+                () -> {
+                    try {
+                        CommitBootstrapArtifactsResponse response =
+                                new CommitBootstrapArtifactsResponse();
+                        for (Map.Entry<Long, Map<TableBucket, BootstrapArtifact>> artifactEntry :
+                                bootstrapArtifactsByTableId.entrySet()) {
+                            long tableId = artifactEntry.getKey();
+                            PbCommitBootstrapArtifactsRespForTable tableResp =
+                                    response.addTableResp();
+                            tableResp.setTableId(tableId);
+                            try {
+                                maybeCompleteBootstrapUpgrade(tableId, artifactEntry.getValue());
+                            } catch (Exception e) {
+                                ApiError error = ApiError.fromThrowable(e);
+                                tableResp.setError(error.error().code(), error.message());
+                            }
+                        }
+                        callback.complete(response);
+                    } catch (Exception e) {
+                        callback.completeExceptionally(e);
+                    }
+                });
+    }
+
+    /**
+     * Completes a bootstrap upgrade when bootstrap artifacts are received. Registers a
+     * CompletedSnapshot for each bucket, activates the partition via CreatePartitionEvent, and
+     * marks the bootstrap upgrade as COMPLETE.
+     */
+    private void maybeCompleteBootstrapUpgrade(
+            long tableId, Map<TableBucket, BootstrapArtifact> artifacts) {
+        BootstrapUpgradeState bootstrapUpgradeState =
+                bootstrapUpgradeStateManager.get(tableId).orElse(null);
+        if (bootstrapUpgradeState == null
+                || bootstrapUpgradeState.getStatus() != BootstrapUpgradeStatus.IN_PROGRESS) {
+            return;
+        }
+
+        String holdPartition = bootstrapUpgradeState.getHoldPartition();
+        Long holdPartitionId = bootstrapUpgradeState.getHoldPartitionId();
+        TableInfo tableInfo = coordinatorContext.getTableInfoById(tableId);
+        TablePath tablePath = tableInfo.getTablePath();
+
+        // Register CompletedSnapshot for each bucket so replicas can find the bootstrap SST.
+        if (tableInfo.isPartitioned() && holdPartitionId != null) {
+            registerBootstrapCompletedSnapshots(
+                    tableId, tablePath, tableInfo, holdPartition, holdPartitionId, artifacts);
+        }
+
+        // Mark COMPLETE before activating the partition. This ensures that when the
+        // CreatePartitionEvent is processed by processCreatePartition(), the bootstrap
+        // state is no longer IN_PROGRESS, so the partition activation proceeds normally.
+        bootstrapUpgradeStateManager.markComplete(tableId);
+
+        if (tableInfo.isPartitioned() && holdPartitionId != null) {
+            activateBootstrapPartition(
+                    tableId, tablePath, holdPartition, holdPartitionId, tableInfo);
+        }
+        LOG.info(
+                "Bootstrap upgrade is marked COMPLETE for table {} ({}) via commitLakeTableSnapshot.",
+                tableId,
+                tablePath);
+    }
+
+    /**
+     * Completes a bootstrap upgrade without artifact data (called from the regular lake snapshot
+     * commit path). Partition was already created early in enrichTieringTask(), and
+     * CompletedSnapshot registration is handled by the bootstrap artifacts path.
+     */
     private void maybeCompleteBootstrapUpgrade(long tableId) {
         BootstrapUpgradeState bootstrapUpgradeState =
                 bootstrapUpgradeStateManager.get(tableId).orElse(null);
@@ -2084,48 +2192,121 @@ public class CoordinatorEventProcessor implements EventProcessor {
         }
 
         String holdPartition = bootstrapUpgradeState.getHoldPartition();
-        TableInfo tableInfo = coordinatorContext.getTableInfoById(tableId);
-        TablePath tablePath = tableInfo.getTablePath();
+        Long holdPartitionId = bootstrapUpgradeState.getHoldPartitionId();
+        TablePath tablePath = coordinatorContext.getTableInfoById(tableId).getTablePath();
 
-        if (tableInfo.isPartitioned()) {
-            ensureBootstrapHoldPartitionExists(tableId, tableInfo, holdPartition);
-        }
-
-        bootstrapUpgradeStateManager.markComplete(tableId, holdPartition);
+        bootstrapUpgradeStateManager.markComplete(tableId);
         LOG.info(
                 "Bootstrap upgrade is marked COMPLETE for table {} ({}) via commitLakeTableSnapshot.",
                 tableId,
                 tablePath);
     }
 
-    private void ensureBootstrapHoldPartitionExists(
-            long tableId, TableInfo tableInfo, String holdPartition) {
-        ResolvedPartitionSpec resolvedPartitionSpec =
-                parseBootstrapHoldPartition(tableInfo, holdPartition);
-        String partitionName = resolvedPartitionSpec.getPartitionName();
-        if (metadataManager.getPartitions(tableInfo.getTablePath()).contains(partitionName)) {
+    /**
+     * Registers a {@link CompletedSnapshot} for each bucket in the bootstrap artifacts so that
+     * replicas can find and download the bootstrap SST when they become leaders.
+     *
+     * <p>The bootstrap writer has already written a {@code _METADATA} JSON file at the snapshot
+     * path. This method reads the {@link CompletedSnapshot} from that path and registers it via
+     * {@link CompletedSnapshotStore}.
+     */
+    private void registerBootstrapCompletedSnapshots(
+            long tableId,
+            TablePath tablePath,
+            TableInfo tableInfo,
+            String holdPartition,
+            long holdPartitionId,
+            Map<TableBucket, BootstrapArtifact> artifacts) {
+        for (Map.Entry<TableBucket, BootstrapArtifact> entry : artifacts.entrySet()) {
+            TableBucket tableBucket = entry.getKey();
+            BootstrapArtifact artifact = entry.getValue();
+
+            String snapshotPath = artifact.getSnapshotPath();
+            if (snapshotPath == null) {
+                LOG.warn(
+                        "No snapshot path for bootstrap artifact of bucket {}, skipping.",
+                        tableBucket);
+                continue;
+            }
+
+            try {
+                // Read the CompletedSnapshot from the _METADATA file that the bootstrap
+                // writer already wrote at the snapshot location.
+                FsPath snapshotLocation = new FsPath(snapshotPath);
+                FsPath metadataFilePath = CompletedSnapshot.getMetadataFilePath(snapshotLocation);
+                CompletedSnapshotHandle handle =
+                        new CompletedSnapshotHandle(1L, metadataFilePath, 0L);
+                CompletedSnapshot completedSnapshot = handle.retrieveCompleteSnapshot();
+
+                CompletedSnapshotStore store =
+                        completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(
+                                tablePath, tableBucket);
+                store.add(completedSnapshot);
+                LOG.info(
+                        "Registered bootstrap CompletedSnapshot for bucket {} "
+                                + "(snapshotPath={}).",
+                        tableBucket,
+                        snapshotPath);
+            } catch (Exception e) {
+                LOG.error(
+                        "Failed to register bootstrap CompletedSnapshot for bucket {}.",
+                        tableBucket,
+                        e);
+                throw new FlussRuntimeException(
+                        "Failed to register bootstrap CompletedSnapshot for bucket " + tableBucket,
+                        e);
+            }
+        }
+    }
+
+    /**
+     * Activates the bootstrap partition by firing a {@link CreatePartitionEvent}, which triggers
+     * the state machine transitions and sends notifyLeaderAndIsr to replicas.
+     */
+    private void activateBootstrapPartition(
+            long tableId,
+            TablePath tablePath,
+            String holdPartition,
+            long holdPartitionId,
+            TableInfo tableInfo) {
+        String partitionName =
+                parseBootstrapHoldPartition(tableInfo, holdPartition).getPartitionName();
+
+        // Read the partition assignment from ZK (stored during early partition creation).
+        PartitionAssignment partitionAssignment;
+        try {
+            Optional<PartitionAssignment> optAssignment =
+                    zooKeeperClient.getPartitionAssignment(holdPartitionId);
+            if (!optAssignment.isPresent()) {
+                LOG.error(
+                        "No partition assignment found in ZK for bootstrap partition {} "
+                                + "(partitionId={}) of table {}. Skipping activation.",
+                        holdPartition,
+                        holdPartitionId,
+                        tablePath);
+                return;
+            }
+            partitionAssignment = optAssignment.get();
+        } catch (Exception e) {
+            LOG.error(
+                    "Failed to read partition assignment for bootstrap partition {} "
+                            + "(partitionId={}) of table {}.",
+                    holdPartition,
+                    holdPartitionId,
+                    tablePath,
+                    e);
             return;
         }
 
-        int replicaFactor = tableInfo.getTableConfig().getReplicationFactor();
-        TabletServerInfo[] servers = serverMetadataCache.getLiveServers();
-        Map<Integer, BucketAssignment> bucketAssignments =
-                generateAssignment(tableInfo.getNumBuckets(), replicaFactor, servers)
-                        .getBucketAssignments();
-        PartitionAssignment partitionAssignment =
-                new PartitionAssignment(tableId, bucketAssignments);
-
-        metadataManager.createPartition(
-                tableInfo.getTablePath(),
-                tableId,
-                partitionAssignment,
-                resolvedPartitionSpec,
-                true);
+        coordinatorEventManager.put(
+                new CreatePartitionEvent(
+                        tablePath, tableId, holdPartitionId, partitionName, partitionAssignment));
         LOG.info(
-                "Created bootstrap hold partition {} (partitionName={}) for table {}.",
-                holdPartition,
+                "Fired CreatePartitionEvent for bootstrap partition {} (partitionId={}) "
+                        + "of table {}.",
                 partitionName,
-                tableInfo.getTablePath());
+                holdPartitionId,
+                tablePath);
     }
 
     private ResolvedPartitionSpec parseBootstrapHoldPartition(

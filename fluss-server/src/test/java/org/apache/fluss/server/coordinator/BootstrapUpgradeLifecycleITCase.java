@@ -132,7 +132,7 @@ class BootstrapUpgradeLifecycleITCase {
     }
 
     @Test
-    void testHeartbeatFinishDoesNotMarkBootstrapComplete() throws Exception {
+    void testHeartbeatFinishMarksBootstrapComplete() throws Exception {
         TablePath tablePath = TablePath.of("fluss", "test_bootstrap_complete_fallback");
         createBootstrapLakeTable(tablePath, "dt=2026-03-27", Duration.ofMillis(100));
 
@@ -161,24 +161,22 @@ class BootstrapUpgradeLifecycleITCase {
         assertThat(finishResponse.getFinishedTableRespAt(0).hasError()).isFalse();
 
         BootstrapUpgradeState stateAfterFinish =
-                FLUSS_CLUSTER_EXTENSION
-                        .getZooKeeperClient()
-                        .getBootstrapUpgradeState(tableId)
-                        .orElseThrow(
-                                () ->
-                                        new AssertionError(
-                                                "Bootstrap-upgrade state should exist after finish heartbeat."));
-        assertThat(stateAfterFinish.getStatus()).isEqualTo(BootstrapUpgradeStatus.IN_PROGRESS);
+                waitValue(
+                        () ->
+                                FLUSS_CLUSTER_EXTENSION
+                                        .getZooKeeperClient()
+                                        .getBootstrapUpgradeState(tableId)
+                                        .filter(
+                                                state ->
+                                                        state.getStatus()
+                                                                == BootstrapUpgradeStatus.COMPLETE),
+                        Duration.ofMinutes(1),
+                        "Fail to wait bootstrap-upgrade state COMPLETE after finish heartbeat.");
         assertThat(stateAfterFinish.getHoldPartition()).isEqualTo("dt=2026-03-27");
 
-        PbLakeTieringTableInfo reassignedBootstrapTask =
-                waitValue(
-                        () -> requestTableFor(tableId),
-                        Duration.ofMinutes(1),
-                        "Fail to wait bootstrap tiering task after finish heartbeat.");
-        assertThat(reassignedBootstrapTask.getTaskType())
-                .isEqualTo(LakeTieringTaskType.BOOTSTRAP_UPGRADE.code());
-        assertThat(reassignedBootstrapTask.getHoldPartition()).isEqualTo("dt=2026-03-27");
+        LakeTieringHeartbeatResponse heartbeatResponse =
+                coordinatorGateway.lakeTieringHeartbeat(new LakeTieringHeartbeatRequest()).get();
+        assertThat(heartbeatResponse.hasTieringTable()).isFalse();
     }
 
     @Test

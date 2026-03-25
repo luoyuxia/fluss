@@ -53,6 +53,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
+import org.apache.fluss.metadata.TablePartition;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.messages.AcquireKvSnapshotLeaseRequest;
@@ -67,6 +68,8 @@ import org.apache.fluss.rpc.messages.AlterTableRequest;
 import org.apache.fluss.rpc.messages.AlterTableResponse;
 import org.apache.fluss.rpc.messages.CancelRebalanceRequest;
 import org.apache.fluss.rpc.messages.CancelRebalanceResponse;
+import org.apache.fluss.rpc.messages.CommitBootstrapArtifactsRequest;
+import org.apache.fluss.rpc.messages.CommitBootstrapArtifactsResponse;
 import org.apache.fluss.rpc.messages.CommitKvSnapshotRequest;
 import org.apache.fluss.rpc.messages.CommitKvSnapshotResponse;
 import org.apache.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
@@ -138,6 +141,7 @@ import org.apache.fluss.server.coordinator.event.AccessContextEvent;
 import org.apache.fluss.server.coordinator.event.AddServerTagEvent;
 import org.apache.fluss.server.coordinator.event.AdjustIsrReceivedEvent;
 import org.apache.fluss.server.coordinator.event.CancelRebalanceEvent;
+import org.apache.fluss.server.coordinator.event.CommitBootstrapArtifactsEvent;
 import org.apache.fluss.server.coordinator.event.CommitKvSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitLakeTableSnapshotEvent;
 import org.apache.fluss.server.coordinator.event.CommitRemoteLogManifestEvent;
@@ -204,6 +208,7 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.addTableOffset
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.fromTablePath;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getAcquireKvSnapshotLeaseData;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getAdjustIsrData;
+import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getBootstrapArtifactsData;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getCommitLakeTableSnapshotData;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getCommitRemoteLogManifestData;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getPartitionSpec;
@@ -243,6 +248,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private final ProducerOffsetsManager producerOffsetsManager;
     private final KvSnapshotLeaseManager kvSnapshotLeaseManager;
     private final BootstrapUpgradeStateManager bootstrapUpgradeStateManager;
+    private final @Nullable String remoteDataDir;
 
     public CoordinatorService(
             Configuration conf,
@@ -279,6 +285,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         this.ioExecutor = ioExecutor;
         this.lakeTableHelper =
                 new LakeTableHelper(zkClient, conf.getString(ConfigOptions.REMOTE_DATA_DIR));
+        this.remoteDataDir = conf.getOptional(ConfigOptions.REMOTE_DATA_DIR).orElse(null);
         this.bootstrapUpgradeStateManager = new BootstrapUpgradeStateManager(zkClient);
 
         // Initialize and start the producer snapshot manager
@@ -821,6 +828,18 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     }
 
     @Override
+    public CompletableFuture<CommitBootstrapArtifactsResponse> commitBootstrapArtifacts(
+            CommitBootstrapArtifactsRequest request) {
+        CompletableFuture<CommitBootstrapArtifactsResponse> response = new CompletableFuture<>();
+        eventManagerSupplier
+                .get()
+                .put(
+                        new CommitBootstrapArtifactsEvent(
+                                getBootstrapArtifactsData(request), response));
+        return response;
+    }
+
+    @Override
     public CompletableFuture<LakeTieringHeartbeatResponse> lakeTieringHeartbeat(
             LakeTieringHeartbeatRequest request) {
         LakeTieringHeartbeatResponse heartbeatResponse = new LakeTieringHeartbeatResponse();
@@ -869,6 +888,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         finishTable.getTableId(),
                         finishTable.getTieringEpoch(),
                         forceFinishedTableId.contains(finishTable.getTableId()));
+                maybeCompleteBootstrapUpgradeByHeartbeat(finishTable.getTableId());
             } catch (Throwable e) {
                 pbHeartbeatRespForTable.setError(ApiError.fromThrowable(e).toErrorResponse());
             }
@@ -888,6 +908,20 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     heartbeatResponse
                             .getTieringTable()
                             .setHoldPartition(tieringTask.holdPartition());
+                }
+                // For bootstrap tasks, include partition ID and remote data dir
+                // so the tiering service can write SST to the correct remote path.
+                if (tieringTask.taskType() == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
+                    BootstrapUpgradeState state =
+                            bootstrapUpgradeStateManager.get(tieringTask.tableId()).orElse(null);
+                    if (state != null && state.getHoldPartitionId() != null) {
+                        heartbeatResponse
+                                .getTieringTable()
+                                .setHoldPartitionId(state.getHoldPartitionId());
+                    }
+                    if (remoteDataDir != null) {
+                        heartbeatResponse.getTieringTable().setRemoteDataDir(remoteDataDir);
+                    }
                 }
             }
         }
@@ -912,6 +946,14 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         tableInfo.getTablePath());
                 bootstrapUpgradeStateManager.initializeInProgress(
                         lakeTieringTableInfo.tableId(), holdPartition);
+
+                // For partitioned tables, create partition metadata early so we can
+                // pass the partition ID to the tiering service for remote path construction.
+                if (tableInfo.isPartitioned()) {
+                    ensureBootstrapHoldPartitionMetadataCreated(
+                            lakeTieringTableInfo.tableId(), tableInfo, holdPartition);
+                }
+
                 return new LakeTieringTableInfo(
                         lakeTieringTableInfo.tableId(),
                         lakeTieringTableInfo.tablePath(),
@@ -922,6 +964,19 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             if (bootstrapUpgradeState.getStatus() != BootstrapUpgradeStatus.IN_PROGRESS) {
                 return lakeTieringTableInfo;
             }
+
+            // For partitioned tables, ensure partition metadata is created (recovery case
+            // where state exists but partition wasn't created yet).
+            if (bootstrapUpgradeState.getHoldPartitionId() == null) {
+                TableInfo tableInfo = metadataManager.getTable(lakeTieringTableInfo.tablePath());
+                if (tableInfo.isPartitioned()) {
+                    ensureBootstrapHoldPartitionMetadataCreated(
+                            lakeTieringTableInfo.tableId(),
+                            tableInfo,
+                            bootstrapUpgradeState.getHoldPartition());
+                }
+            }
+
             return new LakeTieringTableInfo(
                     lakeTieringTableInfo.tableId(),
                     lakeTieringTableInfo.tablePath(),
@@ -934,6 +989,89 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                     lakeTieringTableInfo.tableId(),
                     e);
             return lakeTieringTableInfo;
+        }
+    }
+
+    private void maybeCompleteBootstrapUpgradeByHeartbeat(long tableId) {
+        BootstrapUpgradeState bootstrapUpgradeState =
+                bootstrapUpgradeStateManager.get(tableId).orElse(null);
+        if (bootstrapUpgradeState == null
+                || bootstrapUpgradeState.getStatus() != BootstrapUpgradeStatus.IN_PROGRESS) {
+            return;
+        }
+
+        TablePath tablePath = getTablePathById(tableId);
+        String holdPartition = bootstrapUpgradeState.getHoldPartition();
+
+        // Partition metadata is already created early in enrichTieringTask().
+        // TODO: Register CompletedSnapshot and activate partition via CreatePartitionEvent.
+        bootstrapUpgradeStateManager.markComplete(tableId);
+        LOG.info(
+                "Bootstrap upgrade is marked COMPLETE for table {} ({}) via finish heartbeat.",
+                tableId,
+                tablePath);
+    }
+
+    /**
+     * Creates partition metadata (ZK only, no state machine activation) and stores the assigned
+     * partition ID in the bootstrap-upgrade state. This is idempotent - if the partition already
+     * exists, it just ensures the partition ID is stored in the state.
+     */
+    private void ensureBootstrapHoldPartitionMetadataCreated(
+            long tableId, TableInfo tableInfo, String holdPartition) {
+        ResolvedPartitionSpec resolvedPartitionSpec =
+                parseBootstrapHoldPartition(tableInfo, holdPartition);
+        String partitionName = resolvedPartitionSpec.getPartitionName();
+
+        // Create partition metadata in ZK if it doesn't exist yet (idempotent).
+        if (!metadataManager.getPartitions(tableInfo.getTablePath()).contains(partitionName)) {
+            int replicaFactor = tableInfo.getTableConfig().getReplicationFactor();
+            TabletServerInfo[] servers = metadataCache.getLiveServers();
+            Map<Integer, BucketAssignment> bucketAssignments =
+                    generateAssignment(tableInfo.getNumBuckets(), replicaFactor, servers)
+                            .getBucketAssignments();
+            PartitionAssignment partitionAssignment =
+                    new PartitionAssignment(tableId, bucketAssignments);
+
+            metadataManager.createPartition(
+                    tableInfo.getTablePath(),
+                    tableId,
+                    partitionAssignment,
+                    resolvedPartitionSpec,
+                    true);
+            LOG.info(
+                    "Created bootstrap hold partition metadata {} (partitionName={}) for table {}.",
+                    holdPartition,
+                    partitionName,
+                    tableInfo.getTablePath());
+        }
+
+        // Retrieve the partition ID and store it in the bootstrap-upgrade state.
+        Optional<TablePartition> tablePartition =
+                metadataManager.getOptionalTablePartition(tableInfo.getTablePath(), partitionName);
+        if (tablePartition.isPresent()) {
+            long partitionId = tablePartition.get().getPartitionId();
+            bootstrapUpgradeStateManager.updateHoldPartitionId(tableId, partitionId);
+            LOG.info(
+                    "Stored bootstrap hold partition ID {} for table {} partition {}.",
+                    partitionId,
+                    tableId,
+                    partitionName);
+        } else {
+            LOG.warn(
+                    "Failed to retrieve partition ID for bootstrap hold partition {} of table {}.",
+                    partitionName,
+                    tableId);
+        }
+    }
+
+    private ResolvedPartitionSpec parseBootstrapHoldPartition(
+            TableInfo tableInfo, String holdPartition) {
+        try {
+            return ResolvedPartitionSpec.fromPartitionQualifiedName(holdPartition);
+        } catch (Exception ignored) {
+            return ResolvedPartitionSpec.fromPartitionName(
+                    tableInfo.getPartitionKeys(), holdPartition);
         }
     }
 

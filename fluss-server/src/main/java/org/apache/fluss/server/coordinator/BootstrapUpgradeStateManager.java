@@ -22,6 +22,8 @@ import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.BootstrapUpgradeState;
 import org.apache.fluss.server.zk.data.BootstrapUpgradeStatus;
 
+import javax.annotation.Nullable;
+
 import java.util.Optional;
 
 /** Coordinator-side manager for bootstrap-upgrade state access. */
@@ -35,6 +37,12 @@ public class BootstrapUpgradeStateManager {
 
     /** Initializes bootstrap-upgrade state with {@link BootstrapUpgradeStatus#IN_PROGRESS}. */
     public void initializeInProgress(long tableId, String holdPartition) {
+        initializeInProgress(tableId, holdPartition, null);
+    }
+
+    /** Initializes bootstrap-upgrade state with {@link BootstrapUpgradeStatus#IN_PROGRESS}. */
+    public void initializeInProgress(
+            long tableId, String holdPartition, @Nullable Long holdPartitionId) {
         try {
             Optional<BootstrapUpgradeState> existing =
                     zooKeeperClient.getBootstrapUpgradeState(tableId);
@@ -52,7 +60,8 @@ public class BootstrapUpgradeStateManager {
             }
             upsert(
                     tableId,
-                    new BootstrapUpgradeState(BootstrapUpgradeStatus.IN_PROGRESS, holdPartition),
+                    new BootstrapUpgradeState(
+                            BootstrapUpgradeStatus.IN_PROGRESS, holdPartition, holdPartitionId),
                     false);
         } catch (FlussRuntimeException e) {
             throw e;
@@ -64,12 +73,62 @@ public class BootstrapUpgradeStateManager {
         }
     }
 
+    /**
+     * Updates the holdPartitionId on an existing IN_PROGRESS bootstrap-upgrade state. This is used
+     * after partition metadata is created early to store the assigned partition ID.
+     */
+    public void updateHoldPartitionId(long tableId, long holdPartitionId) {
+        try {
+            Optional<BootstrapUpgradeState> existing =
+                    zooKeeperClient.getBootstrapUpgradeState(tableId);
+            if (!existing.isPresent()) {
+                throw new FlussRuntimeException(
+                        String.format(
+                                "Bootstrap-upgrade state does not exist for table %d.", tableId));
+            }
+            BootstrapUpgradeState existingState = existing.get();
+            upsert(
+                    tableId,
+                    new BootstrapUpgradeState(
+                            existingState.getStatus(),
+                            existingState.getHoldPartition(),
+                            holdPartitionId),
+                    true);
+        } catch (FlussRuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new FlussRuntimeException(
+                    String.format("Failed to update holdPartitionId for table %d.", tableId), e);
+        }
+    }
+
     /** Marks bootstrap-upgrade state as {@link BootstrapUpgradeStatus#COMPLETE}. */
-    public void markComplete(long tableId, String holdPartition) {
-        upsert(
-                tableId,
-                new BootstrapUpgradeState(BootstrapUpgradeStatus.COMPLETE, holdPartition),
-                true);
+    public void markComplete(long tableId) {
+        try {
+            BootstrapUpgradeState existing =
+                    get(tableId)
+                            .orElseThrow(
+                                    () ->
+                                            new FlussRuntimeException(
+                                                    String.format(
+                                                            "Bootstrap-upgrade state does not exist for table %d.",
+                                                            tableId)));
+            upsert(
+                    tableId,
+                    new BootstrapUpgradeState(
+                            BootstrapUpgradeStatus.COMPLETE,
+                            existing.getHoldPartition(),
+                            existing.getHoldPartitionId()),
+                    true);
+        } catch (FlussRuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new FlussRuntimeException(
+                    String.format(
+                            "Failed to mark bootstrap-upgrade state COMPLETE for table %d.",
+                            tableId),
+                    e);
+        }
     }
 
     /** Loads bootstrap-upgrade state for the given table. */

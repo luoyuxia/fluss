@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.zk.data;
 
+import javax.annotation.Nullable;
+
 import java.util.Objects;
 
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -26,10 +28,17 @@ public class BootstrapUpgradeState {
 
     private final BootstrapUpgradeStatus status;
     private final String holdPartition;
+    private final @Nullable Long holdPartitionId;
 
     public BootstrapUpgradeState(BootstrapUpgradeStatus status, String holdPartition) {
+        this(status, holdPartition, null);
+    }
+
+    public BootstrapUpgradeState(
+            BootstrapUpgradeStatus status, String holdPartition, @Nullable Long holdPartitionId) {
         this.status = checkNotNull(status, "status must not be null.");
         this.holdPartition = checkNotNull(holdPartition, "holdPartition must not be null.");
+        this.holdPartitionId = holdPartitionId;
     }
 
     public BootstrapUpgradeStatus getStatus() {
@@ -38,6 +47,10 @@ public class BootstrapUpgradeState {
 
     public String getHoldPartition() {
         return holdPartition;
+    }
+
+    public @Nullable Long getHoldPartitionId() {
+        return holdPartitionId;
     }
 
     @Override
@@ -49,12 +62,14 @@ public class BootstrapUpgradeState {
             return false;
         }
         BootstrapUpgradeState that = (BootstrapUpgradeState) o;
-        return status == that.status && Objects.equals(holdPartition, that.holdPartition);
+        return status == that.status
+                && Objects.equals(holdPartition, that.holdPartition)
+                && Objects.equals(holdPartitionId, that.holdPartitionId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(status, holdPartition);
+        return Objects.hash(status, holdPartition, holdPartitionId);
     }
 
     @Override
@@ -65,6 +80,8 @@ public class BootstrapUpgradeState {
                 + ", holdPartition='"
                 + holdPartition
                 + '\''
+                + ", holdPartitionId="
+                + holdPartitionId
                 + '}';
     }
 }
