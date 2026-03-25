@@ -40,11 +40,7 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
 
     public static final TieringSplitSerializer INSTANCE = new TieringSplitSerializer();
 
-    private static final int VERSION_0 = 0;
     private static final int VERSION_1 = 1;
-    private static final int VERSION_2 = 2;
-    private static final int VERSION_3 = 3;
-    private static final int VERSION_4 = 4;
 
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
@@ -53,7 +49,7 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
     private static final byte TIERING_LOG_SPLIT_FLAG = 2;
     private static final byte TIERING_BOOTSTRAP_SPLIT_FLAG = 3;
 
-    private static final int CURRENT_VERSION = VERSION_4;
+    private static final int CURRENT_VERSION = VERSION_1;
 
     @Override
     public int getVersion() {
@@ -94,9 +90,8 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
         out.writeBoolean(split.shouldSkipCurrentRound());
         // write task type
         out.writeInt(split.getTaskType().code());
-        out.writeLong(split.getTieringEpoch());
 
-        // write remoteDataDir (version 3+)
+        // write remoteDataDir
         if (split.getRemoteDataDir() != null) {
             out.writeBoolean(true);
             out.writeUTF(split.getRemoteDataDir());
@@ -132,11 +127,7 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
 
     @Override
     public TieringSplit deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION_0
-                && version != VERSION_1
-                && version != VERSION_2
-                && version != VERSION_3
-                && version != VERSION_4) {
+        if (version != VERSION_1) {
             throw new IOException("Unknown version " + version);
         }
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
@@ -166,13 +157,9 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
         // deserialize number of splits
         int numberOfSplits = in.readInt();
         boolean skipCurrentRound = in.readBoolean();
-        LakeTieringTaskType taskType =
-                version >= VERSION_1
-                        ? LakeTieringTaskType.fromCode(in.readInt())
-                        : LakeTieringTaskType.NORMAL_TIERING;
-        long tieringEpoch = version >= VERSION_2 ? in.readLong() : -1L;
+        LakeTieringTaskType taskType = LakeTieringTaskType.fromCode(in.readInt());
         String remoteDataDir = null;
-        if (version >= VERSION_3 && in.readBoolean()) {
+        if (in.readBoolean()) {
             remoteDataDir = in.readUTF();
         }
 
@@ -190,7 +177,6 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                     numberOfSplits,
                     skipCurrentRound,
                     taskType,
-                    tieringEpoch,
                     remoteDataDir);
         } else if (splitKind == TIERING_BOOTSTRAP_SPLIT_FLAG) {
             // deserialize snapshot id
@@ -202,7 +188,6 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                     snapshotId,
                     numberOfSplits,
                     skipCurrentRound,
-                    tieringEpoch,
                     remoteDataDir);
         } else {
             // deserialize starting offset
@@ -217,8 +202,7 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                     stoppingOffset,
                     numberOfSplits,
                     skipCurrentRound,
-                    taskType,
-                    tieringEpoch);
+                    taskType);
         }
     }
 }

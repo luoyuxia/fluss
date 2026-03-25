@@ -25,20 +25,14 @@ import javax.annotation.Nullable;
 public class BootstrapArtifact {
     private final TableBucket tableBucket;
     @Nullable private final String partitionName;
-    private final long sstSizeBytes;
-    private final long rowCount;
     @Nullable private final String snapshotPath;
 
     public BootstrapArtifact(
             TableBucket tableBucket,
             @Nullable String partitionName,
-            long sstSizeBytes,
-            long rowCount,
             @Nullable String snapshotPath) {
         this.tableBucket = tableBucket;
         this.partitionName = partitionName;
-        this.sstSizeBytes = sstSizeBytes;
-        this.rowCount = rowCount;
         this.snapshotPath = snapshotPath;
     }
 
@@ -49,14 +43,6 @@ public class BootstrapArtifact {
     @Nullable
     public String getPartitionName() {
         return partitionName;
-    }
-
-    public long getSstSizeBytes() {
-        return sstSizeBytes;
-    }
-
-    public long getRowCount() {
-        return rowCount;
     }
 
     @Nullable

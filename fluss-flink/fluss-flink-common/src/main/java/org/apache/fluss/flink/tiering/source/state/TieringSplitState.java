@@ -47,8 +47,7 @@ public class TieringSplitState {
                     split.getLogOffsetOfSnapshot(),
                     split.getNumberOfSplits(),
                     split.shouldSkipCurrentRound(),
-                    split.getTaskType(),
-                    split.getTieringEpoch());
+                    split.getTaskType());
         } else {
             final TieringLogSplit split = (TieringLogSplit) tieringSplit;
             return new TieringLogSplit(

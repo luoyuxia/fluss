@@ -266,7 +266,7 @@ final class BootstrapSstWriter implements Closeable {
 
         // Record immediately to prevent duplicate submissions.
         uploadedSstFiles.put(
-                origSstName, new SnapshotFileInfo(remotePath.toString(), uuidFileName, fileSize));
+                origSstName, new SnapshotFileInfo(remotePath.toString(), origSstName, fileSize));
 
         CompletableFuture<?> future =
                 CompletableFuture.runAsync(
@@ -327,7 +327,10 @@ final class BootstrapSstWriter implements Closeable {
         }
 
         // 4. Create checkpoint for a consistent view of SST + metadata files.
-        Path checkpointDir = Files.createTempDirectory("fluss-bootstrap-checkpoint-");
+        Path checkpointDir =
+                Files.createTempDirectory(
+                                "fluss-bootstrap-checkpoint-" + System.currentTimeMillis() + "-")
+                        .resolve("checkpoint");
         try (Checkpoint checkpoint = Checkpoint.create(tempDb)) {
             checkpoint.createCheckpoint(checkpointDir.toString());
         } catch (RocksDBException e) {
@@ -431,7 +434,7 @@ final class BootstrapSstWriter implements Closeable {
                     staleSsts.size(),
                     totalSize,
                     remoteSnapshotDir);
-            return remoteSnapshotDir.toString();
+            return metadataPath.toString();
         } finally {
             FileUtils.deleteDirectoryQuietly(checkpointDir.toFile());
         }
@@ -466,7 +469,7 @@ final class BootstrapSstWriter implements Closeable {
             String uuidFileName = UUID.randomUUID() + ".sst";
             FsPath remotePath = new FsPath(remoteKvSharedDir, uuidFileName);
             uploadedSstFiles.put(
-                    origName, new SnapshotFileInfo(remotePath.toString(), uuidFileName, size));
+                    origName, new SnapshotFileInfo(remotePath.toString(), origName, size));
             futures.add(
                     CompletableFuture.runAsync(
                             () -> {

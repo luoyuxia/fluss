@@ -43,7 +43,6 @@ public abstract class TieringSplit implements SourceSplit {
     // the total number of splits in one round of tiering
     protected final int numberOfSplits;
     protected final LakeTieringTaskType taskType;
-    protected final long tieringEpoch;
     @Nullable protected final String remoteDataDir;
 
     /**
@@ -65,7 +64,7 @@ public abstract class TieringSplit implements SourceSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 LakeTieringTaskType.NORMAL_TIERING,
-                -1L);
+                null);
     }
 
     public TieringSplit(
@@ -82,25 +81,6 @@ public abstract class TieringSplit implements SourceSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 taskType,
-                -1L);
-    }
-
-    public TieringSplit(
-            TablePath tablePath,
-            TableBucket tableBucket,
-            @Nullable String partitionName,
-            int numberOfSplits,
-            boolean skipCurrentRound,
-            LakeTieringTaskType taskType,
-            long tieringEpoch) {
-        this(
-                tablePath,
-                tableBucket,
-                partitionName,
-                numberOfSplits,
-                skipCurrentRound,
-                taskType,
-                tieringEpoch,
                 null);
     }
 
@@ -111,7 +91,6 @@ public abstract class TieringSplit implements SourceSplit {
             int numberOfSplits,
             boolean skipCurrentRound,
             LakeTieringTaskType taskType,
-            long tieringEpoch,
             @Nullable String remoteDataDir) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
@@ -124,7 +103,6 @@ public abstract class TieringSplit implements SourceSplit {
         this.numberOfSplits = numberOfSplits;
         this.skipCurrentRound = skipCurrentRound;
         this.taskType = taskType;
-        this.tieringEpoch = tieringEpoch;
         this.remoteDataDir = remoteDataDir;
     }
 
@@ -195,10 +173,6 @@ public abstract class TieringSplit implements SourceSplit {
         return taskType;
     }
 
-    public long getTieringEpoch() {
-        return tieringEpoch;
-    }
-
     @Nullable
     public String getRemoteDataDir() {
         return remoteDataDir;
@@ -244,7 +218,6 @@ public abstract class TieringSplit implements SourceSplit {
                 && numberOfSplits == that.numberOfSplits
                 && skipCurrentRound == that.skipCurrentRound
                 && taskType == that.taskType
-                && tieringEpoch == that.tieringEpoch
                 && Objects.equals(remoteDataDir, that.remoteDataDir);
     }
 
@@ -257,7 +230,6 @@ public abstract class TieringSplit implements SourceSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 taskType,
-                tieringEpoch,
                 remoteDataDir);
     }
 }

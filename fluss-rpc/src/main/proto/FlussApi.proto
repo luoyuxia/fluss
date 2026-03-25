@@ -1169,10 +1169,6 @@ message PbBootstrapArtifactMetadata {
   optional int64 partition_id = 3;
   required int32 bucket_id = 4;
   optional string partition_name = 6;
-  // The total size of the SST file(s) in bytes.
-  optional int64 sst_size_bytes = 7;
-  // The number of rows in the SST file(s).
-  optional int64 row_count = 8;
   // The snapshot location path where _METADATA JSON was written.
   optional string snapshot_path = 10;
 }

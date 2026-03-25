@@ -435,7 +435,9 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         }
 
         // before create table in fluss, we may create in lake
-        if (isDataLakeEnabled(tableDescriptor)) {
+        if (isDataLakeEnabled(tableDescriptor)
+                && !isBootstrapUpgradeEnabled(
+                        TableInfo.of(tablePath, -1, -1, tableDescriptor, -1, -1))) {
             try {
                 checkNotNull(lakeCatalogContainer.getLakeCatalog())
                         .createTable(

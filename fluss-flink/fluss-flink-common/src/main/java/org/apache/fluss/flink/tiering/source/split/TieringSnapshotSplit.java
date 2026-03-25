@@ -73,7 +73,6 @@ public class TieringSnapshotSplit extends TieringSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 LakeTieringTaskType.NORMAL_TIERING,
-                -1L,
                 null);
     }
 
@@ -85,8 +84,7 @@ public class TieringSnapshotSplit extends TieringSplit {
             long logOffsetOfSnapshot,
             int numberOfSplits,
             boolean skipCurrentRound,
-            LakeTieringTaskType taskType,
-            long tieringEpoch) {
+            LakeTieringTaskType taskType) {
         this(
                 tablePath,
                 tableBucket,
@@ -96,7 +94,6 @@ public class TieringSnapshotSplit extends TieringSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 taskType,
-                tieringEpoch,
                 null);
     }
 
@@ -109,7 +106,6 @@ public class TieringSnapshotSplit extends TieringSplit {
             int numberOfSplits,
             boolean skipCurrentRound,
             LakeTieringTaskType taskType,
-            long tieringEpoch,
             @Nullable String remoteDataDir) {
         super(
                 tablePath,
@@ -118,7 +114,6 @@ public class TieringSnapshotSplit extends TieringSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 taskType,
-                tieringEpoch,
                 remoteDataDir);
         this.snapshotId = snapshotId;
         this.logOffsetOfSnapshot = logOffsetOfSnapshot;
@@ -169,7 +164,6 @@ public class TieringSnapshotSplit extends TieringSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 taskType,
-                tieringEpoch,
                 remoteDataDir);
     }
 

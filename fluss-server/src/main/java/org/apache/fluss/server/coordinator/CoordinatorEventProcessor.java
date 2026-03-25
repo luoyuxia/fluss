@@ -774,12 +774,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
         AutoPartitionStrategy autoPartitionStrategy =
                 tableInfo.getTableConfig().getAutoPartitionStrategy();
         if (autoPartitionStrategy.isAutoPartitionEnabled()) {
-            String partitionValue =
-                    PartitionUtils.generateAutoPartitionTime(
-                            ZonedDateTime.now(ZoneId.of(autoPartitionStrategy.timeZone().getID())),
-                            0,
-                            autoPartitionStrategy.timeUnit());
-            return autoPartitionStrategy.key() + "=" + partitionValue;
+            return PartitionUtils.generateAutoPartitionTime(
+                    ZonedDateTime.now(ZoneId.of(autoPartitionStrategy.timeZone().getID())),
+                    0,
+                    autoPartitionStrategy.timeUnit());
         }
 
         if (!tableInfo.getPartitionKeys().isEmpty()) {
@@ -892,10 +890,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
     private void processCreatePartition(CreatePartitionEvent createPartitionEvent) {
         long partitionId = createPartitionEvent.getPartitionId();
-        // skip the partition if it already exists
-        if (coordinatorContext.containsPartitionId(partitionId)) {
-            return;
-        }
+        //        // skip the partition if it already exists
+        //        if (coordinatorContext.containsPartitionId(partitionId)) {
+        //            return;
+        //        }
 
         long tableId = createPartitionEvent.getTableId();
 
@@ -2233,11 +2231,13 @@ public class CoordinatorEventProcessor implements EventProcessor {
                 // Read the CompletedSnapshot from the _METADATA file that the bootstrap
                 // writer already wrote at the snapshot location.
                 FsPath snapshotLocation = new FsPath(snapshotPath);
-                FsPath metadataFilePath = CompletedSnapshot.getMetadataFilePath(snapshotLocation);
+                //                FsPath metadataFilePath =
+                // CompletedSnapshot.getMetadataFilePath(snapshotLocation);
                 CompletedSnapshotHandle handle =
-                        new CompletedSnapshotHandle(1L, metadataFilePath, 0L);
+                        new CompletedSnapshotHandle(1L, snapshotLocation, 0L);
                 CompletedSnapshot completedSnapshot = handle.retrieveCompleteSnapshot();
 
+                // todo: skip store snapshot
                 CompletedSnapshotStore store =
                         completedSnapshotStoreManager.getOrCreateCompletedSnapshotStore(
                                 tablePath, tableBucket);

@@ -1701,14 +1701,6 @@ public class ServerRpcMessageUtils {
             TableBucket tableBucket =
                     new TableBucket(
                             tableId, partitionId, pbBootstrapArtifactMetadata.getBucketId());
-            long sstSizeBytes =
-                    pbBootstrapArtifactMetadata.hasSstSizeBytes()
-                            ? pbBootstrapArtifactMetadata.getSstSizeBytes()
-                            : 0L;
-            long rowCount =
-                    pbBootstrapArtifactMetadata.hasRowCount()
-                            ? pbBootstrapArtifactMetadata.getRowCount()
-                            : 0L;
             // Read snapshot path from protobuf.
             String snapshotPath =
                     pbBootstrapArtifactMetadata.hasSnapshotPath()
@@ -1722,8 +1714,6 @@ public class ServerRpcMessageUtils {
                                     pbBootstrapArtifactMetadata.hasPartitionName()
                                             ? pbBootstrapArtifactMetadata.getPartitionName()
                                             : null,
-                                    sstSizeBytes,
-                                    rowCount,
                                     snapshotPath));
         }
         return result;

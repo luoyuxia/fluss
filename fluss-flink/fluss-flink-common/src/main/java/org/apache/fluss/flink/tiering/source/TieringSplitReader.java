@@ -577,7 +577,7 @@ public class TieringSplitReader<WriteResult>
         TableInfo tableInfo = checkNotNull(currentTable).getTableInfo();
         LakeSource<LakeSplit> lakeSource =
                 LakeSourceUtils.createLakeSource(
-                        checkNotNull(currentTablePath), tableInfo.getCustomProperties().toMap());
+                        checkNotNull(currentTablePath), tableInfo.getProperties().toMap());
         if (lakeSource == null) {
             throw new IllegalStateException(
                     String.format(
@@ -589,14 +589,16 @@ public class TieringSplitReader<WriteResult>
 
     private boolean matchesBootstrapBucket(
             TieringBootstrapSplit bootstrapSplit, LakeSplit lakeSplit) {
-        if (lakeSplit.bucket() != bootstrapSplit.getTableBucket().getBucket()) {
-            return false;
-        }
-        String targetPartitionName = bootstrapSplit.getPartitionName();
-        if (targetPartitionName == null) {
-            return lakeSplit.partition().isEmpty();
-        }
-        return targetPartitionName.equals(String.join("$", lakeSplit.partition()));
+        return true;
+        // todo: revisit it
+        //        if (lakeSplit.bucket() != bootstrapSplit.getTableBucket().getBucket()) {
+        //            return false;
+        //        }
+        //        String targetPartitionName = bootstrapSplit.getPartitionName();
+        //        if (targetPartitionName == null) {
+        //            return lakeSplit.partition().isEmpty();
+        //        }
+        //        return targetPartitionName.equals(String.join("$", lakeSplit.partition()));
     }
 
     private TableBucketWriteResultWithSplitIds emptyTableBucketWriteResultWithSplitIds() {

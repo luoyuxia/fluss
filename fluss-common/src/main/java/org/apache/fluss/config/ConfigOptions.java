@@ -1349,6 +1349,12 @@ public class ConfigOptions {
                                     + "this feature determines which key should serve as the primary time dimension for making auto-partitioning decisions."
                                     + "And If the table has only one partition key, this config is not necessary. Otherwise, it must be specified.");
 
+    public static final ConfigOption<Boolean> TABLE_DATALAKE_BOOTSTRAP_ENABLED =
+            key("table.datalake.bootstrap.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription("xxx");
+
     public static final ConfigOption<AutoPartitionTimeUnit> TABLE_AUTO_PARTITION_TIME_UNIT =
             key("table.auto-partition.time-unit")
                     .enumType(AutoPartitionTimeUnit.class)

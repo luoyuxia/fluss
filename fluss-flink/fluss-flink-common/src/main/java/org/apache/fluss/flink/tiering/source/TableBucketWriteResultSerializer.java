@@ -170,7 +170,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
         boolean bootstrap = version >= VERSION_4 && in.readBoolean();
         // deserialize bootstrap snapshot path (VERSION_5+)
         String bootstrapSnapshotPath = null;
-        if (version >= VERSION_5 && in.readBoolean()) {
+        if (version == VERSION_5 && in.readBoolean()) {
             bootstrapSnapshotPath = in.readUTF();
         }
         return new TableBucketWriteResult<>(

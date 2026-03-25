@@ -439,7 +439,7 @@ class BootstrapUpgradeLifecycleITCase {
                 .isEqualTo(LakeTieringTaskType.BOOTSTRAP_UPGRADE.code());
 
         LakeTieringHeartbeatRequest forceFinishRequest = new LakeTieringHeartbeatRequest();
-        forceFinishRequest.addForceFinishedTables(tableId);
+        forceFinishRequest.addForceFinishedTable(tableId);
         forceFinishRequest
                 .addFinishedTable()
                 .setTableId(tableId)

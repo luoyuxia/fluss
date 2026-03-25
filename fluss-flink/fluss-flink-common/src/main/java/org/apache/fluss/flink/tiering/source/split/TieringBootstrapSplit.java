@@ -43,7 +43,6 @@ public class TieringBootstrapSplit extends TieringSplit {
             long snapshotId,
             int numberOfSplits,
             boolean skipCurrentRound,
-            long tieringEpoch,
             @Nullable String remoteDataDir) {
         super(
                 tablePath,
@@ -52,7 +51,6 @@ public class TieringBootstrapSplit extends TieringSplit {
                 numberOfSplits,
                 skipCurrentRound,
                 LakeTieringTaskType.BOOTSTRAP_UPGRADE,
-                tieringEpoch,
                 remoteDataDir);
         this.snapshotId = snapshotId;
     }
@@ -63,8 +61,7 @@ public class TieringBootstrapSplit extends TieringSplit {
             @Nullable String partitionName,
             long snapshotId,
             int numberOfSplits,
-            boolean skipCurrentRound,
-            long tieringEpoch) {
+            boolean skipCurrentRound) {
         this(
                 tablePath,
                 tableBucket,
@@ -72,7 +69,6 @@ public class TieringBootstrapSplit extends TieringSplit {
                 snapshotId,
                 numberOfSplits,
                 skipCurrentRound,
-                tieringEpoch,
                 null);
     }
 
@@ -113,7 +109,6 @@ public class TieringBootstrapSplit extends TieringSplit {
                 snapshotId,
                 numberOfSplits,
                 skipCurrentRound,
-                tieringEpoch,
                 remoteDataDir);
     }
 

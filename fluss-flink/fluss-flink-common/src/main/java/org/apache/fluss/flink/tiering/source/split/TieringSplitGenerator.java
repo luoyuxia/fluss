@@ -238,30 +238,21 @@ public class TieringSplitGenerator {
         List<TieringSplit> splits = new ArrayList<>();
 
         if (taskType == LakeTieringTaskType.BOOTSTRAP_UPGRADE) {
-            if (lakeSnapshotInfo == null) {
-                throw new FlinkRuntimeException(
-                        String.format(
-                                "Bootstrap-upgrade requires an existing lake snapshot for table %s.",
-                                tableInfo.getTablePath()));
-            }
-            long bootstrapSnapshotId = lakeSnapshotInfo.getSnapshotId();
+            // todo: hard code to 1, should use latest snapshot
+            long bootstrapSnapshotId = 1;
             for (BucketTieringTask bucketTask : bucketTieringTasks) {
                 int bucket = bucketTask.bucket();
                 TableBucket tableBucket =
                         new TableBucket(tableInfo.getTableId(), bucketTask.partitionId(), bucket);
-                long logOffsetOfSnapshot =
-                        Math.max(0L, latestBucketsOffset.getOrDefault(bucket, 0L));
                 splits.add(
-                        new TieringSnapshotSplit(
+                        new TieringBootstrapSplit(
                                 tableInfo.getTablePath(),
                                 tableBucket,
                                 bucketTask.partitionName(),
                                 bootstrapSnapshotId,
-                                logOffsetOfSnapshot,
-                                0,
+                                // hard code to 1
+                                1,
                                 false,
-                                taskType,
-                                -1L,
                                 remoteDataDir));
             }
             return splits;
@@ -367,8 +358,7 @@ public class TieringSplitGenerator {
                                     partitionName,
                                     latestSnapshotId,
                                     0,
-                                    false,
-                                    -1L));
+                                    false));
                 }
                 return Optional.of(
                         new TieringSnapshotSplit(
