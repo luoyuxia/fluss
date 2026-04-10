@@ -52,15 +52,10 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
 
     private final FileStoreTable fileStoreTable;
 
-    // Child allocator for system column vectors, sharing the same root as the batch allocator
-    @Nullable private BufferAllocator systemColumnAllocator;
-
-    // Reusable resources for enriched VectorSchemaRoot with system columns
-    @Nullable private VectorSchemaRoot enrichedRoot;
-    @Nullable private Schema enrichedSchema;
-    @Nullable private IntVector bucketVector;
-    @Nullable private BigIntVector offsetVector;
-    @Nullable private TimeStampMilliVector timestampVector;
+    // System column field definitions, reused across batches
+    private final Field bucketField;
+    private final Field offsetField;
+    private final Field timestampField;
 
     public AppendOnlyWriter(
             FileStoreTable fileStoreTable,
@@ -77,6 +72,22 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
                 partition,
                 partitionKeys); // Pass to parent
         this.fileStoreTable = fileStoreTable;
+        this.bucketField =
+                new Field(
+                        TableDescriptor.BUCKET_COLUMN_NAME,
+                        new FieldType(false, new ArrowType.Int(32, true), null),
+                        null);
+        this.offsetField =
+                new Field(
+                        TableDescriptor.OFFSET_COLUMN_NAME,
+                        new FieldType(false, new ArrowType.Int(64, true), null),
+                        null);
+        this.timestampField =
+                new Field(
+                        TableDescriptor.TIMESTAMP_COLUMN_NAME,
+                        new FieldType(
+                                false, new ArrowType.Timestamp(TimeUnit.MILLISECOND, null), null),
+                        null);
     }
 
     @Override
@@ -103,6 +114,10 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
      * Writes an Arrow batch directly to Paimon Parquet files. Enriches the VectorSchemaRoot with
      * system columns (__bucket, __offset, __timestamp) and uses Paimon's {@link ArrowBundleRecords}
      * for efficient batch writing.
+     *
+     * <p>System column vectors are created using the batch's own allocator to ensure all vectors in
+     * the enriched VectorSchemaRoot share the same allocator root. This is required by Arrow's C
+     * Data Interface which validates allocator root identity during buffer association.
      */
     public void writeArrowBatch(ArrowBatchData arrowBatchData) throws Exception {
         int writtenBucket = bucket;
@@ -111,105 +126,83 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
         }
 
         VectorSchemaRoot originalRoot = arrowBatchData.getVectorSchemaRoot();
+        BufferAllocator batchAllocator = arrowBatchData.getAllocator();
         long baseOffset = arrowBatchData.getBaseLogOffset();
         long timestamp = arrowBatchData.getTimestamp();
         int rowCount = originalRoot.getRowCount();
 
-        ensureEnrichedRootInitialized(originalRoot, arrowBatchData.getAllocator());
-        updateEnrichedVectorSchemaRoot(writtenBucket, baseOffset, timestamp, rowCount);
+        // Create system column vectors using the same allocator as data vectors so that
+        // all vectors share the same allocator root for Paimon's Arrow C Data serialization.
+        try (IntVector batchBucketVector = new IntVector(bucketField, batchAllocator);
+                BigIntVector batchOffsetVector = new BigIntVector(offsetField, batchAllocator);
+                TimeStampMilliVector batchTimestampVector =
+                        new TimeStampMilliVector(timestampField, batchAllocator)) {
+            populateSystemColumns(
+                    batchBucketVector,
+                    batchOffsetVector,
+                    batchTimestampVector,
+                    bucket,
+                    baseOffset,
+                    timestamp,
+                    rowCount);
 
-        ArrowBundleRecords arrowBundleRecords =
-                new ArrowBundleRecords(enrichedRoot, tableRowType, false);
+            VectorSchemaRoot enrichedRoot =
+                    buildEnrichedRoot(
+                            originalRoot,
+                            batchBucketVector,
+                            batchOffsetVector,
+                            batchTimestampVector);
 
-        // derive partition from the first row if not yet determined
-        if (partition == null) {
-            // todo: optimize how to get paimon partition
-            InternalRow firstRow = arrowBundleRecords.iterator().next();
-            partition = tableWrite.getPartition(firstRow);
+            ArrowBundleRecords arrowBundleRecords =
+                    new ArrowBundleRecords(enrichedRoot, tableRowType, false);
+
+            // derive partition from the first row if not yet determined
+            if (partition == null) {
+                // todo: optimize how to get paimon partition
+                InternalRow firstRow = arrowBundleRecords.iterator().next();
+                partition = tableWrite.getPartition(firstRow);
+            }
+
+            tableWrite.writeBundle(partition, writtenBucket, arrowBundleRecords);
         }
-
-        tableWrite.writeBundle(partition, writtenBucket, arrowBundleRecords);
     }
 
-    /**
-     * Ensures the enriched VectorSchemaRoot is initialized with system column vectors. Reuses
-     * system column vectors if schema matches. The enrichedRoot references the current
-     * originalRoot's data vectors plus the system column vectors.
-     */
-    private void ensureEnrichedRootInitialized(
-            VectorSchemaRoot originalRoot, BufferAllocator batchAllocator) {
-        Schema originalSchema = originalRoot.getSchema();
-        List<Field> originalFields = originalSchema.getFields();
-        int currentFieldCount = originalFields.size();
+    /** Builds an enriched VectorSchemaRoot with original data vectors plus system columns. */
+    private VectorSchemaRoot buildEnrichedRoot(
+            VectorSchemaRoot originalRoot,
+            IntVector batchBucketVector,
+            BigIntVector batchOffsetVector,
+            TimeStampMilliVector batchTimestampVector) {
+        List<Field> originalFields = originalRoot.getSchema().getFields();
+        List<Field> enrichedFields = new ArrayList<>(originalFields);
+        enrichedFields.add(bucketField);
+        enrichedFields.add(offsetField);
+        enrichedFields.add(timestampField);
+        Schema enrichedSchema = new Schema(enrichedFields);
 
-        // initialize system column vectors on first call, using a child allocator that
-        // shares the same root as the batch allocator so all vectors are compatible
-        if (bucketVector == null) {
-            Field bucketField =
-                    new Field(
-                            TableDescriptor.BUCKET_COLUMN_NAME,
-                            new FieldType(false, new ArrowType.Int(32, true), null),
-                            null);
-            Field offsetField =
-                    new Field(
-                            TableDescriptor.OFFSET_COLUMN_NAME,
-                            new FieldType(false, new ArrowType.Int(64, true), null),
-                            null);
-            Field timestampField =
-                    new Field(
-                            TableDescriptor.TIMESTAMP_COLUMN_NAME,
-                            new FieldType(
-                                    false,
-                                    new ArrowType.Timestamp(TimeUnit.MILLISECOND, null),
-                                    null),
-                            null);
-
-            List<Field> enrichedFields = new ArrayList<>(originalFields);
-            enrichedFields.add(bucketField);
-            enrichedFields.add(offsetField);
-            enrichedFields.add(timestampField);
-            enrichedSchema = new Schema(enrichedFields);
-
-            if (systemColumnAllocator == null) {
-                systemColumnAllocator =
-                        batchAllocator
-                                .getRoot()
-                                .newChildAllocator("system-column-allocator", 0, Long.MAX_VALUE);
-            }
-            bucketVector = new IntVector(bucketField, systemColumnAllocator);
-            offsetVector = new BigIntVector(offsetField, systemColumnAllocator);
-            timestampVector = new TimeStampMilliVector(timestampField, systemColumnAllocator);
-        }
-
-        // recreate enrichedRoot to reference the current originalRoot's data vectors
         List<FieldVector> allVectors = new ArrayList<>();
-        for (int i = 0; i < currentFieldCount; i++) {
+        for (int i = 0; i < originalFields.size(); i++) {
             allVectors.add(originalRoot.getVector(i));
         }
-        allVectors.add(bucketVector);
-        allVectors.add(offsetVector);
-        allVectors.add(timestampVector);
+        allVectors.add(batchBucketVector);
+        allVectors.add(batchOffsetVector);
+        allVectors.add(batchTimestampVector);
 
-        enrichedRoot = new VectorSchemaRoot(enrichedSchema, allVectors, originalRoot.getRowCount());
+        return new VectorSchemaRoot(enrichedSchema, allVectors, originalRoot.getRowCount());
     }
 
-    /**
-     * Updates system column values in the enriched VectorSchemaRoot. Data columns are already
-     * referenced from the original root.
-     */
-    private void updateEnrichedVectorSchemaRoot(
-            int bucket, long baseOffset, long timestamp, int rowCount) {
-        enrichedRoot.setRowCount(rowCount);
-
-        if (bucketVector.getValueCapacity() < rowCount) {
-            bucketVector.allocateNew(rowCount);
-        }
-        if (offsetVector.getValueCapacity() < rowCount) {
-            offsetVector.allocateNew(rowCount);
-        }
-        if (timestampVector.getValueCapacity() < rowCount) {
-            timestampVector.allocateNew(rowCount);
-        }
+    /** Populates system column vectors with bucket, offset, and timestamp values. */
+    private static void populateSystemColumns(
+            IntVector bucketVector,
+            BigIntVector offsetVector,
+            TimeStampMilliVector timestampVector,
+            int bucket,
+            long baseOffset,
+            long timestamp,
+            int rowCount) {
+        bucketVector.allocateNew(rowCount);
+        offsetVector.allocateNew(rowCount);
+        timestampVector.allocateNew(rowCount);
 
         for (int i = 0; i < rowCount; i++) {
             bucketVector.set(i, bucket);
@@ -229,25 +222,6 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
 
     @Override
     public void close() throws Exception {
-        if (bucketVector != null) {
-            bucketVector.close();
-            bucketVector = null;
-        }
-        if (offsetVector != null) {
-            offsetVector.close();
-            offsetVector = null;
-        }
-        if (timestampVector != null) {
-            timestampVector.close();
-            timestampVector = null;
-        }
-        if (systemColumnAllocator != null) {
-            systemColumnAllocator.close();
-            systemColumnAllocator = null;
-        }
-        enrichedRoot = null;
-        enrichedSchema = null;
-
         super.close();
     }
 }
