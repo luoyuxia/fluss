@@ -29,6 +29,7 @@ import org.apache.fluss.types.RowType;
 import org.apache.fluss.types.StringType;
 import org.apache.fluss.utils.CloseableIterator;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -105,6 +106,97 @@ class SortMergeReaderTest {
                         : CloseableIterator.wrap(
                                 expectedLogRecords.stream().map(LogRecord::getRow).iterator());
         assertThat(actualRows).isEqualTo(materializeRows(expected, fieldGetters));
+    }
+
+    @Test
+    void testReadBatchWithDeleteChangelog() {
+        // Test that DELETE records in changelog don't cause early termination.
+        // Snapshot: keys 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+        // Changelog: DELETE keys 2, 5, 8
+        // Expected result: keys 0, 1, 3, 4, 6, 7, 9 (7 records)
+        int keyIndex = 0;
+        int[] pkIndexes = new int[] {keyIndex};
+
+        // Create snapshot with keys 0-9
+        List<LogRecord> snapshotRecords = createRecords(0, 10, false);
+
+        // Create changelog with DELETE for keys 2, 5, 8
+        List<KeyValueRow> changelogRecords = new ArrayList<>();
+        for (int key : new int[] {2, 5, 8}) {
+            GenericRow deleteRow =
+                    row(
+                            key,
+                            BinaryString.fromString("a"),
+                            BinaryString.fromString("A"));
+            changelogRecords.add(new KeyValueRow(pkIndexes, deleteRow, true));
+        }
+
+        SortMergeReader sortMergeReader =
+                new SortMergeReader(
+                        null,
+                        pkIndexes,
+                        CloseableIterator.wrap(snapshotRecords.iterator()),
+                        new FlussRowComparator(keyIndex),
+                        CloseableIterator.wrap(changelogRecords.iterator()));
+
+        List<InternalRow> actualRows = new ArrayList<>();
+        InternalRow.FieldGetter[] fieldGetters =
+                InternalRow.createFieldGetters(
+                        RowType.of(new IntType(), new StringType(), new StringType()));
+        try (CloseableIterator<InternalRow> iterator = sortMergeReader.readBatch()) {
+            actualRows.addAll(materializeRows(iterator, fieldGetters));
+        }
+
+        // Should have 7 records (10 - 3 deleted)
+        assertThat(actualRows).hasSize(7);
+
+        // Verify the keys are correct: 0, 1, 3, 4, 6, 7, 9
+        List<Integer> actualKeys =
+                actualRows.stream().map(row -> row.getInt(0)).collect(Collectors.toList());
+        assertThat(actualKeys).containsExactly(0, 1, 3, 4, 6, 7, 9);
+    }
+
+    @Test
+    void testReadBatchWithConsecutiveDeletes() {
+        // Test consecutive DELETE records don't cause issues.
+        // Snapshot: keys 0, 1, 2, 3, 4
+        // Changelog: DELETE keys 1, 2, 3 (consecutive deletes)
+        // Expected result: keys 0, 4
+        int keyIndex = 0;
+        int[] pkIndexes = new int[] {keyIndex};
+
+        List<LogRecord> snapshotRecords = createRecords(0, 5, false);
+
+        List<KeyValueRow> changelogRecords = new ArrayList<>();
+        for (int key : new int[] {1, 2, 3}) {
+            GenericRow deleteRow =
+                    row(
+                            key,
+                            BinaryString.fromString("a"),
+                            BinaryString.fromString("A"));
+            changelogRecords.add(new KeyValueRow(pkIndexes, deleteRow, true));
+        }
+
+        SortMergeReader sortMergeReader =
+                new SortMergeReader(
+                        null,
+                        pkIndexes,
+                        CloseableIterator.wrap(snapshotRecords.iterator()),
+                        new FlussRowComparator(keyIndex),
+                        CloseableIterator.wrap(changelogRecords.iterator()));
+
+        List<InternalRow> actualRows = new ArrayList<>();
+        InternalRow.FieldGetter[] fieldGetters =
+                InternalRow.createFieldGetters(
+                        RowType.of(new IntType(), new StringType(), new StringType()));
+        try (CloseableIterator<InternalRow> iterator = sortMergeReader.readBatch()) {
+            actualRows.addAll(materializeRows(iterator, fieldGetters));
+        }
+
+        assertThat(actualRows).hasSize(2);
+        List<Integer> actualKeys =
+                actualRows.stream().map(row -> row.getInt(0)).collect(Collectors.toList());
+        assertThat(actualKeys).containsExactly(0, 4);
     }
 
     private CloseableIterator<InternalRow> projected(
