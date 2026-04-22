@@ -132,7 +132,7 @@ services:
     image: apache/fluss-quickstart-flink:$FLUSS_QUICKSTART_FLINK_DOCKER_VERSION$
     depends_on:
       - jobmanager
-    command: /opt/flink/bin/sql-client.sh
+    command: /opt/sql-client/sql-client
     environment:
       - |
         FLINK_PROPERTIES=
@@ -148,7 +148,7 @@ The Docker Compose environment consists of the following containers:
 - **RustFS:** an S3-compatible object storage for tiered storage. You can access the RustFS console at http://localhost:9001 with credentials `rustfsadmin/rustfsadmin`. An init container (`rustfs-init`) automatically creates the `fluss` bucket on startup.
 - **Fluss Cluster:** a Fluss `CoordinatorServer`, a Fluss `TabletServer` and a `ZooKeeper` server.
    - Credentials are configured directly with `s3.access-key` and `s3.secret-key`. The `s3.assumed.role.arn` and `s3.assumed.role.sts.endpoint` options configure [AssumeRole STS](/maintenance/filesystems/s3.md#assumerole-sts-configuration) which is required by RustFS for delegation token support. Production systems should use CredentialsProvider chain specific to cloud environments.
-- **Flink Cluster**: a Flink `JobManager`, a Flink `TaskManager`, and a Flink SQL client container to execute queries. The [`apache/fluss-quickstart-flink`](https://hub.docker.com/r/apache/fluss-quickstart-flink) image bundles the Fluss Flink connector, [flink-faker](https://github.com/knaufk/flink-faker) for demo data generation, and S3 filesystem support — no extra downloads required.
+- **Flink Cluster**: a Flink `JobManager`, a Flink `TaskManager`, and a Flink SQL client container to execute queries. The [`apache/fluss-quickstart-flink`](https://hub.docker.com/r/apache/fluss-quickstart-flink) image bundles the Fluss Flink connector, [flink-faker](https://github.com/knaufk/flink-faker) for demo data generation, and S3 filesystem support, so no extra jar downloads are required for this guide.
 
 :::tip
 [RustFS](https://github.com/rustfs/rustfs) is used as replacement for S3 in this quickstart example, for your production setup you may want to configure this to use cloud file system. See [here](/maintenance/filesystems/overview.md) for information on how to setup cloud file systems
@@ -181,66 +181,15 @@ First, use the following command to enter the Flink SQL CLI Container:
 docker compose run sql-client
 ```
 
-To simplify this guide, we will create three temporary tables with `faker` connector to generate data:
+To simplify this guide, three temporary tables have been pre-created with `faker` connector to generate data.
+
+### Inspect Pre-created Source Tables
+You can inspect the generated source table definitions with `SHOW CREATE TABLE`:
 
 ```sql title="Flink SQL"
-CREATE TEMPORARY TABLE source_order (
-    `order_key` BIGINT,
-    `cust_key` INT,
-    `total_price` DECIMAL(15, 2),
-    `order_date` DATE,
-    `order_priority` STRING,
-    `clerk` STRING
-) WITH (
-  'connector' = 'faker',
-  'rows-per-second' = '10',
-  'number-of-rows' = '10000',
-  'fields.order_key.expression' = '#{number.numberBetween ''0'',''100000000''}',
-  'fields.cust_key.expression' = '#{number.numberBetween ''0'',''20''}',
-  'fields.total_price.expression' = '#{number.randomDouble ''3'',''1'',''1000''}',
-  'fields.order_date.expression' = '#{date.past ''100'' ''DAYS''}',
-  'fields.order_priority.expression' = '#{regexify ''(low|medium|high){1}''}',
-  'fields.clerk.expression' = '#{regexify ''(Clerk1|Clerk2|Clerk3|Clerk4){1}''}'
-);
-```
-
-```sql title="Flink SQL"
-CREATE TEMPORARY TABLE source_customer (
-    `cust_key` INT,
-    `name` STRING,
-    `phone` STRING,
-    `nation_key` INT NOT NULL,
-    `acctbal` DECIMAL(15, 2),
-    `mktsegment` STRING,
-    PRIMARY KEY (`cust_key`) NOT ENFORCED
-) WITH (
-  'connector' = 'faker',
-  'number-of-rows' = '200',
-  'fields.cust_key.expression' = '#{number.numberBetween ''0'',''20''}',
-  'fields.name.expression' = '#{funnyName.name}',
-  'fields.nation_key.expression' = '#{number.numberBetween ''1'',''5''}',
-  'fields.phone.expression' = '#{phoneNumber.cellPhone}',
-  'fields.acctbal.expression' = '#{number.randomDouble ''3'',''1'',''1000''}',
-  'fields.mktsegment.expression' = '#{regexify ''(AUTOMOBILE|BUILDING|FURNITURE|MACHINERY|HOUSEHOLD){1}''}'
-);
-```
-
-```sql title="Flink SQL"
-CREATE TEMPORARY TABLE `source_nation` (
-  `nation_key` INT NOT NULL,
-  `name`       STRING,
-   PRIMARY KEY (`nation_key`) NOT ENFORCED
-) WITH (
-  'connector' = 'faker',
-  'number-of-rows' = '100',
-  'fields.nation_key.expression' = '#{number.numberBetween ''1'',''5''}',
-  'fields.name.expression' = '#{regexify ''(CANADA|JORDAN|CHINA|UNITED|INDIA){1}''}'
-);
-```
-
-```sql title="Flink SQL"
--- drop records silently if a null value would have to be inserted into a NOT NULL column
-SET 'table.exec.sink.not-null-enforcer'='DROP';
+SHOW CREATE TABLE `default_catalog`.`default_database`.source_order;
+SHOW CREATE TABLE `default_catalog`.`default_database`.source_customer;
+SHOW CREATE TABLE `default_catalog`.`default_database`.source_nation;
 ```
 
 ## Create Fluss Tables

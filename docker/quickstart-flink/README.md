@@ -16,61 +16,75 @@
  limitations under the License.
 -->
 
-# `apache/fluss-quickstart-flink` Docker image
+# Fluss Quickstart Flink Docker
 
-This directory contains the `Dockerfile` for the `apache/fluss-quickstart-flink`
-image referenced by the Fluss [Quickstart guide](../../website/docs/quickstart/flink.md).
+This directory contains the Docker setup for the `apache/fluss-quickstart-flink` image used by the Fluss quickstart guides.
 
-The image is based on `flink:<FLINK_VERSION>-java17` and bundles:
+## Overview
 
-- The Fluss Flink connector (`fluss-flink-<FLINK_VERSION>`)
-- The Fluss S3 filesystem plugin (`fluss-fs-s3`)
-- [Flink Faker](https://github.com/knaufk/flink-faker) (demo data generation)
-- The Flink Prometheus metrics reporter (available on the classpath, disabled by default)
+The image now separates dependencies into three clearly defined groups:
 
-## Why is this built manually?
+- `lib/`: base Fluss quickstart dependencies copied directly into `FLINK_HOME/lib`
+- `paimon/`: optional Paimon lakehouse dependencies activated by `/opt/flink/init_paimon.sh`
+- `iceberg/`: optional Iceberg lakehouse dependencies activated by `/opt/flink/init_iceberg.sh`
 
-The Dockerfile downloads the Fluss jars from a Maven repository at build time.
-Fluss does **not** currently publish snapshots to the ASF snapshot repository,
-so this image cannot be built from `main` by CI. It is therefore built and
-pushed manually by the release manager using a released version (or a staged
-release-candidate).
+This split keeps the regular "Quickstart with Flink" flow working out of the box while still allowing the Paimon and Iceberg lakehouse guides to opt in to their extra jars explicitly.
 
-See the [release guide](../../website/community/how-to-release/creating-a-fluss-release.mdx)
-for the full workflow.
+The optional lakehouse directories include the Flink-side filesystem and catalog jars needed by those guides. For example:
 
-## Build
+- `paimon/` includes `paimon-flink-1.20-1.3.1`, `paimon-s3-1.3.1`, and `hadoop-apache`
+- `iceberg/` includes `iceberg-flink-runtime`, `hadoop-apache`, `iceberg-aws`, `iceberg-aws-bundle`, and `postgresql`
 
-### From a released version (artifacts on Maven Central)
+## Important Behavior
+
+- The standard Flink quickstart should start with no custom entrypoint and no manual jar copying.
+- Paimon quickstart containers must use `/opt/flink/init_paimon.sh` before starting Flink.
+- Iceberg quickstart containers must use `/opt/flink/init_iceberg.sh` before starting Flink.
+- The `/opt/sql-client/sql-client` helper is only for the "Real-Time Analytics with Flink" quickstart and preloads demo SQL objects from `sql/sql-client.sql`.
+
+## Prerequisites
+
+Before building the Docker image, ensure you have:
+
+1. Check out the code version that you want to use for the Docker image. Go to the project root directory and build Fluss using `./mvnw clean package -DskipTests`.
+The local build artifacts will be used for the Docker image.
+2. Docker installed and running
+3. Internet access for retrieving dependencies
+
+## Build Process
+
+The build process consists of two main steps:
+
+### Step 1: Prepare Build Files
+
+First, prepare the required base and optional dependency directories:
 
 ```bash
-docker buildx build --push --platform linux/arm64/v8,linux/amd64 \
-    --build-arg FLINK_VERSION=2.2 \
-    --build-arg FLUSS_VERSION=<RELEASE_VERSION> \
-    --tag apache/fluss-quickstart-flink:2.2-<RELEASE_VERSION> \
-    .
+# Make the script executable
+chmod +x prepare_build.sh
+
+# Run the preparation script
+./prepare_build.sh
 ```
 
-### From a staged release candidate (artifacts on the Apache Nexus staging repo)
+### Step 2: Build Docker Image
 
-Use the staging repository URL from the release candidate (see the release
-guide, "Deploy to the Nexus staging repository"):
+After the preparation is complete, build the Docker image:
 
 ```bash
-docker buildx build --push --platform linux/arm64/v8,linux/amd64 \
-    --build-arg FLINK_VERSION=2.2 \
-    --build-arg FLUSS_VERSION=<RELEASE_VERSION> \
-    --build-arg FLUSS_MAVEN_REPO_URL=https://repository.apache.org/content/repositories/orgapachefluss-<STAGING_ID>/ \
-    --tag apache/fluss-quickstart-flink:2.2-<RELEASE_VERSION>-rc<RC_NUM> \
-    .
+# Build the Docker image
+docker build -t apache/fluss-quickstart-flink .
 ```
 
-## Build arguments
+After `prepare_build.sh` finishes, verify that the following directories exist:
 
-| Arg                     | Required | Default                                | Description                                                                  |
-|-------------------------|----------|----------------------------------------|------------------------------------------------------------------------------|
-| `FLINK_VERSION`         | No       | `2.2`                                  | Flink major/minor version for the base image and the `fluss-flink-*` jar.    |
-| `FLUSS_VERSION`         | **Yes**  | –                                      | Fluss version used to resolve the `fluss-flink-*` and `fluss-fs-s3` jars.    |
-| `FLUSS_MAVEN_REPO_URL`  | No       | `https://repo1.maven.org/maven2`       | Maven repository to download the Fluss jars from.                            |
+- `lib/`
+- `paimon/`
+- `iceberg/`
+- `opt/`
 
-The build fails fast if `FLUSS_VERSION` is not provided.
+If you are wiring the image into Docker Compose:
+
+- use `command: ["/opt/sql-client/sql-client"]` for SQL clients that should preload the demo source tables
+- use `entrypoint: ["/opt/flink/init_paimon.sh"]` for Paimon services
+- use `entrypoint: ["/opt/flink/init_iceberg.sh"]` for Iceberg services

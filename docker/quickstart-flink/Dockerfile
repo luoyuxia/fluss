@@ -16,39 +16,35 @@
 # limitations under the License.
 #
 
-# ARG before FROM is consumed only by FROM; redeclare after FROM to use in RUN.
-ARG FLINK_VERSION=2.2
+# Base image for all Fluss quickstart scenarios.
+FROM flink:1.20.0-scala_2.12-java17
 
-FROM flink:${FLINK_VERSION}-java17
+# The init scripts copy optional lakehouse jars into /opt/flink/lib at runtime,
+# so keep the quickstart container running as root like the previous image.
+USER root
 
-ARG FLINK_VERSION=2.2
-ARG FLUSS_VERSION
-ARG FLUSS_MAVEN_REPO_URL=https://repo1.maven.org/maven2
+# Put the SQL helper into a dedicated directory. The helper is used by the
+# "Real-Time Analytics with Flink" quickstart to pre-load demo source tables.
+COPY bin/ /opt/sql-client/
+COPY sql/ /opt/sql-client/sql/
 
-# Pre-install dependencies into Flink lib so that quickstart users do not need to
-# download any jars manually:
-#   - Fluss Flink connector
-#   - Fluss S3 filesystem plugin (needed for remote tiered storage in quickstart)
-#   - Flink Faker connector (for generating demo data in quickstart examples)
-#   - Flink Prometheus metrics reporter (placed in lib/ so it is on the classpath;
-#     it acts as a reporter only when explicitly configured via metrics.reporter.*)
-RUN set -ex; \
-    # Validate required build args early so failures are fast and actionable
-    # (otherwise a missing FLUSS_VERSION would produce a confusing 404 from Maven).
-    if [ -z "${FLUSS_VERSION}" ]; then \
-        echo "ERROR: FLUSS_VERSION build-arg is required (e.g. --build-arg FLUSS_VERSION=0.9.0-incubating)" >&2; \
-        exit 1; \
-    fi; \
-    # Fluss JARs are downloaded from the official Apache Maven repository (Maven Central
-    # for releases, ASF Snapshot repo for snapshots). Integrity is ensured by the TLS
-    # connection to the repository host and Maven Central's GPG-signed artifacts.
-    # SHA-256 pinning is not used here because the FLUSS_VERSION build-arg varies per
-    # release; instead, trust is delegated to the repository's transport security.
-    curl -fL -o /opt/flink/lib/fluss-flink-${FLINK_VERSION}-${FLUSS_VERSION}.jar \
-        "${FLUSS_MAVEN_REPO_URL}/org/apache/fluss/fluss-flink-${FLINK_VERSION}/${FLUSS_VERSION}/fluss-flink-${FLINK_VERSION}-${FLUSS_VERSION}.jar"; \
-    curl -fL -o /opt/flink/lib/fluss-fs-s3-${FLUSS_VERSION}.jar \
-        "${FLUSS_MAVEN_REPO_URL}/org/apache/fluss/fluss-fs-s3/${FLUSS_VERSION}/fluss-fs-s3-${FLUSS_VERSION}.jar"; \
-    curl -fL -o /opt/flink/lib/flink-faker-0.5.3.jar \
-        "https://github.com/knaufk/flink-faker/releases/download/v0.5.3/flink-faker-0.5.3.jar"; \
-    echo "d5015905354f3580cd9a1e984501cbfca843a4ce8e9e7f6c7ff81f5abf9c5a7e  /opt/flink/lib/flink-faker-0.5.3.jar" | sha256sum -c -; \
-    cp /opt/flink/opt/flink-metrics-prometheus-*.jar /opt/flink/lib/
+# Keep the base Fluss quickstart dependencies in /opt/flink/lib so the standard
+# Flink quickstart works out of the box with no extra container setup.
+COPY lib/ /opt/flink/lib/
+
+# Keep optional lakehouse dependencies out of /opt/flink/lib by default.
+# The init_paimon.sh / init_iceberg.sh scripts activate them explicitly when a
+# Paimon or Iceberg quickstart container starts.
+COPY paimon/ /opt/flink/paimon/
+COPY iceberg/ /opt/flink/iceberg/
+COPY opt/ /opt/flink/opt/
+COPY bin/init_paimon.sh /opt/flink/init_paimon.sh
+COPY bin/init_iceberg.sh /opt/flink/init_iceberg.sh
+
+WORKDIR /opt/sql-client
+ENV SQL_CLIENT_HOME=/opt/sql-client
+
+RUN chmod +x \
+    /opt/sql-client/sql-client \
+    /opt/flink/init_paimon.sh \
+    /opt/flink/init_iceberg.sh
