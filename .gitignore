@@ -21,6 +21,7 @@ dependency-reduced-pom.xml
 
 ### VS Code ###
 .vscode/
+.qoder/
 
 ### claude code ###
 .claude/
