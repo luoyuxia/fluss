@@ -17,31 +17,6 @@
 
 package org.apache.fluss.flink.source;
 
-import org.apache.fluss.client.initializer.OffsetsInitializer;
-import org.apache.fluss.config.ConfigOptions;
-import org.apache.fluss.config.Configuration;
-import org.apache.fluss.flink.FlinkConnectorOptions;
-import org.apache.fluss.flink.source.deserializer.RowDataDeserializationSchema;
-import org.apache.fluss.flink.source.lookup.FlinkAsyncLookupFunction;
-import org.apache.fluss.flink.source.lookup.FlinkLookupFunction;
-import org.apache.fluss.flink.source.lookup.LookupNormalizer;
-import org.apache.fluss.flink.source.reader.LeaseContext;
-import org.apache.fluss.flink.utils.FlinkConnectorOptionsUtils;
-import org.apache.fluss.flink.utils.FlinkConversions;
-import org.apache.fluss.flink.utils.PushdownUtils;
-import org.apache.fluss.flink.utils.PushdownUtils.FieldEqual;
-import org.apache.fluss.lake.source.LakeSource;
-import org.apache.fluss.lake.source.LakeSplit;
-import org.apache.fluss.metadata.ChangelogImage;
-import org.apache.fluss.metadata.DeleteBehavior;
-import org.apache.fluss.metadata.MergeEngineType;
-import org.apache.fluss.metadata.TablePath;
-import org.apache.fluss.predicate.PartitionPredicateVisitor;
-import org.apache.fluss.predicate.Predicate;
-import org.apache.fluss.predicate.PredicateBuilder;
-import org.apache.fluss.predicate.PredicateVisitor;
-import org.apache.fluss.types.RowType;
-
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
@@ -75,11 +50,34 @@ import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.types.RowKind;
+import org.apache.fluss.client.initializer.OffsetsInitializer;
+import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.config.Configuration;
+import org.apache.fluss.flink.FlinkConnectorOptions;
+import org.apache.fluss.flink.source.deserializer.RowDataDeserializationSchema;
+import org.apache.fluss.flink.source.lookup.FlinkAsyncLookupFunction;
+import org.apache.fluss.flink.source.lookup.FlinkLookupFunction;
+import org.apache.fluss.flink.source.lookup.LookupNormalizer;
+import org.apache.fluss.flink.source.reader.LeaseContext;
+import org.apache.fluss.flink.utils.FlinkConnectorOptionsUtils;
+import org.apache.fluss.flink.utils.FlinkConversions;
+import org.apache.fluss.flink.utils.PushdownUtils;
+import org.apache.fluss.flink.utils.PushdownUtils.FieldEqual;
+import org.apache.fluss.lake.source.LakeSource;
+import org.apache.fluss.lake.source.LakeSplit;
+import org.apache.fluss.metadata.ChangelogImage;
+import org.apache.fluss.metadata.DeleteBehavior;
+import org.apache.fluss.metadata.MergeEngineType;
+import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.predicate.PartitionPredicateVisitor;
+import org.apache.fluss.predicate.Predicate;
+import org.apache.fluss.predicate.PredicateBuilder;
+import org.apache.fluss.predicate.PredicateVisitor;
+import org.apache.fluss.types.RowType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
