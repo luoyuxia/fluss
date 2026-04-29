@@ -70,6 +70,57 @@ class FlinkUnionReadDvTableITCase extends FlinkUnionReadTestBase {
         FlinkUnionReadTestBase.beforeAll();
     }
 
+
+    @Test
+    void t1() {
+        batchTEnv.executeSql(
+                "CREATE TABLE `sensor_readings_hot_cold_15min` (\n" +
+                        "      `event_day` STRING,\n" +
+                        "      `sample_id` STRING,\n" +
+                        "      `benchmark_run_id` STRING,\n" +
+                        "      `query_tag` STRING,\n" +
+                        "      `sensor_id` INT,\n" +
+                        "      `sensor_type` INT,\n" +
+                        "      `temperature` DOUBLE,\n" +
+                        "      `humidity` DOUBLE,\n" +
+                        "      `pressure` DOUBLE,\n" +
+                        "      `battery_level` DOUBLE,\n" +
+                        "      `status` INT,\n" +
+                        "      `event_time` BIGINT,\n" +
+                        "      `producer_send_time` BIGINT,\n" +
+                        "      PRIMARY KEY (`event_day`, `sample_id`, `sensor_id`, `query_tag`, `temperature`) NOT ENFORCED\n" +
+                        "  ) PARTITIONED BY (`event_day`) WITH (\n" +
+                        "      'bucket.num' = '8',\n" +
+                        "      'table.log.ttl' = '24h',\n" +
+                        "      'table.auto-partition.enabled' = 'true',\n" +
+                        "      'table.auto-partition.time-unit' = 'DAY',\n" +
+                        "      'table.auto-partition.num-precreate' = '2',\n" +
+                        "      'table.auto-partition.num-retention' = '1',\n" +
+                        "      'table.auto-partition.time-zone' = 'Asia/Shanghai',\n" +
+                        "      'table.datalake.enabled' = 'true',\n" +
+                        "      'table.datalake.freshness' = '5min',\n" +
+                        "      'table.datalake.format' = 'paimon',\n" +
+                        "      'paimon.file.format' = 'parquet',\n" +
+                        "      'paimon.file.compression' = 'zstd',\n" +
+                        "      'paimon.file.compression.zstd-level' = '7',\n" +
+                        "      'paimon.deletion-vectors.enabled' = 'true',\n" +
+                        "      'paimon.pk-clustering-override' = 'true',\n" +
+                        "      'paimon.clustering.columns' = 'query_tag',\n" +
+                        "      'paimon.file-index.bitmap.columns' = 'query_tag,status',\n" +
+                        "      'paimon.file-index.range-bitmap.columns' = 'sensor_id',\n" +
+                        "      'paimon.snapshot.num-retained.max' = '2147473647',\n" +
+                        "      'paimon.snapshot.time-retained' = '24h',\n" +
+                        "      'bucket.key' = 'sample_id'\n" +
+                        "  );"
+        );
+
+        String plan =
+        batchTEnv.explainSql("select * from sensor_readings_hot_cold_15min where temperature = 28.7452891 ");
+        System.out.println(plan);
+    }
+
+
+
     /**
      * Test union read on a non-partitioned deletion-vectors enabled table.
      *

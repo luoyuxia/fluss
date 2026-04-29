@@ -512,6 +512,20 @@ oldFiles = snapshot_files(S_old) - snapshot_files(S_new)   // S_old 中已被替
 | **卡住什么** | 卡住 CoordinatorServer 发布 S_new 为 DV-readable | 卡住下一轮 split 生成 |
 | **为什么需要** | 防止 client 查到 S_new 时 TabletServer 还没准备好 | 保证 `snapshotBitmap` 最多一份——S_new+1 的 split 不能在 S_new switch 之前生成 |
 
+**为什么不能在 positionReport 阶段就完成 readable switch**：
+
+一种看似更简单的设计是：TabletServer 收到 positionReport 后一次性完成所有操作（Ingest SST → 合并到 RowPosIndex → 清理 oldFiles LakeDv → diff 清理 → 更新 readableSnapshotId），然后 TieringService 收齐 ack 后通知 CoordinatorServer 发布。这样可以省掉 pendingRowPos、hard-link、两阶段 ack 等机制。但这个方案有两个致命问题：
+
+1. **部分成功导致状态撕裂**：若 5 个 bucket 中 bucket 0-3 的 TabletServer 已完成 switch（readableSnapshotId = S_new），bucket 4 失败，则：bucket 0-3 只能服务 S_new（LakeDv 已清理，无法服务 S_old），bucket 4 只能服务 S_old（未切换），CoordinatorServer 未发布（未收齐 ack）。client 无论用 S_old 还是 S_new 都无法完成查询——整张表不可用，直到 bucket 4 恢复。当前设计中，positionReport 阶段不修改 RowPosIndex、不清理 LakeDv，所有 bucket 始终可用 S_old 服务，部分 bucket 失败不影响整体可用性。
+
+2. **attempt 失败无法干净回滚**：当前设计中 attempt 失败时，通过 `DropColumnFamily(pendingRowPos)` 即可 O(1) 清除所有新 attempt 的数据，RowPosIndex 零污染。若已合并到 RowPosIndex，S_new 的 entry 与 S_old 的 entry 混在一起，无法区分和剔除——RowPosIndex 被永久污染，后续 retry 的新 attempt 数据与残留旧 attempt 数据叠加，结果不可预测。
+
+因此 `pendingRowPos` 作为独立 CF 的设计是必要的：它既保证 §6.2 的 dual-check 能同时标记新旧两个 snapshot 的文件（见 §3.3 设计动机），又提供原子回滚能力（DropColumnFamily），使得 positionReport 阶段的所有操作对 RowPosIndex 完全无侵入。
+
+**可优化的点——消除 publish 后的 stale error 窗口**：
+
+当前设计中，CoordinatorServer 发布 S_new 后到 TabletServer 完成 readable switch 之间，client 用 S_new 请求会收到 stale error（`requestedSnapshotId > readableSnapshotId`）。但实际上，TabletServer 在 ready ack 时已具备服务 S_new 的能力——union read 不依赖 RowPosIndex（只用 LakeDv + LogDv），而 LakeDv 在 diff 清理之前是 S_old 和 S_new 的超集，对两个 snapshot 都正确（S_new 的 client 会收到一些已物化的冗余 LakeDv 条目，多屏蔽不丢数据）。可通过在 positionReport 完成后记录 `pendingReadableSnapshotId = S_new`，将 snapshot 一致性校验放宽为同时接受 `readableSnapshotId` 和 `pendingReadableSnapshotId`，使 publish 后所有 TabletServer 立即可服务 S_new，readable switch 变为不影响可用性的后台清理。
+
 ### 7.2 Tiering 流程 (TieringService 侧)
 
 #### 7.2.1 生成 Tiering Split
@@ -580,7 +594,7 @@ Tiering Writer 收到 tiering split 后的处理流程：
    ├── rowDelta.addDeletes(dvFiles)
    └── rowDelta.commit()   // 失败则 abort，见冲突处理
    commit 时远程 SST + manifest + index 已存在，保证 committed → position metadata 可恢复。
-   Iceberg snapshot property 中记录 `indexUuid`（用于 post-commit reconcile 和恢复定位 SST，见 §7.2.4、§10.2）。
+   Iceberg snapshot property 中记录 `indexUuid`（用于 post-commit reconcile 和恢复定位 SST，见 §7.2.4、§10.2）和 `fluss.nextFileId`（用于 Tiering Service 重启后恢复 FileDictAllocator 计数器）。
 
 7. positionReport RPC 上报给 TabletServer：
          ├── sstDir（= `{$remoteLakeTableSnapshotDir}/rowPos/{bucketId}/{uuid}/`）→ 下载 manifest 获取 SST 列表，逐个 Ingest 到 pendingRowPos
@@ -630,14 +644,14 @@ TabletServer 维护一个 `knownFiles` 集合（从 `newFileDictEntries` 逐步�
 
 #### 7.2.4 FileDictAllocator（Tiering Service 全局 fileId 分配器）
 
-**角色**：每张 Fluss 启用 DV 的主键表，在 Tiering Service 侧持有一个**全局 FileDictAllocator**，负责为所有新出现的 `file_path` 分配全局唯一的 `fileId`。所有 TabletServer 的本地 FileDict CF 是该全局映射的子集——仅包含本 bucket 实际涉及的文件条目，但对同一 `file_path` 的 `fileId` 在所有地方一致。
+**角色**：每张 Fluss 启用 DV 的主键表，在 Tiering Service 侧持有一个**内存级 FileDictAllocator**，负责为所有新出现的 `file_path` 分配全局唯一的 `fileId`。所有 TabletServer 的本地 FileDict CF 是该全局映射的子集——仅包含本 bucket 实际涉及的文件条目。
 
 **状态**：
 
 ```
 FileDictAllocator {
     nextFileId   : int            // 单调递增分配计数器
-    pathToFileId : Map<String, int>  // 已分配的 file_path → fileId
+    pathToFileId : Map<String, int>  // 当前 batch 内已分配的 file_path → fileId（纯内存，不持久化）
 }
 ```
 
@@ -649,7 +663,9 @@ if (新分配)
     newFileDictEntries.put(fileId, path);
 ```
 
-**持久化**：Allocator 状态随 Tiering Service（Flink Job）的 state backend 做 checkpoint。`computeIfAbsent` 保证同一 `file_path` 无论分配多少次都得到相同 `fileId`；Flink 从 pre-allocation checkpoint 恢复后重新分配也是幂等的。
+**无状态设计**：Allocator **不依赖 Flink state backend**，Tiering Service 保持无状态。`nextFileId` 的恢复通过 Iceberg snapshot property 实现——每次 Iceberg commit 时将当前 `nextFileId` 写入 snapshot property（字段 `fluss.nextFileId`，与 `indexUuid` 一同写入）。`pathToFileId` 仅在内存中维护当前 batch 的去重，不做跨 batch 持久化。
+
+**重启恢复**：Tiering Service 启动时，从最新 Iceberg committed snapshot 的 `fluss.nextFileId` property 读取计数器值，`pathToFileId` 初始化为空。重启后同一 `file_path` 可能被分配新的 `fileId`（跨 batch 去重丢失），但功能正确——每个 bucket 的 RowPosIndex entry 与本地 FileDict entry 自洽即可，跨 bucket 是否共享同一 fileId 不影响查询。代价仅为少量 fileId 空间浪费，int 40 亿空间远不至于耗尽。
 
 **故障恢复——Pre-commit vs Post-commit 分治**：
 
@@ -657,11 +673,11 @@ if (新分配)
 
 | 故障点 | 远程 SST 状态 | Iceberg 状态 | 恢复策略 |
 |--------|-------------|-------------|---------|
-| SST 上传前 crash | 不存在或不完整 | 未 commit | **全量 retry**：Flink 从 checkpoint 恢复，重新执行步骤 1-7。Allocator `computeIfAbsent` 幂等，新 UUID 生成新路径。 |
+| SST 上传前 crash | 不存在或不完整 | 未 commit | **全量 retry**：重新执行步骤 1-7。`nextFileId` 从上次 committed snapshot property 恢复，本次已分配但未 commit 的 fileId 不存在于任何地方，不会冲突。新 UUID 生成新路径。 |
 | SST 已上传、commit 前 crash | 完整 | 未 commit | **全量 retry**：同上。旧 UUID 路径下的远程 SST + index 成为孤儿（由定期清理回收）。 |
-| commit 成功、positionReport RPC 前 crash | 完整 | 已 commit | **Post-commit Metadata Reconcile**（见下方）：不得重新 commit，仅补齐 Fluss 注册。 |
+| commit 成功、positionReport RPC 前 crash | 完整 | 已 commit | **Post-commit Metadata Reconcile**（见下方）：不得重新 commit，仅补齐 Fluss 注册。`nextFileId` 已随本次 commit 写入 snapshot property。 |
 | positionReport RPC 失败 | 完整 | 已 commit | **Post-commit Metadata Reconcile**：同上。 |
-| Tiering Service 整体 failover | 取决于故障点 | 取决于故障点 | Flink state backend 恢复 Allocator；TieringService 启动时检测 committed-but-unregistered snapshot，按需走 reconcile。 |
+| Tiering Service 整体 failover | 取决于故障点 | 取决于故障点 | 从最新 Iceberg snapshot property 恢复 `nextFileId`；TieringService 启动时检测 committed-but-unregistered snapshot，按需走 reconcile。 |
 
 **Post-commit Metadata Reconcile**：
 
@@ -689,9 +705,8 @@ if (新分配)
 
 **为什么放在 Tiering Service 而非 CoordinatorServer**：
 
-1. Tiering Service（Flink Job）天然持有 state backend，扩展一个 ValueState 近乎零成本；
-2. fileId 分配紧耦合 Iceberg commit 流程，放在 Tiering Service 减少跨进程 RPC；
-3. CoordinatorServer 做 Allocator 需要额外的持久化和分配 RPC，引入更多故障面。
+1. fileId 分配紧耦合 Iceberg commit 流程（分配后立即生成 SST、随 commit 持久化 `nextFileId`），放在 Tiering Service 减少跨进程 RPC；
+2. CoordinatorServer 做 Allocator 需要额外的持久化和分配 RPC，引入更多故障面。
 
 ### 7.3 Server 处理流程 (TabletServer 侧)
 
@@ -762,9 +777,9 @@ TabletServer 收到后：
 >
 > **步骤 10 失败策略**：如果步骤 10 失败，**不得发送 ready ack**。实现上应原地重试；若重试仍失败，记录错误日志并等待 CoordinatorServer **显式宣告当前 attempt 失败** 后再触发新的 retry。该 bucket 的 ready ack 缺失会阻止 CoordinatorServer 将新 snapshot 标记为 DV-readable，union read 继续使用旧的 readable snapshot——数据正确但陈旧，不会导致旧行复活。
 
-> **SST 下载失败的处理**：Phase 1 的下载若失败，TabletServer 直接返回 RPC 错误给 Tiering Service，Tiering Service 根据 §3.6 的单飞/强取消语义决定是否重试。由于 SST 是 Tiering Service 侧不可变产物，同一 attempt 内重试直接复用 `sstDir` 即可。若 attempt 失败后触发新 attempt：(a) Iceberg commit 尚未成功——全量 retry，生成新的 SST 和 `newFileDictEntries`（已分配的 fileId 复用，见 §7.2.4 Allocator 幂等性）；(b) Iceberg commit 已成功——走 Post-commit Metadata Reconcile（§7.2.4），复用远程已存在的 SST + manifest，仅补发 positionReport。
+> **SST 下载失败的处理**：Phase 1 的下载若失败，TabletServer 直接返回 RPC 错误给 Tiering Service，Tiering Service 根据 §3.6 的单飞/强取消语义决定是否重试。由于 SST 是 Tiering Service 侧不可变产物，同一 attempt 内重试直接复用 `sstDir` 即可。若 attempt 失败后触发新 attempt：(a) Iceberg commit 尚未成功——全量 retry，生成新的 SST 和 `newFileDictEntries`（fileId 可能与旧 attempt 不同，但 `epoch > pendingAttemptEpoch` 分支会重置所有 pending 状态，新 attempt 的 fileId 自洽即可）；(b) Iceberg commit 已成功——走 Post-commit Metadata Reconcile（§7.2.4），复用远程已存在的 SST + manifest，仅补发 positionReport。
 
-> **`newFileDictEntries` 的幂等与异常分支**：由于 FileDictAllocator 在 Tiering Service 侧持久化（见 §7.2.4），同一 `file_path` 的 `fileId` 在 attempt 重试间保持一致。因此 TabletServer 对 `newFileDictEntries` 的写入天然幂等（同 fileId → 同 path）。若检测到 `fileId → 不同 path` 的冲突，属于 Allocator 状态损坏或错误路由（例如 bucket 到 tableId 的路由 bug）——必须 fail-fast，不得静默覆盖。
+> **`newFileDictEntries` 的幂等与异常分支**：同一 attempt 内，SST 和 `newFileDictEntries` 是一体生成的不可变产物，重试直接复用，天然幂等。跨 attempt 时，由于 `epoch > pendingAttemptEpoch` 分支会重置所有 pending 状态（`DropColumnFamily(pendingRowPos)` + 重建空 CF、清空 `pendingSstFiles` 等），新 attempt 的 fileId 分配与旧 attempt 无关，不存在跨 attempt 的 fileId 冲突。若检测到同一 attempt 内 `fileId → 不同 path` 的冲突，属于路由 bug——必须 fail-fast，不得静默覆盖。
 
 > **为什么反向扫 PendingDeletes 能覆盖所有死行（正确性论证）**：SST 中的 entry 可以分成两类——(A) 本轮 tiering 新写入的行（`RowId ∈ splitOffsetRange`，即 Fluss 自己产出的 `+I/+U`）和 (B) 外部 compaction 把已有行从旧文件重写到新文件（`RowId ∉ splitOffsetRange`）。两类的"死行"判定逻辑各自独立：
 >
@@ -1418,7 +1433,7 @@ Client 侧处理：
 | **LakeDv** | 增量存储，每轮 tiering commit 后通过 bitmap 差集清理已物化的条目 |
 | **LogDv** | Range-based bitmap，按固定 offset 间隔分段 |
 | **存储** | DvRocksDB 独立于 KvTablet RocksDB，六个列族（RowPosIndex、pendingRowPos、LogDv、LakeDv、FileDict、PendingDeletes）；PendingDeletes 升级为"完整未物化死行日志"（value = `{fileId, pos}` 或 sentinel `{0, 0}`），作为 §7.3.1 反向扫的唯一索引；DvRWLock（全局读写锁）序列化 §6.2/§7.3.1/§7.3.3 写路径（写锁），union read 持读锁并 clone 出查询涉及文件的 bitmap 子集后立即释放；position 上报天然幂等（反向扫仅更新 PendingDeletes.value 不删除）+ attemptEpoch 三路校验拦截过期和乱序请求；PendingDeletes 在 readable 切换时基于 `snapshotBitmap` 精确清理（PendingDeletes.value 已物化的条目被删除） |
-| **架构分工** | TabletServer 维护轻量元数据 + 快照 LakeDv，SST 下载 + Ingest；Tiering Writer 写 data file + 物化 Puffin DV；Tiering Service 持有全局 FileDictAllocator、**commit 前**在 `{$remoteLakeTableSnapshotDir}/rowPos/` 下生成 per-bucket SST（UUID 子目录）+ cross-bucket index 并上传远程（保证 committed → index + SST + manifest 均可恢复）；post-commit failure 走 metadata-only reconcile（§7.2.4）；snapshot property 记录 indexUuid，恢复时 snapshotId → indexUuid → index → per-bucket sstDir |
+| **架构分工** | TabletServer 维护轻量元数据 + 快照 LakeDv，SST 下载 + Ingest；Tiering Writer 写 data file + 物化 Puffin DV；Tiering Service 持有内存级 FileDictAllocator（无状态，`nextFileId` 通过 Iceberg snapshot property 恢复）、**commit 前**在 `{$remoteLakeTableSnapshotDir}/rowPos/` 下生成 per-bucket SST（UUID 子目录）+ cross-bucket index 并上传远程（保证 committed → index + SST + manifest 均可恢复）；post-commit failure 走 metadata-only reconcile（§7.2.4）；snapshot property 记录 indexUuid + nextFileId，恢复时 snapshotId → indexUuid → index → per-bucket sstDir |
 | **DV 物化** | LakeDv 快照覆盖跨 split 删除；同 split 内先写后删通过 `logDvSnapshot` 写前过滤；commit 前过滤已被外部 compaction 替换的文件 + `validateDataFilesExist` 兜底；未物化的删除由 LakeDv 保底 |
 | **Commit 验证** | IcebergLakeCommitter 从无校验改为 `validateFromSnapshot` + `validateDataFilesExist`；冲突时 abort 下轮重试 |
 | **Position 构建** | Writer 上报（默认）+ Tiering Service 扫描外部 compaction 文件（兜底）；两条路径合并进入 Tiering Service 的 SST 生成管道；§7.3.1 反向扫 PendingDeletes 统一处理所有死行（复杂度 O(\|PendingDeletes\|) 而非 O(\|SST\|)），无需对 SST 的每一行做 `RowPosIndex.get()` alive check；PendingDeletes 既解决 position report 与删除操作的时序间隙，也作为外部 compaction 死行的反向索引 |
@@ -1427,7 +1442,7 @@ Client 侧处理：
 | **Iceberg 数据列** | 新增 `__bucket` 列，用于外部 compaction 后识别行的 bucket 归属 |
 | **Iceberg 版本** | 切换到 v3；新表强制 v3，存量 v2 表原地升级，历史 equality delete 仍有效 |
 | **外部 Compaction** | Tiering Service 检测并扫描外部新文件，按 `__bucket` 合并进入 SST 生成管道；oldFiles 清理推迟到 readable snapshot 前移 |
-| **恢复** | TabletServer：从 DvRocksDB checkpoint 加载，重放 changelog 增量；通过 snapshot property 中的 `indexUuid` 定位 cross-bucket index → per-bucket sstDir，按序下载远程 SST Ingest → RowPosIndex，从 `tieredOffset + 1` 重放 changelog + 反向扫 PendingDeletes 补齐 LakeDv。TieringService：检测 committed-but-unregistered snapshot，走 Post-commit Metadata Reconcile（§7.2.4）补齐 Fluss 注册，不重新 commit |
+| **恢复** | TabletServer：从 DvRocksDB checkpoint 加载，重放 changelog 增量；通过 snapshot property 中的 `indexUuid` 定位 cross-bucket index → per-bucket sstDir，按序下载远程 SST Ingest → RowPosIndex，从 `tieredOffset + 1` 重放 changelog + 反向扫 PendingDeletes 补齐 LakeDv。TieringService（无状态）：从最新 Iceberg snapshot property 恢复 `nextFileId`；检测 committed-but-unregistered snapshot，走 Post-commit Metadata Reconcile（§7.2.4）补齐 Fluss 注册，不重新 commit |
 | **前置要求** | 主键表必须使用 FULL changelog 模式 |
 
 ---
