@@ -227,7 +227,7 @@ This is the core chapter. It is organized as **constraints first → flow detail
 
 ### 5.1 End-to-End Overview
 
-A single tiering round advances the readable snapshot from S_old to S_new through three components coordinated by a **two-phase ack barrier**:
+A single tiering round advances the readable snapshot from S_old to S_new through three components coordinated by a **two-phase ack barrier**. Note: this barrier is an additional post-Iceberg-commit coordination mechanism for DV metadata distribution, not a replacement for the existing 2PC commit flow. The existing tiering commit (write data → commit Iceberg snapshot) remains unchanged; the barrier runs after the Iceberg commit succeeds.
 
 ```
 newFiles = snapshot_files(S_new) - snapshot_files(S_old)   // files added in S_new
@@ -558,8 +558,12 @@ Executed with each tiering commit round.
 
 1. When generating the tiering split, TabletServer snapshots current LakeDv under read lock, resolving `file_id` to `file_path` via FileDict.
 2. The LakeDv snapshot (`{file_path → bitmap}`) is sent with the tiering split to the Tiering Writer.
-3. The Tiering Writer generates Puffin DV files directly from `file_path` and bitmap (no dictionary lookup needed).
+3. For each file in the LakeDv snapshot, the Tiering Writer checks whether the file already has an existing Puffin DV in the current Iceberg snapshot:
+   - **No existing DV**: Generate Puffin DV directly from the LakeDv snapshot bitmap.
+   - **Existing DV**: Read the existing Puffin DV (remote read), merge with the LakeDv snapshot bitmap (RoaringBitmap OR), and generate a new Puffin DV containing the merged result.
 4. Puffin DV files are committed to Iceberg together with data files via the `RowDelta` API.
+
+> **Merge cost**: Merging requires reading existing Puffin DVs — one remote read per affected file. However, the scope is limited: (1) bitmap diff cleanup (§5.4) ensures LakeDv only contains incremental deletes since the last round, so the number of affected files is small; (2) Puffin DV blobs are compact RoaringBitmaps (typically a few KB), not full data files.
 
 ### Cleanup: Bitmap Diff
 
@@ -603,18 +607,21 @@ Fluss does not monitor Iceberg snapshot changes in real time. External compactio
 
 ### 8.2 Detection & Handling
 
-TieringService performs detection during commit:
+TieringService performs detection during commit. Since Fluss tiering commits tag each Iceberg snapshot with a Fluss-specific property (via `IcebergLakeCommitter`), detection traverses the snapshot history between the last known snapshot and the current table state, identifying snapshots **without** the Fluss property — these are external compaction snapshots:
 
 ```
-tieringNewFiles  = files written by this tiering round
-currentFiles     = all files in current Iceberg table state
-lastKnownFiles   = files in last known snapshot
+externalSnapshots = []
+for snapshot in snapshots_since(lastKnownSnapshotId):
+    if not snapshot.hasProperty("fluss.tiering"):
+        externalSnapshots.append(snapshot)
 
-externalNewFiles = (currentFiles - lastKnownFiles) - tieringNewFiles
-externalOldFiles = lastKnownFiles - currentFiles
+externalNewFiles = union(s.addedDataFiles() for s in externalSnapshots)
+externalOldFiles = union(s.removedDataFiles() for s in externalSnapshots)
 ```
 
-If `externalNewFiles` is non-empty, external compaction occurred. TieringService:
+This is cheaper than diffing full file sets — only snapshot metadata (typically a few entries) is traversed, rather than the entire file list.
+
+If `externalNewFiles` is non-empty, external compaction occurred. TieringService then **scans the external new files** to rebuild RowId-to-position mappings:
 
 1. **Scan external new files**: Read `__rowid` and `__bucket` columns from each file in `externalNewFiles`. `__rowid` is the RowId, `__bucket` identifies the Fluss bucket.
 2. **Group by bucket**: Group `(RowId, file, row_position)` entries by `__bucket` value.
@@ -679,7 +686,7 @@ Recovery path is **metadata-only reconcile**:
 
 #### DvRocksDB Checkpoint
 
-DvRocksDB periodically checkpoints, uploading SST files to remote storage. Each checkpoint records:
+DvRocksDB periodically checkpoints (note: DvRocksDB checkpoint is independent from KvTablet snapshot — they have no overlapping data, different lifecycles, and recover independently; see §3.3), uploading SST files to remote storage. Each checkpoint records:
 
 - `restoreSnapshot`: Current DV-readable snapshot ID
 - `snapshotStartLogOffset`: The snapshot's changelog start offset
@@ -704,11 +711,11 @@ DvRocksDB periodically checkpoints, uploading SST files to remote storage. Each 
 
 4. **Process post-checkpoint readable-switched snapshots**: The restored state is for `restoreSnapshot`. Query CoordinatorServer for current DV-readable snapshot (`S_readable`). If `S_readable` is newer, advance RowPosIndex:
 
-   Query LakeStorage for all committed snapshots between `restoreSnapshot` and `S_readable`, denoted `S_1, S_2, ..., S_n` (where `S_n = S_readable`). These have all completed readable switch (guaranteed by two-phase ack barrier).
+   Query LakeStorage for all committed snapshots between `restoreSnapshot` and `S_readable` in commit order, denoted `S_1, S_2, ..., S_n` (where `S_n = S_readable`). These have all completed readable switch (guaranteed by two-phase ack barrier).
 
    **Sequential position state rebuild** — using `indexUuid` from each snapshot's Iceberg property, locate remote SSTs via cross-bucket index:
 
-   For each `S_i` (from `S_1` to `S_n`, **must be in chronological order**):
+   For each `S_i` (from `S_1` to `S_n`):
 
    a. Read `indexUuid` from `S_i`'s snapshot property, download index file, get this bucket's `sstDir`. Download manifest for SST file names and `newFileDictEntries`.
 
@@ -796,22 +803,36 @@ RowId is placed at the head so that when a key is updated or deleted, the old Ro
 When tiering writes Iceberg data files, the following system columns are included alongside user columns:
 
 - **`__rowid`**: The `+I`/`+U` changelog log offset (= RowId). Existing column, used for identifying rows after external compaction.
-- **`__bucket`**: The Fluss bucket id (int type). **New column**, used for identifying a row's bucket after external compaction, avoiding reverse hash computation from primary key.
+- **`__bucket`**: The Fluss bucket id (int type). **New column**, used for identifying a row's bucket after external compaction, avoiding the need to read primary key columns for hash computation.
 
-> **Constraint**: `__rowid` and `__bucket` are foundational for DV correctness. External engines performing compaction or rewrite on Fluss-managed Iceberg tables **must preserve these two columns and their values**.
+> **Constraint**: Fluss must be the sole writer for data ingestion. External engines must not INSERT directly into Fluss-managed Iceberg tables — externally inserted rows would be invisible to Fluss's changelog and KV state, breaking upsert semantics and union read consistency. This is a general Fluss constraint that exists independently of DV. External engines may only perform compaction or rewrite on existing data, and **must preserve `__rowid` and `__bucket` columns and their values**.
 
 ### 10.4 Iceberg Format Version
 
-Switch from Iceberg v2 to v3, using position delete (Puffin DV) instead of equality delete.
+Default to Iceberg v3 Deletion Vectors (Puffin DV) to replace equality delete. Users may explicitly set `format-version=2` to fall back to v2 position deletes.
 
-- **New tables**: When DV is enabled, set `format-version=3` at table creation.
-- **Existing v2 tables**: In-place upgrade; historical equality deletes remain valid.
+- **Default (v3)**: When DV is enabled, tables are created with `format-version=3`. Deletes are materialized as Deletion Vectors (RoaringBitmap in Puffin files) — compact, mergeable, no small file accumulation.
+- **Fallback (v2)**: Users can explicitly set `format-version=2`. In this case, deletes are materialized as v2 position delete files (Parquet files listing `(file_path, position)` pairs). This still eliminates equality delete but retains per-operation delete file accumulation.
+- **Existing v2 tables**: In-place upgrade to v3 is supported; historical equality deletes remain valid.
+
+> **Implementation note**: The fallback only affects the materialization format in the Tiering Writer (§5.2 Step 4) — v3 generates Puffin DV files, v2 generates position delete Parquet files. The upstream data model (LakeDv, RowPosIndex, PendingDeletes, etc.) is format-agnostic and remains unchanged.
 
 ### 10.5 Prerequisite: FULL Changelog Mode
 
 DV requires primary key tables to use **FULL changelog mode** (i.e., updates write both `-U` and `+U`). In LOOKUP changelog mode, updates only write `+U` without `-U`, making it impossible to determine the old version's RowId and thus impossible to locate the old row in Iceberg for deletion marking.
 
 When creating a primary key table with DV enabled, the system should validate that changelog mode is FULL; otherwise, reject creation.
+
+**MergeEngine compatibility matrix**:
+
+| MergeEngine | DV supported | Notes |
+|-------------|-------------|-------|
+| DEDUPLICATE | Yes | Standard upsert; -U/-D carry oldRowId |
+| FIRST_ROW | Yes | Duplicate keys are ignored (no -U); DELETE still produces -D with oldRowId |
+| PARTIAL_UPDATE | Yes | Requires FULL changelog mode; -U/-D carry oldRowId |
+| AGGREGATE | Yes | Requires FULL changelog mode; -U/-D carry oldRowId |
+
+All MergeEngine types are compatible with DV, provided the table uses FULL changelog mode.
 
 ---
 
