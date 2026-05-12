@@ -47,7 +47,7 @@ graph TB
 
     subgraph IcebergLayer["Iceberg (历史层)"]
         direction TB
-        IcebergDv["Iceberg Deletion Vector<br/>(Puffin 文件, RoaringBitmap)<br/>已物化的物理删除标记"]
+        IcebergDv["Iceberg Deletion Vector<br/>(Puffin 文件, RoaringPositionBitmap)<br/>已物化的物理删除标记"]
         DataFiles["Data Files"]
     end
 
@@ -110,12 +110,10 @@ sequenceDiagram
 
 标记数据在 Iceberg 中的物理位置：
 
-```
-FilePos (8 bytes) = file_id (高 4B) + row_position (低 4B)
-```
+- `file_id`：data file 的字典编码 ID（int，节省存储）
+- `row_position`：数据在文件中的行号（从 0 开始，**long 类型**，与 Iceberg spec 一致）
 
-- `file_id`：data file 的字典编码 ID（节省存储）
-- `row_position`：数据在文件中的行号（从 0 开始）
+两个字段均采用 **unsigned varint**（LEB128）编码。典型场景下（file_id < 数千，row_position < 百万），单个 FilePos 仅 **3–5 字节**。
 
 ### 3.3 RowPosIndex（单 CF 架构）
 
@@ -128,7 +126,7 @@ graph LR
     end
 
     Delete["-U/-D 到达"] --> RPI
-    Note["单次 point-get<br/>命中 → 标记 LakeDv<br/>写 DeletedRowIdSet"]
+    Note["单次 point-get<br/>命中 → 标记 LakeDv<br/>写 PendingDeletes"]
 
     Switch["readable switch"] -->|"Ingest SST"| RPI
     Note2["SST 推迟到<br/>readable switch<br/>时才 Ingest"]
@@ -150,9 +148,9 @@ graph TD
 
 **为什么可以推迟**：prepare 到 readable switch 之间，union read 仍然使用旧 snapshot。§4.2 的删除只需查 RowPosIndex（旧位置），标记的 LakeDv 对旧 snapshot 完全正确。**不需要同时看到新旧两个位置**——因为读端还没切到新 snapshot。
 
-### 3.4 DeletedRowIdSet（未物化死行日志）
+### 3.4 PendingDeletes（未物化死行日志）
 
-**为什么需要 DeletedRowIdSet？**
+**为什么需要 PendingDeletes？**
 
 当 `-U/-D` 删除一行时，需要在 LakeDv 中标记该行在 Iceberg 中的物理位置。但有两种情况无法立即完整标记：
 
@@ -178,9 +176,9 @@ flowchart LR
     style Problem2 fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#333
 ```
 
-**解决方案**：DeletedRowIdSet 记录所有已删除的 RowId 及其已知位置（或 pending 标记），在 **readable switch 时 batch 解析**——Ingest SST 后统一查 RowPosIndex 补齐 LakeDv 标记。
+**解决方案**：PendingDeletes 记录所有已删除的 RowId 及其已知位置（或 pending 标记），在 **readable switch 时 batch 解析**——Ingest SST 后统一查 RowPosIndex 补齐 LakeDv 标记。
 
-**DeletedRowIdSet 怎么写入？**
+**PendingDeletes 怎么写入？**
 
 ```mermaid
 flowchart TD
@@ -189,8 +187,8 @@ flowchart TD
     Query -->|"命中 (file_id, pos)"| Hit["1. 标记 LakeDv 当前位置<br/>2. 删除 RowPosIndex entry"]
     Query -->|"未命中"| Miss["无法标记 LakeDv<br/>(位置未知)"]
 
-    Hit --> WriteHit["写入 DeletedRowIdSet<br/>R → (file_id, pos)"]
-    Miss --> WriteMiss["写入 DeletedRowIdSet<br/>R → pending"]
+    Hit --> WriteHit["写入 PendingDeletes<br/>R → (file_id, pos)"]
+    Miss --> WriteMiss["写入 PendingDeletes<br/>R → pending"]
 
     WriteHit --> Done["完成<br/>等待 readable switch batch 解析"]
     WriteMiss --> Done
@@ -200,15 +198,15 @@ flowchart TD
     style Done fill:#b0bec5,stroke:#37474f,stroke-width:2px,color:#333
 ```
 
-**后续怎么消费？** readable switch 时 Ingest SST 后，batch 遍历 DeletedRowIdSet，查 `RowPosIndex.get(R)` 补齐：
+**后续怎么消费？** readable switch 时 Ingest SST 后，batch 遍历 PendingDeletes，查 `RowPosIndex.get(R)` 补齐：
 
 ```mermaid
 flowchart TD
-    Ingest["1. Ingest SST → RowPosIndex<br/>（新位置写入）"] --> Scan["2. 遍历 DeletedRowIdSet 每个 (R, v)"]
+    Ingest["1. Ingest SST → RowPosIndex<br/>（新位置写入）"] --> Scan["2. 遍历 PendingDeletes 每个 (R, v)"]
 
     Scan --> Check["RowPosIndex.get(R)"]
 
-    Check -->|"命中:<br/>时序间隙补齐<br/>或外部 compaction 重写"| Fix["补齐 LakeDv 标记<br/>更新 DeletedRowIdSet 值<br/>删除 RowPosIndex entry"]
+    Check -->|"命中:<br/>时序间隙补齐<br/>或外部 compaction 重写"| Fix["补齐 LakeDv 标记<br/>更新 PendingDeletes 值<br/>删除 RowPosIndex entry"]
     Check -->|"未命中:<br/>R 不在本轮 SST 中"| Keep["保留, 等后续处理"]
 
     Fix --> Clean["3. 清理已物化条目"]
@@ -218,7 +216,7 @@ flowchart TD
     style Keep fill:#e0e0e0,stroke:#757575,stroke-width:1.5px,color:#333
 ```
 
-> 对比原方案：原方案在 position report 阶段做 reverse-scan PendingDeletes + 查 pendingRowPos；Deferred Ingest 将相同的遍历解析操作移到 readable switch 阶段，查询目标改为 Ingest 后的 RowPosIndex。操作本质相同（O(|DeletedRowIdSet|) point-gets），但时机不同，消除了对 pendingRowPos 的依赖。
+> 对比原方案：原方案在 position report 阶段做 reverse-scan PendingDeletes + 查 pendingRowPos；Deferred Ingest 将相同的遍历解析操作移到 readable switch 阶段，查询目标改为 Ingest 后的 RowPosIndex。操作本质相同（O(|PendingDeletes|) point-gets），但时机不同，消除了对 pendingRowPos 的依赖。
 
 ### 3.5 DV-Readable Snapshot
 
@@ -233,9 +231,9 @@ graph TD
     subgraph DvRocksDB["DvRocksDB (独立于 KvTablet RocksDB)"]
         CF1["CF: RowPosIndex<br/>RowId → FilePos<br/>(始终反映当前 readable snapshot)"]
         CF3["CF: LogDv<br/>offset_range → del_bitmap"]
-        CF4["CF: LakeDv<br/>file_id → del_bitmap"]
+        CF4["CF: LakeDv<br/>file_id → RoaringPositionBitmap"]
         CF5["CF: FileDict<br/>file_path ↔ file_id<br/>(双向映射)"]
-        CF6["CF: DeletedRowIdSet<br/>RowId → FilePos 或 pending<br/>(未物化死行日志)"]
+        CF6["CF: PendingDeletes<br/>RowId → FilePos 或 pending<br/>(未物化死行日志)"]
     end
 ```
 
@@ -246,7 +244,7 @@ graph TD
 | CF 数量 | 6 个 | **5 个**（删除 pendingRowPos） |
 | RowPosIndex | 反映当前 readable snapshot | **不变** |
 | pendingRowPos | 存储待合并的新位置 | **删除** |
-| PendingDeletes | sentinel {0,0} + filePos，reverse-scan 解析 | **替换为 DeletedRowIdSet**：pending / filePos，batch lookup 解析 |
+| PendingDeletes | sentinel {0,0} + filePos，reverse-scan 解析 | pending / filePos，**batch lookup 解析**（语义简化，不再使用 sentinel） |
 
 **并发控制：DvRWLock（全局读写锁）**
 
@@ -300,8 +298,8 @@ flowchart TD
     Lock --> ForEach["遍历每条 -U/-D"]
     ForEach --> Query["查 RowPosIndex<br/>point get(oldRowId)"]
 
-    Query --> Hit["**命中 (file_id, pos)**<br/>LakeDv[file_id] |= {pos}<br/>删除 RowPosIndex entry<br/>写入 DeletedRowIdSet{file_id, pos}"]
-    Query --> Miss["**未命中**<br/>可能正在 tiering 中<br/>写入 DeletedRowIdSet{pending}"]
+    Query --> Hit["**命中 (file_id, pos)**<br/>LakeDv[file_id] |= {pos}<br/>删除 RowPosIndex entry<br/>写入 PendingDeletes{file_id, pos}"]
+    Query --> Miss["**未命中**<br/>可能正在 tiering 中<br/>写入 PendingDeletes{pending}"]
 
     Hit --> LogDv["更新 LogDv:<br/>标记 offset 为已删除"]
     Miss --> LogDv
@@ -314,7 +312,7 @@ flowchart TD
 
 **对比原方案**：
 - **1 次 point-get**（原方案 2 次：RowPosIndex + pendingRowPos）
-- **统一处理逻辑**：命中/未命中都写 DeletedRowIdSet，不区分 Case X / Case Y
+- **统一处理逻辑**：命中/未命中都写 PendingDeletes，不区分 Case X / Case Y
 - **无 sentinel {0,0} 语义**：未命中时写 pending 标记
 
 > **关键顺序**：必须先更新 DV → 再更新 log_hw。否则 union read 可能看到更大的 logEndOffset 但 LakeDv 还没更新，导致读到已删除的旧行。
@@ -356,8 +354,8 @@ sequenceDiagram
         Note over CS: client 可开始 union read S_new
         CS->>TB: readable switch 通知
         TB->>TB: 1. Ingest SST → RowPosIndex
-        TB->>TB: 2. Batch 解析 DeletedRowIdSet
-        TB->>TB: 3. 清理过期状态 (DeletedRowIdSet, LakeDv, LogDv)
+        TB->>TB: 2. Batch 解析 PendingDeletes
+        TB->>TB: 3. 清理过期状态 (PendingDeletes, LakeDv, LogDv)
         TB-->>CS: switched ack
         Note over CS: barrier: 等齐所有 bucket 的 switched ack
         CS-->>TS: 本轮完成，允许生成下一轮 split
@@ -371,7 +369,7 @@ sequenceDiagram
 | TieringService 职责 | 写数据 + commit + 直接向 TabletServer 发 positionReport | **写数据 + commit + 上报 CoordinatorServer，不与 TabletServer 通信** |
 | 调度中心 | TieringService 驱动 Phase A，CoordinatorServer 驱动 Phase B/C | **CoordinatorServer 统一驱动 Phase B/C** |
 | Prepare 阶段 | **重**：Ingest + reverse-scan + hard-link | **轻**：下载 SST + 存储路径 |
-| Readable switch | **轻**：Ingest hard-link + DropCF | **重**：Ingest SST + batch 解析 DeletedRowIdSet |
+| Readable switch | **轻**：Ingest hard-link + DropCF | **重**：Ingest SST + batch 解析 PendingDeletes |
 
 ### 5.2 TieringService 处理流程
 
@@ -447,11 +445,11 @@ flowchart TD
 
     Lock --> Step1["1. Ingest SST → RowPosIndex<br/>（新位置覆盖旧位置）"]
 
-    Step1 --> Step2["2. Batch 解析 DeletedRowIdSet:<br/>遍历每个 (R, v)，查 RowPosIndex.get(R)<br/>命中 → 补齐 LakeDv + 删除 RowPosIndex entry<br/>未命中 + R < tieredOffset → 清理孤儿"]
+    Step1 --> Step2["2. Batch 解析 PendingDeletes:<br/>遍历每个 (R, v)，查 RowPosIndex.get(R)<br/>命中 → 补齐 LakeDv + 删除 RowPosIndex entry<br/>未命中 + R < tieredOffset → 清理孤儿"]
 
     Step2 --> Step3["3. 清理 oldFiles 对应的 LakeDv"]
     Step3 --> Step4["4. Bitmap diff cleanup LakeDv"]
-    Step4 --> Step5["5. 清理已物化的 DeletedRowIdSet 条目"]
+    Step4 --> Step5["5. 清理已物化的 PendingDeletes 条目"]
     Step5 --> Step6["6. 清理过期 LogDv"]
     Step6 --> Step7["7. 更新 readableSnapshotId"]
 
@@ -528,7 +526,7 @@ sequenceDiagram
 flowchart TD
     Start["TabletServer 重启"] --> Load["1. 从远程加载 DvRocksDB checkpoint<br/>(restoreSnapshot, checkpointLogHw)"]
 
-    Load --> Replay["2. 从 checkpointLogHw+1 开始<br/>重放 changelog 中的 -U/-D<br/>恢复 LakeDv / LogDv / DeletedRowIdSet"]
+    Load --> Replay["2. 从 checkpointLogHw+1 开始<br/>重放 changelog 中的 -U/-D<br/>恢复 LakeDv / LogDv / PendingDeletes"]
 
     Replay --> Query["3. 查询 CoordinatorServer<br/>获取当前 DV-readable snapshot"]
     Query --> Compare{"restoreSnapshot<br/>== S_readable?"}
@@ -538,7 +536,7 @@ flowchart TD
 
     Catch --> Download["5. 按序下载 SST<br/>Ingest → RowPosIndex"]
     Download --> ReplayMore["6. 从 tieredOffset+1 重放 changelog"]
-    ReplayMore --> BackScan["7. 遍历 DeletedRowIdSet<br/>查 RowPosIndex 补打 LakeDv"]
+    ReplayMore --> BackScan["7. 遍历 PendingDeletes<br/>查 RowPosIndex 补打 LakeDv"]
     BackScan --> Done
 
     style Done fill:#c8e6c9
@@ -583,7 +581,7 @@ sequenceDiagram
 
     CS->>CS: publish S_new
     CS->>Tab: readable switch 通知
-    Tab->>Tab: Ingest SST + batch 解析 DeletedRowIdSet<br/>为已删行的新位置补打 LakeDv
+    Tab->>Tab: Ingest SST + batch 解析 PendingDeletes<br/>为已删行的新位置补打 LakeDv
     Tab-->>CS: switched ack
 ```
 
@@ -689,7 +687,7 @@ sequenceDiagram
 
     CS->>CS: publish S1 为 DV-readable
     CS->>Tab: readable switch 通知
-    Tab->>Tab: Ingest SST → RowPosIndex<br/>batch 解析 DeletedRowIdSet（空，无操作）
+    Tab->>Tab: Ingest SST → RowPosIndex<br/>batch 解析 PendingDeletes（空，无操作）
     Tab-->>CS: switched ack
 ```
 
@@ -697,7 +695,7 @@ sequenceDiagram
 ```
 RowPosIndex: {0→file_A:pos0, 1→file_A:pos1, 2→file_A:pos2}
 LakeDv: 空
-DeletedRowIdSet: 空
+PendingDeletes: 空
 ```
 
 ### Step 3: 更新 key1
@@ -709,7 +707,7 @@ PUT(key1, v4) → -U(offset=3, oldRowId=0) + +U(offset=4, RowId=4)
 ```mermaid
 flowchart LR
     Delete["-U(oldRowId=0)"] --> Query["查 RowPosIndex<br/>命中 file_A:pos0"]
-    Query --> Mark["LakeDv: file_A → {0}<br/>LogDv: offset0 已删除<br/>DeletedRowIdSet: 0 → (file_A, pos0)"]
+    Query --> Mark["LakeDv: file_A → {0}<br/>LogDv: offset0 已删除<br/>PendingDeletes: 0 → (file_A, pos0)"]
     Query --> Remove["删除 RowPosIndex[0]"]
 ```
 
@@ -754,10 +752,10 @@ sequenceDiagram
 
     CS->>CS: publish S2 为 DV-readable
     CS->>Tab: readable switch 通知
-    Tab->>Tab: 1. Ingest SST → RowPosIndex<br/>2. Batch 解析 DeletedRowIdSet<br/>3. 差集清理 LakeDv<br/>{0,2} AND NOT {0,2} = {}
+    Tab->>Tab: 1. Ingest SST → RowPosIndex<br/>2. Batch 解析 PendingDeletes<br/>3. 差集清理 LakeDv<br/>{0,2} AND NOT {0,2} = {}
     Tab-->>CS: switched ack
 
-    Note over Tab: LakeDv = 空<br/>DeletedRowIdSet = 空
+    Note over Tab: LakeDv = 空<br/>PendingDeletes = 空
 ```
 
 ---
@@ -771,7 +769,7 @@ sequenceDiagram
 | **Deferred Ingest** | SST 推迟到 readable switch 时 Ingest | prepare 到 readable switch 期间读端仍用旧 snapshot，不需要同时看到新旧位置 |
 | **CoordinatorServer 统一调度** | TieringService 只 commit + 上报，不与 TabletServer 通信 | 职责清晰：TieringService 只管写数据，CoordinatorServer 统一驱动 prepare / publish / switch |
 | **SST 由 TieringService 生成** | TabletServer 通过 indexUuid 自行下载 | 避免 TabletServer 做重 I/O；SST 定位与恢复流程复用同一路径 |
-| **batch 解析 DeletedRowIdSet** | readable switch 时统一遍历 + point-get | 统一处理时序间隙和外部 compaction，O(\|DeletedRowIdSet\|) |
+| **batch 解析 PendingDeletes** | readable switch 时统一遍历 + point-get | 统一处理时序间隙和外部 compaction，O(\|PendingDeletes\|) |
 | **差集清理 LakeDv** | AND NOT snapshotBitmap | 不丢新增删除，不膨胀 |
 | **staleness 校验** | 用 lastTieredOffset 比较 | 拦截乱序/过期请求 |
 | **DvRWLock 读写锁** | 写路径互斥，读路径并行 | 简单高效，临界区 ms 级 |
