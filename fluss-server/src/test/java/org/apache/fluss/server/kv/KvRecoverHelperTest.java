@@ -330,6 +330,105 @@ class KvRecoverHelperTest {
         kvTabletB.close();
     }
 
+    /**
+     * Tests that recovery for a historical partition writes a tombstone (empty byte array) to
+     * RocksDB for DELETE records, rather than deleting the key. This prevents the lake fallback
+     * from returning stale pre-delete data.
+     */
+    @Test
+    void testHistoricalRecoveryWritesTombstoneForDelete(@TempDir File tempDir) throws Exception {
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of("test_db", "test_table", "__historical__");
+        TableBucket tableBucket = new TableBucket(TABLE_ID, 3L, 0);
+        TestingSchemaGetter schemaGetter =
+                new TestingSchemaGetter(new SchemaInfo(PARTITIONED_SCHEMA, SCHEMA_ID));
+
+        // Create LogTablet
+        LogTablet logTablet = createLogTablet(tempDir, historicalPath);
+
+        // Create KvTablet A: write INSERT then DELETE to populate WAL
+        File kvDirA = new File(tempDir, "kv-a");
+        kvDirA.mkdirs();
+        KvTablet kvTabletA =
+                createKvTablet(historicalPath, tableBucket, logTablet, kvDirA, schemaGetter);
+
+        KvRecordTestUtils.KvRecordBatchFactory batchFactory =
+                KvRecordTestUtils.KvRecordBatchFactory.of(SCHEMA_ID);
+        KvRecordTestUtils.PKBasedKvRecordFactory recordFactory =
+                KvRecordTestUtils.PKBasedKvRecordFactory.of(
+                        PARTITIONED_SCHEMA.getRowType(), new int[] {0});
+
+        // INSERT record
+        KvRecord insertRecord = recordFactory.ofRecord(new Object[] {1, "alice", "2024-01-01"});
+        KvRecordBatch insertBatch = batchFactory.ofRecords(Collections.singletonList(insertRecord));
+        kvTabletA.putAsLeader(insertBatch, null, MergeMode.DEFAULT, "2024-01-01");
+
+        // DELETE record (null value)
+        KvRecordTestUtils.KvRecordFactory rawRecordFactory =
+                KvRecordTestUtils.KvRecordFactory.of(PARTITIONED_SCHEMA.getRowType());
+        KeyEncoder keyEncoder =
+                KeyEncoder.ofPrimaryKeyEncoder(
+                        PARTITIONED_SCHEMA.getRowType(),
+                        Arrays.asList("id"),
+                        new TableConfig(new Configuration()),
+                        false);
+        byte[] plainKey1 = keyEncoder.encodeKey(insertRecord.getRow());
+        KvRecord deleteRecord = rawRecordFactory.ofRecord(plainKey1, null);
+        KvRecordBatch deleteBatch = batchFactory.ofRecords(Collections.singletonList(deleteRecord));
+        kvTabletA.putAsLeader(deleteBatch, null, MergeMode.DEFAULT, "2024-01-01");
+
+        // Advance HW
+        logTablet.updateHighWatermark(logTablet.localLogEndOffset());
+        kvTabletA.close();
+
+        // Create fresh KvTablet B and run recovery
+        File kvDirB = new File(tempDir, "kv-b");
+        kvDirB.mkdirs();
+        KvTablet kvTabletB =
+                createKvTablet(historicalPath, tableBucket, logTablet, kvDirB, schemaGetter);
+
+        KvRecoverHelper.KvRecoverContext recoverContext =
+                new KvRecoverHelper.KvRecoverContext(TABLE_PATH, zkClient, 1024 * 1024);
+        RemoteLogFetcher remoteLogFetcher =
+                new RemoteLogFetcher(null, tableBucket, new File(tempDir, "remote-tmp").toPath());
+
+        try {
+            KvRecoverHelper kvRecoverHelper =
+                    new KvRecoverHelper(
+                            kvTabletB,
+                            logTablet,
+                            0L,
+                            null,
+                            null,
+                            recoverContext,
+                            KvFormat.COMPACTED,
+                            LogFormat.ARROW,
+                            schemaGetter,
+                            remoteLogFetcher,
+                            true,
+                            Collections.singletonList("dt"));
+            kvRecoverHelper.recover();
+        } finally {
+            remoteLogFetcher.close();
+        }
+
+        // Flush pre-write buffer
+        kvTabletB.flush(Long.MAX_VALUE, NOPErrorHandler.INSTANCE);
+
+        // Build the composite key for the DELETE'd record
+        byte[] compositeKey1 = CompositeKeyEncoder.encode("2024-01-01", plainKey1);
+
+        // Verify: the composite key should exist in RocksDB with a tombstone (empty byte array),
+        // NOT be absent. multiGet returns the raw RocksDB value.
+        List<byte[]> rawValues = kvTabletB.multiGet(Collections.singletonList(compositeKey1));
+        assertThat(rawValues.get(0))
+                .as("deleted key should have tombstone (empty byte[]) in RocksDB, not null")
+                .isNotNull()
+                .isEmpty();
+
+        kvTabletB.close();
+    }
+
     // ----- helper methods -----
 
     private LogTablet createLogTablet(File tempDir, PhysicalTablePath physicalPath)

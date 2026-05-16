@@ -37,7 +37,7 @@ class KvPreWriteBufferTest {
     void testIllegalLSN() {
         KvPreWriteBuffer buffer =
                 new KvPreWriteBuffer(
-                        new NopKvBatchWriter(), TestingMetricGroups.TABLET_SERVER_METRICS);
+                        new NopKvBatchWriter(), false, TestingMetricGroups.TABLET_SERVER_METRICS);
         bufferInsert(buffer, "key1", "value1", 1);
         bufferDelete(buffer, "key1", 3);
 
@@ -58,7 +58,7 @@ class KvPreWriteBufferTest {
     void testWriteAndFlush() throws Exception {
         KvPreWriteBuffer buffer =
                 new KvPreWriteBuffer(
-                        new NopKvBatchWriter(), TestingMetricGroups.TABLET_SERVER_METRICS);
+                        new NopKvBatchWriter(), false, TestingMetricGroups.TABLET_SERVER_METRICS);
         int elementCount = 0;
 
         // put a series of kv entries
@@ -141,7 +141,7 @@ class KvPreWriteBufferTest {
     void testTruncate() {
         KvPreWriteBuffer buffer =
                 new KvPreWriteBuffer(
-                        new NopKvBatchWriter(), TestingMetricGroups.TABLET_SERVER_METRICS);
+                        new NopKvBatchWriter(), false, TestingMetricGroups.TABLET_SERVER_METRICS);
         int elementCount = 0;
 
         // put a series of kv entries
@@ -196,7 +196,7 @@ class KvPreWriteBufferTest {
     void testRowCount() throws IOException {
         KvPreWriteBuffer buffer =
                 new KvPreWriteBuffer(
-                        new NopKvBatchWriter(), TestingMetricGroups.TABLET_SERVER_METRICS);
+                        new NopKvBatchWriter(), false, TestingMetricGroups.TABLET_SERVER_METRICS);
         int elementCount = 0;
 
         // put a series of kv entries

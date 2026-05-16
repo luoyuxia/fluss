@@ -22,6 +22,7 @@ import org.apache.fluss.memory.MemorySegment;
 import org.apache.fluss.metrics.Counter;
 import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.server.kv.KvBatchWriter;
+import org.apache.fluss.server.kv.KvTablet;
 import org.apache.fluss.server.metrics.group.TabletServerMetricGroup;
 import org.apache.fluss.utils.MurmurHashUtils;
 
@@ -87,6 +88,7 @@ import static org.apache.fluss.utils.UnsafeUtils.BYTE_ARRAY_BASE_OFFSET;
 @NotThreadSafe
 public class KvPreWriteBuffer implements AutoCloseable {
     private final KvBatchWriter kvBatchWriter;
+    private final boolean isHistoricalPartition;
 
     // a mapping from the key to the kv-entry
     private final Map<Key, KvEntry> kvEntryMap = new HashMap<>();
@@ -102,8 +104,11 @@ public class KvPreWriteBuffer implements AutoCloseable {
     private long maxLogSequenceNumber = -1;
 
     public KvPreWriteBuffer(
-            KvBatchWriter kvBatchWriter, TabletServerMetricGroup serverMetricGroup) {
+            KvBatchWriter kvBatchWriter,
+            boolean isHistoricalPartition,
+            TabletServerMetricGroup serverMetricGroup) {
         this.kvBatchWriter = kvBatchWriter;
+        this.isHistoricalPartition = isHistoricalPartition;
 
         truncateAsDuplicatedCount = serverMetricGroup.kvTruncateAsDuplicatedCount();
         truncateAsErrorCount = serverMetricGroup.kvTruncateAsErrorCount();
@@ -233,7 +238,11 @@ public class KvPreWriteBuffer implements AutoCloseable {
                 kvBatchWriter.put(entry.getKey().key, value.value);
             } else {
                 flushedCount += 1;
-                kvBatchWriter.delete(entry.getKey().key);
+                if (isHistoricalPartition) {
+                    kvBatchWriter.put(entry.getKey().key, KvTablet.TOMBSTONE_VALUE);
+                } else {
+                    kvBatchWriter.delete(entry.getKey().key);
+                }
             }
 
             // for update_after, we don't change the row count

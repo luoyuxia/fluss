@@ -804,10 +804,13 @@ public final class FlussClusterExtension
                     Optional<LeaderAndIsr> leaderAndIsrOpt = zkClient.getLeaderAndIsr(tableBucket);
                     if (!leaderAndIsrOpt.isPresent()) {
                         return Optional.empty();
-                    } else {
-                        int leader = leaderAndIsrOpt.get().leader();
-                        return getReplica(tableBucket, leader, true);
                     }
+                    int leader = leaderAndIsrOpt.get().leader();
+                    if (leader < 0) {
+                        // leader=-1 means no leader elected yet; keep waiting.
+                        return Optional.empty();
+                    }
+                    return getReplica(tableBucket, leader, true);
                 },
                 Duration.ofMinutes(1),
                 "Fail to wait leader replica ready");

@@ -144,7 +144,13 @@ public class KvRecoverHelper {
             ThrowingConsumer<KeyValueAndLogOffset, Exception> resumeRecordApplier =
                     (resumeRecord) -> {
                         if (resumeRecord.value == null) {
-                            kvBatchWriter.delete(resumeRecord.key);
+                            if (isHistoricalPartition) {
+                                // Write tombstone so lake fallback won't return
+                                // stale pre-delete data for this key.
+                                kvBatchWriter.put(resumeRecord.key, KvTablet.TOMBSTONE_VALUE);
+                            } else {
+                                kvBatchWriter.delete(resumeRecord.key);
+                            }
                         } else {
                             kvBatchWriter.put(resumeRecord.key, resumeRecord.value);
                         }

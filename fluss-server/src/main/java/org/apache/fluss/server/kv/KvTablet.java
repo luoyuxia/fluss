@@ -144,6 +144,20 @@ public final class KvTablet {
     // whether this tablet belongs to a __historical__ partition
     private final boolean isHistoricalPartition;
 
+    /**
+     * Tombstone marker written to RocksDB for DELETE operations on historical partitions. A normal
+     * encoded value always has at least 2 bytes (schema_id), so an empty byte array is unambiguous.
+     *
+     * <p>Without tombstones, a DELETE in RocksDB is indistinguishable from "never written", causing
+     * the lake fallback in {@link #getOldValue} to return stale pre-delete data.
+     */
+    public static final byte[] TOMBSTONE_VALUE = new byte[0];
+
+    /** Returns true if the given value is a tombstone marker. */
+    static boolean isTombstone(@Nullable byte[] value) {
+        return value != null && value.length == 0;
+    }
+
     // Lake table lookuper for old-value fallback (historical partitions only)
     @Nullable private LakeTableLookuper lakeTableLookuper;
     // Partition keys for constructing ResolvedPartitionSpec during lake fallback
@@ -193,7 +207,9 @@ public final class KvTablet {
         this.rocksDBKv = rocksDBKv;
         this.writeBatchSize = writeBatchSize;
         this.serverMetricGroup = serverMetricGroup;
-        this.kvPreWriteBuffer = new KvPreWriteBuffer(createKvBatchWriter(), serverMetricGroup);
+        this.kvPreWriteBuffer =
+                new KvPreWriteBuffer(
+                        createKvBatchWriter(), isHistoricalPartition, serverMetricGroup);
         this.logFormat = logFormat;
         this.arrowWriterProvider = new ArrowWriterPool(arrowBufferAllocator);
         this.memorySegmentPool = memorySegmentPool;
@@ -790,7 +806,9 @@ public final class KvTablet {
         // 2. RocksDB
         byte[] rocksResult = rocksDBKv.get(key.get());
         if (rocksResult != null) {
-            return rocksResult;
+            // Historical partition tombstone: key was explicitly deleted.
+            // Return null without lake fallback.
+            return isTombstone(rocksResult) ? null : rocksResult;
         }
         // 3. lake fallback (only for historical partition)
         if (!isHistoricalPartition || lakeTableLookuper == null || partitionName == null) {

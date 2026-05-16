@@ -829,9 +829,16 @@ public final class Replica {
                 // Historical partition: always start from clean RocksDB, no snapshot.
                 // Per FIP-28 A.3.4: historical RocksDB is non-persistent, recovery
                 // replays WAL from tiered offset.
+                //
+                // IMPORTANT: Delete existing KV directory before creating fresh RocksDB.
+                // When a server restarts and becomes leader again (e.g., ISR=[self] scenario),
+                // the old RocksDB files from the previous leader tenure may still exist on disk.
+                // Without this deletion, getOrCreateKv() would open the existing directory and
+                // recovery from tieredOffset would only ADD new data without removing stale keys.
                 LOG.info(
                         "Historical partition {} — skipping snapshot, creating fresh RocksDB.",
                         tableBucket);
+                kvManager.createTabletDir(logTablet.getDataDir(), physicalPath, tableBucket);
                 kvTablet =
                         kvManager.getOrCreateKv(
                                 physicalPath,

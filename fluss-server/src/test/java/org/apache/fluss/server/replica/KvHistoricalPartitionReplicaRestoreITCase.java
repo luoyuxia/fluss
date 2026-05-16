@@ -56,6 +56,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.record.TestData.DEFAULT_SCHEMA_ID;
@@ -172,18 +173,21 @@ class KvHistoricalPartitionReplicaRestoreITCase {
                     expectedValue(i, "val_" + i, "2001"));
         }
 
-        // Failover: stop leader, wait for new leader with KV recovery complete
+        // Failover: stop leader then restart immediately.
         FLUSS_CLUSTER_EXTENSION.stopTabletServer(leaderServer);
+        FLUSS_CLUSTER_EXTENSION.startTabletServer(leaderServer);
+
+        // Wait for the new leader replica to be fully initialized (KV recovery complete).
         FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
         int newLeaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
-        TabletServerGateway newGateway =
+        TabletServerGateway phase1Gateway =
                 FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(newLeaderServer);
 
         // Verify all records recovered with correct composite key encoding for both partitions
         for (int i = 0; i < 5; i++) {
             byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
             assertHistoricalLookup(
-                    newGateway,
+                    phase1Gateway,
                     tableId,
                     historicalPartitionId,
                     0,
@@ -191,7 +195,7 @@ class KvHistoricalPartitionReplicaRestoreITCase {
                     "2000",
                     expectedValue(i, "val_" + i, "2000"));
             assertHistoricalLookup(
-                    newGateway,
+                    phase1Gateway,
                     tableId,
                     historicalPartitionId,
                     0,
@@ -199,10 +203,6 @@ class KvHistoricalPartitionReplicaRestoreITCase {
                     "2001",
                     expectedValue(i, "val_" + i, "2001"));
         }
-
-        // Restart stopped server to restore cluster health
-        FLUSS_CLUSTER_EXTENSION.startTabletServer(leaderServer);
-        FLUSS_CLUSTER_EXTENSION.assertHasTabletServerNumber(3);
 
         // --- Phase 2: tiered offset recovery ---
 
@@ -251,17 +251,40 @@ class KvHistoricalPartitionReplicaRestoreITCase {
                     expectedValue(i, "val_" + i, "2001"));
         }
 
-        // Failover again: new leader re-initializes KV from tieredOffset
-        FLUSS_CLUSTER_EXTENSION.stopTabletServer(leaderServer);
-        FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
-        newLeaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
-        newGateway = FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(newLeaderServer);
+        // Verify ZK LakeTableSnapshot is readable before failover
+        {
+            Optional<LakeTableSnapshot> zkSnapshot = zkClient.getLakeTableSnapshot(tableId, null);
+            assertThat(zkSnapshot).as("LakeTableSnapshot should be in ZK").isPresent();
+            Optional<Long> zkOffset = zkSnapshot.get().getLogEndOffset(historicalBucket);
+            assertThat(zkOffset)
+                    .as("tieredOffset for historicalBucket should be in ZK")
+                    .isPresent();
+            assertThat(zkOffset.get())
+                    .as("tieredOffset value should match what we wrote")
+                    .isEqualTo(tieredOffset);
+        }
 
-        // Phase 2 records (id=5..9) should be found for both partitions
+        // Failover: stop leader then restart. All 3 servers are available during re-election
+        // which avoids ISR-related election delays.
+        FLUSS_CLUSTER_EXTENSION.stopTabletServer(leaderServer);
+        FLUSS_CLUSTER_EXTENSION.startTabletServer(leaderServer);
+
+        // Wait for the new leader and verify its lakeLogEndOffset is correctly set from ZK.
+        // waitAndGetLeaderReplica guarantees makeLeader() has completed (isLeader=true),
+        // which means updateWithLakeTableSnapshot→initKvTablet(tieredOffset) is done.
+        Replica phase2LeaderReplica =
+                FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        assertThat(phase2LeaderReplica.getLakeLogEndOffset())
+                .as("New leader's lakeLogEndOffset should equal tieredOffset from ZK")
+                .isEqualTo(tieredOffset);
+        int phase2LeaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
+        TabletServerGateway phase2Gateway =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(phase2LeaderServer);
+
         for (int i = 5; i < 10; i++) {
             byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
             assertHistoricalLookup(
-                    newGateway,
+                    phase2Gateway,
                     tableId,
                     historicalPartitionId,
                     0,
@@ -269,7 +292,7 @@ class KvHistoricalPartitionReplicaRestoreITCase {
                     "2000",
                     expectedValue(i, "val_" + i, "2000"));
             assertHistoricalLookup(
-                    newGateway,
+                    phase2Gateway,
                     tableId,
                     historicalPartitionId,
                     0,
@@ -282,14 +305,10 @@ class KvHistoricalPartitionReplicaRestoreITCase {
         for (int i = 0; i < 5; i++) {
             byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
             assertHistoricalLookup(
-                    newGateway, tableId, historicalPartitionId, 0, key, "2000", null);
+                    phase2Gateway, tableId, historicalPartitionId, 0, key, "2000", null);
             assertHistoricalLookup(
-                    newGateway, tableId, historicalPartitionId, 0, key, "2001", null);
+                    phase2Gateway, tableId, historicalPartitionId, 0, key, "2001", null);
         }
-
-        // Restart to restore cluster health
-        FLUSS_CLUSTER_EXTENSION.startTabletServer(leaderServer);
-        FLUSS_CLUSTER_EXTENSION.assertHasTabletServerNumber(3);
     }
 
     /**
@@ -431,6 +450,128 @@ class KvHistoricalPartitionReplicaRestoreITCase {
         }
     }
 
+    /**
+     * Verifies that after DELETE + failover, lookup returns null (not the stale lake value).
+     *
+     * <p>Flow: INSERT(k1) → simulate tiering → DELETE(k1) → failover → recovery replays DELETE →
+     * RocksDB has tombstone → lookup returns null instead of falling back to lake.
+     */
+    @Test
+    void testDeleteTombstoneAfterRecovery() throws Exception {
+        TablePath tablePath = TablePath.of("test_db", "test_tombstone_recovery");
+        long tableId =
+                createTable(
+                        FLUSS_CLUSTER_EXTENSION, tablePath, createHistoricalPkTableDescriptor());
+
+        long historicalPartitionId = createHistoricalPartitionAndGetId(tablePath);
+        TableBucket historicalBucket = new TableBucket(tableId, historicalPartitionId, 0);
+        FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        int leaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
+
+        // INSERT record (id=1, b="val_1", c="2000")
+        KvRecordBatch insertBatch = genHistoricalKvRecordBatch(1, 1, "2000");
+        putKvToPartition(historicalBucket, leaderServer, insertBatch, "2000").join();
+
+        // Verify INSERT visible
+        TabletServerGateway gateway =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(leaderServer);
+        byte[] lookupKey = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(1));
+        assertHistoricalLookup(
+                gateway,
+                tableId,
+                historicalPartitionId,
+                0,
+                lookupKey,
+                "2000",
+                expectedValue(1, "val_1", "2000"));
+
+        // Simulate tiering: mark current log as tiered (so lake has the INSERT data)
+        Replica leaderReplica = FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        LogTablet logTablet = leaderReplica.getLogTablet();
+        long tieredOffset = logTablet.localLogEndOffset();
+        logTablet.updateLakeLogEndOffset(tieredOffset);
+
+        // Register LakeTableSnapshot to ZK
+        ZooKeeperClient zkClient = FLUSS_CLUSTER_EXTENSION.getZooKeeperClient();
+        LakeTableSnapshot lakeTableSnapshot =
+                new LakeTableSnapshot(1L, Collections.singletonMap(historicalBucket, tieredOffset));
+        zkClient.upsertLakeTable(tableId, new LakeTable(lakeTableSnapshot), /* isUpdate= */ false);
+
+        // DELETE record (id=1)
+        KvRecordBatch deleteBatch = genHistoricalDeleteBatch(1, "2000");
+        putKvToPartition(historicalBucket, leaderServer, deleteBatch, "2000").join();
+
+        // Verify DELETE visible before failover
+        assertHistoricalLookup(gateway, tableId, historicalPartitionId, 0, lookupKey, "2000", null);
+
+        // Failover: stop leader then restart.
+        FLUSS_CLUSTER_EXTENSION.stopTabletServer(leaderServer);
+        FLUSS_CLUSTER_EXTENSION.startTabletServer(leaderServer);
+
+        // Wait for new leader replica to be fully initialized (KV recovery complete).
+        FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        int newLeaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
+        TabletServerGateway newGateway =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(newLeaderServer);
+
+        // After recovery: lookup should return null (tombstone prevents lake fallback)
+        assertHistoricalLookup(
+                newGateway, tableId, historicalPartitionId, 0, lookupKey, "2000", null);
+    }
+
+    /**
+     * Verifies that INSERT after DELETE correctly overwrites the tombstone. Lookup should return
+     * the new value, not null.
+     */
+    @Test
+    void testInsertAfterDeleteOverwritesTombstone() throws Exception {
+        TablePath tablePath = TablePath.of("test_db", "test_insert_after_delete");
+        long tableId =
+                createTable(
+                        FLUSS_CLUSTER_EXTENSION, tablePath, createHistoricalPkTableDescriptor());
+
+        long historicalPartitionId = createHistoricalPartitionAndGetId(tablePath);
+        TableBucket historicalBucket = new TableBucket(tableId, historicalPartitionId, 0);
+        FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        int leaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
+
+        // INSERT (id=1, b="val_1", c="2000")
+        KvRecordBatch insertBatch1 = genHistoricalKvRecordBatch(1, 1, "2000");
+        putKvToPartition(historicalBucket, leaderServer, insertBatch1, "2000").join();
+
+        // DELETE (id=1)
+        KvRecordBatch deleteBatch = genHistoricalDeleteBatch(1, "2000");
+        putKvToPartition(historicalBucket, leaderServer, deleteBatch, "2000").join();
+
+        // Verify deleted
+        TabletServerGateway gateway =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(leaderServer);
+        byte[] lookupKey = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(1));
+        assertHistoricalLookup(gateway, tableId, historicalPartitionId, 0, lookupKey, "2000", null);
+
+        // Re-INSERT same key with different value (id=1, b="new_val", c="2000")
+        KvRecordTestUtils.KvRecordFactory kvRecordFactory =
+                KvRecordTestUtils.KvRecordFactory.of(HISTORICAL_ROW_TYPE);
+        KvRecordTestUtils.KvRecordBatchFactory kvBatchFactory =
+                KvRecordTestUtils.KvRecordBatchFactory.of(DEFAULT_SCHEMA_ID);
+        byte[] keyBytes = HISTORICAL_KV_KEY_ENCODER.encodeKey(row(1, "new_val", "2000"));
+        KvRecord reinsertRecord =
+                kvRecordFactory.ofRecord(keyBytes, new Object[] {1, "new_val", "2000"});
+        KvRecordBatch reinsertBatch =
+                kvBatchFactory.ofRecords(Collections.singletonList(reinsertRecord));
+        putKvToPartition(historicalBucket, leaderServer, reinsertBatch, "2000").join();
+
+        // Verify new value
+        assertHistoricalLookup(
+                gateway,
+                tableId,
+                historicalPartitionId,
+                0,
+                lookupKey,
+                "2000",
+                expectedValue(1, "new_val", "2000"));
+    }
+
     // ---- Helper methods ----
 
     private static Configuration initConfig() {
@@ -532,6 +673,20 @@ class KvHistoricalPartitionReplicaRestoreITCase {
             records.add(kvRecordFactory.ofRecord(keyBytes, values));
         }
         return kvBatchFactory.ofRecords(records);
+    }
+
+    /**
+     * Generates a DELETE KvRecordBatch for the given id and partition. The record has a key encoded
+     * with PaimonKeyEncoder and a null value (signaling deletion).
+     */
+    private KvRecordBatch genHistoricalDeleteBatch(int id, String partitionValue) throws Exception {
+        KvRecordTestUtils.KvRecordFactory kvRecordFactory =
+                KvRecordTestUtils.KvRecordFactory.of(HISTORICAL_ROW_TYPE);
+        KvRecordTestUtils.KvRecordBatchFactory kvBatchFactory =
+                KvRecordTestUtils.KvRecordBatchFactory.of(DEFAULT_SCHEMA_ID);
+        byte[] keyBytes = HISTORICAL_KV_KEY_ENCODER.encodeKey(row(id, "val_" + id, partitionValue));
+        KvRecord deleteRecord = kvRecordFactory.ofRecord(keyBytes, null);
+        return kvBatchFactory.ofRecords(Collections.singletonList(deleteRecord));
     }
 
     /**
