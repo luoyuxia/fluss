@@ -11,8 +11,9 @@ Layer 2:             PR 6  (← PR 2)
                      PR 7a (← PR 2)
 Layer 3:             PR 7b (← PR 7a, PR 5)
 Layer 4:             PR 7c (← PR 7b, PR 3)
-                     PR 9  (← PR 7b)
+                     PR 9a (← PR 7b)       — Recovery
 Layer 5:             PR 8  (← PR 7c)
+                     PR 9b (← PR 9a)       — Cleanup
 Layer 6:             PR 10 (← all)
 ```
 
@@ -503,63 +504,86 @@ Historical lookup batch key = (__historical__ bucket, original partition name)
 
 ---
 
-## PR 9: Recovery + Cleanup
+## PR 9a: Recovery — composite key WAL 回放 + 跳过快照
 
-**目标**: `__historical__` 重启后能正确恢复状态；tiering 完成后能安全清理 RocksDB。
+**目标**: `__historical__` 重启后能正确恢复状态，修复 WAL 回放时 key 格式不一致的正确性 bug。
 
-**对应设计文档章节**: A.3.3, A.3.4
+**对应设计文档章节**: A.3.4
 
-**前置依赖**: PR 7b（cleanup 使用 PR 4 的 per-bucket serial executor，recovery 使用 PR 5 的 historical RocksDB）
+**前置依赖**: PR 7b（composite key encoding in KvTablet）
+
+**详细设计**: [FIP-28-PR9a-plan.md](./FIP-28-PR9a-plan.md)
+
+### 核心问题
+
+当前 `KvRecoverHelper` 使用 `KeyEncoder.encodeKey(logRow)` 产生 plain key，但正常写入使用 `CompositeKeyEncoder.encode(partitionName, key)` 产生 composite key。Recovery 后 RocksDB 中 key 格式不一致导致 lookup miss。
 
 ### 改动范围
 
 | 模块 | 文件 | 改动内容 |
 |---|---|---|
-| fluss-server | `fluss-server/src/main/java/org/apache/fluss/server/kv/KvRecoverHelper.java` | `__historical__` 恢复逻辑 |
-| fluss-server | `KvTablet.java` / `HistoricalKvManager.java` | cleanup 逻辑 |
-| fluss-server | `ReplicaManager.java` 或 tiering 回调 | cleanup 触发时机 |
-
-### Recovery 流程
-
-```
-1. 删除旧 historical RocksDB 目录（如果存在）
-2. 创建全新空 RocksDB 实例
-3. 获取 __historical__ 分区的 tiered offset（exclusive next-offset 语义）
-4. 从 tiered offset 开始 replay WAL 到 log end：
-   - 提取 original partition from row partition columns
-   - 编码 composite key
-   - apply upsert/delete
-5. 到达 high watermark 后，后续 record 写入 prewrite buffer（而非直接写 RocksDB）
-```
-
-### Cleanup 流程
-
-```
-条件：tieredOffset >= logEndOffset（均为 exclusive next-offset 语义）
-
-1. 提交 cleanup 任务到 per-bucket serial executor
-2. 串行执行器内 re-check tieredOffset >= logEndOffset
-   - 如果新写入已到达 → 条件不满足 → 跳过
-   - 如果条件成立 → 继续
-3. 等待所有 outstanding lookup reference 释放（reference-counted handle）
-4. close + delete 整个 historical RocksDB 目录
-5. 后续 lookup 看到 null handle → fall through 到 lake
-6. 后续 write 到达时 lazily 重新创建 RocksDB
-```
+| fluss-server | `Replica.java` | `initKvTablet()` 为 historical 分区跳过 snapshot、使用 tiered offset；`createKv()` 跳过 `startPeriodicKvSnapshot()` |
+| fluss-server | `KvRecoverHelper.java` | 增加 historical 模式：从 log row 提取 partitionName → composite key 编码 |
+| fluss-server | `KvTablet.java` | 暴露 `isHistoricalPartition()` getter |
 
 ### 测试要求
 
-- 写入 → 重启 → recovery（WAL replay）→ lookup 数据正确
-- 写入 → tiering 完成 → cleanup → RocksDB 被清理 → 后续 lookup fall through 到 lake 返回正确值
-- cleanup 过程中有并发 lookup → reference counting 正确协调
-- cleanup check 后有新写入到达 → re-check 失败 → cleanup 跳过（不误删）
-- recovery 数据量 = log end - tiered offset（有界的）
+- 写入 → 重启 → recovery（WAL replay with composite key）→ lookup 数据正确
+- recovery 从 tiered offset 开始，数据量 = log end - tiered offset（有界的）
+- 普通分区 recovery 不受任何影响
 
 ### 验收标准
 
 - recovery 不依赖 snapshot，始终从 clean RocksDB + WAL replay 恢复
+- WAL 回放时使用 composite key 编码，与正常写入路径一致
+- historical 分区不生成 snapshot（节省 I/O 和存储）
+
+---
+
+## PR 9b: Cleanup — tiering 完成后 RocksDB 清理
+
+**目标**: tiering 完成后能安全清理 `__historical__` 的 RocksDB，释放磁盘空间，后续 lookup fall through 到 lake。
+
+**对应设计文档章节**: A.3.3
+
+**前置依赖**: PR 9a（recovery 修复后 cleanup 才有意义）
+
+**详细设计**: [FIP-28-PR9b-plan.md](./FIP-28-PR9b-plan.md)
+
+### 改动范围
+
+| 模块 | 文件 | 改动内容 |
+|---|---|---|
+| fluss-server | `KvTablet.java` | reference-counted read access + `closeAndDeleteForCleanup()` |
+| fluss-server | `Replica.java` | `tryCleanupHistoricalKv()` 方法 |
+| fluss-server | `ReplicaManager.java` | `notifyLakeTableOffset()` 触发 cleanup check |
+
+### Cleanup 流程
+
+```
+触发: notifyLakeTableOffset() 对 __historical__ 分区投递 cleanup check 到 per-bucket serial executor
+条件: tieredOffset >= logEndOffset（均为 exclusive next-offset 语义）
+
+1. serial executor 内 re-check tieredOffset >= logEndOffset
+   - 新写入到达 → 条件不满足 → 跳过
+   - 条件成立 → 继续
+2. 标记 cleanedUp，等待 outstanding read references drain
+3. close + delete 整个 historical RocksDB 目录
+4. 后续 lookup → fall through 到 lake
+5. 后续 write → 重新创建 RocksDB（lazy re-creation）
+```
+
+### 测试要求
+
+- 写入 → tiering 完成 → cleanup → RocksDB 被清理 → 后续 lookup fall through 到 lake 返回正确值
+- cleanup 过程中有并发 lookup → reference counting 正确协调
+- cleanup check 后有新写入到达 → re-check 失败 → cleanup 跳过（不误删）
+
+### 验收标准
+
 - cleanup 与写入通过 serial executor 串行化，无竞态
 - cleanup 与 lookup 通过 reference counting 协调，无读关闭竞态
+- cleanup 后 lookup 无感知地切换到 lake fallback
 
 ---
 
@@ -569,7 +593,7 @@ Historical lookup batch key = (__historical__ bucket, original partition name)
 
 **对应设计文档章节**: Test Plan
 
-**前置依赖**: PR 1–9 全部（含 PR 7c）
+**前置依赖**: PR 1–9b 全部（含 PR 7c）
 
 ### 测试场景
 

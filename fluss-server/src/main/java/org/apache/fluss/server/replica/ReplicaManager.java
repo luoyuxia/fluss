@@ -1239,9 +1239,24 @@ public class ReplicaManager implements ServerReconfigurable {
                                 .getMaxTimestamp()
                                 .ifPresent(logTablet::updateLakeMaxTimestamp);
 
+                        maybeScheduleHistoricalCleanup(tb);
+
                         responseCallback.accept(new NotifyLakeTableOffsetResponse());
                     }
                 });
+    }
+
+    /**
+     * Schedules a cleanup check for a historical partition's RocksDB. Submitted to the per-bucket
+     * serial executor to serialize with writes.
+     */
+    private void maybeScheduleHistoricalCleanup(TableBucket tb) {
+        Replica replica = getReplicaOrException(tb);
+        if (!PartitionUtils.isHistoricalPartitionName(
+                replica.getPhysicalTablePath().getPartitionName())) {
+            return;
+        }
+        historicalPartitionHandler.submitWrite(tb, replica::cleanupHistoricalKv);
     }
 
     /**

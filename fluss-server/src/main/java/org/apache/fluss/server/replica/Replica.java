@@ -742,6 +742,49 @@ public final class Replica {
         }
     }
 
+    /**
+     * Cleans up the historical partition's RocksDB after tiering completes, then immediately
+     * re-creates an empty RocksDB so that kvTablet is never null.
+     *
+     * <p>The {@link #dropKv()} + {@link #initKvTablet()} pair is protected by {@code
+     * leaderIsrUpdateLock} write lock to prevent concurrent lookups from seeing kvTablet == null.
+     * This mirrors {@link #onBecomeNewLeader()} which also calls dropKv() + createKv() under the
+     * write lock.
+     *
+     * <p>When tieredOffset >= logEndOffset, all data has been tiered to lake. dropKv() removes old
+     * data, initKvTablet() creates fresh RocksDB (replay from new tieredOffset will find 0 records
+     * to replay, so the write lock is held only briefly).
+     */
+    public void cleanupHistoricalKv() {
+        inWriteLock(
+                leaderIsrUpdateLock,
+                () -> {
+                    if (kvTablet == null) {
+                        return;
+                    }
+
+                    long tieredOffset = logTablet.getLakeLogEndOffset();
+                    long logEnd = logTablet.localLogEndOffset();
+
+                    if (tieredOffset < logEnd) {
+                        LOG.debug(
+                                "Skipping historical KV cleanup for {}: tieredOffset={} < logEndOffset={}",
+                                tableBucket,
+                                tieredOffset,
+                                logEnd);
+                        return;
+                    }
+
+                    LOG.info(
+                            "Cleaning up historical KV for {} (tieredOffset={} >= logEndOffset={}).",
+                            tableBucket,
+                            tieredOffset,
+                            logEnd);
+                    dropKv();
+                    initKvTablet();
+                });
+    }
+
     private void mayFlushKv(long newHighWatermark) {
         KvTablet kvTablet = this.kvTablet;
         if (kvTablet != null) {

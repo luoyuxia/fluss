@@ -292,6 +292,145 @@ class KvHistoricalPartitionReplicaRestoreITCase {
         FLUSS_CLUSTER_EXTENSION.assertHasTabletServerNumber(3);
     }
 
+    /**
+     * Verifies that cleanup drops old RocksDB and re-creates an empty one after tiering completes,
+     * and that new writes after cleanup work correctly.
+     *
+     * <ol>
+     *   <li>Write data to __historical__ partition.
+     *   <li>Simulate tiering complete (tieredOffset >= logEndOffset).
+     *   <li>Trigger cleanup → old data cleared, kvTablet still non-null.
+     *   <li>Write new data after cleanup → new data accessible via lookup.
+     * </ol>
+     */
+    @Test
+    void testHistoricalCleanupAfterTiering() throws Exception {
+        TablePath tablePath = TablePath.of("test_db", "test_hist_cleanup");
+        long tableId =
+                createTable(
+                        FLUSS_CLUSTER_EXTENSION, tablePath, createHistoricalPkTableDescriptor());
+
+        long historicalPartitionId = createHistoricalPartitionAndGetId(tablePath);
+        TableBucket historicalBucket = new TableBucket(tableId, historicalPartitionId, 0);
+        FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        int leaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
+
+        // Write 5 records for partition "2000"
+        KvRecordBatch batch = genHistoricalKvRecordBatch(0, 5, "2000");
+        putKvToPartition(historicalBucket, leaderServer, batch, "2000").join();
+
+        // Verify data visible
+        TabletServerGateway gateway =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(leaderServer);
+        for (int i = 0; i < 5; i++) {
+            byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
+            assertHistoricalLookup(
+                    gateway,
+                    tableId,
+                    historicalPartitionId,
+                    0,
+                    key,
+                    "2000",
+                    expectedValue(i, "val_" + i, "2000"));
+        }
+
+        // Simulate tiering complete: tieredOffset >= logEndOffset
+        Replica leaderReplica = FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        LogTablet logTablet = leaderReplica.getLogTablet();
+        long logEnd = logTablet.localLogEndOffset();
+        logTablet.updateLakeLogEndOffset(logEnd);
+
+        // Trigger cleanup
+        leaderReplica.cleanupHistoricalKv();
+
+        // Verify kvTablet is still non-null (re-created as empty RocksDB)
+        assertThat(leaderReplica.getKvTablet()).isNotNull();
+
+        // Verify old data is cleared (empty RocksDB → lookup returns null)
+        for (int i = 0; i < 5; i++) {
+            byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
+            assertHistoricalLookup(gateway, tableId, historicalPartitionId, 0, key, "2000", null);
+        }
+
+        // Write new records after cleanup (id=10..14)
+        KvRecordBatch newBatch = genHistoricalKvRecordBatch(10, 5, "2000");
+        putKvToPartition(historicalBucket, leaderServer, newBatch, "2000").join();
+
+        // Verify new data accessible
+        for (int i = 10; i < 15; i++) {
+            byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
+            assertHistoricalLookup(
+                    gateway,
+                    tableId,
+                    historicalPartitionId,
+                    0,
+                    key,
+                    "2000",
+                    expectedValue(i, "val_" + i, "2000"));
+        }
+    }
+
+    /**
+     * Verifies that cleanup is skipped when new writes arrive after tiering completes but before
+     * cleanup executes (tieredOffset < logEndOffset at cleanup time).
+     */
+    @Test
+    void testCleanupSkippedWhenNewWriteArrives() throws Exception {
+        TablePath tablePath = TablePath.of("test_db", "test_hist_cleanup_skip");
+        long tableId =
+                createTable(
+                        FLUSS_CLUSTER_EXTENSION, tablePath, createHistoricalPkTableDescriptor());
+
+        long historicalPartitionId = createHistoricalPartitionAndGetId(tablePath);
+        TableBucket historicalBucket = new TableBucket(tableId, historicalPartitionId, 0);
+        FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        int leaderServer = FLUSS_CLUSTER_EXTENSION.waitAndGetLeader(historicalBucket);
+
+        // Write 5 records for partition "2000"
+        KvRecordBatch batch = genHistoricalKvRecordBatch(0, 5, "2000");
+        putKvToPartition(historicalBucket, leaderServer, batch, "2000").join();
+
+        // Simulate tiering complete at current log end
+        Replica leaderReplica = FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(historicalBucket);
+        LogTablet logTablet = leaderReplica.getLogTablet();
+        long tieredOffset = logTablet.localLogEndOffset();
+        logTablet.updateLakeLogEndOffset(tieredOffset);
+
+        // Write more records BEFORE cleanup runs (id=10..14)
+        // This advances logEndOffset beyond tieredOffset
+        KvRecordBatch newBatch = genHistoricalKvRecordBatch(10, 5, "2000");
+        putKvToPartition(historicalBucket, leaderServer, newBatch, "2000").join();
+
+        // Now trigger cleanup — should be skipped because tieredOffset < logEndOffset
+        leaderReplica.cleanupHistoricalKv();
+
+        // Verify ALL data is still present (cleanup was skipped)
+        TabletServerGateway gateway =
+                FLUSS_CLUSTER_EXTENSION.newTabletServerClientForNode(leaderServer);
+        for (int i = 0; i < 5; i++) {
+            byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
+            assertHistoricalLookup(
+                    gateway,
+                    tableId,
+                    historicalPartitionId,
+                    0,
+                    key,
+                    "2000",
+                    expectedValue(i, "val_" + i, "2000"));
+        }
+        for (int i = 10; i < 15; i++) {
+            byte[] key = HISTORICAL_LOOKUP_KEY_ENCODER.encodeKey(row(i));
+            assertHistoricalLookup(
+                    gateway,
+                    tableId,
+                    historicalPartitionId,
+                    0,
+                    key,
+                    "2000",
+                    expectedValue(i, "val_" + i, "2000"));
+        }
+    }
+
     // ---- Helper methods ----
 
     private static Configuration initConfig() {
