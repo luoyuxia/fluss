@@ -22,6 +22,7 @@ import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.client.metrics.WriterMetricGroup;
 import org.apache.fluss.client.write.RecordAccumulator.ReadyCheckResult;
 import org.apache.fluss.cluster.Cluster;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidMetadataException;
 import org.apache.fluss.exception.LeaderNotAvailableException;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
@@ -40,6 +41,8 @@ import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.utils.ExceptionUtils;
+import org.apache.fluss.utils.ExponentialBackoff;
+import org.apache.fluss.utils.clock.Clock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -107,6 +110,11 @@ public class Sender implements Runnable {
 
     private final WriterMetricGroup writerMetricGroup;
 
+    private final Clock clock;
+
+    /** Exponential backoff for historical partition throttle retries. */
+    private final ExponentialBackoff throttleBackoff = new ExponentialBackoff(100, 2, 5000, 0.2);
+
     public Sender(
             RecordAccumulator accumulator,
             int maxRequestTimeoutMs,
@@ -115,7 +123,8 @@ public class Sender implements Runnable {
             int retries,
             MetadataUpdater metadataUpdater,
             IdempotenceManager idempotenceManager,
-            WriterMetricGroup writerMetricGroup) {
+            WriterMetricGroup writerMetricGroup,
+            Clock clock) {
         this.accumulator = accumulator;
         this.maxRequestSize = maxRequestSize;
         this.maxRequestTimeoutMs = maxRequestTimeoutMs;
@@ -129,6 +138,7 @@ public class Sender implements Runnable {
 
         this.idempotenceManager = idempotenceManager;
         this.writerMetricGroup = writerMetricGroup;
+        this.clock = clock;
 
         // TODO add retry logic while send failed. See FLUSS-56364375
     }
@@ -562,6 +572,16 @@ public class Sender implements Runnable {
                     readyWriteBatch.tableBucket(),
                     retries - writeBatch.attempts(),
                     error.formatErrMsg());
+
+            // Apply exponential backoff for historical partition throttle
+            if (error.exception() instanceof HistoricalPartitionThrottledException) {
+                long backoffMs = throttleBackoff.backoff(writeBatch.attempts());
+                writeBatch.setRetryAfterMs(clock.milliseconds() + backoffMs);
+                LOG.info(
+                        "Historical partition throttled for {}, backing off {}ms",
+                        readyWriteBatch.tableBucket(),
+                        backoffMs);
+            }
 
             if (!idempotenceManager.idempotenceEnabled()) {
                 reEnqueueBatch(readyWriteBatch);

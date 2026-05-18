@@ -315,7 +315,8 @@ public class WriterClient {
                 retries,
                 metadataUpdater,
                 idempotenceManager,
-                writerMetricGroup);
+                writerMetricGroup,
+                SystemClock.getInstance());
     }
 
     public void close(Duration timeout) {

@@ -41,6 +41,8 @@ import org.apache.fluss.rpc.messages.ProduceLogResponse;
 import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
+import org.apache.fluss.utils.clock.Clock;
+import org.apache.fluss.utils.clock.ManualClock;
 import org.apache.fluss.utils.clock.SystemClock;
 
 import org.junit.jupiter.api.AfterEach;
@@ -57,6 +59,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_WRITER_ID;
 import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
@@ -880,6 +883,117 @@ final class SenderTest {
         assertThat(future.get()).isNull();
     }
 
+    @Test
+    void testHistoricalPartitionThrottledBackoff() throws Exception {
+        // Use ManualClock for deterministic time control
+        ManualClock clock = new ManualClock(System.currentTimeMillis());
+        int maxRetries = 3;
+        Sender sender1 =
+                setupWithIdempotenceState(
+                        new IdempotenceManager(
+                                false,
+                                MAX_INFLIGHT_REQUEST_PER_BUCKET,
+                                metadataUpdater.newRandomTabletServerClient(),
+                                metadataUpdater),
+                        maxRetries,
+                        0,
+                        clock);
+
+        CompletableFuture<Exception> future = new CompletableFuture<>();
+        appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> future.complete(e));
+
+        // Send the batch
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tb1)).isEqualTo(1);
+
+        // Simulate HISTORICAL_PARTITION_THROTTLED response
+        finishRequest(tb1, 0, createProduceLogResponse(tb1, Errors.HISTORICAL_PARTITION_THROTTLED));
+        sender1.runOnce();
+
+        // Batch is re-enqueued with backoff — should NOT be drained immediately
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tb1)).isEqualTo(0);
+
+        // Advance clock past the initial backoff (max ~120ms with jitter)
+        clock.advanceTime(150, TimeUnit.MILLISECONDS);
+
+        // Now the batch should be drained and sent
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tb1)).isEqualTo(1);
+
+        // Complete successfully
+        long offset = 0;
+        finishRequest(tb1, 0, createProduceLogResponse(tb1, offset, 1));
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tb1)).isEqualTo(0);
+        assertThat(future.get()).isNull();
+    }
+
+    @Test
+    void testHistoricalPartitionThrottledPutKvBackoff() throws Exception {
+        TableBucket tableBucket = new TableBucket(DATA1_TABLE_ID_PK, 0);
+
+        // Use ManualClock for deterministic time control
+        ManualClock clock = new ManualClock(System.currentTimeMillis());
+        int maxRetries = 3;
+        Sender sender1 =
+                setupWithIdempotenceState(
+                        new IdempotenceManager(
+                                false,
+                                MAX_INFLIGHT_REQUEST_PER_BUCKET,
+                                metadataUpdater.newRandomTabletServerClient(),
+                                metadataUpdater),
+                        maxRetries,
+                        0,
+                        clock);
+
+        BinaryRow row = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        int[] pkIndex = DATA1_SCHEMA_PK.getPrimaryKeyIndexes();
+        byte[] key = new CompactedKeyEncoder(DATA1_ROW_TYPE, pkIndex).encodeKey(row);
+        CompletableFuture<Exception> future = new CompletableFuture<>();
+        accumulator.append(
+                WriteRecord.forUpsert(
+                        DATA1_TABLE_INFO_PK,
+                        PhysicalTablePath.of(DATA1_TABLE_PATH_PK),
+                        row,
+                        key,
+                        key,
+                        WriteFormat.COMPACTED_KV,
+                        null),
+                (tb, leo, e) -> future.complete(e),
+                metadataUpdater.getCluster(),
+                0,
+                false);
+
+        // Send the batch
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tableBucket)).isEqualTo(1);
+
+        // Simulate HISTORICAL_PARTITION_THROTTLED response for PutKv
+        finishRequest(
+                tableBucket,
+                0,
+                createPutKvResponse(tableBucket, Errors.HISTORICAL_PARTITION_THROTTLED));
+        sender1.runOnce();
+
+        // Batch is re-enqueued with backoff — should NOT be drained immediately
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tableBucket)).isEqualTo(0);
+
+        // Advance clock past the initial backoff
+        clock.advanceTime(150, TimeUnit.MILLISECONDS);
+
+        // Now the batch should be drained and sent
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tableBucket)).isEqualTo(1);
+
+        // Complete successfully
+        finishRequest(tableBucket, 0, createPutKvResponse(tableBucket, 1));
+        sender1.runOnce();
+        assertThat(sender1.numOfInFlightBatches(tableBucket)).isEqualTo(0);
+        assertThat(future.get()).isNull();
+    }
+
     private TestingMetadataUpdater initializeMetadataUpdater() {
         Map<TablePath, TableInfo> tableInfos = new HashMap<>();
         tableInfos.put(DATA1_TABLE_PATH, DATA1_TABLE_INFO);
@@ -966,14 +1080,18 @@ final class SenderTest {
 
     private Sender setupWithIdempotenceState(
             IdempotenceManager idempotenceManager, int reties, int batchTimeoutMs) {
+        return setupWithIdempotenceState(
+                idempotenceManager, reties, batchTimeoutMs, SystemClock.getInstance());
+    }
+
+    private Sender setupWithIdempotenceState(
+            IdempotenceManager idempotenceManager, int reties, int batchTimeoutMs, Clock clock) {
         Configuration conf = new Configuration();
         conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE, new MemorySize(TOTAL_MEMORY_SIZE));
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(BATCH_SIZE));
         conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(PAGE_SIZE));
         conf.set(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT, Duration.ofMillis(batchTimeoutMs));
-        accumulator =
-                new RecordAccumulator(
-                        conf, idempotenceManager, writerMetricGroup, SystemClock.getInstance());
+        accumulator = new RecordAccumulator(conf, idempotenceManager, writerMetricGroup, clock);
         return new Sender(
                 accumulator,
                 REQUEST_TIMEOUT,
@@ -982,7 +1100,8 @@ final class SenderTest {
                 reties,
                 metadataUpdater,
                 idempotenceManager,
-                writerMetricGroup);
+                writerMetricGroup,
+                clock);
     }
 
     private IdempotenceManager createIdempotenceManager(boolean idempotenceEnabled) {

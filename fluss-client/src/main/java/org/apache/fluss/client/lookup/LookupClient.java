@@ -23,6 +23,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.utils.clock.SystemClock;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 
 import org.slf4j.Logger;
@@ -78,7 +79,8 @@ public class LookupClient {
                         historicalInflight,
                         conf.getInt(ConfigOptions.CLIENT_LOOKUP_MAX_RETRIES),
                         acks,
-                        (int) conf.get(ConfigOptions.CLIENT_REQUEST_TIMEOUT).toMillis());
+                        (int) conf.get(ConfigOptions.CLIENT_REQUEST_TIMEOUT).toMillis(),
+                        SystemClock.getInstance());
         lookupSenderThreadPool.submit(lookupSender);
     }
 

@@ -44,6 +44,9 @@ public abstract class AbstractLookupQuery<T> {
 
     private int retries;
 
+    /** Earliest time (epoch ms) at which this lookup may be retried after throttle backoff. */
+    private long retryAfterMs = 0L;
+
     public AbstractLookupQuery(TablePath tablePath, TableBucket tableBucket, byte[] key) {
         this(tablePath, tableBucket, key, false, null);
     }
@@ -90,6 +93,16 @@ public abstract class AbstractLookupQuery<T> {
 
     public void incrementRetries() {
         retries++;
+    }
+
+    /** Set the earliest time at which this lookup may be retried (used for throttle backoff). */
+    public void setRetryAfterMs(long retryAfterMs) {
+        this.retryAfterMs = retryAfterMs;
+    }
+
+    /** Returns the earliest time at which this lookup may be retried. */
+    public long getRetryAfterMs() {
+        return retryAfterMs;
     }
 
     public abstract LookupType lookupType();

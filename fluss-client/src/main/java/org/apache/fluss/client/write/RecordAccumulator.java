@@ -495,6 +495,8 @@ public final class RecordAccumulator {
             // We are careful to only perform the minimum required inside the synchronized
             // block, as this lock is also used to synchronize writer threads
             // attempting to append() to a bucket/batch.
+            final boolean inBackoff;
+            final long batchRetryAfterMs;
             synchronized (deque) {
                 // Deque are often empty in this path, esp with large bucket counts,
                 // so we exit early if we can.
@@ -503,9 +505,19 @@ public final class RecordAccumulator {
                     continue;
                 }
 
-                waitedTimeMs = batch.waitedTimeMs(clock.milliseconds());
+                long nowMs = clock.milliseconds();
+                waitedTimeMs = batch.waitedTimeMs(nowMs);
                 dequeSize = deque.size();
                 full = dequeSize > 1 || batch.isClosed();
+                inBackoff = !batch.isReadyForRetry(nowMs);
+                batchRetryAfterMs = batch.getRetryAfterMs();
+            }
+
+            // If the batch is in backoff, adjust next check delay and skip this bucket
+            if (inBackoff) {
+                long backoffLeftMs = Math.max(0, batchRetryAfterMs - clock.milliseconds());
+                nextReadyCheckDelayMs = Math.min(nextReadyCheckDelayMs, backoffLeftMs);
+                continue;
             }
 
             int bucketId = entry.getKey();
@@ -730,7 +742,10 @@ public final class RecordAccumulator {
                     continue;
                 }
 
-                // TODO retry back off check.
+                // Retry backoff check — skip batch if still in backoff period
+                if (!first.isReadyForRetry(clock.milliseconds())) {
+                    continue;
+                }
 
                 if (size + first.estimatedSizeInBytes() > maxSize && !ready.isEmpty()) {
                     // there is a rare case that a single batch size is larger than the request size

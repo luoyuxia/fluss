@@ -22,6 +22,7 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.FlussRuntimeException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidMetadataException;
 import org.apache.fluss.exception.LeaderNotAvailableException;
 import org.apache.fluss.exception.RetriableException;
@@ -37,6 +38,8 @@ import org.apache.fluss.rpc.messages.PbValueList;
 import org.apache.fluss.rpc.messages.PrefixLookupRequest;
 import org.apache.fluss.rpc.messages.PrefixLookupResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
+import org.apache.fluss.utils.ExponentialBackoff;
+import org.apache.fluss.utils.clock.Clock;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
@@ -85,6 +88,11 @@ class LookupSender implements Runnable {
 
     private final short acks;
 
+    /** Exponential backoff for historical partition throttle retries. */
+    private final ExponentialBackoff throttleBackoff = new ExponentialBackoff(100, 2, 5000, 0.2);
+
+    private final Clock clock;
+
     LookupSender(
             MetadataUpdater metadataUpdater,
             LookupQueue lookupQueue,
@@ -92,7 +100,8 @@ class LookupSender implements Runnable {
             int historicalFlightRequests,
             int maxRetries,
             short acks,
-            int maxRequestTimeoutMs) {
+            int maxRequestTimeoutMs,
+            Clock clock) {
         this.metadataUpdater = metadataUpdater;
         this.lookupQueue = lookupQueue;
         this.realtimeMaxInFlightReuqestsSemaphore =
@@ -102,6 +111,7 @@ class LookupSender implements Runnable {
         this.running = true;
         this.acks = acks;
         this.maxRequestTimeoutMs = maxRequestTimeoutMs;
+        this.clock = clock;
     }
 
     @Override
@@ -135,7 +145,8 @@ class LookupSender implements Runnable {
     }
 
     /** Run a single iteration of sending. */
-    private void runOnce(boolean drainAll) throws Exception {
+    @VisibleForTesting
+    void runOnce(boolean drainAll) throws Exception {
         List<AbstractLookupQuery<?>> lookups =
                 drainAll ? lookupQueue.drainAll() : lookupQueue.drain();
         sendLookups(lookups);
@@ -146,11 +157,26 @@ class LookupSender implements Runnable {
             return;
         }
 
+        // Filter out lookups still in backoff period, re-enqueue them
+        long nowMs = clock.milliseconds();
+        List<AbstractLookupQuery<?>> readyLookups = new ArrayList<>(lookups.size());
+        for (AbstractLookupQuery<?> lookup : lookups) {
+            if (lookup.getRetryAfterMs() > nowMs) {
+                reEnqueueLookup(lookup);
+            } else {
+                readyLookups.add(lookup);
+            }
+        }
+
+        if (readyLookups.isEmpty()) {
+            return;
+        }
+
         // Split lookups into realtime and historical to use separate semaphores,
         // ensuring slow lake I/O lookups don't starve realtime lookups.
         List<AbstractLookupQuery<?>> realtimeLookups = new ArrayList<>();
         List<AbstractLookupQuery<?>> historicalLookups = new ArrayList<>();
-        for (AbstractLookupQuery<?> lookup : lookups) {
+        for (AbstractLookupQuery<?> lookup : readyLookups) {
             if (lookup.isHistorical()) {
                 historicalLookups.add(lookup);
             } else {
@@ -572,6 +598,15 @@ class LookupSender implements Runnable {
                         maxRetries - lookup.retries(),
                         error.formatErrMsg());
                 lookup.incrementRetries();
+                // Apply exponential backoff for historical partition throttle
+                if (error.exception() instanceof HistoricalPartitionThrottledException) {
+                    long backoffMs = throttleBackoff.backoff(lookup.retries() - 1);
+                    lookup.setRetryAfterMs(clock.milliseconds() + backoffMs);
+                    LOG.info(
+                            "Historical partition throttled for {}, backing off {}ms",
+                            tableBucket,
+                            backoffMs);
+                }
                 reEnqueueLookup(lookup);
             } else {
                 LOG.warn(

@@ -21,6 +21,7 @@ import org.apache.fluss.client.metadata.TestingMetadataUpdater;
 import org.apache.fluss.cluster.BucketLocation;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.NotLeaderOrFollowerException;
 import org.apache.fluss.exception.TableNotExistException;
@@ -38,6 +39,8 @@ import org.apache.fluss.rpc.messages.PrefixLookupRequest;
 import org.apache.fluss.rpc.messages.PrefixLookupResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
+import org.apache.fluss.utils.clock.ManualClock;
+import org.apache.fluss.utils.clock.SystemClock;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -102,7 +105,8 @@ public class LookupSenderTest {
                         Math.max(1, (int) (MAX_INFLIGHT_REQUESTS * 0.1)),
                         MAX_RETRIES,
                         (short) -1,
-                        1000);
+                        1000,
+                        SystemClock.getInstance());
 
         senderThread = new Thread(lookupSender);
         senderThread.start();
@@ -379,6 +383,134 @@ public class LookupSenderTest {
         // individual lookups
         assertThat(attemptCount.get())
                 .isGreaterThanOrEqualTo(2); // at least 1 failure + 1 success for the batch
+    }
+
+    @Test
+    void testHistoricalPartitionThrottledLookupBackoff() throws Exception {
+        // Use ManualClock for deterministic time control
+        ManualClock clock = new ManualClock(System.currentTimeMillis());
+
+        // Create a dedicated sender with ManualClock
+        Configuration conf = new Configuration();
+        conf.set(ConfigOptions.CLIENT_LOOKUP_QUEUE_SIZE, 5);
+        conf.set(ConfigOptions.CLIENT_LOOKUP_MAX_BATCH_SIZE, 10);
+        conf.set(ConfigOptions.CLIENT_LOOKUP_BATCH_TIMEOUT, Duration.ofMillis(1));
+        LookupQueue manualQueue = new LookupQueue(conf);
+        LookupSender manualSender =
+                new LookupSender(
+                        metadataUpdater,
+                        manualQueue,
+                        MAX_INFLIGHT_REQUESTS,
+                        Math.max(1, (int) (MAX_INFLIGHT_REQUESTS * 0.1)),
+                        MAX_RETRIES,
+                        (short) -1,
+                        1000,
+                        clock);
+
+        // setup: fail twice with HistoricalPartitionThrottledException, then succeed
+        AtomicInteger attemptCount = new AtomicInteger(0);
+        gateway.setLookupHandler(
+                request -> {
+                    int attempt = attemptCount.incrementAndGet();
+                    if (attempt <= 2) {
+                        return createFailedResponse(
+                                request,
+                                new HistoricalPartitionThrottledException(
+                                        "historical partition queue full"));
+                    } else {
+                        return createSuccessResponse(request, "value".getBytes());
+                    }
+                });
+
+        // Submit lookup and run first attempt
+        byte[] key = "key".getBytes();
+        LookupQuery query = new LookupQuery(DATA1_TABLE_PATH_PK, TABLE_BUCKET, key);
+        manualQueue.appendLookup(query);
+
+        // Run sender — first attempt fails with throttle, sets backoff ~100ms
+        manualSender.runOnce(true);
+        assertThat(attemptCount.get()).isEqualTo(1);
+        assertThat(query.future()).isNotDone();
+
+        // Run again — lookup is in backoff, should NOT be sent
+        manualSender.runOnce(true);
+        assertThat(attemptCount.get()).isEqualTo(1);
+
+        // Advance clock past first backoff (~120ms max with jitter)
+        clock.advanceTime(150, TimeUnit.MILLISECONDS);
+
+        // Run again — now the lookup should be sent (second attempt, also fails with throttle)
+        manualSender.runOnce(true);
+        assertThat(attemptCount.get()).isEqualTo(2);
+        assertThat(query.future()).isNotDone();
+
+        // Advance clock past second backoff (~240ms max with jitter)
+        clock.advanceTime(300, TimeUnit.MILLISECONDS);
+
+        // Run again — third attempt succeeds
+        manualSender.runOnce(true);
+        assertThat(attemptCount.get()).isEqualTo(3);
+
+        byte[] result = query.future().get(1, TimeUnit.SECONDS);
+        assertThat(result).isEqualTo("value".getBytes());
+        assertThat(query.retries()).isEqualTo(2);
+
+        manualSender.forceClose();
+    }
+
+    @Test
+    void testHistoricalPartitionThrottledMaxRetries() throws Exception {
+        // Use ManualClock for deterministic time control
+        ManualClock clock = new ManualClock(System.currentTimeMillis());
+
+        Configuration conf = new Configuration();
+        conf.set(ConfigOptions.CLIENT_LOOKUP_QUEUE_SIZE, 5);
+        conf.set(ConfigOptions.CLIENT_LOOKUP_MAX_BATCH_SIZE, 10);
+        conf.set(ConfigOptions.CLIENT_LOOKUP_BATCH_TIMEOUT, Duration.ofMillis(1));
+        LookupQueue manualQueue = new LookupQueue(conf);
+        LookupSender manualSender =
+                new LookupSender(
+                        metadataUpdater,
+                        manualQueue,
+                        MAX_INFLIGHT_REQUESTS,
+                        Math.max(1, (int) (MAX_INFLIGHT_REQUESTS * 0.1)),
+                        MAX_RETRIES,
+                        (short) -1,
+                        1000,
+                        clock);
+
+        // setup: always fail with throttle exception
+        AtomicInteger attemptCount = new AtomicInteger(0);
+        gateway.setLookupHandler(
+                request -> {
+                    attemptCount.incrementAndGet();
+                    return createFailedResponse(
+                            request,
+                            new HistoricalPartitionThrottledException(
+                                    "historical partition queue full"));
+                });
+
+        // execute: submit lookup
+        byte[] key = "key".getBytes();
+        LookupQuery query = new LookupQuery(DATA1_TABLE_PATH_PK, TABLE_BUCKET, key);
+        manualQueue.appendLookup(query);
+
+        // Drive the sender through all retries by advancing clock between each attempt
+        for (int i = 0; i <= MAX_RETRIES; i++) {
+            manualSender.runOnce(true);
+            // Advance clock past any backoff
+            clock.advanceTime(10, TimeUnit.SECONDS);
+        }
+
+        // verify: fails after max retries
+        assertThatThrownBy(() -> query.future().get(1, TimeUnit.SECONDS))
+                .isInstanceOf(ExecutionException.class)
+                .hasRootCauseInstanceOf(HistoricalPartitionThrottledException.class);
+
+        assertThat(attemptCount.get()).isEqualTo(1 + MAX_RETRIES);
+        assertThat(query.retries()).isEqualTo(MAX_RETRIES);
+
+        manualSender.forceClose();
     }
 
     // Helper methods

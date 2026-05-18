@@ -55,6 +55,9 @@ public abstract class WriteBatch {
     protected int recordCount;
     private long drainedMs;
 
+    /** Earliest time (epoch ms) at which this batch may be retried after throttle backoff. */
+    private volatile long retryAfterMs = 0L;
+
     public WriteBatch(int bucketId, PhysicalTablePath physicalTablePath, long createdMs) {
         this.physicalTablePath = physicalTablePath;
         this.createdMs = createdMs;
@@ -225,6 +228,21 @@ public abstract class WriteBatch {
 
     void drained(long nowMs) {
         this.drainedMs = Math.max(drainedMs, nowMs);
+    }
+
+    /** Set the earliest time at which this batch may be retried (used for throttle backoff). */
+    void setRetryAfterMs(long retryAfterMs) {
+        this.retryAfterMs = retryAfterMs;
+    }
+
+    /** Returns the earliest time at which this batch may be retried. */
+    long getRetryAfterMs() {
+        return retryAfterMs;
+    }
+
+    /** Returns true if the batch is ready for retry (backoff period has elapsed). */
+    boolean isReadyForRetry(long nowMs) {
+        return nowMs >= retryAfterMs;
     }
 
     /**
