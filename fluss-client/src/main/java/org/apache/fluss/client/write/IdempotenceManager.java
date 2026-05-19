@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.ThreadSafe;
 
+import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -66,6 +67,15 @@ public class IdempotenceManager {
     private final int maxInflightRequestsPerBucket;
     private final TabletServerGateway tabletServerGateway;
     private final MetadataUpdater metadataUpdater;
+
+    /**
+     * Buckets that have been throttled due to {@link
+     * org.apache.fluss.exception.HistoricalPartitionThrottledException}. When a bucket is
+     * throttled, we must not send new batches for it (to avoid {@link OutOfOrderSequenceException}
+     * caused by sequence gaps). The flag is cleared when a batch for the bucket completes
+     * successfully or fails permanently.
+     */
+    private final Set<TableBucket> throttledBuckets = new HashSet<>();
 
     private volatile long writerId;
 
@@ -132,6 +142,7 @@ public class IdempotenceManager {
     synchronized void resetWriterId() {
         setWriterId(NO_WRITER_ID);
         this.idempotenceBucketMap.reset();
+        this.throttledBuckets.clear();
     }
 
     synchronized boolean hasStaleWriterId(TableBucket tableBucket) {
@@ -213,6 +224,8 @@ public class IdempotenceManager {
                 tableBucket,
                 lastAckedSequence);
         removeInFlightBatch(readyWriteBatch);
+        // Clear throttle flag on successful completion — the sequence gap has been resolved.
+        throttledBuckets.remove(tableBucket);
     }
 
     synchronized void handleFailedBatch(
@@ -243,6 +256,9 @@ public class IdempotenceManager {
             resetWriterId();
         } else {
             removeInFlightBatch(readyWriteBatch);
+            // Clear throttle flag — even on failure, the bucket should not remain permanently
+            // throttled. This allows subsequent batches to be drained normally.
+            throttledBuckets.remove(readyWriteBatch.tableBucket());
             if (adjustSequenceNumbers) {
                 idempotenceBucketMap.adjustSequencesDueToFailedBatch(readyWriteBatch);
             }
@@ -253,8 +269,18 @@ public class IdempotenceManager {
         return idempotenceBucketMap.getOrCreate(tableBucket).hasInflightBatches();
     }
 
+    /**
+     * Marks a bucket as throttled. While throttled, no new batches will be drained for this bucket
+     * to avoid out-of-order sequence exceptions caused by the sequence gap from the throttled
+     * batch.
+     */
+    synchronized void markBucketThrottled(TableBucket tableBucket) {
+        throttledBuckets.add(tableBucket);
+    }
+
     synchronized boolean canSendMoreRequests(TableBucket tableBucket) {
-        return inflightBatchSize(tableBucket) < maxInflightRequestsPerBucket;
+        return !throttledBuckets.contains(tableBucket)
+                && inflightBatchSize(tableBucket) < maxInflightRequestsPerBucket;
     }
 
     @VisibleForTesting

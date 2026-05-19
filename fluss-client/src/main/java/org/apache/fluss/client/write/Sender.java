@@ -577,6 +577,13 @@ public class Sender implements Runnable {
             if (error.exception() instanceof HistoricalPartitionThrottledException) {
                 long backoffMs = throttleBackoff.backoff(writeBatch.attempts());
                 writeBatch.setRetryAfterMs(clock.milliseconds() + backoffMs);
+                // Mark the bucket as throttled so that no new batches are drained for it.
+                // This prevents subsequent batches from hitting the server with higher
+                // sequence numbers while the throttled batch has not been committed,
+                // which would cause OutOfOrderSequenceException.
+                if (idempotenceManager.idempotenceEnabled()) {
+                    idempotenceManager.markBucketThrottled(readyWriteBatch.tableBucket());
+                }
                 LOG.info(
                         "Historical partition throttled for {}, backing off {}ms",
                         readyWriteBatch.tableBucket(),

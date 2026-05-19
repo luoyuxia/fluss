@@ -205,7 +205,16 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
         PhysicalTablePath historicalPath =
                 PhysicalTablePath.of(tableInfo.getTablePath(), historicalName);
 
-        metadataUpdater.checkAndUpdatePartitionMetadata(historicalPath);
+        // Check if __historical__ already exists. The metadata update may throw
+        // PartitionNotExistException when the partition is not yet in ZK, which is
+        // expected — we will create it below.
+        try {
+            metadataUpdater.checkAndUpdatePartitionMetadata(historicalPath);
+        } catch (PartitionNotExistException e) {
+            LOG.debug(
+                    "Historical partition {} not found in metadata, will attempt to create it",
+                    historicalPath);
+        }
         Long partitionId = metadataUpdater.getPartitionId(historicalPath).orElse(null);
         if (partitionId != null) {
             return partitionId;
@@ -225,7 +234,16 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
             return null;
         }
 
-        metadataUpdater.checkAndUpdatePartitionMetadata(historicalPath);
+        // Fetch metadata again after creation. This may also throw if the partition
+        // metadata has not yet propagated to the tablet server.
+        try {
+            metadataUpdater.checkAndUpdatePartitionMetadata(historicalPath);
+        } catch (PartitionNotExistException e) {
+            LOG.warn(
+                    "Historical partition {} created but not yet visible in metadata",
+                    historicalPath);
+            return null;
+        }
         return metadataUpdater.getPartitionId(historicalPath).orElse(null);
     }
 }

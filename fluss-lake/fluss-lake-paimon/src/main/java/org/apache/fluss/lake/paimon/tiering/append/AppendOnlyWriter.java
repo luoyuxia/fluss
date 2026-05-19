@@ -61,14 +61,14 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
     public void write(LogRecord record) throws Exception {
         flussRecordAsPaimonRow.setFlussRecord(record);
 
-        // hacky, call internal method tableWrite.getWrite() to support
-        // to write to given partition, otherwise, it'll always extract a partition from Paimon row
-        // which may be costly
+        // Use internal tableWrite.getWrite() to write with explicit partition and bucket.
+        // For historical partitions, partition is extracted per-record from row data;
+        // for regular partitions, the pre-resolved partition is used for efficiency.
         int writtenBucket = bucket;
         // if bucket-unaware mode, we have to use bucket = 0 to write to follow paimon best practice
         if (fileStoreTable.store().bucketMode() == BucketMode.BUCKET_UNAWARE) {
             writtenBucket = 0;
         }
-        tableWrite.getWrite().write(partition, writtenBucket, flussRecordAsPaimonRow);
+        tableWrite.getWrite().write(getPartitionForRecord(), writtenBucket, flussRecordAsPaimonRow);
     }
 }

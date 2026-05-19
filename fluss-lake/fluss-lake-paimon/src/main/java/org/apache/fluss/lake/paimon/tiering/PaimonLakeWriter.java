@@ -28,7 +28,6 @@ import org.apache.fluss.types.RowType;
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.table.FileStoreTable;
-import org.apache.paimon.table.sink.CommitMessage;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -82,13 +81,11 @@ public class PaimonLakeWriter implements LakeWriter<PaimonWriteResult> {
 
     @Override
     public PaimonWriteResult complete() throws IOException {
-        CommitMessage commitMessage;
         try {
-            commitMessage = recordWriter.complete();
+            return new PaimonWriteResult(recordWriter.complete());
         } catch (Exception e) {
             throw new IOException("Failed to complete Paimon write.", e);
         }
-        return new PaimonWriteResult(commitMessage);
     }
 
     @Override

@@ -24,6 +24,7 @@ import org.apache.fluss.metadata.TableBucket;
 
 import javax.annotation.Nullable;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -49,6 +50,25 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
     private long startingOffset;
     private final long stoppingOffset;
 
+    /**
+     * Override partition ID for log subscription. When set, the log scanner subscribes to this
+     * partition (e.g., __historical__) instead of the tableBucket's own partition.
+     */
+    @Nullable private final Long logPartitionId;
+
+    /**
+     * Include filter: only keep log records whose auto-partition key value equals this string. Used
+     * for expired partition splits that subscribe to __historical__ log.
+     */
+    @Nullable private final String logIncludePartition;
+
+    /**
+     * Exclude filter: skip log records whose auto-partition key value is in this list. Used for
+     * __historical__ splits to avoid duplicating records already handled by expired partition
+     * splits.
+     */
+    @Nullable private final List<String> logExcludePartitions;
+
     public LakeSnapshotAndFlussLogSplit(
             TableBucket tableBucket,
             @Nullable String partitionName,
@@ -64,7 +84,10 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
                 0,
                 0,
                 // if lake splits is null, no lake splits, also means LakeSplitFinished
-                snapshotSplits == null);
+                snapshotSplits == null,
+                null,
+                null,
+                null);
     }
 
     public LakeSnapshotAndFlussLogSplit(
@@ -76,6 +99,32 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
             long recordsToSkip,
             int currentLakeSplitIndex,
             boolean isLakeSplitFinished) {
+        this(
+                tableBucket,
+                partitionName,
+                snapshotSplits,
+                startingOffset,
+                stoppingOffset,
+                recordsToSkip,
+                currentLakeSplitIndex,
+                isLakeSplitFinished,
+                null,
+                null,
+                null);
+    }
+
+    public LakeSnapshotAndFlussLogSplit(
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            @Nullable List<LakeSplit> snapshotSplits,
+            long startingOffset,
+            long stoppingOffset,
+            long recordsToSkip,
+            int currentLakeSplitIndex,
+            boolean isLakeSplitFinished,
+            @Nullable Long logPartitionId,
+            @Nullable String logIncludePartition,
+            @Nullable List<String> logExcludePartitions) {
         super(tableBucket, partitionName);
         this.lakeSnapshotSplits = snapshotSplits;
         this.startingOffset = startingOffset;
@@ -83,6 +132,12 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
         this.recordToSkip = recordsToSkip;
         this.currentLakeSplitIndex = currentLakeSplitIndex;
         this.isLakeSplitFinished = isLakeSplitFinished;
+        this.logPartitionId = logPartitionId;
+        this.logIncludePartition = logIncludePartition;
+        this.logExcludePartitions =
+                logExcludePartitions != null
+                        ? Collections.unmodifiableList(logExcludePartitions)
+                        : null;
     }
 
     public LakeSnapshotAndFlussLogSplit updateWithRecordsToSkip(long recordsToSkip) {
@@ -148,6 +203,21 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
         return currentLakeSplitIndex;
     }
 
+    @Nullable
+    public Long getLogPartitionId() {
+        return logPartitionId;
+    }
+
+    @Nullable
+    public String getLogIncludePartition() {
+        return logIncludePartition;
+    }
+
+    @Nullable
+    public List<String> getLogExcludePartitions() {
+        return logExcludePartitions;
+    }
+
     @Override
     public String toString() {
         return "LakeSnapshotAndFlussLogSplit{"
@@ -166,6 +236,13 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
                 + ", partitionName='"
                 + partitionName
                 + '\''
+                + ", logPartitionId="
+                + logPartitionId
+                + ", logIncludePartition='"
+                + logIncludePartition
+                + '\''
+                + ", logExcludePartitions="
+                + logExcludePartitions
                 + '}';
     }
 }

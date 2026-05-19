@@ -22,7 +22,13 @@ import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.paimon.table.sink.CommitMessage;
 import org.apache.paimon.table.sink.CommitMessageSerializer;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /** The {@link SimpleVersionedSerializer} for {@link PaimonWriteResult}. */
 public class PaimonWriteResultSerializer implements SimpleVersionedSerializer<PaimonWriteResult> {
@@ -38,8 +44,17 @@ public class PaimonWriteResultSerializer implements SimpleVersionedSerializer<Pa
 
     @Override
     public byte[] serialize(PaimonWriteResult paimonWriteResult) throws IOException {
-        CommitMessage commitMessage = paimonWriteResult.commitMessage();
-        return messageSer.serialize(commitMessage);
+        List<CommitMessage> commitMessages = paimonWriteResult.commitMessages();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(baos);
+        out.writeInt(commitMessages.size());
+        for (CommitMessage commitMessage : commitMessages) {
+            byte[] serialized = messageSer.serialize(commitMessage);
+            out.writeInt(serialized.length);
+            out.write(serialized);
+        }
+        out.flush();
+        return baos.toByteArray();
     }
 
     @Override
@@ -52,7 +67,15 @@ public class PaimonWriteResultSerializer implements SimpleVersionedSerializer<Pa
                             + version
                             + ".");
         }
-        CommitMessage commitMessage = messageSer.deserialize(messageSer.getVersion(), serialized);
-        return new PaimonWriteResult(commitMessage);
+        DataInputStream in = new DataInputStream(new ByteArrayInputStream(serialized));
+        int count = in.readInt();
+        List<CommitMessage> commitMessages = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            int len = in.readInt();
+            byte[] msgBytes = new byte[len];
+            in.readFully(msgBytes);
+            commitMessages.add(messageSer.deserialize(messageSer.getVersion(), msgBytes));
+        }
+        return new PaimonWriteResult(commitMessages);
     }
 }

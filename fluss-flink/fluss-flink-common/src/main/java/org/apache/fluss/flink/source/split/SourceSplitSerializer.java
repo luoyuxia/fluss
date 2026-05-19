@@ -36,6 +36,7 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSplitBase> {
 
     private static final int VERSION_0 = 0;
+    private static final int VERSION_1 = 1;
 
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
@@ -43,7 +44,7 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
     private static final byte HYBRID_SNAPSHOT_SPLIT_FLAG = 1;
     private static final byte LOG_SPLIT_FLAG = 2;
 
-    private static final int CURRENT_VERSION = VERSION_0;
+    private static final int CURRENT_VERSION = VERSION_1;
 
     @Nullable private final LakeSource<LakeSplit> lakeSource;
 
@@ -111,7 +112,7 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
 
     @Override
     public SourceSplitBase deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION_0) {
+        if (version != VERSION_0 && version != VERSION_1) {
             throw new IOException("Unknown version " + version);
         }
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
@@ -147,7 +148,8 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
         } else {
             LakeSplitSerializer lakeSplitSerializer =
                     new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());
-            return lakeSplitSerializer.deserialize(splitKind, tableBucket, partitionName, in);
+            return lakeSplitSerializer.deserialize(
+                    splitKind, tableBucket, partitionName, in, version);
         }
     }
 }

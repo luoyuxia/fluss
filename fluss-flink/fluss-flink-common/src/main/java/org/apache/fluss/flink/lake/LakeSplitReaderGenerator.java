@@ -117,7 +117,10 @@ public class LakeSplitReaderGenerator {
                             lakeSplit.getTableBucket(),
                             lakeSplit.getStartingOffset(),
                             stoppingOffset,
-                            projectedFields);
+                            projectedFields,
+                            lakeSplit.getLogPartitionId(),
+                            lakeSplit.getLogIncludePartition(),
+                            lakeSplit.getLogExcludePartitions());
         }
         return lakeBatchScanner;
     }

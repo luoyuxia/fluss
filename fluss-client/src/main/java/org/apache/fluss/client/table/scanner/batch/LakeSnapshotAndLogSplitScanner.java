@@ -32,7 +32,10 @@ import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.KeyValueRow;
+import org.apache.fluss.types.DataTypeRoot;
+import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.CloseableIterator;
+import org.apache.fluss.utils.PartitionUtils;
 
 import javax.annotation.Nullable;
 
@@ -71,6 +74,13 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
 
     private SortMergeReader currentSortMergeReader;
 
+    // partition filter fields for expired partition / __historical__ splits
+    @Nullable private final String logIncludePartition;
+    @Nullable private final List<String> logExcludePartitions;
+    @Nullable private InternalRow.FieldGetter autoPartitionKeyFieldGetter;
+    private int autoPartitionKeyIndexInRow;
+    private DataTypeRoot autoPartitionKeyType;
+
     public LakeSnapshotAndLogSplitScanner(
             Table table,
             LakeSource<LakeSplit> lakeSource,
@@ -79,10 +89,36 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
             long startingOffset,
             long stoppingOffset,
             @Nullable int[] projectedFields) {
+        this(
+                table,
+                lakeSource,
+                lakeSplits,
+                tableBucket,
+                startingOffset,
+                stoppingOffset,
+                projectedFields,
+                null,
+                null,
+                null);
+    }
+
+    public LakeSnapshotAndLogSplitScanner(
+            Table table,
+            LakeSource<LakeSplit> lakeSource,
+            @Nullable List<LakeSplit> lakeSplits,
+            TableBucket tableBucket,
+            long startingOffset,
+            long stoppingOffset,
+            @Nullable int[] projectedFields,
+            @Nullable Long logPartitionId,
+            @Nullable String logIncludePartition,
+            @Nullable List<String> logExcludePartitions) {
         this.pkIndexes = table.getTableInfo().getSchema().getPrimaryKeyIndexes();
         this.lakeSplits = lakeSplits;
         this.lakeSource = lakeSource;
         this.stoppingOffset = stoppingOffset;
+        this.logIncludePartition = logIncludePartition;
+        this.logExcludePartitions = logExcludePartitions;
         int[] newProjectedFields = getNeedProjectFields(table, projectedFields);
 
         this.logScanner = table.newScan().project(newProjectedFields).createLogScanner();
@@ -91,9 +127,12 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                         .mapToObj(field -> new int[] {field})
                         .toArray(int[][]::new));
 
-        if (tableBucket.getPartitionId() != null) {
+        // Subscribe to the appropriate partition's log
+        Long subscribePartitionId =
+                logPartitionId != null ? logPartitionId : tableBucket.getPartitionId();
+        if (subscribePartitionId != null) {
             this.logScanner.subscribe(
-                    tableBucket.getPartitionId(), tableBucket.getBucket(), startingOffset);
+                    subscribePartitionId, tableBucket.getBucket(), startingOffset);
         } else {
             this.logScanner.subscribe(tableBucket.getBucket(), startingOffset);
         }
@@ -102,6 +141,19 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
     }
 
     private int[] getNeedProjectFields(Table flussTable, @Nullable int[] projectedFields) {
+        boolean needPartitionKey = logIncludePartition != null || logExcludePartitions != null;
+        RowType rowType = flussTable.getTableInfo().getRowType();
+
+        // Resolve the auto-partition key index in the full row if filtering is needed
+        int partitionKeyIndexInFullRow = -1;
+        if (needPartitionKey) {
+            List<String> partitionKeys = flussTable.getTableInfo().getPartitionKeys();
+            // Use the first partition key for auto-partition filtering
+            String partitionKeyName = partitionKeys.get(0);
+            partitionKeyIndexInFullRow = rowType.getFieldIndex(partitionKeyName);
+            autoPartitionKeyType = rowType.getTypeAt(partitionKeyIndexInFullRow).getTypeRoot();
+        }
+
         if (projectedFields != null) {
             // we need to include the primary key in projected fields to sort merge by pk
             // if the provided don't include, we need to include it
@@ -123,6 +175,26 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                     keyIndexesInRow[i] = newProjectedFields.size() - 1;
                 }
             }
+
+            // Also include the auto-partition key if needed for filtering
+            if (needPartitionKey) {
+                int indexInProjected = findIndex(projectedFields, partitionKeyIndexInFullRow);
+                if (indexInProjected >= 0) {
+                    autoPartitionKeyIndexInRow = indexInProjected;
+                } else {
+                    // check if it was already added for PK
+                    int[] currentProjection =
+                            newProjectedFields.stream().mapToInt(Integer::intValue).toArray();
+                    int indexInNew = findIndex(currentProjection, partitionKeyIndexInFullRow);
+                    if (indexInNew >= 0) {
+                        autoPartitionKeyIndexInRow = indexInNew;
+                    } else {
+                        newProjectedFields.add(partitionKeyIndexInFullRow);
+                        autoPartitionKeyIndexInRow = newProjectedFields.size() - 1;
+                    }
+                }
+            }
+
             int[] newProjection = newProjectedFields.stream().mapToInt(Integer::intValue).toArray();
             // the underlying scan will use the new projection to scan data,
             // but will still need to map from the new projection to the origin projected fields
@@ -131,12 +203,25 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                 adjustProjectedFields[i] = findIndex(newProjection, projectedFields[i]);
             }
             this.adjustProjectedFields = adjustProjectedFields;
+
+            if (needPartitionKey) {
+                autoPartitionKeyFieldGetter =
+                        InternalRow.createFieldGetter(
+                                rowType.getTypeAt(partitionKeyIndexInFullRow),
+                                autoPartitionKeyIndexInRow);
+            }
             return newProjection;
         } else {
             // no projectedFields, use all fields
             keyIndexesInRow = pkIndexes;
-            return IntStream.range(0, flussTable.getTableInfo().getRowType().getFieldCount())
-                    .toArray();
+            if (needPartitionKey) {
+                autoPartitionKeyIndexInRow = partitionKeyIndexInFullRow;
+                autoPartitionKeyFieldGetter =
+                        InternalRow.createFieldGetter(
+                                rowType.getTypeAt(partitionKeyIndexInFullRow),
+                                autoPartitionKeyIndexInRow);
+            }
+            return IntStream.range(0, rowType.getFieldCount()).toArray();
         }
     }
 
@@ -208,6 +293,25 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
     private void pollLogRecords(Duration timeout) {
         ScanRecords scanRecords = logScanner.poll(timeout);
         for (ScanRecord scanRecord : scanRecords) {
+            // Apply partition filters if configured
+            if (logIncludePartition != null || logExcludePartitions != null) {
+                String partValue = extractAutoPartitionKeyValue(scanRecord.getRow());
+                if (logIncludePartition != null && !logIncludePartition.equals(partValue)) {
+                    if (scanRecord.logOffset() >= stoppingOffset - 1) {
+                        logScanFinished = true;
+                        break;
+                    }
+                    continue;
+                }
+                if (logExcludePartitions != null && logExcludePartitions.contains(partValue)) {
+                    if (scanRecord.logOffset() >= stoppingOffset - 1) {
+                        logScanFinished = true;
+                        break;
+                    }
+                    continue;
+                }
+            }
+
             boolean isDelete =
                     scanRecord.getChangeType() == ChangeType.DELETE
                             || scanRecord.getChangeType() == ChangeType.UPDATE_BEFORE;
@@ -222,6 +326,14 @@ public class LakeSnapshotAndLogSplitScanner implements BatchScanner {
                 break;
             }
         }
+    }
+
+    private String extractAutoPartitionKeyValue(InternalRow row) {
+        Object value = autoPartitionKeyFieldGetter.getFieldOrNull(row);
+        if (value == null) {
+            return null;
+        }
+        return PartitionUtils.convertValueOfType(value, autoPartitionKeyType);
     }
 
     @Override

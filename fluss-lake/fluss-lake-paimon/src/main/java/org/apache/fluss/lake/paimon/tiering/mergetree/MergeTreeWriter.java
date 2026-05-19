@@ -118,9 +118,9 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
                 KeyValue.UNKNOWN_SEQUENCE,
                 toRowKind(record.getChangeType()),
                 flussRecordAsPaimonRow);
-        // hacky, call internal method tableWrite.getWrite() to support
-        // to write to given partition, otherwise, it'll always extract a partition from Paimon row
-        // which may be costly
-        tableWrite.getWrite().write(partition, bucket, keyValue);
+        // Use internal tableWrite.getWrite() to write with explicit partition and bucket.
+        // For historical partitions, partition is extracted per-record from row data;
+        // for regular partitions, the pre-resolved partition is used for efficiency.
+        tableWrite.getWrite().write(getPartitionForRecord(), bucket, keyValue);
     }
 }

@@ -53,6 +53,7 @@ import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.utils.ExceptionUtils;
+import org.apache.fluss.utils.PartitionUtils;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
@@ -318,6 +319,8 @@ public class FlinkSourceEnumerator
                         // handle hybrid lake fluss splits firstly
                         handleSplitsAdd(hybridLakeFlussSplits, null);
                     }
+                } else {
+                    pendingHybridLakeFlussSplits = Collections.emptyList();
                 }
 
                 if (scanPartitionDiscoveryIntervalMs > 0) {
@@ -408,6 +411,7 @@ public class FlinkSourceEnumerator
                     },
                     this::handleSplitsAdd);
         } else {
+            pendingHybridLakeFlussSplits = Collections.emptyList();
             // init bucket splits and assign
             context.callAsync(this::initNonPartitionedSplits, this::handleSplitsAdd);
         }
@@ -444,7 +448,15 @@ public class FlinkSourceEnumerator
             int originalSize = partitionInfos.size();
             List<PartitionInfo> filteredPartitionInfos =
                     partitionInfos.stream()
-                            .filter(partition -> partitionFilters.test(toInternalRow(partition)))
+                            .filter(
+                                    partition ->
+                                            // Always include __historical__ partitions: they
+                                            // contain data for arbitrary expired partitions and
+                                            // must not be pruned by user partition predicates.
+                                            PartitionUtils.isHistoricalPartitionName(
+                                                            partition.getPartitionName())
+                                                    || partitionFilters.test(
+                                                            toInternalRow(partition)))
                             .collect(Collectors.toList());
 
             int filteredSize = filteredPartitionInfos.size();

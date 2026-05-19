@@ -20,19 +20,32 @@ package org.apache.fluss.lake.paimon.tiering;
 import org.apache.paimon.table.sink.CommitMessage;
 
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.List;
 
 /** The write result of Paimon lake writer to pass to committer to commit. */
 public class PaimonWriteResult implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final CommitMessage commitMessage;
+    private final List<CommitMessage> commitMessages;
 
     public PaimonWriteResult(CommitMessage commitMessage) {
-        this.commitMessage = commitMessage;
+        this.commitMessages = Collections.singletonList(commitMessage);
     }
 
+    public PaimonWriteResult(List<CommitMessage> commitMessages) {
+        this.commitMessages = commitMessages;
+    }
+
+    /**
+     * @deprecated Use {@link #commitMessages()} instead.
+     */
     public CommitMessage commitMessage() {
-        return commitMessage;
+        return commitMessages.get(0);
+    }
+
+    public List<CommitMessage> commitMessages() {
+        return commitMessages;
     }
 }

@@ -71,7 +71,8 @@ class LakeSplitSerializerTest {
                         LAKE_SNAPSHOT_SPLIT_KIND,
                         tableBucket,
                         "2025-08-18",
-                        new DataInputDeserializer(output.getCopyOfBuffer()));
+                        new DataInputDeserializer(output.getCopyOfBuffer()),
+                        1);
 
         assertThat(deserializedSplit instanceof LakeSnapshotSplit).isTrue();
         LakeSnapshotSplit result = (LakeSnapshotSplit) deserializedSplit;
@@ -104,7 +105,8 @@ class LakeSplitSerializerTest {
                         LAKE_SNAPSHOT_SPLIT_KIND,
                         tableBucket,
                         "2025-08-18",
-                        new DataInputDeserializer(output.getCopyOfBuffer()));
+                        new DataInputDeserializer(output.getCopyOfBuffer()),
+                        1);
 
         assertThat(deserializedSplit instanceof LakeSnapshotSplit).isTrue();
         LakeSnapshotSplit result = (LakeSnapshotSplit) deserializedSplit;
@@ -136,7 +138,8 @@ class LakeSplitSerializerTest {
                         LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND,
                         tableBucket,
                         "2025-08-18",
-                        new DataInputDeserializer(output.getCopyOfBuffer()));
+                        new DataInputDeserializer(output.getCopyOfBuffer()),
+                        1);
 
         assertThat(deserializedSplit instanceof LakeSnapshotAndFlussLogSplit).isTrue();
         LakeSnapshotAndFlussLogSplit result = (LakeSnapshotAndFlussLogSplit) deserializedSplit;
@@ -162,7 +165,8 @@ class LakeSplitSerializerTest {
                                         (byte) 99,
                                         tableBucket,
                                         "2023-10-01",
-                                        new DataInputDeserializer(output.getCopyOfBuffer())))
+                                        new DataInputDeserializer(output.getCopyOfBuffer()),
+                                        1))
                 .withFailMessage(() -> "Unsupported split kind: ")
                 .isInstanceOf(UnsupportedOperationException.class);
     }

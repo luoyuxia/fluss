@@ -44,6 +44,7 @@ public abstract class RecordWriter<T> implements AutoCloseable {
     protected final int bucket;
     protected final List<String> partitionKeys;
     protected final BinaryRow partition;
+    protected final boolean isHistoricalPartition;
     protected final FlussRecordAsPaimonRow flussRecordAsPaimonRow;
 
     public RecordWriter(
@@ -57,8 +58,12 @@ public abstract class RecordWriter<T> implements AutoCloseable {
         this.tableRowType = tableRowType;
         this.bucket = tableBucket.getBucket();
         this.partitionKeys = partitionKeys;
-        if (partition == null || partitionKeys.isEmpty()) {
-            // non-partitioned table
+        this.isHistoricalPartition =
+                partition != null && PartitionUtils.isHistoricalPartitionName(partition);
+        if (isHistoricalPartition || partition == null || partitionKeys.isEmpty()) {
+            // For historical partitions, partition is resolved per-record from row data
+            // since records from different original partitions coexist.
+            // For non-partitioned tables, use empty row.
             this.partition = BinaryRow.EMPTY_ROW;
         } else {
             // eagerly resolve BinaryRow partition from partition name string
@@ -70,17 +75,28 @@ public abstract class RecordWriter<T> implements AutoCloseable {
 
     public abstract void write(LogRecord record) throws Exception;
 
-    CommitMessage complete() throws Exception {
-        List<CommitMessage> commitMessages = tableWrite.prepareCommit();
-        checkState(
-                commitMessages.size() == 1,
-                "The size of CommitMessage must be 1, but got %s.",
-                commitMessages);
-        return commitMessages.get(0);
+    List<CommitMessage> complete() throws Exception {
+        return tableWrite.prepareCommit();
     }
 
     public void close() throws Exception {
         tableWrite.close();
+    }
+
+    /**
+     * Returns the Paimon partition for the current record being written.
+     *
+     * <p>For historical partitions, extracts the partition from the row data since different
+     * records may belong to different original partitions. For regular partitions, returns the
+     * pre-resolved partition.
+     *
+     * <p>Must be called after {@link FlussRecordAsPaimonRow#setFlussRecord(LogRecord)}.
+     */
+    protected BinaryRow getPartitionForRecord() {
+        if (isHistoricalPartition) {
+            return tableWrite.getPartition(flussRecordAsPaimonRow);
+        }
+        return partition;
     }
 
     /**

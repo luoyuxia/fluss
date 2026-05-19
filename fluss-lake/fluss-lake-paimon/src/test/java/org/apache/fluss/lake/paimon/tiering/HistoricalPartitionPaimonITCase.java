@@ -36,12 +36,16 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 import org.apache.fluss.testutils.common.CommonTestUtils;
 import org.apache.fluss.types.DataTypes;
+import org.apache.fluss.utils.PartitionUtils;
 
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.reader.RecordReader;
+import org.apache.paimon.table.FileStoreTable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,6 +53,7 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
 import java.time.Year;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -57,6 +62,7 @@ import java.util.Map;
 import static org.apache.fluss.flink.FlinkConnectorOptions.BOOTSTRAP_SERVERS;
 import static org.apache.fluss.flink.source.testutils.FlinkRowAssertionsUtils.assertResultsIgnoreOrder;
 import static org.apache.fluss.testutils.DataTestUtils.row;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * E2E integration test for historical partition lake fallback with real Paimon storage. Verifies
@@ -263,7 +269,149 @@ class HistoricalPartitionPaimonITCase extends FlinkPaimonTieringTestBase {
         assertResultsIgnoreOrder(lookupIter, lookupExpected, true);
     }
 
-    // ---- Helper methods ----
+    /**
+     * Verifies that tiering of the {@code __historical__} partition writes records to their correct
+     * Paimon partitions (e.g., {@code c=2023}) rather than to a literal {@code c=__historical__}
+     * partition.
+     *
+     * <p>Unlike {@link #testHistoricalPkWriteWithLakeFallback()}, this test keeps the tiering job
+     * running throughout, allowing {@code __historical__} CDC logs to be tiered to Paimon. It then
+     * reads Paimon directly to verify partition placement.
+     */
+    @Test
+    void testHistoricalPartitionTieringWritesToCorrectPaimonPartition() throws Exception {
+        int currentYear = Year.now().getValue();
+        String p1 = String.valueOf(currentYear - 3);
+        String p2 = String.valueOf(currentYear - 2);
+
+        TablePath tablePath = TablePath.of(DEFAULT_DB, "pk_historical_tiering_correctness");
+        long tableId = createPartitionedPkTable(tablePath);
+        FLUSS_CLUSTER_EXTENSION.waitUntilPartitionAllReady(tablePath);
+
+        // Phase 1: Write initial data to past partitions within retention window.
+        Configuration writerConf = new Configuration(clientConf);
+        writerConf.set(ConfigOptions.CLIENT_WRITER_DYNAMIC_CREATE_PARTITION_ENABLED, true);
+
+        int precreateCount = ConfigOptions.TABLE_AUTO_PARTITION_NUM_PRECREATE.defaultValue();
+
+        try (Connection writerConn = ConnectionFactory.createConnection(writerConf);
+                Table writerTable = writerConn.getTable(tablePath)) {
+            UpsertWriter writer = writerTable.newUpsert().createWriter();
+            writer.upsert(row(1, "val_p1", p1));
+            writer.upsert(row(1, "val_p2", p2));
+            writer.flush();
+        }
+
+        Map<Long, String> partitions =
+                waitUntilPartitions(
+                        FLUSS_CLUSTER_EXTENSION.getZooKeeperClient(),
+                        tablePath,
+                        precreateCount + 2);
+
+        // Start tiering job and keep it running throughout the test.
+        JobClient jobClient = buildTieringJob(execEnv);
+
+        // Wait for tiering to sync p1 and p2 to Paimon.
+        for (Map.Entry<Long, String> entry : partitions.entrySet()) {
+            if (p1.equals(entry.getValue()) || p2.equals(entry.getValue())) {
+                TableBucket tb = new TableBucket(tableId, entry.getKey(), 0);
+                waitUntilBucketSynced(tb);
+            }
+        }
+
+        // Phase 2: Expire both partitions by altering retention, then drop them.
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.set(
+                                        ConfigOptions.TABLE_AUTO_PARTITION_NUM_RETENTION.key(),
+                                        "1")),
+                        false)
+                .get();
+        admin.dropPartition(tablePath, new PartitionSpec(Collections.singletonMap("c", p1)), true)
+                .get();
+        admin.dropPartition(tablePath, new PartitionSpec(Collections.singletonMap("c", p2)), true)
+                .get();
+
+        waitUntilPartitionDropPropagated(tablePath, p1, p2);
+
+        // Phase 3: Write to expired partitions (routed to __historical__).
+        Configuration historicalConf = new Configuration(clientConf);
+        historicalConf.set(ConfigOptions.CLIENT_WRITER_DYNAMIC_CREATE_PARTITION_ENABLED, false);
+
+        try (Connection historicalConn = ConnectionFactory.createConnection(historicalConf);
+                Table historicalTable = historicalConn.getTable(tablePath)) {
+            UpsertWriter writer = historicalTable.newUpsert().createWriter();
+            writer.upsert(row(1, "new_p1", p1));
+            writer.upsert(row(1, "new_p2", p2));
+            writer.upsert(row(999, "brand_new", p1));
+            writer.flush();
+        }
+
+        // Phase 4: Wait for __historical__ partition to appear and be tiered.
+        CommonTestUtils.waitUntil(
+                () ->
+                        FLUSS_CLUSTER_EXTENSION
+                                .getZooKeeperClient()
+                                .getPartitionIdAndNames(tablePath)
+                                .values()
+                                .stream()
+                                .anyMatch(PartitionUtils::isHistoricalPartitionName),
+                Duration.ofSeconds(60),
+                "__historical__ partition to be created");
+
+        Map<Long, String> allPartitions =
+                FLUSS_CLUSTER_EXTENSION.getZooKeeperClient().getPartitionIdAndNames(tablePath);
+        long historicalPartId =
+                allPartitions.entrySet().stream()
+                        .filter(e -> PartitionUtils.isHistoricalPartitionName(e.getValue()))
+                        .map(Map.Entry::getKey)
+                        .findFirst()
+                        .get();
+
+        waitUntilBucketSynced(new TableBucket(tableId, historicalPartId, 0));
+
+        // Phase 5: Verify Paimon data is in the correct partitions.
+        try {
+            // The literal __historical__ partition must NOT exist in Paimon.
+            try (org.apache.paimon.utils.CloseableIterator<org.apache.paimon.data.InternalRow>
+                    iter =
+                            getPaimonRowCloseableIterator(
+                                    tablePath,
+                                    Collections.singletonMap(
+                                            "c", PartitionUtils.HISTORICAL_PARTITION_VALUE))) {
+                assertThat(iter.hasNext())
+                        .as("Paimon should not contain a physical __historical__ partition")
+                        .isFalse();
+            }
+
+            // p1 should contain key=999 (brand_new) written via __historical__.
+            try (org.apache.paimon.utils.CloseableIterator<org.apache.paimon.data.InternalRow>
+                    iter =
+                            getPaimonRowCloseableIterator(
+                                    tablePath, Collections.singletonMap("c", p1))) {
+                List<Integer> keys = new ArrayList<>();
+                while (iter.hasNext()) {
+                    keys.add(iter.next().getInt(0));
+                }
+                assertThat(keys)
+                        .as("p1 should contain key=999 from __historical__ tiering")
+                        .contains(999);
+            }
+
+            // p2 should contain data written via __historical__.
+            try (org.apache.paimon.utils.CloseableIterator<org.apache.paimon.data.InternalRow>
+                    iter =
+                            getPaimonRowCloseableIterator(
+                                    tablePath, Collections.singletonMap("c", p2))) {
+                assertThat(iter.hasNext())
+                        .as("p2 should contain data from __historical__ tiering")
+                        .isTrue();
+            }
+        } finally {
+            jobClient.cancel().get();
+        }
+    }
 
     /**
      * Waits until dropped partitions are no longer returned by the tablet server's metadata cache.
@@ -302,6 +450,29 @@ class HistoricalPartitionPaimonITCase extends FlinkPaimonTieringTestBase {
                 },
                 Duration.ofSeconds(30),
                 "partition drops to propagate to tablet server cache");
+    }
+
+    /**
+     * Reads rows from a Paimon table filtered by the given partition spec.
+     *
+     * @param tablePath the Fluss table path (used to derive the Paimon table identifier)
+     * @param partitionSpec partition column name to value mapping for filtering
+     * @return a closeable iterator over matching Paimon rows
+     */
+    private org.apache.paimon.utils.CloseableIterator<org.apache.paimon.data.InternalRow>
+            getPaimonRowCloseableIterator(TablePath tablePath, Map<String, String> partitionSpec)
+                    throws Exception {
+        Identifier tableIdentifier =
+                Identifier.create(tablePath.getDatabaseName(), tablePath.getTableName());
+        FileStoreTable table = (FileStoreTable) paimonCatalog.getTable(tableIdentifier);
+        RecordReader<org.apache.paimon.data.InternalRow> reader =
+                table.newRead()
+                        .createReader(
+                                table.newReadBuilder()
+                                        .withPartitionFilter(partitionSpec)
+                                        .newScan()
+                                        .plan());
+        return reader.toCloseableIterator();
     }
 
     /**

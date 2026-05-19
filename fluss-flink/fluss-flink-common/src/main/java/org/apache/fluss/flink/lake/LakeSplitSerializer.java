@@ -32,6 +32,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit.LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND;
@@ -80,6 +81,35 @@ public class LakeSplitSerializer {
             out.writeLong(lakeSnapshotAndFlussLogSplit.getRecordsToSkip());
             out.writeInt(lakeSnapshotAndFlussLogSplit.getCurrentLakeSplitIndex());
             out.writeBoolean(lakeSnapshotAndFlussLogSplit.isLakeSplitFinished());
+
+            // v1 fields: log partition override and partition filters
+            Long logPartitionId = lakeSnapshotAndFlussLogSplit.getLogPartitionId();
+            if (logPartitionId != null) {
+                out.writeBoolean(true);
+                out.writeLong(logPartitionId);
+            } else {
+                out.writeBoolean(false);
+            }
+
+            String logIncludePartition = lakeSnapshotAndFlussLogSplit.getLogIncludePartition();
+            if (logIncludePartition != null) {
+                out.writeBoolean(true);
+                out.writeUTF(logIncludePartition);
+            } else {
+                out.writeBoolean(false);
+            }
+
+            List<String> logExcludePartitions =
+                    lakeSnapshotAndFlussLogSplit.getLogExcludePartitions();
+            if (logExcludePartitions != null) {
+                out.writeBoolean(true);
+                out.writeInt(logExcludePartitions.size());
+                for (String partition : logExcludePartitions) {
+                    out.writeUTF(partition);
+                }
+            } else {
+                out.writeBoolean(false);
+            }
         } else {
             throw new UnsupportedOperationException(
                     "Unsupported split type: " + split.getClass().getName());
@@ -90,7 +120,8 @@ public class LakeSplitSerializer {
             byte splitKind,
             TableBucket tableBucket,
             @Nullable String partition,
-            DataInputDeserializer input)
+            DataInputDeserializer input,
+            int sourceSplitSerializerVersion)
             throws IOException {
         int version = input.readInt();
         if (splitKind == LAKE_SNAPSHOT_SPLIT_KIND) {
@@ -115,6 +146,28 @@ public class LakeSplitSerializer {
             long recordsToSkip = input.readLong();
             int splitIndex = input.readInt();
             boolean isLakeSplitFinished = input.readBoolean();
+
+            // v1 fields: log partition override and partition filters
+            Long logPartitionId = null;
+            String logIncludePartition = null;
+            List<String> logExcludePartitions = null;
+            if (sourceSplitSerializerVersion >= 1) {
+                if (input.readBoolean()) {
+                    logPartitionId = input.readLong();
+                }
+                if (input.readBoolean()) {
+                    logIncludePartition = input.readUTF();
+                }
+                if (input.readBoolean()) {
+                    int size = input.readInt();
+                    logExcludePartitions = new ArrayList<>(size);
+                    for (int i = 0; i < size; i++) {
+                        logExcludePartitions.add(input.readUTF());
+                    }
+                    logExcludePartitions = Collections.unmodifiableList(logExcludePartitions);
+                }
+            }
+
             return new LakeSnapshotAndFlussLogSplit(
                     tableBucket,
                     partition,
@@ -123,7 +176,10 @@ public class LakeSplitSerializer {
                     stoppingOffset,
                     recordsToSkip,
                     splitIndex,
-                    isLakeSplitFinished);
+                    isLakeSplitFinished,
+                    logPartitionId,
+                    logIncludePartition,
+                    logExcludePartitions);
         } else {
             throw new UnsupportedOperationException("Unsupported split kind: " + splitKind);
         }
