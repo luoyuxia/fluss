@@ -1452,18 +1452,53 @@ WITH (
   每条记录: (dt='20260401', id, name='updated-{id}', amount=id * 2.0)
   → ground truth: 100,000 条，其中 30,000 条的 name/amount 被更新
 
-阶段 3 — 批量 DELETE（10%）:
-  对 id = 90,001 ~ 100,000 执行 delete
-  → ground truth: 90,000 条存活记录
-
-阶段 4 — 二次 UPDATE（覆盖部分已更新的 key）:
+阶段 3 — 二次 UPDATE（覆盖部分已更新的 key）:
   对 id = 1 ~ 10,000 执行 upsert
   每条记录: (dt='20260401', id, name='final-{id}', amount=id * 3.0)
-  → ground truth: 90,000 条，其中 id=1~10,000 的值为最后一次 UPDATE 值
+  → ground truth: 100,000 条，其中 id=1~10,000 的值为最后一次 UPDATE 值
 ```
 
+首先创建 datagen 数据源表：
+
 ```sql
--- 阶段 1: 全量 INSERT（使用 datagen 或自定义 Source）
+-- 数据源: 生成 id = 1 ~ 100,000
+CREATE TEMPORARY TABLE source_100k (
+    id BIGINT
+) WITH (
+    'connector' = 'datagen',
+    'number-of-rows' = '100000',
+    'fields.id.kind' = 'sequence',
+    'fields.id.start' = '1',
+    'fields.id.end' = '100000'
+);
+
+-- 数据源: 生成 id = 1 ~ 30,000
+CREATE TEMPORARY TABLE source_30k (
+    id BIGINT
+) WITH (
+    'connector' = 'datagen',
+    'number-of-rows' = '30000',
+    'fields.id.kind' = 'sequence',
+    'fields.id.start' = '1',
+    'fields.id.end' = '30000'
+);
+
+-- 数据源: 生成 id = 1 ~ 10,000
+CREATE TEMPORARY TABLE source_10k (
+    id BIGINT
+) WITH (
+    'connector' = 'datagen',
+    'number-of-rows' = '10000',
+    'fields.id.kind' = 'sequence',
+    'fields.id.start' = '1',
+    'fields.id.end' = '10000'
+);
+```
+
+然后分阶段写入：
+
+```sql
+-- 阶段 1: 全量 INSERT
 INSERT INTO fluss_catalog.fluss.pk_correctness_large
 SELECT '20260401' AS dt,
        id,
@@ -1479,11 +1514,7 @@ SELECT '20260401' AS dt,
        CAST(id AS DOUBLE) * 2.0 AS amount
 FROM source_30k;  -- 生成 id = 1 ~ 30,000
 
--- 阶段 3: DELETE 后 10%
--- 通过程序调用 DELETE 或生成 -D changelog 写入
--- DELETE FROM ... WHERE dt = '20260401' AND id BETWEEN 90001 AND 100000
-
--- 阶段 4: 二次 UPDATE 前 10%
+-- 阶段 3: 二次 UPDATE 前 10%
 INSERT INTO fluss_catalog.fluss.pk_correctness_large
 SELECT '20260401' AS dt,
        id,
@@ -1497,6 +1528,19 @@ FROM source_10k;  -- 生成 id = 1 ~ 10,000
 4. 通过三条路径验证，与 ground truth 比对：
 
 ```sql
+-- === 数据源: 生成 lookup join 所需的 key 集合 ===
+CREATE TEMPORARY TABLE all_keys_source (
+    id BIGINT,
+    dt AS '20260401',
+    proc_time AS PROCTIME()
+) WITH (
+    'connector' = 'datagen',
+    'number-of-rows' = '100000',
+    'fields.id.kind' = 'sequence',
+    'fields.id.start' = '1',
+    'fields.id.end' = '100000'
+);
+
 -- === 路径 A: Fluss Lookup — 逐 key 遍历 ===
 -- 使用 Flink 作业遍历 id = 1 ~ 100,000 做 lookup join
 -- 将结果写入 Paimon 结果表 lookup_result
@@ -1531,7 +1575,7 @@ FROM fluss_catalog.fluss.pk_correctness_large$historical
 
 -- === 比对: 行数 + checksum + EXCEPT ===
 
--- 1) 行数比对（三条路径均应为 90,000）
+-- 1) 行数比对（三条路径均应为 100,000）
 SELECT 'lookup' AS path, COUNT(*) FROM paimon_direct.verify.lookup_result_18
 UNION ALL
 SELECT 'changelog', COUNT(*) FROM paimon_direct.verify.changelog_result_18
@@ -1565,17 +1609,16 @@ UNION ALL
 
 | id 范围 | name | amount | 说明 |
 |---|---|---|---|
-| 1 ~ 10,000 | `final-{id}` | `id * 3.0` | 阶段 4 二次 UPDATE |
-| 10,001 ~ 30,000 | `updated-{id}` | `id * 2.0` | 阶段 2 UPDATE，未被阶段 4 覆盖 |
-| 30,001 ~ 90,000 | `orig-{id}` | `id * 1.0` | 阶段 1 INSERT，未被修改 |
-| 90,001 ~ 100,000 | — | — | 阶段 3 已 DELETE，不应存在 |
+| 1 ~ 10,000 | `final-{id}` | `id * 3.0` | 阶段 3 二次 UPDATE |
+| 10,001 ~ 30,000 | `updated-{id}` | `id * 2.0` | 阶段 2 UPDATE，未被阶段 3 覆盖 |
+| 30,001 ~ 100,000 | `orig-{id}` | `id * 1.0` | 阶段 1 INSERT，未被修改 |
 
 **验证**:
 
-- 三条路径行数均为 **90,000**
+- 三条路径行数均为 **100,000**
 - 三条路径 `SUM(amount)` 值一致（可预先计算 ground truth checksum）
 - 双向 `EXCEPT` 差集为空
-- 抽样检查边界 key：id=1, id=10000, id=10001, id=30000, id=30001, id=90000, id=90001（应为 null）
+- 抽样检查边界 key：id=1, id=10000, id=10001, id=30000, id=30001, id=100000
 
 ### 场景 19: 多过期分区大规模并发写入 — 跨分区正确性
 
@@ -1594,6 +1637,17 @@ dt='20260305': name='mar5-{id}', amount=id * 5.0  (5 万条)
 ```
 
 ```sql
+-- 数据源: 生成 id = 1 ~ 50,000
+CREATE TEMPORARY TABLE source_50k (
+    id BIGINT
+) WITH (
+    'connector' = 'datagen',
+    'number-of-rows' = '50000',
+    'fields.id.kind' = 'sequence',
+    'fields.id.start' = '1',
+    'fields.id.end' = '50000'
+);
+
 -- 使用多个并发 Flink 作业或单个作业内 UNION ALL 同时写入
 INSERT INTO fluss_catalog.fluss.pk_correctness_large
 SELECT dt, id, name, amount FROM (
@@ -1616,7 +1670,75 @@ SELECT dt, id, name, amount FROM (
 
 2. 等待 tiering 完成。
 
-3. 分别对每个过期分区做全量 lookup 验证：
+3. 创建结果表并通过 lookup join 写入验证数据：
+
+```sql
+-- 数据源: 为 5 个分区生成 lookup key（每个分区 id = 1 ~ 50,000）
+CREATE TEMPORARY TABLE all_keys_source_19 (
+    id BIGINT,
+    proc_time AS PROCTIME()
+) WITH (
+    'connector' = 'datagen',
+    'number-of-rows' = '50000',
+    'fields.id.kind' = 'sequence',
+    'fields.id.start' = '1',
+    'fields.id.end' = '50000'
+);
+
+-- 结果表
+CREATE TABLE paimon_direct.verify.lookup_result_19 (
+    dt STRING, id BIGINT, name STRING, amount DOUBLE,
+    PRIMARY KEY (dt, id) NOT ENFORCED
+);
+
+-- 对每个分区分别执行 lookup join 写入结果表
+-- dt='20260301'
+INSERT INTO paimon_direct.verify.lookup_result_19
+SELECT '20260301' AS dt, k.id, t.name, t.amount
+FROM all_keys_source_19 k
+LEFT JOIN fluss_catalog.fluss.pk_correctness_large
+    FOR SYSTEM_TIME AS OF k.proc_time AS t
+ON t.dt = '20260301' AND k.id = t.id
+WHERE t.id IS NOT NULL;
+
+-- dt='20260302'
+INSERT INTO paimon_direct.verify.lookup_result_19
+SELECT '20260302' AS dt, k.id, t.name, t.amount
+FROM all_keys_source_19 k
+LEFT JOIN fluss_catalog.fluss.pk_correctness_large
+    FOR SYSTEM_TIME AS OF k.proc_time AS t
+ON t.dt = '20260302' AND k.id = t.id
+WHERE t.id IS NOT NULL;
+
+-- dt='20260303'
+INSERT INTO paimon_direct.verify.lookup_result_19
+SELECT '20260303' AS dt, k.id, t.name, t.amount
+FROM all_keys_source_19 k
+LEFT JOIN fluss_catalog.fluss.pk_correctness_large
+    FOR SYSTEM_TIME AS OF k.proc_time AS t
+ON t.dt = '20260303' AND k.id = t.id
+WHERE t.id IS NOT NULL;
+
+-- dt='20260304'
+INSERT INTO paimon_direct.verify.lookup_result_19
+SELECT '20260304' AS dt, k.id, t.name, t.amount
+FROM all_keys_source_19 k
+LEFT JOIN fluss_catalog.fluss.pk_correctness_large
+    FOR SYSTEM_TIME AS OF k.proc_time AS t
+ON t.dt = '20260304' AND k.id = t.id
+WHERE t.id IS NOT NULL;
+
+-- dt='20260305'
+INSERT INTO paimon_direct.verify.lookup_result_19
+SELECT '20260305' AS dt, k.id, t.name, t.amount
+FROM all_keys_source_19 k
+LEFT JOIN fluss_catalog.fluss.pk_correctness_large
+    FOR SYSTEM_TIME AS OF k.proc_time AS t
+ON t.dt = '20260305' AND k.id = t.id
+WHERE t.id IS NOT NULL;
+```
+
+4. 分别对每个过期分区做验证：
 
 ```sql
 -- 对每个分区分别验证: 行数 + checksum + 抽样

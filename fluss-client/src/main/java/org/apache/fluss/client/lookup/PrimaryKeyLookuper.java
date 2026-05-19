@@ -40,7 +40,9 @@ import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.client.utils.ClientUtils.getPartitionId;
@@ -81,6 +83,12 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
 
     /** Admin for creating __historical__ partition when needed. */
     private final Admin admin;
+
+    /**
+     * Cache of expired partition name to its resolved __historical__ partition ID. This avoids
+     * repeated ZK metadata requests for partitions that are known to be expired.
+     */
+    private final Map<String, Long> expiredPartitionCache = new HashMap<>();
 
     public PrimaryKeyLookuper(
             TableInfo tableInfo,
@@ -141,27 +149,36 @@ class PrimaryKeyLookuper extends AbstractLookuper implements Lookuper {
         String originalPartitionName = null;
         if (partitionGetter != null) {
             String partitionName = partitionGetter.getPartition(lookupKey);
-            try {
-                partitionId =
-                        getPartitionId(
-                                lookupKey,
-                                partitionGetter,
-                                tableInfo.getTablePath(),
-                                metadataUpdater);
-            } catch (PartitionNotExistException e) {
-                if (!isExpiredPartition(
-                        partitionName,
-                        partitionKeys,
-                        checkNotNull(autoPartitionStrategy),
-                        isDataLakeEnabled)) {
-                    return CompletableFuture.completedFuture(
-                            new LookupResult(Collections.emptyList()));
-                }
+
+            // Fast path: check if this partition was already resolved as expired
+            Long cachedHistoricalId = expiredPartitionCache.get(partitionName);
+            if (cachedHistoricalId != null) {
+                partitionId = cachedHistoricalId;
                 originalPartitionName = partitionName;
-                partitionId = resolveHistoricalPartitionId(partitionName);
-                if (partitionId == null) {
-                    return CompletableFuture.completedFuture(
-                            new LookupResult(Collections.emptyList()));
+            } else {
+                try {
+                    partitionId =
+                            getPartitionId(
+                                    lookupKey,
+                                    partitionGetter,
+                                    tableInfo.getTablePath(),
+                                    metadataUpdater);
+                } catch (PartitionNotExistException e) {
+                    if (!isExpiredPartition(
+                            partitionName,
+                            partitionKeys,
+                            checkNotNull(autoPartitionStrategy),
+                            isDataLakeEnabled)) {
+                        return CompletableFuture.completedFuture(
+                                new LookupResult(Collections.emptyList()));
+                    }
+                    originalPartitionName = partitionName;
+                    partitionId = resolveHistoricalPartitionId(partitionName);
+                    if (partitionId == null) {
+                        return CompletableFuture.completedFuture(
+                                new LookupResult(Collections.emptyList()));
+                    }
+                    expiredPartitionCache.put(partitionName, partitionId);
                 }
             }
         }

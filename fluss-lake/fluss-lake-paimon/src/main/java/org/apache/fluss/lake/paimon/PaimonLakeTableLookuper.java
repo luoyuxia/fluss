@@ -105,7 +105,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
 
     @Nullable
     @Override
-    public byte[] lookup(byte[] key, LookupContext context) throws Exception {
+    public synchronized byte[] lookup(byte[] key, LookupContext context) throws Exception {
         ensureInitialized(context.getSchemaId());
 
         BinaryRow partition = resolvePartition(context.getPartitionSpec());
@@ -231,15 +231,27 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
      */
     private Map<PaimonPartitionBucket, List<DataFileMeta>> getScannedFiles(long snapshotId) {
         if (snapshotId != lastScannedSnapshotId || scannedFilesByPb == null) {
-            scannedFilesByPb = new HashMap<>();
+            // Use a Map keyed by fileName to deduplicate files within the same
+            // (partition, bucket). Multiple DataSplits for the same PB can share
+            // data files, and passing duplicates to Paimon's Levels constructor
+            // causes a checkState failure because its internal TreeSet silently
+            // deduplicates level-0 files.
+            Map<PaimonPartitionBucket, Map<String, DataFileMeta>> dedupByPb = new HashMap<>();
             List<Split> splits = table.newReadBuilder().newScan().plan().splits();
             for (Split split : splits) {
                 DataSplit dataSplit = (DataSplit) split;
                 PaimonPartitionBucket pb =
                         new PaimonPartitionBucket(dataSplit.partition(), dataSplit.bucket());
-                scannedFilesByPb
-                        .computeIfAbsent(pb, k -> new ArrayList<>())
-                        .addAll(dataSplit.dataFiles());
+                Map<String, DataFileMeta> fileMap =
+                        dedupByPb.computeIfAbsent(pb, k -> new HashMap<>());
+                for (DataFileMeta file : dataSplit.dataFiles()) {
+                    fileMap.putIfAbsent(file.fileName(), file);
+                }
+            }
+            scannedFilesByPb = new HashMap<>();
+            for (Map.Entry<PaimonPartitionBucket, Map<String, DataFileMeta>> entry :
+                    dedupByPb.entrySet()) {
+                scannedFilesByPb.put(entry.getKey(), new ArrayList<>(entry.getValue().values()));
             }
             lastScannedSnapshotId = snapshotId;
         }
