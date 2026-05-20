@@ -1,4 +1,4 @@
-# FIP: Support Write and Lookup for Expired Partitions in DataLake-Enabled Tables
+# FIP: Support Write and Lookup for Expired Partitions in Paimon Lake Tables
 
 ## Motivation
 
@@ -41,8 +41,6 @@ message PbLookupReqForBucket {
 - Server uses this field to determine which lake partition to query.
 - Field is optional; absent for normal lookups.
 
-This reuses the existing `LookupRequest` instead of introducing a separate RPC. The dispatch strategy (synchronous local lookup vs. async lake lookup) is determined server-side based on whether the target is `__historical__` partition — the same approach used for the write path.
-
 Extend put-kv RPC for deterministic historical delete routing:
 
 ```protobuf
@@ -54,9 +52,9 @@ message PbPutKvReqForBucket {
 }
 ```
 
-- `partition_name` carries the original partition before redirecting to `__historical__`.
-- This allows server-side deterministic routing for key-only delete (`row == null`) in `__historical__` path.
-- Field is optional for backward compatibility and only needed when partition cannot be derived from row payload.
+- `partition_name` carries the original partition name before redirecting to `__historical__`.
+- For historical partition puts, client always sets this field. Server uses it to encode composite keys and resolve lake fallback partition. For key-only deletes (`row == null`), this is the only source of original partition identity since there is no row payload.
+- Field is optional for backward compatibility; absent for normal (non-historical) partition puts.
 
 ### New SPI Interface
 
@@ -67,8 +65,8 @@ public interface LakeStorage {
     // existing methods...
 
     /**
-     * Create a {@link LakeTableLookuper} for the given table to perform point lookups
-     * against lake storage for expired partitions.
+     * Creates a {@link LakeTableLookuper} for point lookup against the specified table
+     * in lake storage.
      */
     default LakeTableLookuper createLakeTableLookuper(TablePath tablePath) {
         throw new UnsupportedOperationException(
@@ -77,7 +75,11 @@ public interface LakeStorage {
 }
 
 /**
- * An interface for performing point lookups against lake storage for expired partitions.
+ * Interface for looking up a single key from lake storage. This is used for:
+ * <ul>
+ *   <li>PK table historical write: old-value fallback from lake when RocksDB doesn't have the key
+ *   <li>Expired partition point lookup: local-first lookup (RocksDB → lake fallback)
+ * </ul>
  *
  * <p>Each instance is bound to a specific table and caches per-table resources
  * (e.g., catalog connections, table metadata) for efficient repeated lookups.
@@ -86,32 +88,43 @@ public interface LakeStorage {
  * native format (e.g., Paimon BinaryRow format) by the client-side encoder, so
  * implementations can use them directly without re-encoding.
  */
-public interface LakeTableLookuper {
+public interface LakeTableLookuper extends AutoCloseable {
     /**
-     * Lookup a single key from lake storage for an expired partition.
+     * Lookup a single key from lake storage.
      *
-     * <p>The key bytes are already encoded in the lake storage's native key format
-     * by the client-side encoder (e.g., Paimon BinaryRow format). Implementations
-     * can wrap them directly as the lake storage's key type without decode/re-encode.
+     * <p>Key bytes are already encoded in the lake storage's native key format.
+     * Returned value bytes should be encoded with schema ID prefix.
      *
-     * <p>The returned value bytes should be encoded with a schema ID prefix
-     * so the client can correctly decode them.
-     *
-     * @param key the encoded key bytes to lookup, in the lake storage's native key format
-     * @param context the lookup context containing partition and bucket information
-     * @return the encoded value bytes, or null if the key is not found
-     * @throws Exception if the lookup fails
+     * @param key encoded key bytes in lake storage's native format
+     * @param context lookup context containing partition, bucket, and schema information
+     * @return encoded value bytes with schema ID prefix, or null if not found
+     * @throws Exception if lookup fails
      */
     @Nullable
     byte[] lookup(byte[] key, LookupContext context) throws Exception;
 
+    /** Context for a single lake lookup operation. */
     class LookupContext {
-        /** Original partition spec resolved from Fluss. */
-        ResolvedPartitionSpec partitionSpec;
-        /** Bucket id used by lake lookup for this table partition. */
-        int bucketId;
-        /** Schema id used to encode value bytes returned to Fluss-compatible format. */
-        int schemaId;
+        @Nullable private final ResolvedPartitionSpec partitionSpec;
+        private final int bucketId;
+        private final int schemaId;
+
+        public LookupContext(
+                @Nullable ResolvedPartitionSpec partitionSpec, int bucketId, int schemaId) {
+            this.partitionSpec = partitionSpec;
+            this.bucketId = bucketId;
+            this.schemaId = schemaId;
+        }
+
+        /** Returns the partition spec, or null for non-partitioned tables. */
+        @Nullable
+        public ResolvedPartitionSpec getPartitionSpec() { return partitionSpec; }
+
+        /** Returns the bucket ID. */
+        public int getBucketId() { return bucketId; }
+
+        /** Returns the schema ID used for value encoding. */
+        public int getSchemaId() { return schemaId; }
     }
 }
 ```
@@ -278,8 +291,22 @@ Old-value lookup: prewrite buffer -> historical RocksDB -> lake
 Old-value resolution chain:
 
 1. prewrite buffer (composite key lookup),
-2. historical RocksDB (composite key lookup),
+2. historical RocksDB (composite key lookup) — if a **tombstone** is found (see below), return `null` immediately without falling through to lake,
 3. lake fallback (original partition + original key).
+
+**Tombstone mechanism for DELETE operations**:
+
+In normal (non-historical) partitions, a RocksDB `delete(key)` physically removes the key. After deletion, a `get(key)` returns `null`, which is correct because there is no lake fallback. In `__historical__` partitions, however, `null` from RocksDB triggers the lake fallback (step 3 above), which would return the stale pre-delete value from lake storage — effectively undoing the delete.
+
+To prevent this, DELETE operations on `__historical__` partitions write a **tombstone** (an empty byte array `new byte[0]`) instead of physically deleting the key:
+
+- A normal encoded value always has at least 2 bytes (schema ID prefix), so an empty byte array is unambiguous as a tombstone marker.
+- `isTombstone(value)` returns `true` when `value != null && value.length == 0`.
+- The old-value resolution chain (step 2) checks for tombstones: if the RocksDB result is a tombstone, it returns `null` without falling through to lake fallback.
+
+Tombstones are applied consistently across all paths that write to historical RocksDB:
+- **Write path** (`KvPreWriteBuffer.flush()`): when flushing a DELETE entry for a historical partition, writes `TOMBSTONE_VALUE` instead of calling `delete()`.
+- **Recovery path** (`KvRecoverHelper`): when replaying WAL DELETE records during recovery, writes `TOMBSTONE_VALUE` to the historical RocksDB.
 
 Execution note:
 
@@ -303,6 +330,12 @@ This FIP chooses option 4 because:
 - **Minimal codec impact**: composite key encoding is scoped entirely to the `__historical__` bucket's own RocksDB instance. Normal partition's key codec, snapshot, and recovery paths are completely unaffected. The encoding/decoding is trivial (a 4-byte length prefix + partition name bytes prepended to the original key).
 - **Simple management**: one RocksDB instance per `__historical__` bucket — one open, one close, one directory. No need to manage a dynamic set of RocksDB instances or CF handles.
 
+**`HistoricalKvManager`**: All per-bucket historical RocksDB instances are managed by a centralized `HistoricalKvManager` that provides:
+
+- **Lazy creation**: RocksDB is only opened on the first `put()` call for a given bucket, not when the bucket is assigned.
+- **Idle timeout cleanup**: A scheduled task periodically scans all open instances and evicts those that have been idle longer than a configurable timeout (`kv.historical.idle-timeout`, default 30 minutes). This bounds memory usage when historical writes are bursty — after a burst finishes and data is tiered, the idle RocksDB instances are automatically cleaned up.
+- **Read-write lock concurrency**: Each per-bucket handle uses a `ReentrantReadWriteLock`. Read operations (`put`, `get`, `delete`) acquire the shared read lock for concurrent access. Cleanup and drop operations acquire the exclusive write lock via `tryLock()` to avoid blocking active operations.
+
 #### A.3.3 Cleanup after tiering sync
 
 Historical writes are expected to be bursty — a pulse of late-arriving data followed by an idle period. The entire burst is typically tiered to lake quickly. Based on this characteristic, cleanup uses a simple whole-RocksDB drop strategy instead of per-partition incremental cleanup:
@@ -317,7 +350,7 @@ Historical writes are expected to be bursty — a pulse of late-arriving data fo
 
 **Coordination with concurrent lookups**:
 
-Cleanup closes and deletes the historical RocksDB, but historical lookups (which do not go through the per-bucket serial executor, see C.2) may be concurrently reading from it. To prevent lookups from accessing a closed/deleted RocksDB instance, a **reference-counted RocksDB handle** is used: lookups acquire a reference before reading local historical state, and cleanup waits until all outstanding references are released before closing the instance. If cleanup completes first, subsequent lookups see no local instance and fall through directly to lake fallback.
+Cleanup closes and deletes the historical RocksDB, but historical lookups (which do not go through the per-bucket serial executor, see C.2) may be concurrently reading from it. To prevent lookups from accessing a closed/deleted RocksDB instance, a **read-write lock** (`ReentrantReadWriteLock`) is used per bucket handle: lookups acquire the shared read lock before reading local historical state (allowing concurrent reads), and cleanup acquires the exclusive write lock via `tryLock()` before closing the instance (if the lock cannot be acquired immediately, cleanup skips that instance and retries later). If cleanup completes first, subsequent lookups see no local instance and fall through directly to lake fallback.
 
 **Why whole-RocksDB drop instead of per-partition `DeleteRange`**:
 - No per-partition offset tracking needed — only one check against the partition-level tiered offset.
@@ -380,6 +413,8 @@ When `PrimaryKeyLookuper` cannot resolve partition (partition expired, as determ
 - send a standard `LookupRequest` with the additional `partition_name` field set to the original partition name.
 - `LookupSender` must batch historical lookup requests by `(__historical__ bucket, original partition name)` — the same batching key as historical PK writes (see C.1). Since `partition_name` is a bucket-request-level field, a single `PbLookupReqForBucket` can only carry keys for one original partition. Mixing keys from different original partitions in the same bucket request would cause the server to look up all keys against the wrong lake partition.
 
+**Expired partition cache**: `PrimaryKeyLookuper` maintains an in-memory cache (`Map<String, Long>`) that maps expired partition names to their resolved `__historical__` partition ID. Once a partition is identified as expired and its historical partition ID is resolved (which involves a ZK metadata lookup), the mapping is cached. Subsequent lookups for the same expired partition skip the ZK lookup entirely, avoiding repeated metadata requests that could flood ZooKeeper under high lookup concurrency.
+
 #### B.2 Server-Side: Dispatch by Partition Type
 
 `ReplicaManager.lookups()` checks whether the target is `__historical__` partition:
@@ -399,15 +434,21 @@ This ensures that data written to `__historical__` but not yet tiered to lake is
 
 The Paimon-specific implementation uses Paimon's `LocalTableQuery` for efficient point lookups:
 
+**Thread safety:**
+- The `lookup()` method is `synchronized` to ensure thread-safe access to shared mutable state (Paimon `LocalTableQuery`, file refresh tracking, scan result cache). Multiple historical lookup requests from the `ioExecutor` may target the same `PaimonLakeTableLookuper` instance concurrently.
+
 **Lazy initialization:**
-- Resources (Catalog, FileStoreTable, LocalTableQuery, etc.) are lazily initialized on first lookup
+- Resources (Catalog, FileStoreTable, LocalTableQuery, etc.) are lazily initialized on first `lookup()` call.
+- On schema evolution (schema ID change), all resources are closed and re-created to reflect the new schema.
 
 **Per-(partition, bucket) file refresh with snapshot-based invalidation:**
-- Maintains a `Map<Tuple2<String, Integer>, Long> refreshedBuckets` that maps each (partitionName, bucketId) pair to the Paimon snapshot ID used for the last file refresh.
+- Maintains a `Map<PaimonPartitionBucket, Long> refreshedSnapshots` that maps each (partition BinaryRow, bucketId) pair to the Paimon snapshot ID used for the last file refresh.
 - On each lookup, compares the current latest Paimon snapshot ID against the cached snapshot ID for that (partition, bucket):
     - If no entry exists or the cached snapshot ID is stale (i.e., a newer snapshot is available), scans Paimon for the data files, calls `tableQuery.refreshFiles()`, and updates the cached snapshot ID.
     - If the cached snapshot ID matches the latest, skips the scan.
 - This ensures that newly tiered data from `__historical__` (which produces new Paimon snapshots) is visible to subsequent lookups, while avoiding redundant file scans when no new snapshot has been committed.
+- **Scan result caching**: The full table scan result is cached by snapshot ID (`lastScannedSnapshotId`). When multiple (partition, bucket) pairs need refresh within the same snapshot, only one scan is performed.
+- **File deduplication**: Within each (partition, bucket), data files are deduplicated by `fileName` before passing to `tableQuery.refreshFiles()`. Multiple `DataSplit`s for the same partition/bucket can share data files, and passing duplicates causes Paimon's internal `Levels` constructor to fail because its `TreeSet` silently deduplicates level-0 files.
 
 **Lookup flow:**
 1. The key bytes are already encoded in Paimon's BinaryRow format by the client-side `PaimonKeyEncoder`, so directly wrap them as a Paimon `BinaryRow` via `keyRow.pointTo(MemorySegment.wrap(key), 0, key.length)` — no decode/re-encode needed
@@ -427,9 +468,9 @@ The isolation strategy has two layers:
 | Layer | Resource | Historical Cap | Mechanism |
 |---|---|---|---|
 | Server | `ioExecutor` thread pool | No cap needed — dedicated to historical (C.2) | Real-time paths never use ioExecutor |
-| Server | Historical request queue | ~1/10 of total server request queue (C.3) | Exceeds queue size → `HISTORICAL_PARTITION_THROTTLED` |
-| Client | Write in-flight requests | ~1/10 of `maxInFlight` (C.4.1) | Sender skips historical batches when cap reached |
-| Client | Lookup inflight permits | ~1/10 of `maxLookupInflight` (C.4.2) | Separate historical semaphore |
+| Server | Historical request semaphore | `maxQueued × server.historical-request-queue-ratio` (C.3) | `tryAcquire()` fails → `HISTORICAL_PARTITION_THROTTLED` |
+| Client | Write throughput | Bounded by server semaphore (C.4.1) | Server throttle + client exponential backoff (100ms, 2×, max 5s) |
+| Client | Lookup inflight permits | `maxLookupInflight × client.lookup.historical-inflight-ratio` (C.4.2) | Separate historical semaphore |
 
 #### C.1 Client-side: Batching Constraints
 
@@ -470,54 +511,54 @@ Lookups do not require ordering and can execute concurrently regardless of bucke
 
 #### C.3 Server-side: Flow Control
 
-The server maintains a bounded request queue for historical operations. The default queue size is ~1/10 of the total server request queue capacity, ensuring historical requests do not crowd out real-time request processing resources. The queue size is configurable.
+The server uses a bounded `Semaphore` (`HistoricalPartitionHandler.requestPermits`) to limit the number of concurrent in-flight historical requests. Each request acquires one permit via `tryAcquire()` (non-blocking) regardless of how many buckets it contains, and releases the permit when all its sub-tasks complete. The capacity is computed as `maxQueuedRequests * server.historical-request-queue-ratio` (default ratio 0.1), ensuring historical requests do not crowd out real-time request processing resources.
 
-When the historical request queue is full, the server rejects the request with a `HISTORICAL_PARTITION_THROTTLED` error code. Client receives this error and performs backoff retry using the existing client retry mechanism — no historical-partition-specific retry logic is needed.
+When all permits are taken (`tryAcquire()` returns `false`), the server rejects the entire request with a `HISTORICAL_PARTITION_THROTTLED` error code. Client receives this error and performs **exponential backoff retry** (initial 100ms, multiplier 2×, max 5s, jitter 0.2). For write paths with idempotence enabled, the client also marks the bucket as throttled to prevent subsequent batches from being sent with out-of-order sequence numbers.
 
-Historical requests accepted into the queue are dispatched to the `ioExecutor` for processing. The `ioExecutor` threads and the request queue are independent concerns: the queue bounds how many historical requests are admitted, while the `ioExecutor` determines how many are processed concurrently.
+**Defensive copy for async write submission**: Before submitting a historical write to the `ioExecutor`, the server copies the `KvRecordBatch` to heap memory (`copyToHeap()`). This prevents `IndexOutOfBoundsException` from the Netty ByteBuf being released by the RPC layer while the async task is still processing.
+
+Historical requests accepted by the semaphore are dispatched to the `ioExecutor` for processing. The semaphore and the `ioExecutor` are independent concerns: the semaphore bounds how many historical requests are admitted, while the `ioExecutor` determines how many are processed concurrently.
 
 #### C.4 Client-side: Historical Resource Cap
 
 The client caps historical operations at ~1/10 of total shared resources. This bounds the impact of historical writes/lookups on real-time paths without requiring complex per-resource analysis.
 
-##### C.4.1 Write path: historical in-flight cap
+##### C.4.1 Write path: server-side throttle + client-side backoff
 
-`Sender` limits the number of concurrent in-flight historical write requests:
+The write path relies on the server-side semaphore (C.3) as the primary flow control mechanism, combined with client-side exponential backoff on throttle errors:
 
-```text
-historicalWriteInFlightCap = maxInFlight / 10
-
-Sender.runOnce():
-  for each ready batch:
-    if batch.isHistorical() and historicalInFlight >= historicalWriteInFlightCap:
-      skip  // will retry in next Sender iteration
-    else:
-      send(batch)
-      if historical: historicalInFlight++
-  on ACK callback:
-    if historical: historicalInFlight--
-```
+1. Server rejects historical writes when the semaphore is full, returning `HISTORICAL_PARTITION_THROTTLED`.
+2. Client `Sender` handles the throttle error with exponential backoff (`ExponentialBackoff(100, 2, 5000, 0.2)`):
+   - Sets `retryAfterMs` on the batch based on the backoff delay.
+   - If idempotence is enabled, marks the bucket as throttled via `idempotenceManager.markBucketThrottled()` to prevent subsequent batches from being drained for that bucket (which would cause `OutOfOrderSequenceException`).
+   - Re-enqueues the batch for retry after the backoff period.
+3. Real-time batches are never affected — the throttle error and backoff only apply to historical batches targeting `__historical__` partition.
 
 Effects:
-- At most `historicalWriteInFlightCap` historical batches are in-flight at any time. Real-time batches are never blocked — when the cap is reached, Sender skips historical batches and continues processing real-time batches.
-- **Memory**: historical in-flight memory ≤ `cap × batchSize`, naturally bounded at ~1/10 of total in-flight memory.
-- **Flush**: `flush()` must wait for all in-flight batches to ACK, including historical. With the cap, flush waits for at most `historicalWriteInFlightCap` slow ACKs. Given historical ACK latency ≈ 10–100ms (lake I/O), this adds at most hundreds of milliseconds — well within checkpoint timeout.
+- Historical write throughput is bounded by the server semaphore capacity (~1/10 of total request queue). Client automatically adapts its sending rate via backoff.
+- **Idempotence safety**: bucket throttle marking prevents sequence number gaps when a batch is delayed by backoff.
+- **Flush**: `flush()` waits for all in-flight batches including historical ones to complete. Given server-side lake I/O latency ≈ 10–100ms, this adds at most hundreds of milliseconds — well within checkpoint timeout.
 
 ##### C.4.2 Lookup path: historical permit cap
 
-`LookupSender` splits the single inflight semaphore into two independent semaphores following the 1/10 ratio:
+`LookupSender` splits the single inflight semaphore into two independent semaphores. The historical ratio is configured via `client.lookup.historical-inflight-ratio` (default 0.1):
 
 ```text
-realtimeLookupSemaphore   = new Semaphore(maxLookupInflight * 9 / 10)  // e.g., 116
-historicalLookupSemaphore = new Semaphore(maxLookupInflight / 10)      // e.g., 12
+historicalInflight = max(1, (int)(maxLookupInflight * historicalInflightRatio))  // e.g., 13
+realtimeLookupSemaphore   = new Semaphore(maxLookupInflight - historicalInflight) // e.g., 115
+historicalLookupSemaphore = new Semaphore(historicalInflight)                     // e.g., 13
 ```
 
 `LookupSender` acquires the corresponding semaphore based on lookup type:
 - Real-time lookup → `realtimeLookupSemaphore.acquire()` — only competes with other real-time lookups.
 - Historical lookup → `historicalLookupSemaphore.acquire()` — only competes with other historical lookups.
 
+Historical lookups are grouped by `partitionName` first, then by `(leader, type)` within each partition group. This ensures each RPC request carries the correct `partition_name` for composite key encoding on the server — different expired partitions (e.g., "2000", "2001") may redirect to the same `__historical__` bucket but must be sent in separate requests.
+
+When `LookupSender` receives a `HISTORICAL_PARTITION_THROTTLED` error from the server, it applies the same exponential backoff strategy as the write path (`ExponentialBackoff(100, 2, 5000, 0.2)`), setting `retryAfterMs` on the lookup query to delay the retry.
+
 Effects:
-- Even if all historical permits are occupied by slow lake fallback requests, real-time lookups still have ~116 permits available.
+- Even if all historical permits are occupied by slow lake fallback requests, real-time lookups still have ~115 permits available.
 - When historical permits are exhausted, the sender thread skips historical batches and continues processing real-time batches — historical lookups are retried in subsequent iterations.
 
 ## Compatibility, Deprecation, and Migration Plan
