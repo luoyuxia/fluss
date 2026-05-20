@@ -22,7 +22,7 @@ Scope and eligibility:
 - For Primary Key tables, this is a hard technical requirement: historical writes need old-value resolution to generate correct changelog (`UPDATE_BEFORE` + `UPDATE_AFTER`), and the old value for expired partitions only exists in lake storage. Without a lake backend, old-value lookup is impossible and the write path cannot produce correct results.
 - For Log tables, historical writes are technically feasible without lake storage (append-only, no old-value resolution needed). However, we still restrict this FIP to lake-enabled tables to avoid a fragmented feature matrix — supporting historical writes for lake-enabled Log tables but not for non-lake Log tables would create inconsistent user expectations across the same table type.
 
-Note: This FIP primarily focuses on Paimon as the lake storage backend, because Paimon provides efficient point lookup capabilities via its `LocalTableQuery` API. Other lake formats such as Iceberg and Lance do not currently offer comparable point query performance, so support for them can be considered in future FIPs, which will required a full cache on Iceberg.
+Note: This FIP primarily focuses on Paimon as the lake storage backend, because Paimon provides efficient point lookup capabilities via its `LocalTableQuery` API. Other lake formats such as Iceberg and Lance do not currently offer comparable point query performance, so support for them can be considered in future FIPs, which would require a full cache on Iceberg.
 
 ## Public Interfaces
 
@@ -77,7 +77,7 @@ public interface LakeStorage {
 /**
  * Interface for looking up a single key from lake storage. This is used for:
  * <ul>
- *   <li>PK table historical write: old-value fallback from lake when RocksDB doesn't have the key
+ *   <li>PK table historical write: old-value fallback from lake to produce UPDATE_BEFORE for changelog
  *   <li>Expired partition point lookup: local-first lookup (RocksDB → lake fallback)
  * </ul>
  *
@@ -135,13 +135,18 @@ public interface LakeTableLookuper extends AutoCloseable {
 
 #### A.1 Historical Partition
 
-For each eligible table, maintain one special partition (name `__historical__`) as the write target for all expired partitions. In this FIP we call it **Historical Partition**.
+For each eligible table, maintain special **Historical Partition(s)** as the write target for expired partitions. The historical partition name is derived by replacing the auto-partition key value with `__historical__`:
+
+- **Single partition key** `[dt]`: one historical partition per table — `__historical__`.
+- **Multi partition key** `[region, dt]` (dt is auto key): one historical partition **per static partition prefix** — e.g., `us-east$__historical__`, `eu-west$__historical__`. Each static prefix has its own independent historical partition with its own buckets, WAL, and tiering lifecycle.
+
+In this FIP we use the term "historical partition" to refer to any such `__historical__`-suffixed partition.
 
 Properties:
 - always writable,
 - not auto-expired,
 - normal replication/WAL behavior,
-- bucket count same as other partitions of the table.
+- bucket count same as other partitions of the table. 
 
 When a write targets an expired original partition, client redirects it to the historical partition; original partition identity remains in row partition columns. This applies to both Primary Key writes and Log appends.
 
@@ -149,14 +154,14 @@ When a write targets an expired original partition, client redirects it to the h
 
 A partition is considered "expired" (and eligible for `__historical__` redirect) only when **all** of the following are true:
 
-1. The table is an auto-partitioned table with lake tiering enabled (eligible table).
+1. The table is an auto-partitioned table with data lake enabled (eligible table).
 2. The partition name matches the table's auto-partition spec naming pattern (e.g., valid date format for date-partitioned tables).
 3. The partition name falls before the TTL expiration boundary computed from the auto-partition spec and current time (i.e., it is older than the retention window).
 4. The partition does not exist in current metadata.
 
 If condition 4 is true but any of conditions 1–3 are false, the client must **not** redirect to `__historical__` and should preserve the original `PartitionNotExistException`. This prevents invalid partition names, future partitions, or non-eligible tables from being incorrectly routed to the historical path.
 
-The predicate is evaluated client-side using the table's auto-partition spec and TTL configuration (already available in client metadata cache).
+The predicate is evaluated client-side using the table's auto-partition spec and TTL configuration (already available in client metadata cache). The current time is obtained via `Instant.now()` (UTC epoch) and converted to the table's configured time zone (`autoPartitionStrategy.timeZone()`), so the expiration boundary is consistent across clients regardless of machine-local time zone settings — only wall-clock skew between machines can cause transient disagreement, which is benign: the worst case is one client redirects to `__historical__` slightly earlier or later than another, and both paths produce correct results.
 
 **Creation**:
 - `__historical__` is lazily created by the client when it first encounters an expired partition (as defined by the predicate above) — regardless of whether the operation is a write or a lookup. The client checks whether `__historical__` exists in cached metadata, and if not, triggers creation via the partition creation RPC.
@@ -165,7 +170,7 @@ The predicate is evaluated client-side using the table's auto-partition spec and
 - If multiple clients race to create `__historical__` concurrently, only one succeeds; the others receive `PartitionAlreadyExistException` and proceed normally.
 
 **Name reservation**:
-- The partition name `__historical__` is reserved by the system. User attempts to create a partition with this name (via DDL or dynamic partition creation) are rejected with an error. This is enforced in the partition creation validation path.
+- The partition value `__historical__` is conceptually reserved by the system. However, this is currently **not enforced** server-side — the `__historical__` partition is created through the standard partition creation RPC, and the server cannot distinguish system-initiated creation from user-initiated creation. If a user manually creates a partition with this name, it would conflict with the system's historical partition. In practice, the risk is low because `__historical__` is not a valid date/time value and would not be produced by auto-partition strategies.
 
 **AutoPartitionManager exclusion**:
 - `AutoPartitionManager` recognizes `__historical__` as a system partition and unconditionally skips it during TTL expiration checks. This is implemented by checking the partition name before applying TTL logic.
@@ -272,7 +277,7 @@ Incoming PK record on __historical__
         |
         v
 Extract original partition:
-  - upsert (row != null): from row partition columns
+  - upsert (row != null): from `partition_name` in RPC request
   - delete (row == null): from `partition_name` in RPC request
         |
         v
@@ -463,7 +468,7 @@ Historical partition operations involve lake I/O with unpredictable latency. Wit
 The isolation strategy has two layers:
 
 - **Server-side** (C.2, C.3): Historical operations are offloaded from RPC threads to a dedicated `ioExecutor`. Since real-time paths never use `ioExecutor`, there is no resource contention — full thread and queue capacity is available for historical operations.
-- **Client-side** (C.4): Real-time and historical paths share the same `Sender` thread, memory pool, and `LookupSender`. To prevent historical slowness from propagating to real-time paths, historical operations are capped at approximately **1/10 of shared client resources**. The 1/10 ratio is configurable and reflects the expectation that late-arriving data is typically a small fraction of total throughput.
+- **Client-side** (C.4): For the **lookup path**, `LookupSender` splits inflight permits into realtime and historical semaphores with a configurable ratio (`client.lookup.historical-inflight-ratio`, default 0.1), preventing slow lake lookups from exhausting permits shared with real-time lookups. For the **write path**, no client-side ratio cap is applied — flow control relies entirely on the server-side semaphore (C.3) combined with client-side exponential backoff on throttle errors.
 
 | Layer | Resource | Historical Cap | Mechanism |
 |---|---|---|---|
@@ -511,7 +516,7 @@ Lookups do not require ordering and can execute concurrently regardless of bucke
 
 #### C.3 Server-side: Flow Control
 
-The server uses a bounded `Semaphore` (`HistoricalPartitionHandler.requestPermits`) to limit the number of concurrent in-flight historical requests. Each request acquires one permit via `tryAcquire()` (non-blocking) regardless of how many buckets it contains, and releases the permit when all its sub-tasks complete. The capacity is computed as `maxQueuedRequests * server.historical-request-queue-ratio` (default ratio 0.1), ensuring historical requests do not crowd out real-time request processing resources.
+Historical operations are offloaded to `ioExecutor` asynchronously, but the Netty server request queue is shared between real-time and historical requests. If historical requests accumulate without bound (e.g., due to slow lake I/O), they can fill up the shared request queue and cause real-time requests to be rejected. To prevent this, the server uses a bounded `Semaphore` (`HistoricalPartitionHandler.requestPermits`) to limit the number of concurrent in-flight historical requests. Each request acquires one permit via `tryAcquire()` (non-blocking) regardless of how many buckets it contains, and releases the permit when all its sub-tasks complete. The capacity is computed as `maxQueuedRequests * server.historical-request-queue-ratio` (default ratio 0.1), reserving the majority of queue capacity for real-time requests.
 
 When all permits are taken (`tryAcquire()` returns `false`), the server rejects the entire request with a `HISTORICAL_PARTITION_THROTTLED` error code. Client receives this error and performs **exponential backoff retry** (initial 100ms, multiplier 2×, max 5s, jitter 0.2). For write paths with idempotence enabled, the client also marks the bucket as throttled to prevent subsequent batches from being sent with out-of-order sequence numbers.
 
