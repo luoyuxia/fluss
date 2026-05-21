@@ -49,6 +49,11 @@ public class ArrowWalBuilder implements WalBuilder {
     }
 
     @Override
+    public void append(ChangeType changeType, InternalRow row, long rowId) throws Exception {
+        recordsBuilder.append(changeType, row, rowId);
+    }
+
+    @Override
     public MemoryLogRecords build() throws Exception {
         recordsBuilder.close();
         MultiBytesView bytesView = recordsBuilder.build();

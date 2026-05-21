@@ -23,6 +23,7 @@ import org.apache.fluss.memory.OutputView;
 import org.apache.fluss.metadata.LogFormat;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.InternalRow;
+import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.row.indexed.IndexedRowWriter;
 import org.apache.fluss.types.DataType;
@@ -66,6 +67,10 @@ public class IndexedLogRecord implements LogRecord {
     private MemorySegment segment;
     private int offset;
     private int sizeInBytes;
+
+    // DV support: RowId and the number of bytes consumed by its varint encoding
+    private long rowId = NO_ROW_ID;
+    private int rowIdSize = 0;
 
     IndexedLogRecord(long logOffset, long timestamp, DataType[] fieldTypes) {
         this.logOffset = logOffset;
@@ -120,8 +125,13 @@ public class IndexedLogRecord implements LogRecord {
     }
 
     @Override
+    public long getRowId() {
+        return rowId;
+    }
+
+    @Override
     public InternalRow getRow() {
-        int rowOffset = LENGTH_LENGTH + ATTRIBUTES_LENGTH;
+        int rowOffset = LENGTH_LENGTH + ATTRIBUTES_LENGTH + rowIdSize;
         return LogRecord.deserializeInternalRow(
                 sizeInBytes - rowOffset,
                 segment,
@@ -148,15 +158,52 @@ public class IndexedLogRecord implements LogRecord {
         return sizeInBytes + LENGTH_LENGTH;
     }
 
+    /** Write the record with a RowId (for DV-enabled tables) and return its size. */
+    public static int writeTo(
+            OutputView outputView, ChangeType changeType, IndexedRow row, long rowId)
+            throws IOException {
+        int varintSize = ValueEncoder.unsignedVarLongSize(rowId);
+        int sizeInBytes = ATTRIBUTES_LENGTH + varintSize + row.getSizeInBytes();
+
+        // write record total bytes size.
+        outputView.writeInt(sizeInBytes);
+
+        // write attributes.
+        outputView.writeByte(changeType.toByteValue());
+
+        // write varint RowId.
+        writeUnsignedVarLong(outputView, rowId);
+
+        // write internal row.
+        serializeInternalRow(outputView, row);
+
+        return sizeInBytes + LENGTH_LENGTH;
+    }
+
     public static IndexedLogRecord readFrom(
             MemorySegment segment,
             int position,
             long logOffset,
             long logTimestamp,
             DataType[] colTypes) {
+        return readFrom(segment, position, logOffset, logTimestamp, colTypes, false);
+    }
+
+    public static IndexedLogRecord readFrom(
+            MemorySegment segment,
+            int position,
+            long logOffset,
+            long logTimestamp,
+            DataType[] colTypes,
+            boolean dvEnabled) {
         int sizeInBytes = segment.getInt(position);
         IndexedLogRecord logRecord = new IndexedLogRecord(logOffset, logTimestamp, colTypes);
         logRecord.pointTo(segment, position, sizeInBytes + LENGTH_LENGTH);
+        if (dvEnabled) {
+            int rowIdOffset = position + LENGTH_LENGTH + ATTRIBUTES_LENGTH;
+            logRecord.rowId = readUnsignedVarLong(segment, rowIdOffset);
+            logRecord.rowIdSize = varintSizeFromSegment(segment, rowIdOffset);
+        }
         return logRecord;
     }
 
@@ -169,6 +216,37 @@ public class IndexedLogRecord implements LogRecord {
         int size = 1; // always one byte for attributes
         size += row.getSizeInBytes();
         return size;
+    }
+
+    /** Write an unsigned varint long to the output view. */
+    static void writeUnsignedVarLong(OutputView outputView, long value) throws IOException {
+        while ((value & 0xFFFFFFFFFFFFFF80L) != 0) {
+            outputView.writeByte((int) ((value & 0x7F) | 0x80));
+            value >>>= 7;
+        }
+        outputView.writeByte((int) (value & 0x7F));
+    }
+
+    /** Read an unsigned varint long from a MemorySegment at the given position. */
+    static long readUnsignedVarLong(MemorySegment segment, int position) {
+        long result = 0;
+        int shift = 0;
+        byte b;
+        do {
+            b = segment.get(position++);
+            result |= (long) (b & 0x7F) << shift;
+            shift += 7;
+        } while ((b & 0x80) != 0);
+        return result;
+    }
+
+    /** Return the number of bytes consumed by a varint at the given position in a MemorySegment. */
+    static int varintSizeFromSegment(MemorySegment segment, int position) {
+        int size = 0;
+        while ((segment.get(position + size) & 0x80) != 0) {
+            size++;
+        }
+        return size + 1;
     }
 
     private static void serializeInternalRow(OutputView outputView, IndexedRow row)

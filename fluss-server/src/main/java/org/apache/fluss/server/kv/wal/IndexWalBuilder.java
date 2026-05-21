@@ -55,6 +55,14 @@ public class IndexWalBuilder implements WalBuilder {
     }
 
     @Override
+    public void append(ChangeType changeType, InternalRow row, long rowId) throws Exception {
+        checkArgument(
+                row instanceof IndexedRow,
+                "IndexWalBuilder requires the log row to be IndexedRow.");
+        recordsBuilder.append(changeType, (IndexedRow) row, rowId);
+    }
+
+    @Override
     public MemoryLogRecords build() throws Exception {
         recordsBuilder.close();
         BytesView bytesView = recordsBuilder.build();

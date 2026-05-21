@@ -73,4 +73,10 @@ public class MemoryLogRecordsIndexedBuilder extends MemoryLogRecordsRowBuilder<I
     protected int writeRecord(ChangeType changeType, IndexedRow row) throws IOException {
         return IndexedLogRecord.writeTo(pagedOutputView, changeType, row);
     }
+
+    @Override
+    protected int writeRecordWithRowId(ChangeType changeType, IndexedRow row, long rowId)
+            throws IOException {
+        return IndexedLogRecord.writeTo(pagedOutputView, changeType, row, rowId);
+    }
 }

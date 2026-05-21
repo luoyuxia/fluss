@@ -93,12 +93,23 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
     /** Implement to write the record and return total written bytes including length field. */
     protected abstract int writeRecord(ChangeType changeType, T row) throws IOException;
 
+    /** Implement to write the record with RowId and return total written bytes. */
+    protected int writeRecordWithRowId(ChangeType changeType, T row, long rowId)
+            throws IOException {
+        throw new UnsupportedOperationException(
+                getClass().getSimpleName() + " does not support writing records with RowId");
+    }
+
     public boolean hasRoomFor(T row) {
         return sizeInBytes + sizeOf(row) <= writeLimit;
     }
 
     public void append(ChangeType changeType, T row) throws Exception {
         appendRecord(changeType, row);
+    }
+
+    public void append(ChangeType changeType, T row, long rowId) throws Exception {
+        appendRecordWithRowId(changeType, row, rowId);
     }
 
     private void appendRecord(ChangeType changeType, T row) throws IOException {
@@ -119,6 +130,29 @@ public abstract class MemoryLogRecordsRowBuilder<T> implements AutoCloseable {
         }
 
         int recordByteSizes = writeRecord(changeType, row);
+        currentRecordNumber++;
+        sizeInBytes += recordByteSizes;
+    }
+
+    private void appendRecordWithRowId(ChangeType changeType, T row, long rowId)
+            throws IOException {
+        if (aborted) {
+            throw new IllegalStateException(
+                    "Tried to append a record, but "
+                            + getClass().getSimpleName()
+                            + " has already been aborted");
+        }
+        if (isClosed) {
+            throw new IllegalStateException(
+                    "Tried to append a record, but MemoryLogRecordsBuilder is closed for record appends");
+        }
+        if (appendOnly && changeType != ChangeType.APPEND_ONLY) {
+            throw new IllegalArgumentException(
+                    "Only append-only change type is allowed for append-only row log builder, but got "
+                            + changeType);
+        }
+
+        int recordByteSizes = writeRecordWithRowId(changeType, row, rowId);
         currentRecordNumber++;
         sizeInBytes += recordByteSizes;
     }

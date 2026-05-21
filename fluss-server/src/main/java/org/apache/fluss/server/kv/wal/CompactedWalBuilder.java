@@ -73,6 +73,21 @@ public class CompactedWalBuilder implements WalBuilder {
     }
 
     @Override
+    public void append(ChangeType changeType, InternalRow row, long rowId) throws Exception {
+        final CompactedRow compactedRow;
+        if (row instanceof CompactedRow) {
+            compactedRow = (CompactedRow) row;
+        } else {
+            rowEncoder.startNewRow();
+            for (int i = 0; i < fieldCount; i++) {
+                rowEncoder.encodeField(i, fieldGetters[i].getFieldOrNull(row));
+            }
+            compactedRow = rowEncoder.finishRow();
+        }
+        recordsBuilder.append(changeType, compactedRow, rowId);
+    }
+
+    @Override
     public MemoryLogRecords build() throws Exception {
         recordsBuilder.close();
         BytesView bytesView = recordsBuilder.build();

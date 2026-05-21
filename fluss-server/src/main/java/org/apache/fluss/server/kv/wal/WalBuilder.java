@@ -26,6 +26,11 @@ public interface WalBuilder {
 
     void append(ChangeType changeType, InternalRow row) throws Exception;
 
+    /** Append a record with a RowId (for DV-enabled tables). */
+    default void append(ChangeType changeType, InternalRow row, long rowId) throws Exception {
+        append(changeType, row);
+    }
+
     MemoryLogRecords build() throws Exception;
 
     void setWriterState(long writerId, int batchSequence);

@@ -74,4 +74,10 @@ public class MemoryLogRecordsCompactedBuilder extends MemoryLogRecordsRowBuilder
     protected int writeRecord(ChangeType changeType, CompactedRow row) throws IOException {
         return CompactedLogRecord.writeTo(pagedOutputView, changeType, row);
     }
+
+    @Override
+    protected int writeRecordWithRowId(ChangeType changeType, CompactedRow row, long rowId)
+            throws IOException {
+        return CompactedLogRecord.writeTo(pagedOutputView, changeType, row, rowId);
+    }
 }

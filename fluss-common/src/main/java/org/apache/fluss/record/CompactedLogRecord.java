@@ -26,11 +26,15 @@ import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.compacted.CompactedRow;
 import org.apache.fluss.row.compacted.CompactedRowDeserializer;
 import org.apache.fluss.row.compacted.CompactedRowWriter;
+import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.types.DataType;
 import org.apache.fluss.utils.MurmurHashUtils;
 
 import java.io.IOException;
 
+import static org.apache.fluss.record.IndexedLogRecord.readUnsignedVarLong;
+import static org.apache.fluss.record.IndexedLogRecord.varintSizeFromSegment;
+import static org.apache.fluss.record.IndexedLogRecord.writeUnsignedVarLong;
 import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_LENGTH;
 
 /**
@@ -67,6 +71,10 @@ public class CompactedLogRecord implements LogRecord {
     private MemorySegment segment;
     private int offset;
     private int sizeInBytes;
+
+    // DV support: RowId and the number of bytes consumed by its varint encoding
+    private long rowId = NO_ROW_ID;
+    private int rowIdSize = 0;
 
     CompactedLogRecord(long logOffset, long timestamp, DataType[] fieldTypes) {
         this.logOffset = logOffset;
@@ -119,8 +127,13 @@ public class CompactedLogRecord implements LogRecord {
     }
 
     @Override
+    public long getRowId() {
+        return rowId;
+    }
+
+    @Override
     public InternalRow getRow() {
-        int rowOffset = LENGTH_LENGTH + ATTRIBUTES_LENGTH;
+        int rowOffset = LENGTH_LENGTH + ATTRIBUTES_LENGTH + rowIdSize;
         return LogRecord.deserializeInternalRow(
                 sizeInBytes - rowOffset,
                 segment,
@@ -142,15 +155,47 @@ public class CompactedLogRecord implements LogRecord {
         return sizeInBytes + LENGTH_LENGTH;
     }
 
+    /** Write the record with a RowId (for DV-enabled tables) and return its size. */
+    public static int writeTo(
+            OutputView outputView, ChangeType changeType, CompactedRow row, long rowId)
+            throws IOException {
+        int varintSize = ValueEncoder.unsignedVarLongSize(rowId);
+        int sizeInBytes = ATTRIBUTES_LENGTH + varintSize + row.getSizeInBytes();
+        // write record total bytes size (excluding this int itself)
+        outputView.writeInt(sizeInBytes);
+        // write attributes
+        outputView.writeByte(changeType.toByteValue());
+        // write varint RowId
+        writeUnsignedVarLong(outputView, rowId);
+        // write row payload
+        CompactedRowWriter.serializeCompactedRow(row, outputView);
+        return sizeInBytes + LENGTH_LENGTH;
+    }
+
     public static CompactedLogRecord readFrom(
             MemorySegment segment,
             int position,
             long logOffset,
             long logTimestamp,
             DataType[] colTypes) {
+        return readFrom(segment, position, logOffset, logTimestamp, colTypes, false);
+    }
+
+    public static CompactedLogRecord readFrom(
+            MemorySegment segment,
+            int position,
+            long logOffset,
+            long logTimestamp,
+            DataType[] colTypes,
+            boolean dvEnabled) {
         int sizeInBytes = segment.getInt(position);
         CompactedLogRecord logRecord = new CompactedLogRecord(logOffset, logTimestamp, colTypes);
         logRecord.pointTo(segment, position, sizeInBytes + LENGTH_LENGTH);
+        if (dvEnabled) {
+            int rowIdOffset = position + LENGTH_LENGTH + ATTRIBUTES_LENGTH;
+            logRecord.rowId = readUnsignedVarLong(segment, rowIdOffset);
+            logRecord.rowIdSize = varintSizeFromSegment(segment, rowIdOffset);
+        }
         return logRecord;
     }
 

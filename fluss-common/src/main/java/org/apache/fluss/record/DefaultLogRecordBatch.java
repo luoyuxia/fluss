@@ -244,6 +244,8 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
         LogFormat logFormat = context.getLogFormat();
         RowType rowType = context.getRowType(schemaId);
 
+        boolean dvEnabled = context.isDvEnabled();
+
         switch (logFormat) {
             case ARROW:
                 return columnRecordIterator(
@@ -251,12 +253,13 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
                         context.getOutputProjectedRow(schemaId),
                         context.getVectorSchemaRoot(schemaId),
                         context.getBufferAllocator(),
-                        timestamp);
+                        timestamp,
+                        dvEnabled);
             case INDEXED:
                 return rowRecordIterator(
-                        rowType, context.getOutputProjectedRow(schemaId), timestamp);
+                        rowType, context.getOutputProjectedRow(schemaId), timestamp, dvEnabled);
             case COMPACTED:
-                return compactedRowRecordIterator(rowType, timestamp);
+                return compactedRowRecordIterator(rowType, timestamp, dvEnabled);
             default:
                 throw new IllegalArgumentException("Unsupported log format: " + logFormat);
         }
@@ -284,18 +287,26 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     private CloseableIterator<LogRecord> rowRecordIterator(
-            RowType rowType, @Nullable ProjectedRow outputProjection, long timestamp) {
+            RowType rowType,
+            @Nullable ProjectedRow outputProjection,
+            long timestamp,
+            boolean dvEnabled) {
         DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
         return new LogRecordIterator() {
             int position = DefaultLogRecordBatch.this.position + recordsDataOffset();
-            int rowId = 0;
+            int recordIdx = 0;
 
             @Override
             protected LogRecord readNext(long baseOffset) {
                 IndexedLogRecord logRecord =
                         IndexedLogRecord.readFrom(
-                                segment, position, baseOffset + rowId, timestamp, fieldTypes);
-                rowId++;
+                                segment,
+                                position,
+                                baseOffset + recordIdx,
+                                timestamp,
+                                fieldTypes,
+                                dvEnabled);
+                recordIdx++;
                 position += logRecord.getSizeInBytes();
                 if (outputProjection == null) {
                     return logRecord;
@@ -305,7 +316,8 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
                             logRecord.logOffset(),
                             logRecord.timestamp(),
                             logRecord.getChangeType(),
-                            outputProjection.replaceRow(logRecord.getRow()));
+                            outputProjection.replaceRow(logRecord.getRow()),
+                            logRecord.getRowId());
                 }
             }
 
@@ -320,18 +332,23 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     }
 
     private CloseableIterator<LogRecord> compactedRowRecordIterator(
-            RowType rowType, long timestamp) {
+            RowType rowType, long timestamp, boolean dvEnabled) {
         DataType[] fieldTypes = rowType.getChildren().toArray(new DataType[0]);
         return new LogRecordIterator() {
             int position = DefaultLogRecordBatch.this.position + recordsDataOffset();
-            int rowId = 0;
+            int recordIdx = 0;
 
             @Override
             protected LogRecord readNext(long baseOffset) {
                 CompactedLogRecord logRecord =
                         CompactedLogRecord.readFrom(
-                                segment, position, baseOffset + rowId, timestamp, fieldTypes);
-                rowId++;
+                                segment,
+                                position,
+                                baseOffset + recordIdx,
+                                timestamp,
+                                fieldTypes,
+                                dvEnabled);
+                recordIdx++;
                 position += logRecord.getSizeInBytes();
                 return logRecord;
             }
@@ -351,38 +368,67 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
             @Nullable ProjectedRow outputProjection,
             VectorSchemaRoot root,
             BufferAllocator allocator,
-            long timestamp) {
+            long timestamp,
+            boolean dvEnabled) {
         boolean isAppendOnly = (attributes() & APPEND_ONLY_FLAG_MASK) > 0;
         int recordsDataOffset = recordsDataOffset();
+        int numRecords = getRecordCount();
         if (isAppendOnly) {
             // append only batch, no change type vector,
             // the start of the arrow data is the beginning of the batch records
-            int arrowOffset = position + recordsDataOffset;
-            int arrowLength = sizeInBytes() - recordsDataOffset;
+            int dataOffset = position + recordsDataOffset;
+            // DV RowIdVector may follow (even for append-only batches in DV mode)
+            RowIdVector rowIdVector = null;
+            if (dvEnabled) {
+                rowIdVector = new RowIdVector(segment, dataOffset, numRecords);
+                dataOffset += rowIdVector.sizeInBytes();
+            }
+            int arrowLength = sizeInBytes() - (dataOffset - position);
             ArrowReader reader =
                     ArrowUtils.createArrowReader(
-                            segment, arrowOffset, arrowLength, root, allocator, rowType);
+                            segment, dataOffset, arrowLength, root, allocator, rowType);
+            RowIdVector finalRowIdVector = rowIdVector;
             return new ArrowLogRecordIterator(root, reader, timestamp, outputProjection) {
                 @Override
                 protected ChangeType getChangeType(int rowId) {
                     return ChangeType.APPEND_ONLY;
                 }
+
+                @Override
+                protected long getRecordRowId(int rowId) {
+                    return finalRowIdVector != null
+                            ? finalRowIdVector.getRowId(rowId)
+                            : LogRecord.NO_ROW_ID;
+                }
             };
         } else {
             // with change type, decode the change type vector first,
-            // the arrow data starts after the change type vector
+            // then optionally RowIdVector, then arrow data
             int changeTypeOffset = position + recordsDataOffset;
             ChangeTypeVector changeTypeVector =
-                    new ChangeTypeVector(segment, changeTypeOffset, getRecordCount());
-            int arrowOffset = changeTypeOffset + changeTypeVector.sizeInBytes();
-            int arrowLength = sizeInBytes() - recordsDataOffset - changeTypeVector.sizeInBytes();
+                    new ChangeTypeVector(segment, changeTypeOffset, numRecords);
+            int afterChangeTypes = changeTypeOffset + changeTypeVector.sizeInBytes();
+            RowIdVector rowIdVector = null;
+            if (dvEnabled) {
+                rowIdVector = new RowIdVector(segment, afterChangeTypes, numRecords);
+                afterChangeTypes += rowIdVector.sizeInBytes();
+            }
+            int arrowLength = sizeInBytes() - (afterChangeTypes - position);
             ArrowReader reader =
                     ArrowUtils.createArrowReader(
-                            segment, arrowOffset, arrowLength, root, allocator, rowType);
+                            segment, afterChangeTypes, arrowLength, root, allocator, rowType);
+            RowIdVector finalRowIdVector = rowIdVector;
             return new ArrowLogRecordIterator(root, reader, timestamp, outputProjection) {
                 @Override
                 protected ChangeType getChangeType(int rowId) {
                     return changeTypeVector.getChangeType(rowId);
+                }
+
+                @Override
+                protected long getRecordRowId(int rowId) {
+                    return finalRowIdVector != null
+                            ? finalRowIdVector.getRowId(rowId)
+                            : LogRecord.NO_ROW_ID;
                 }
             };
         }
@@ -409,6 +455,10 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
 
         protected abstract ChangeType getChangeType(int rowId);
 
+        protected long getRecordRowId(int rowId) {
+            return LogRecord.NO_ROW_ID;
+        }
+
         @Override
         public boolean hasNext() {
             return rowId < reader.getRowCount();
@@ -424,7 +474,8 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
                             getChangeType(rowId),
                             outputProjection == null
                                     ? originalRow
-                                    : outputProjection.replaceRow(originalRow));
+                                    : outputProjection.replaceRow(originalRow),
+                            getRecordRowId(rowId));
             rowId++;
             return record;
         }

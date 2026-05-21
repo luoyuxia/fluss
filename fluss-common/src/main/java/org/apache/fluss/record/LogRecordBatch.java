@@ -223,5 +223,13 @@ public interface LogRecordBatch {
          */
         @Nullable
         ProjectedRow getOutputProjectedRow(int schemaId);
+
+        /**
+         * Whether the table has deletion vectors enabled. When true, each changelog record carries
+         * a RowId (varint-encoded for Indexed/Compacted, fixed 8B for Arrow).
+         */
+        default boolean isDvEnabled() {
+            return false;
+        }
     }
 }

@@ -77,6 +77,10 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
     // Length of statistics bytes written directly to pagedOutputView (V1+)
     private int statisticsBytesLength = 0;
 
+    // DV support: buffered RowIds to be written as a RowIdVector in build()
+    private long[] rowIds;
+    private int rowIdCount = 0;
+
     private MemoryLogRecordsArrowBuilder(
             long baseLogOffset,
             int schemaId,
@@ -177,9 +181,11 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         int headerSize = recordBatchHeaderSize(magic);
         recordCount = arrowWriter.getRecordsCount();
         int changeTypeSize = changeTypeWriter.sizeInBytes();
+        boolean hasRowIds = rowIdCount > 0;
+        int rowIdVectorSize = hasRowIds ? rowIdCount * Long.BYTES : 0;
 
         // For V1+ with statistics, write everything sequentially to pagedOutputView:
-        // [header] [statistics] [changeTypes] [arrow data]
+        // [header] [statistics] [changeTypes] [rowIdVector?] [arrow data]
         // This makes CRC computation zero-copy over contiguous memory segments.
         if (magic >= LOG_MAGIC_VALUE_V1 && statisticsCollector != null && recordCount > 0) {
             // Save changeType bytes before they get overwritten. The changeType data lives
@@ -207,13 +213,28 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             // Write saved changeType bytes to pagedOutputView
             pagedOutputView.write(changeTypeBytes);
 
+            // Write RowIdVector if present
+            if (hasRowIds) {
+                writeRowIdVector(pagedOutputView);
+            }
+
             // Write arrow data to pagedOutputView at current position.
             // Use the no-position overload since pages may have advanced.
             arrowWriter.serializeToOutputView(pagedOutputView);
         } else {
-            // V0 path or no stats: layout is [header] [changeTypes] [arrow data]
+            // V0 path or no stats: layout is [header] [changeTypes] [rowIdVector?] [arrow data]
             // changeTypes are already in firstSegment at headerSize offset
-            arrowWriter.serializeToOutputView(pagedOutputView, headerSize + changeTypeSize);
+            if (hasRowIds) {
+                // Save changeType bytes, then write changeTypes + RowIdVector + arrow
+                byte[] changeTypeBytes = new byte[changeTypeSize];
+                firstSegment.get(headerSize, changeTypeBytes, 0, changeTypeSize);
+                pagedOutputView.setPosition(headerSize);
+                pagedOutputView.write(changeTypeBytes);
+                writeRowIdVector(pagedOutputView);
+                arrowWriter.serializeToOutputView(pagedOutputView);
+            } else {
+                arrowWriter.serializeToOutputView(pagedOutputView, headerSize + changeTypeSize);
+            }
         }
 
         // Reset the statistics collector for reuse
@@ -267,6 +288,24 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             statisticsCollector.processRow(row);
         }
         reCalculateSizeInBytes = true;
+    }
+
+    /**
+     * Append a record with a RowId (for DV-enabled tables). The RowId will be stored as part of a
+     * RowIdVector in the batch.
+     */
+    public void append(ChangeType changeType, InternalRow row, long rowId) throws Exception {
+        append(changeType, row);
+        // Buffer the RowId for writing in build()
+        if (rowIds == null) {
+            rowIds = new long[16];
+        }
+        if (rowIdCount >= rowIds.length) {
+            long[] newArray = new long[rowIds.length * 2];
+            System.arraycopy(rowIds, 0, newArray, 0, rowIds.length);
+            rowIds = newArray;
+        }
+        rowIds[rowIdCount++] = rowId;
     }
 
     public long writerId() {
@@ -325,6 +364,7 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
             estimatedSizeInBytes =
                     recordBatchHeaderSize(magic)
                             + changeTypeWriter.sizeInBytes()
+                            + rowIdCount * Long.BYTES
                             + arrowWriter.estimatedSizeInBytes();
             // For V1+, add estimated statistics size (placed between header and records)
             if (magic >= LOG_MAGIC_VALUE_V1 && statisticsCollector != null) {
@@ -390,6 +430,13 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         long crc = Crc32C.compute(pagedOutputView.getWrittenSegments(), schemaIdOffset(magic));
         outputView.setPosition(crcOffset(magic));
         outputView.writeUnsignedInt(crc);
+    }
+
+    /** Write the buffered RowId values as a RowIdVector (fixed 8B per record, big-endian long). */
+    private void writeRowIdVector(AbstractPagedOutputView outputView) throws IOException {
+        for (int i = 0; i < rowIdCount; i++) {
+            outputView.writeLong(rowIds[i]);
+        }
     }
 
     @VisibleForTesting

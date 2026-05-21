@@ -41,6 +41,14 @@ public class BinaryValue {
         return ValueEncoder.encodeValue(schemaId, row);
     }
 
+    /**
+     * Encode the value with a RowId prefix for DV-enabled tables. The format is: {@code [RowId
+     * (varint)][SchemaId (2B)][BinaryRow (variable)]}.
+     */
+    public byte[] encodeValueWithRowId(long rowId) {
+        return ValueEncoder.encodeValueWithRowId(schemaId, row, rowId);
+    }
+
     @Override
     public boolean equals(Object o) {
         if (o == null || getClass() != o.getClass()) {

@@ -62,6 +62,19 @@ public interface LogRecord {
      */
     InternalRow getRow();
 
+    /** Sentinel value indicating the record does not carry a RowId. */
+    long NO_ROW_ID = -1L;
+
+    /**
+     * Get the RowId carried by this record. For DV-enabled tables, every changelog record carries a
+     * RowId. For non-DV tables, this returns {@link #NO_ROW_ID}.
+     *
+     * @return the RowId, or {@link #NO_ROW_ID} if not present
+     */
+    default long getRowId() {
+        return NO_ROW_ID;
+    }
+
     /** Deserialize the row in the log record according to given log format. */
     static InternalRow deserializeInternalRow(
             int length,

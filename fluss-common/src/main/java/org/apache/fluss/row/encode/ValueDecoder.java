@@ -52,19 +52,40 @@ public class ValueDecoder {
         MemorySegment memorySegment = MemorySegment.wrap(valueBytes);
         short schemaId = memorySegment.getShort(0);
 
-        RowDecoder rowDecoder =
-                rowDecoders.computeIfAbsent(
-                        schemaId,
-                        (id) -> {
-                            Schema schema = schemaGetter.getSchema(schemaId);
-                            return RowDecoder.create(
-                                    kvFormat,
-                                    schema.getRowType().getChildren().toArray(new DataType[0]));
-                        });
+        RowDecoder rowDecoder = getOrCreateRowDecoder(schemaId);
 
         BinaryRow row =
                 rowDecoder.decode(
                         memorySegment, SCHEMA_ID_LENGTH, valueBytes.length - SCHEMA_ID_LENGTH);
         return new BinaryValue(schemaId, row);
+    }
+
+    /**
+     * Decode the value bytes from a DV-enabled table, skipping the varint RowId prefix. The format
+     * is: {@code [RowId (varint)][SchemaId (2B)][BinaryRow (variable)]}.
+     */
+    public BinaryValue decodeValueSkippingRowId(byte[] valueBytes) {
+        int rowIdLen = ValueEncoder.rowIdVarIntSize(valueBytes);
+        MemorySegment memorySegment = MemorySegment.wrap(valueBytes);
+        short schemaId = memorySegment.getShort(rowIdLen);
+
+        RowDecoder rowDecoder = getOrCreateRowDecoder(schemaId);
+
+        BinaryRow row =
+                rowDecoder.decode(
+                        memorySegment,
+                        rowIdLen + SCHEMA_ID_LENGTH,
+                        valueBytes.length - rowIdLen - SCHEMA_ID_LENGTH);
+        return new BinaryValue(schemaId, row);
+    }
+
+    private RowDecoder getOrCreateRowDecoder(short schemaId) {
+        return rowDecoders.computeIfAbsent(
+                schemaId,
+                (id) -> {
+                    Schema schema = schemaGetter.getSchema(schemaId);
+                    return RowDecoder.create(
+                            kvFormat, schema.getRowType().getChildren().toArray(new DataType[0]));
+                });
     }
 }

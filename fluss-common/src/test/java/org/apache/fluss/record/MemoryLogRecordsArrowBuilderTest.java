@@ -45,6 +45,8 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -646,6 +648,153 @@ public class MemoryLogRecordsArrowBuilderTest {
 
         // Close read context
         readContext.close();
+    }
+
+    @Test
+    void testAppendWithRowId() throws Exception {
+        ArrowWriter writer =
+                provider.getOrCreateWriter(
+                        1L, DEFAULT_SCHEMA_ID, 1024 * 10, DATA1_ROW_TYPE, NO_COMPRESSION);
+
+        LogRecordBatchStatisticsCollector statisticsCollector =
+                new LogRecordBatchStatisticsCollector(
+                        writer.getSchema(), createAllColumnsStatsMapping(writer.getSchema()));
+
+        MemoryLogRecordsArrowBuilder builder =
+                MemoryLogRecordsArrowBuilder.builder(
+                        0,
+                        CURRENT_LOG_MAGIC_VALUE,
+                        DEFAULT_SCHEMA_ID,
+                        writer,
+                        new ManagedPagedOutputView(new TestingMemorySegmentPool(1024 * 10)),
+                        statisticsCollector);
+
+        // Append records with RowIds
+        long[] rowIds = {100L, 200L, 300L};
+        List<Object[]> testData =
+                Arrays.asList(new Object[] {1, "a"}, new Object[] {2, "b"}, new Object[] {3, "c"});
+        List<ChangeType> changeTypes =
+                Arrays.asList(ChangeType.INSERT, ChangeType.UPDATE_BEFORE, ChangeType.UPDATE_AFTER);
+
+        for (int i = 0; i < testData.size(); i++) {
+            builder.append(changeTypes.get(i), row(testData.get(i)), rowIds[i]);
+        }
+
+        builder.setWriterState(1L, 0);
+        builder.close();
+
+        MemoryLogRecords records = MemoryLogRecords.pointToBytesView(builder.build());
+        LogRecordBatch batch = records.batches().iterator().next();
+        assertThat(batch.getRecordCount()).isEqualTo(testData.size());
+
+        // Create a DV-enabled read context by wrapping the base context
+        LogRecordReadContext baseContext =
+                LogRecordReadContext.createArrowReadContext(
+                        DATA1_ROW_TYPE, DEFAULT_SCHEMA_ID, TEST_SCHEMA_GETTER);
+        LogRecordBatch.ReadContext dvContext = new DvEnabledReadContext(baseContext);
+
+        try (CloseableIterator<LogRecord> iter = batch.records(dvContext)) {
+            int idx = 0;
+            while (iter.hasNext()) {
+                LogRecord record = iter.next();
+                assertThat(record.getChangeType()).isEqualTo(changeTypes.get(idx));
+                assertThat(record.getRowId()).isEqualTo(rowIds[idx]);
+                assertThat(record.getRow().getInt(0)).isEqualTo((int) testData.get(idx)[0]);
+                assertThat(record.getRow().getString(1).toString()).isEqualTo(testData.get(idx)[1]);
+                idx++;
+            }
+            assertThat(idx).isEqualTo(testData.size());
+        }
+        baseContext.close();
+    }
+
+    @Test
+    void testAppendWithoutRowIdReturnsNoRowId() throws Exception {
+        ArrowWriter writer =
+                provider.getOrCreateWriter(
+                        1L, DEFAULT_SCHEMA_ID, 1024 * 10, DATA1_ROW_TYPE, NO_COMPRESSION);
+
+        LogRecordBatchStatisticsCollector statisticsCollector =
+                new LogRecordBatchStatisticsCollector(
+                        writer.getSchema(), createAllColumnsStatsMapping(writer.getSchema()));
+
+        MemoryLogRecordsArrowBuilder builder =
+                MemoryLogRecordsArrowBuilder.builder(
+                        0,
+                        CURRENT_LOG_MAGIC_VALUE,
+                        DEFAULT_SCHEMA_ID,
+                        writer,
+                        new ManagedPagedOutputView(new TestingMemorySegmentPool(1024 * 10)),
+                        statisticsCollector);
+
+        // Append records WITHOUT RowIds (non-DV)
+        List<Object[]> testData = Arrays.asList(new Object[] {1, "a"}, new Object[] {2, "b"});
+        for (Object[] data : testData) {
+            builder.append(ChangeType.INSERT, row(data));
+        }
+
+        builder.setWriterState(1L, 0);
+        builder.close();
+
+        MemoryLogRecords records = MemoryLogRecords.pointToBytesView(builder.build());
+        LogRecordBatch batch = records.batches().iterator().next();
+
+        // Read without DV (default context)
+        LogRecordReadContext baseContext =
+                LogRecordReadContext.createArrowReadContext(
+                        DATA1_ROW_TYPE, DEFAULT_SCHEMA_ID, TEST_SCHEMA_GETTER);
+        try (CloseableIterator<LogRecord> iter = batch.records(baseContext)) {
+            while (iter.hasNext()) {
+                LogRecord record = iter.next();
+                assertThat(record.getRowId()).isEqualTo(LogRecord.NO_ROW_ID);
+            }
+        }
+        baseContext.close();
+    }
+
+    /**
+     * A wrapper ReadContext that enables DV (isDvEnabled() returns true) while delegating all other
+     * methods to the wrapped context.
+     */
+    private static class DvEnabledReadContext implements LogRecordBatch.ReadContext {
+        private final LogRecordReadContext delegate;
+
+        DvEnabledReadContext(LogRecordReadContext delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public org.apache.fluss.metadata.LogFormat getLogFormat() {
+            return delegate.getLogFormat();
+        }
+
+        @Override
+        public RowType getRowType(int schemaId) {
+            return delegate.getRowType(schemaId);
+        }
+
+        @Override
+        public org.apache.fluss.shaded.arrow.org.apache.arrow.vector.VectorSchemaRoot
+                getVectorSchemaRoot(int schemaId) {
+            return delegate.getVectorSchemaRoot(schemaId);
+        }
+
+        @Override
+        public org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator
+                getBufferAllocator() {
+            return delegate.getBufferAllocator();
+        }
+
+        @Nullable
+        @Override
+        public org.apache.fluss.row.ProjectedRow getOutputProjectedRow(int schemaId) {
+            return delegate.getOutputProjectedRow(schemaId);
+        }
+
+        @Override
+        public boolean isDvEnabled() {
+            return true;
+        }
     }
 
     private static List<ArrowCompressionInfo> compressionInfos() {

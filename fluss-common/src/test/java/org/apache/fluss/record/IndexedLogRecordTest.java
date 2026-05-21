@@ -18,6 +18,7 @@
 package org.apache.fluss.record;
 
 import org.apache.fluss.memory.MemorySegment;
+import org.apache.fluss.memory.MemorySegmentOutputView;
 import org.apache.fluss.row.BinaryString;
 import org.apache.fluss.row.TestInternalRowGenerator;
 import org.apache.fluss.row.indexed.IndexedRow;
@@ -32,6 +33,92 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link IndexedLogRecord}. */
 class IndexedLogRecordTest extends LogTestBase {
+
+    @Test
+    void testWriteToAndReadFromWithRowId() throws IOException {
+        DataType[] fieldTypes = baseRowType.getChildren().toArray(new DataType[0]);
+        IndexedRow row = new IndexedRow(fieldTypes);
+        IndexedRowWriter writer =
+                new IndexedRowWriter(baseRowType.getChildren().toArray(new DataType[0]));
+        writer.writeInt(10);
+        writer.writeString(BinaryString.fromString("abc"));
+        row.pointTo(writer.segment(), 0, writer.position());
+
+        long rowId = 12345L;
+        IndexedLogRecord.writeTo(outputView, ChangeType.INSERT, row, rowId);
+
+        IndexedLogRecord logRecord =
+                IndexedLogRecord.readFrom(
+                        MemorySegment.wrap(outputView.getCopyOfBuffer()),
+                        0,
+                        1000,
+                        10001,
+                        fieldTypes,
+                        true);
+
+        assertThat(logRecord.logOffset()).isEqualTo(1000);
+        assertThat(logRecord.timestamp()).isEqualTo(10001);
+        assertThat(logRecord.getChangeType()).isEqualTo(ChangeType.INSERT);
+        assertThat(logRecord.getRowId()).isEqualTo(rowId);
+        // getRow() must not include RowId bytes
+        assertThat(logRecord.getRow()).isEqualTo(row);
+    }
+
+    @Test
+    void testWriteToAndReadFromWithRowIdBoundaryValues() throws IOException {
+        DataType[] fieldTypes = baseRowType.getChildren().toArray(new DataType[0]);
+        long[] rowIds = {0L, 127L, 128L, 16383L, 16384L, 2097151L, Long.MAX_VALUE};
+
+        for (long rowId : rowIds) {
+            MemorySegmentOutputView view = new MemorySegmentOutputView(200);
+            IndexedRow row = new IndexedRow(fieldTypes);
+            IndexedRowWriter writer =
+                    new IndexedRowWriter(baseRowType.getChildren().toArray(new DataType[0]));
+            writer.writeInt(7);
+            writer.writeString(BinaryString.fromString("x"));
+            row.pointTo(writer.segment(), 0, writer.position());
+
+            IndexedLogRecord.writeTo(view, ChangeType.UPDATE_AFTER, row, rowId);
+
+            IndexedLogRecord logRecord =
+                    IndexedLogRecord.readFrom(
+                            MemorySegment.wrap(view.getCopyOfBuffer()),
+                            0,
+                            500,
+                            9999,
+                            fieldTypes,
+                            true);
+
+            assertThat(logRecord.getRowId()).isEqualTo(rowId);
+            assertThat(logRecord.getRow()).isEqualTo(row);
+        }
+    }
+
+    @Test
+    void testReadFromWithoutDvReturnsNoRowId() throws IOException {
+        DataType[] fieldTypes = baseRowType.getChildren().toArray(new DataType[0]);
+        IndexedRow row = new IndexedRow(fieldTypes);
+        IndexedRowWriter writer =
+                new IndexedRowWriter(baseRowType.getChildren().toArray(new DataType[0]));
+        writer.writeInt(10);
+        writer.writeString(BinaryString.fromString("abc"));
+        row.pointTo(writer.segment(), 0, writer.position());
+
+        // write without RowId (non-DV format)
+        IndexedLogRecord.writeTo(outputView, ChangeType.APPEND_ONLY, row);
+
+        IndexedLogRecord logRecord =
+                IndexedLogRecord.readFrom(
+                        MemorySegment.wrap(outputView.getCopyOfBuffer()),
+                        0,
+                        1000,
+                        10001,
+                        fieldTypes,
+                        false);
+
+        assertThat(logRecord.getRowId()).isEqualTo(LogRecord.NO_ROW_ID);
+        assertThat(logRecord.getRow()).isEqualTo(row);
+    }
 
     @Test
     void testBase() throws IOException {

@@ -790,7 +790,66 @@ TieringService 写入 L0 后显式触发 full compaction 并等待完成。
   - **自行 compaction 模式**：TieringService 在写入后触发 full compaction，确保 L0 数据立即合并到底层
   - **外部 compaction 模式**：配置独立的 compact job，确保其执行频率与 tiering 频率匹配，避免 L0 文件积压导致 TieringService 长时间等待
 
-### 10.5 前置条件：FULL Changelog 模式
+### 10.5 DV 开关：`table.deletion-vectors.enabled`
+
+DV 支持通过 Fluss 表级配置项 **`table.deletion-vectors.enabled`** 控制，默认 **关闭**。
+
+```sql
+CREATE TABLE my_table (
+  ...
+) WITH (
+  'table.datalake.enabled' = 'true',
+  'table.deletion-vectors.enabled' = 'true'         -- 显式开启 DV 支持
+);
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `table.deletion-vectors.enabled` | Boolean | `false` | 是否为该表开启 Deletion Vector 支持 |
+
+**该配置必须在建表时设置，不支持动态开启**：
+
+DV 开启后会改变 KV State Value 的存储格式（嵌入 RowId）和 Changelog 记录格式（携带 oldRowId）。如果在表运行后动态开启：
+
+- 已有的 KV State 数据不包含 RowId，无法回溯补全
+- 已下沉到 Paimon 的数据文件不包含 `__rowid` 列，无法建立 RowId → FilePos 映射
+- RowPosIndex 缺少历史行的位置信息，DV 逻辑无法正确运行
+
+因此 `table.deletion-vectors.enabled` 是**建表时不可变属性**，建表后不允许通过 ALTER TABLE 修改。
+
+**为什么不默认开启**：
+
+DV 支持会带来额外的运行时开销：
+
+1. **存储开销**：每个 bucket 在 TabletServer 上维护独立的 DvRocksDB 实例（RowPosIndex, LakeDv, LogDv, FileDict, PendingDeletes 五个 CF）
+2. **写入开销**：每次 `-U`/`-D` changelog 同步后需要额外的 DvManager 处理（RowPosIndex 查询、LakeDv 标记、PendingDeletes 写入）
+3. **KV State 开销**：value 中嵌入 RowId，增加存储和编解码成本
+4. **Tiering 开销**：compaction 后的文件扫描（读取 `__rowid` 列）、SST 生成和上传、Prepare/Switch 多阶段协调
+5. **Union Read 开销**：额外的 LakeDv + LogDv 查询和过滤
+
+对于不需要跨层去重的场景（如追加写入的日志表、不频繁更新的维表），这些开销是不必要的。
+
+**开启条件**（建表时校验）：
+
+- 表必须是 **主键表**（有 primary key）
+- 表必须开启 **datalake**（`table.datalake.enabled = true`）
+- 表必须使用 **FULL changelog mode**（详见 §10.6）
+
+**行为差异**：
+
+| 组件 | `table.deletion-vectors.enabled = false` | `table.deletion-vectors.enabled = true` |
+|------|---------------------------|--------------------------|
+| KV State Value | 不含 RowId | 包含 RowId |
+| Changelog | 不含 oldRowId | -U/-D 携带 oldRowId |
+| TabletServer | 无 DvRocksDB | 维护 DvRocksDB + DvManager |
+| Tiering 写入 | 全量写入 Paimon | 写入含 `__rowid`，跳过 `-U`，写 `-D` DELETE |
+| Tiering Pipeline | 写入即完成 | Phase A1 → A2 → A3 → Prepare → Switch |
+| Readable Snapshot | 每个 snapshot 即 readable | 仅 COMPACT snapshot 为 readable |
+| Union Read | Paimon 数据 + changelog 简单合并 | 三层 DV 过滤（Paimon DV + LakeDv + LogDv） |
+
+> **与 `paimon.deletion-vectors.enabled` 的关系**：`paimon.deletion-vectors.enabled` 是 Paimon 侧的配置，控制 Paimon 是否在 compaction 时生成 DV 文件。`table.deletion-vectors.enabled` 是 Fluss 侧的配置，控制 Fluss 是否维护三层 DV 架构。两者独立但通常一起使用——当 `table.deletion-vectors.enabled = true` 时，建议同时设置 `paimon.deletion-vectors.enabled = true`，使 Paimon compaction 生成 DV 文件以加速查询。
+
+### 10.6 前置条件：FULL Changelog 模式
 
 与 Iceberg 方案相同。DV 要求主键表使用 **FULL changelog mode**。详见 Iceberg 版设计文档 §10.5。
 
@@ -818,7 +877,8 @@ TieringService 写入 L0 后显式触发 full compaction 并等待完成。
 | **并发控制** | DvRWLock 读写锁 | 无变化 |
 | **Union Read** | 三层 DV 应用 | 无变化 |
 | **Recovery** | 恢复时跳过 oldFiles LakeDv 清理；冗余条目下一轮消除 | Iceberg 恢复时跳过 bitmap diff；冗余条目下一轮消除 |
-| **前置条件** | FULL changelog 模式 | 无变化 |
+| **DV 开关** | `table.deletion-vectors.enabled`（默认关闭），显式开启后才启用三层 DV 架构 | 无变化 |
+| **前置条件** | FULL changelog 模式 + `table.deletion-vectors.enabled = true` | 无变化 |
 
 ---
 

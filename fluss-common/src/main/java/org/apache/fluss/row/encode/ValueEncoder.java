@@ -38,4 +38,80 @@ public class ValueEncoder {
         row.copyTo(values, SCHEMA_ID_LENGTH);
         return values;
     }
+
+    /**
+     * Encode the {@code row} with a {@code schemaId} and a {@code rowId} to a byte array value.
+     * Used for DV-enabled tables. The format is: {@code [RowId (varint)][SchemaId (2B)][BinaryRow
+     * (variable)]}.
+     *
+     * @param schemaId the schema id of the row
+     * @param row the row to encode
+     * @param rowId the RowId (log offset of the +I/+U record) to embed
+     */
+    public static byte[] encodeValueWithRowId(short schemaId, BinaryRow row, long rowId) {
+        int varintLen = unsignedVarLongSize(rowId);
+        byte[] values = new byte[varintLen + SCHEMA_ID_LENGTH + row.getSizeInBytes()];
+        int offset = putUnsignedVarLong(values, 0, rowId);
+        UnsafeUtils.putShort(values, offset, schemaId);
+        row.copyTo(values, offset + SCHEMA_ID_LENGTH);
+        return values;
+    }
+
+    /**
+     * Extract the RowId from the beginning of a DV-enabled value byte array. The RowId is stored as
+     * an unsigned varint prefix.
+     */
+    public static long extractRowId(byte[] valueBytes) {
+        return getUnsignedVarLong(valueBytes, 0);
+    }
+
+    /**
+     * Return the number of bytes occupied by the varint-encoded RowId at the start of the given
+     * value byte array.
+     */
+    public static int rowIdVarIntSize(byte[] valueBytes) {
+        int pos = 0;
+        while ((valueBytes[pos] & 0x80) != 0) {
+            pos++;
+        }
+        return pos + 1;
+    }
+
+    // ---- Unsigned varint (LEB128) encoding/decoding ----
+
+    /** Compute the number of bytes needed to encode the given long as an unsigned varint. */
+    public static int unsignedVarLongSize(long value) {
+        int size = 1;
+        while ((value & 0xFFFFFFFFFFFFFF80L) != 0) {
+            size++;
+            value >>>= 7;
+        }
+        return size;
+    }
+
+    /**
+     * Write the given long as an unsigned varint into the byte array at the given offset. Returns
+     * the new offset after writing.
+     */
+    static int putUnsignedVarLong(byte[] buf, int offset, long value) {
+        while ((value & 0xFFFFFFFFFFFFFF80L) != 0) {
+            buf[offset++] = (byte) ((value & 0x7F) | 0x80);
+            value >>>= 7;
+        }
+        buf[offset++] = (byte) (value & 0x7F);
+        return offset;
+    }
+
+    /** Read an unsigned varint-encoded long from the byte array starting at the given offset. */
+    static long getUnsignedVarLong(byte[] buf, int offset) {
+        long result = 0;
+        int shift = 0;
+        byte b;
+        do {
+            b = buf[offset++];
+            result |= (long) (b & 0x7F) << shift;
+            shift += 7;
+        } while ((b & 0x80) != 0);
+        return result;
+    }
 }
