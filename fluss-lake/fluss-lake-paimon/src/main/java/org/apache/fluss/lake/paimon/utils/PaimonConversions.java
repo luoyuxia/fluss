@@ -18,6 +18,8 @@
 package org.apache.fluss.lake.paimon.utils;
 
 import org.apache.fluss.annotation.VisibleForTesting;
+import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.lake.paimon.source.FlussRowAsPaimonRow;
@@ -230,6 +232,18 @@ public class PaimonConversions {
         tableDescriptor
                 .getCustomProperties()
                 .forEach((k, v) -> setFlussPropertyToPaimon(k, v, options));
+        // Fluss DV doesn't support toggle after creation, so Paimon DV must be consistent
+        Configuration flussConf = Configuration.fromMap(tableDescriptor.getProperties());
+        boolean flussDvEnabled = flussConf.get(ConfigOptions.TABLE_DELETION_VECTORS_ENABLED);
+        boolean paimonDvEnabled = options.get(CoreOptions.DELETION_VECTORS_ENABLED);
+        if (flussDvEnabled && !paimonDvEnabled) {
+            options.set(CoreOptions.DELETION_VECTORS_ENABLED, true);
+        } else if (!flussDvEnabled && paimonDvEnabled) {
+            throw new InvalidConfigException(
+                    "'paimon.deletion-vectors.enabled' requires 'table.deletion-vectors.enabled' = true. "
+                            + "Fluss must maintain the three-layer DV architecture for Paimon DV to work.");
+        }
+
         schemaBuilder.options(options.toMap());
 
         // currently we only support string type, todo

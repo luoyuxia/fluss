@@ -127,6 +127,7 @@ public class TableDescriptorValidation {
         checkSystemColumns(schema.getRowType());
         validateStatisticsConfig(tableDescriptor);
         checkTableLakeFormatMatchesCluster(tableConf, clusterDataLakeFormat);
+        checkDeletionVectors(tableDescriptor, tableConf);
     }
 
     private static void checkTableLakeFormatMatchesCluster(
@@ -150,6 +151,31 @@ public class TableDescriptorValidation {
                             ConfigOptions.DATALAKE_FORMAT.key(),
                             clusterDataLakeFormat,
                             ConfigOptions.TABLE_DATALAKE_ENABLED.key()));
+        }
+    }
+
+    private static void checkDeletionVectors(
+            TableDescriptor tableDescriptor, Configuration tableConf) {
+        if (!tableConf.get(ConfigOptions.TABLE_DELETION_VECTORS_ENABLED)) {
+            return;
+        }
+
+        if (!tableDescriptor.hasPrimaryKey()) {
+            throw new InvalidConfigException(
+                    "'table.deletion-vectors.enabled' can only be enabled on primary key tables.");
+        }
+
+        if (!tableConf.get(ConfigOptions.TABLE_DATALAKE_ENABLED)) {
+            throw new InvalidConfigException(
+                    "'table.deletion-vectors.enabled' requires 'table.datalake.enabled' = true.");
+        }
+
+        ChangelogImage changelogImage = tableConf.get(ConfigOptions.TABLE_CHANGELOG_IMAGE);
+        if (changelogImage != ChangelogImage.FULL) {
+            throw new InvalidConfigException(
+                    "'table.deletion-vectors.enabled' requires FULL changelog image mode. "
+                            + "Please set 'table.changelog.image' to 'FULL' or remove the setting "
+                            + "(FULL is the default).");
         }
     }
 

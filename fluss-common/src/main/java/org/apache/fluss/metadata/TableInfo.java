@@ -18,6 +18,7 @@
 package org.apache.fluss.metadata;
 
 import org.apache.fluss.annotation.PublicEvolving;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.StatisticsColumnsConfig;
 import org.apache.fluss.config.TableConfig;
@@ -240,6 +241,11 @@ public final class TableInfo {
      */
     public boolean isStatisticsEnabled() {
         return tableConfig.isStatisticsEnabled();
+    }
+
+    /** Returns true if deletion vectors is enabled for this table. */
+    public boolean isDeletionVectorsEnabled() {
+        return properties.get(ConfigOptions.TABLE_DELETION_VECTORS_ENABLED);
     }
 
     /**

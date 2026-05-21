@@ -1601,6 +1601,21 @@ public class ConfigOptions {
                     .withDescription(
                             "If true, snapshot expiration will be triggered automatically when tiering service commits to the datalake. It is disabled by default.");
 
+    public static final ConfigOption<Boolean> TABLE_DELETION_VECTORS_ENABLED =
+            key("table.deletion-vectors.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to enable Deletion Vector support for the table. "
+                                    + "Must be set at table creation time and cannot be changed afterwards. "
+                                    + "When enabled, Fluss maintains a three-layer DV architecture "
+                                    + "(Lake DV + Log DV + Paimon DV) for instant cross-layer deduplication "
+                                    + "during union reads. Disabled by default as it introduces additional "
+                                    + "storage, write path, and tiering overhead. "
+                                    + "Requires: primary key table, "
+                                    + "'table.datalake.enabled' = true, "
+                                    + "and FULL changelog image mode.");
+
     public static final ConfigOption<MergeEngineType> TABLE_MERGE_ENGINE =
             key("table.merge-engine")
                     .enumType(MergeEngineType.class)
