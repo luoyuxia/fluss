@@ -71,15 +71,16 @@ class RowPosSstUploadDownloadTest {
         }
 
         // Upload
+        long snapshotId = 100L;
         RowPosSstUploader uploader = new RowPosSstUploader(remoteDir);
         Map<Integer, RowPosSstUploader.BucketSstData> bucketSstMap = new HashMap<>();
         bucketSstMap.put(0, new RowPosSstUploader.BucketSstData(localSstDir, metas));
-        String roundUuid = uploader.uploadRound(bucketSstMap);
+        uploader.upload(snapshotId, bucketSstMap);
 
         // Download to a different local directory
         String downloadDir = tempDir.resolve("download").toString();
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
-        List<String> localPaths = downloader.downloadBucketSst(roundUuid, 0, downloadDir);
+        List<String> localPaths = downloader.downloadBucketSst(snapshotId, 0, downloadDir);
 
         assertThat(localPaths).hasSize(1);
 
@@ -118,17 +119,18 @@ class RowPosSstUploadDownloadTest {
                                             100L, new FilePos(5, 500L))));
         }
 
-        // Upload both buckets in one round
+        // Upload both buckets
+        long snapshotId = 200L;
         RowPosSstUploader uploader = new RowPosSstUploader(remoteDir);
         Map<Integer, RowPosSstUploader.BucketSstData> bucketSstMap = new HashMap<>();
         bucketSstMap.put(0, new RowPosSstUploader.BucketSstData(localSstDir0, metas0));
         bucketSstMap.put(1, new RowPosSstUploader.BucketSstData(localSstDir1, metas1));
-        String roundUuid = uploader.uploadRound(bucketSstMap);
+        uploader.upload(snapshotId, bucketSstMap);
 
         // Download and verify bucket 0
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String downloadDir0 = tempDir.resolve("download_0").toString();
-        List<String> paths0 = downloader.downloadBucketSst(roundUuid, 0, downloadDir0);
+        List<String> paths0 = downloader.downloadBucketSst(snapshotId, 0, downloadDir0);
         assertThat(paths0).hasSize(1);
 
         dvRocksDB.rowPosIndex().ingestExternalFile(paths0);
@@ -137,7 +139,7 @@ class RowPosSstUploadDownloadTest {
 
         // Download and verify bucket 1
         String downloadDir1 = tempDir.resolve("download_1").toString();
-        List<String> paths1 = downloader.downloadBucketSst(roundUuid, 1, downloadDir1);
+        List<String> paths1 = downloader.downloadBucketSst(snapshotId, 1, downloadDir1);
         assertThat(paths1).hasSize(1);
 
         dvRocksDB.rowPosIndex().ingestExternalFile(paths1);
@@ -148,7 +150,7 @@ class RowPosSstUploadDownloadTest {
     void testBucketWithNoSst() throws Exception {
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
 
-        // Upload round with only bucket 0
+        // Upload with only bucket 0
         String localSstDir = tempDir.resolve("local_sst").toString();
         new File(localSstDir).mkdirs();
         List<RowPosSstFileWriter.SstFileMeta> metas;
@@ -159,15 +161,16 @@ class RowPosSstUploadDownloadTest {
                                     new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(1, 10L))));
         }
 
+        long snapshotId = 300L;
         RowPosSstUploader uploader = new RowPosSstUploader(remoteDir);
         Map<Integer, RowPosSstUploader.BucketSstData> bucketSstMap = new HashMap<>();
         bucketSstMap.put(0, new RowPosSstUploader.BucketSstData(localSstDir, metas));
-        String roundUuid = uploader.uploadRound(bucketSstMap);
+        uploader.upload(snapshotId, bucketSstMap);
 
         // Try to download non-existing bucket 99
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String downloadDir = tempDir.resolve("download").toString();
-        List<String> paths = downloader.downloadBucketSst(roundUuid, 99, downloadDir);
+        List<String> paths = downloader.downloadBucketSst(snapshotId, 99, downloadDir);
         assertThat(paths).isEmpty();
     }
 
@@ -175,7 +178,7 @@ class RowPosSstUploadDownloadTest {
     void testIndexReadAfterUpload() throws Exception {
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
 
-        // Upload round with buckets 0 and 2
+        // Upload with buckets 0 and 2
         String localSstDir0 = tempDir.resolve("local_sst_0").toString();
         new File(localSstDir0).mkdirs();
         List<RowPosSstFileWriter.SstFileMeta> metas0;
@@ -198,15 +201,16 @@ class RowPosSstUploadDownloadTest {
                                             20L, new FilePos(2, 200L))));
         }
 
+        long snapshotId = 400L;
         RowPosSstUploader uploader = new RowPosSstUploader(remoteDir);
         Map<Integer, RowPosSstUploader.BucketSstData> bucketSstMap = new HashMap<>();
         bucketSstMap.put(0, new RowPosSstUploader.BucketSstData(localSstDir0, metas0));
         bucketSstMap.put(2, new RowPosSstUploader.BucketSstData(localSstDir2, metas2));
-        String roundUuid = uploader.uploadRound(bucketSstMap);
+        uploader.upload(snapshotId, bucketSstMap);
 
         // Read index directly
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
-        RowPosSstIndex index = downloader.readIndex(roundUuid);
+        RowPosSstIndex index = downloader.readIndex(snapshotId);
 
         assertThat(index.getBucketIds()).containsExactlyInAnyOrder(0, 2);
         assertThat(index.getFiles(0)).hasSize(1);

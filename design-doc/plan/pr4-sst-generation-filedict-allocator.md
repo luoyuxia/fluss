@@ -13,14 +13,14 @@
 
 ## 远程存储目录结构
 
-按 round（一次 readable-switch 周期）组织，每 round 一个 UUID 目录，内含统一索引和按 bucket 分组的 SST 文件：
+按 lake snapshot ID 组织，每个 snapshot 一个目录，内含统一索引和按 bucket 分组的 SST 文件：
 
 ```
 {$remoteLakeTableSnapshotDir}/
 ├── metadata/
 │   └── {UUID}.offsets              ← 已有（lake snapshot offset 文件）
 └── rowPos/
-    └── {roundUuid}/                ← 一轮 readable-switch 的数据
+    └── {snapshotId}/                ← 对应 lake snapshot ID，一轮 readable-switch 的数据
         ├── index.json              ← 统一索引：每 bucket 的文件列表 + 大小
         ├── 0/                      ← bucket 0
         │   ├── sst_0.sst
@@ -30,9 +30,9 @@
 ```
 
 **设计要点**：
-- **按 round 分组**：一轮的所有数据在同一目录下，清理时整目录删除
-- **index.json 统一索引**：避免 S3/OSS 的 list 操作（list 延迟高且有分页问题），Reader 只需 GET 一次 index.json 即可知道该 round 包含哪些 bucket 和文件
-- **index.json 最后写入**：原子可见性保证，index.json 存在即表示该 round 所有 SST 已上传完毕
+- **按 snapshot 分组**：一轮的所有数据在同一目录下，清理时整目录删除
+- **index.json 统一索引**：避免 S3/OSS 的 list 操作（list 延迟高且有分页问题），Reader 只需 GET 一次 index.json 即可知道该 snapshot 包含哪些 bucket 和文件
+- **index.json 最后写入**：原子可见性保证，index.json 存在即表示该 snapshot 所有 SST 已上传完毕
 - **确定性 bucket 子目录**：目录名即 bucketId，无需额外 UUID
 
 `remoteLakeTableSnapshotDir` 通过 `FlussPaths.remoteLakeTableSnapshotDir(remoteDataDir, tablePath, tableId)` 计算。
@@ -154,7 +154,7 @@ public class FileDictAllocator {
 ### 3. 新增类：`RowPosSstIndex`
 **文件**：`fluss-server/.../kv/dv/RowPosSstIndex.java`（新建）
 
-每轮 round 的统一索引文件（`index.json`），记录该 round 包含哪些 bucket 以及每个 bucket 的 SST 文件列表。合并了原来的 `BucketSstIndex`（跨 bucket 索引）和 `SstManifest`（per-bucket 文件清单）的职责。
+每轮 snapshot 的统一索引文件（`index.json`），记录该 snapshot 包含哪些 bucket 以及每个 bucket 的 SST 文件列表。合并了原来的 `BucketSstIndex`（跨 bucket 索引）和 `SstManifest`（per-bucket 文件清单）的职责。
 
 ```java
 public class RowPosSstIndex {
@@ -163,7 +163,7 @@ public class RowPosSstIndex {
 
     public RowPosSstIndex(Map<Integer, List<SstFileEntry>> bucketFiles);
 
-    /** 返回该 round 包含的所有 bucket ID。 */
+    /** 返回该 snapshot 包含的所有 bucket ID。 */
     public Set<Integer> getBucketIds();
 
     /** 返回指定 bucket 的 SST 文件列表。bucket 不存在时返回空列表。 */
@@ -212,7 +212,7 @@ JSON 格式（`index.json`）：
 ### 4. 新增类：`RowPosSstUploader`
 **文件**：`fluss-server/.../kv/dv/RowPosSstUploader.java`（新建）
 
-将一轮 round 的 SST 文件和 index 上传到远程存储。由 TieringService 在 SST 生成后调用。
+将一轮 snapshot 的 SST 文件和 index 上传到远程存储。由 TieringService 在 SST 生成后调用。
 
 ```java
 public class RowPosSstUploader {
@@ -226,15 +226,14 @@ public class RowPosSstUploader {
     public RowPosSstUploader(FsPath remoteLakeTableSnapshotDir);
 
     /**
-     * 上传一轮 round 的所有 bucket SST 文件 + index.json：
-     * 1. 生成 roundUuid
-     * 2. 对每个 bucket：上传 SST 文件到 rowPos/{roundUuid}/{bucketId}/
-     * 3. 最后写入 index.json（原子可见性保证）
+     * 上传指定 snapshot 的所有 bucket SST 文件 + index.json：
+     * 1. 对每个 bucket：上传 SST 文件到 rowPos/{snapshotId}/{bucketId}/
+     * 2. 最后写入 index.json（原子可见性保证）
      *
+     * @param snapshotId lake snapshot ID，用作远程目录名
      * @param bucketSstMap bucketId -> (localSstDir, sstMetas) 映射
-     * @return roundUuid
      */
-    public String uploadRound(
+    public void upload(long snapshotId,
             Map<Integer, BucketSstData> bucketSstMap) throws IOException;
 
     /** 一个 bucket 的本地 SST 数据。 */
@@ -250,8 +249,8 @@ public class RowPosSstUploader {
 ```
 
 上传路径：
-- SST 文件：`{remoteLakeTableSnapshotDir}/rowPos/{roundUuid}/{bucketId}/sst_0.sst`
-- 索引文件：`{remoteLakeTableSnapshotDir}/rowPos/{roundUuid}/index.json`（最后写入）
+- SST 文件：`{remoteLakeTableSnapshotDir}/rowPos/{snapshotId}/{bucketId}/sst_0.sst`
+- 索引文件：`{remoteLakeTableSnapshotDir}/rowPos/{snapshotId}/index.json`（最后写入）
 
 ---
 
@@ -272,19 +271,20 @@ public class RowPosSstDownloader {
     public RowPosSstDownloader(FsPath remoteLakeTableSnapshotDir);
 
     /**
-     * 下载指定 round 中指定 bucket 的 SST 文件到本地目录：
+     * 下载指定 snapshot 中指定 bucket 的 SST 文件到本地目录：
      * 1. 读取 index.json，获取该 bucket 的文件列表
      * 2. 下载 index 中列出的所有 SST 文件
      *
+     * @param snapshotId lake snapshot ID
      * @return 本地 SST 文件路径列表，bucket 不在 index 中时返回空列表
      */
-    public List<String> downloadBucketSst(String roundUuid, int bucketId, String localDir)
+    public List<String> downloadBucketSst(long snapshotId, int bucketId, String localDir)
             throws IOException;
 
     /**
-     * 读取指定 round 的 index.json。
+     * 读取指定 snapshot 的 index.json。
      */
-    public RowPosSstIndex readIndex(String roundUuid) throws IOException;
+    public RowPosSstIndex readIndex(long snapshotId) throws IOException;
 }
 ```
 

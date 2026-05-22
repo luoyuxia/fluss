@@ -35,9 +35,9 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Unified index for one round of RowPos SST files ({@code index.json}).
+ * Unified index for one snapshot's RowPos SST files ({@code index.json}).
  *
- * <p>Records which buckets participated in a round and lists the SST files for each bucket. This
+ * <p>Records which buckets participated in a snapshot and lists the SST files for each bucket. This
  * replaces the need for separate cross-bucket index and per-bucket manifest files.
  */
 @Internal
@@ -58,7 +58,7 @@ public class RowPosSstIndex {
         this.bucketFiles = bucketFiles;
     }
 
-    /** Returns the set of bucket IDs that have SST files in this round. */
+    /** Returns the set of bucket IDs that have SST files in this snapshot. */
     public Set<Integer> getBucketIds() {
         return Collections.unmodifiableSet(bucketFiles.keySet());
     }

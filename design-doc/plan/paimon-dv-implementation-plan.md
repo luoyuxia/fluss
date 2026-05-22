@@ -278,43 +278,121 @@
 
 ### PR 5: Protocol 扩展 + Coordinator DV 编排
 
-**目标**：扩展 RPC 协议以支持 DV 的 Position Report / Prepare / Publish / Readable Switch，在 CoordinatorServer 中实现 DV 编排状态机。
+**目标**：扩展现有 RPC 协议以支持 DV 编排流程（Prepare / Publish / Readable Switch），在 CoordinatorServer 中实现 DV 编排状态机。复用现有 `CommitLakeTableSnapshot` 和 `NotifyLakeTableOffset`，仅新增 1 个 RPC（`DvReadableSwitch`）。
 
 **设计文档参考**：§5.2.2 Step 6, §5.3, §5.4
 
 **改动范围**：
 
-1. **Proto 消息扩展**
-   - **Position Report**（TieringService → Coordinator）：
-     - `indexUuid`，`newFileDictEntries`
-     - `tieredOffsets` (per-bucket)，`readableOffsets` (per-bucket)
-     - `oldFiles` (List<String>)
-     - `readableSnapshotId`，`earliestSnapshotIdToKeep`
-   - **Prepare 通知**（Coordinator → TabletServer）：
-     - `indexUuid`，`readableSnapshotId`
-     - `newFileDictEntries`
-     - `tieredOffsets` (per-bucket)，`readableOffsets` (per-bucket)
-     - `oldFiles` (List<String>)
-   - **Ready ACK**（TabletServer → Coordinator）
-   - **Readable Switch 通知**（Coordinator → TabletServer）
-   - **Switched ACK**（TabletServer → Coordinator）
+#### 1. Proto 消息扩展
 
-2. **CoordinatorServer DV 状态机**
-   - 接收 Position Report → 存储报告信息
-   - 发送 Prepare 通知到所有相关 bucket 的 TabletServer
-   - 收集 Ready ACK → 全部就绪后进入 Publish
-   - 更新 LakeTableZNode → 标记 readable snapshot
-   - 发送 Readable Switch 通知
-   - 收集 Switched ACK
+**RPC 概览**：
 
-3. **CoordinatorEventProcessor 扩展**
-   - 新增 DV 相关 Event 类型
-   - 处理 Position Report / Ready ACK / Switched ACK
+```
+TieringService ──CommitLakeTableSnapshot(+PbDvPositionReport)──→ Coordinator       (复用)
+Coordinator ────NotifyLakeTableOffset(+PbDvPrepare)────────────→ TabletServer      (复用, 同步等, response=ReadyACK)
+Coordinator ────DvReadableSwitchRequest────────────────────────→ TabletServer      (新增, 同步等, response=SwitchedACK)
+```
+
+**(a) DV Position Report —— 复用 `CommitLakeTableSnapshotRequest`**
+
+TieringService → Coordinator 的报告路径已有 `CommitLakeTableSnapshotRequest`（每轮 compaction 完成后调用）。DV 数据作为独立 message 挂在 `PbLakeTableSnapshotMetadata` 上：
+
+```proto
+message PbLakeTableSnapshotMetadata {
+  // ... 已有字段 1-5 ...
+  optional PbDvPositionReport dv_position_report = 6;
+}
+
+// DV Position Report（独立 message，表级别）
+message PbDvPositionReport {
+  required string round_uuid = 1;
+  repeated PbFileDictEntry new_file_dict_entries = 2;
+  repeated string old_files = 3;
+  repeated PbDvBucketOffset bucket_offsets = 4;
+}
+
+message PbDvBucketOffset {
+  required int32 bucket_id = 1;
+  required int64 tiered_offset = 2;
+  required int64 readable_offset = 3;
+}
+
+message PbFileDictEntry {
+  required int32 file_id = 1;
+  required string file_path = 2;
+}
+```
+
+> `readable_snapshot_id` 和 `earliest_snapshot_id_to_keep` 已在 `PbLakeTableSnapshotMetadata` 现有字段中，无需重复。
+
+**(b) DV Prepare + Ready ACK —— 复用 `NotifyLakeTableOffsetRequest`（同步）**
+
+Coordinator → TabletServer 的通知路径已有 `NotifyLakeTableOffsetRequest`。DV Prepare 数据作为独立 message 挂在请求上。TabletServer 收到后同步执行 Prepare（下载 SST + 写 FileDict），完成后返回 response 即为 Ready ACK：
+
+```proto
+message NotifyLakeTableOffsetRequest {
+  // ... 已有字段 1-2 ...
+  optional PbDvPrepare dv_prepare = 3;
+}
+
+// DV Prepare 数据（独立 message）
+message PbDvPrepare {
+  required int64 table_id = 1;
+  required string round_uuid = 2;
+  required int64 readable_snapshot_id = 3;
+  repeated PbFileDictEntry new_file_dict_entries = 4;
+  repeated string old_files = 5;
+  repeated PbDvBucketOffset bucket_offsets = 6;
+}
+
+// Response 即 Ready ACK，无需额外字段
+message NotifyLakeTableOffsetResponse {
+  // 已有，空 message 即表示 Prepare 成功
+}
+```
+
+**(c) Readable Switch + Switched ACK —— 新增 `DvReadableSwitchRequest`（同步）**
+
+Coordinator 收集所有 Ready ACK 并完成 Publish 后，向 TabletServer 发送 Readable Switch。TabletServer 同步执行 Switch（Ingest SST + batch resolve + LogDv 清理），完成后返回 response 即为 Switched ACK：
+
+```proto
+message DvReadableSwitchRequest {
+  required int32 coordinator_epoch = 1;
+  required int64 table_id = 2;
+  required int64 readable_snapshot_id = 3;
+}
+
+// Response 即 Switched ACK
+message DvReadableSwitchResponse {
+}
+```
+
+#### 2. Server 侧数据类扩展
+
+- `CommitLakeTableSnapshotsData` / `CommitLakeTableSnapshot`：新增 DV position report 字段
+- `NotifyLakeTableOffsetData`：新增 DV prepare 字段
+- 新增 `DvReadableSwitchData`：Readable Switch 请求数据
+- `ServerRpcMessageUtils`：扩展 proto ↔ data 转换逻辑
+
+#### 3. CoordinatorServer DV 编排
+
+在 `CoordinatorEventProcessor.handleCommitLakeTableSnapshotV2()` 中，当检测到 `dv_position_report` 存在时，触发 DV 编排流程：
+
+1. **Prepare**：构建 `PbDvPrepare` → 通过 `NotifyLakeTableOffsetRequest` 发送给所有相关 bucket 的 TabletServer → 同步等待所有 response（Ready ACK）
+2. **Publish**：更新 LakeTableZNode → 标记 readable snapshot
+3. **Readable Switch**：通过 `DvReadableSwitchRequest` 发送给所有相关 TabletServer → 同步等待所有 response（Switched ACK）
+
+#### 4. CoordinatorEventProcessor 扩展
+
+- 扩展现有 `CommitLakeTableSnapshotEvent` 处理逻辑（DV 分支）
+- 新增 `DvReadableSwitchEvent` 处理
 
 **测试**：
-- Proto 消息序列化/反序列化
-- Coordinator 状态机状态转换
-- 超时和重试
+- Proto 消息序列化/反序列化（DV 字段的正确编解码）
+- DV 表的 CommitLakeTableSnapshot 端到端流程
+- Coordinator 编排流程（Prepare → Ready → Publish → Switch → Switched）
+- 非 DV 表不受影响（`dv_position_report` 为 null 时走原有逻辑）
 
 **前置依赖**：无（协议定义可独立）
 

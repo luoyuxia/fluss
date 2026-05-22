@@ -30,15 +30,14 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
- * Uploads per-round RowPos SST files and index to remote storage.
+ * Uploads RowPos SST files and index to remote storage for a given lake snapshot.
  *
  * <p>The upload layout is:
  *
  * <pre>
- * {remoteLakeTableSnapshotDir}/rowPos/{roundUuid}/
+ * {remoteLakeTableSnapshotDir}/rowPos/{snapshotId}/
  *   ├── index.json              (written last for atomic visibility)
  *   ├── {bucketId}/sst_0.sst
  *   ├── {bucketId}/sst_1.sst
@@ -46,7 +45,7 @@ import java.util.UUID;
  * </pre>
  *
  * <p>The {@code index.json} is always written <b>last</b>, so its presence guarantees that all SST
- * files for the round have been fully uploaded.
+ * files for the snapshot have been fully uploaded.
  */
 @Internal
 public class RowPosSstUploader {
@@ -62,25 +61,24 @@ public class RowPosSstUploader {
     }
 
     /**
-     * Uploads one round of SST data for all buckets.
+     * Uploads SST data for all buckets under the given snapshot.
      *
      * <p>Steps:
      *
      * <ol>
-     *   <li>Generate a round UUID
-     *   <li>Upload each bucket's SST files to {@code rowPos/{roundUuid}/{bucketId}/}
+     *   <li>Upload each bucket's SST files to {@code rowPos/{snapshotId}/{bucketId}/}
      *   <li>Write {@code index.json} last (atomic visibility guarantee)
      * </ol>
      *
+     * @param snapshotId the lake snapshot ID used as the directory name
      * @param bucketSstMap mapping from bucketId to local SST data
-     * @return the generated round UUID
      */
-    public String uploadRound(Map<Integer, BucketSstData> bucketSstMap) throws IOException {
-        String roundUuid = UUID.randomUUID().toString();
-        FsPath roundDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + roundUuid);
+    public void upload(long snapshotId, Map<Integer, BucketSstData> bucketSstMap)
+            throws IOException {
+        FsPath snapshotDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + snapshotId);
 
-        FileSystem fs = roundDir.getFileSystem();
-        fs.mkdirs(roundDir);
+        FileSystem fs = snapshotDir.getFileSystem();
+        fs.mkdirs(snapshotDir);
 
         // Build index while uploading SST files
         Map<Integer, List<RowPosSstIndex.SstFileEntry>> indexEntries = new HashMap<>();
@@ -89,7 +87,7 @@ public class RowPosSstUploader {
             int bucketId = entry.getKey();
             BucketSstData data = entry.getValue();
 
-            FsPath bucketDir = new FsPath(roundDir, String.valueOf(bucketId));
+            FsPath bucketDir = new FsPath(snapshotDir, String.valueOf(bucketId));
             fs.mkdirs(bucketDir);
 
             List<RowPosSstIndex.SstFileEntry> fileEntries = new ArrayList<>();
@@ -105,13 +103,11 @@ public class RowPosSstUploader {
 
         // Write index.json last for atomic visibility
         RowPosSstIndex index = new RowPosSstIndex(indexEntries);
-        FsPath indexPath = new FsPath(roundDir, INDEX_FILE);
+        FsPath indexPath = new FsPath(snapshotDir, INDEX_FILE);
         byte[] indexBytes = index.toJsonBytes();
         try (FSDataOutputStream out = fs.create(indexPath, FileSystem.WriteMode.NO_OVERWRITE)) {
             out.write(indexBytes);
         }
-
-        return roundUuid;
     }
 
     private void uploadFile(FileSystem fs, File localFile, FsPath remotePath) throws IOException {

@@ -51,23 +51,23 @@ public class RowPosSstDownloader {
     }
 
     /**
-     * Downloads SST files for a specific bucket within a round to a local directory.
+     * Downloads SST files for a specific bucket within a snapshot to a local directory.
      *
-     * @param roundUuid the round identifier
+     * @param snapshotId the lake snapshot ID
      * @param bucketId the bucket to download
      * @param localDir local directory to store downloaded SST files
      * @return list of local SST file paths; empty if the bucket is not in the index
      */
-    public List<String> downloadBucketSst(String roundUuid, int bucketId, String localDir)
+    public List<String> downloadBucketSst(long snapshotId, int bucketId, String localDir)
             throws IOException {
-        RowPosSstIndex index = readIndex(roundUuid);
+        RowPosSstIndex index = readIndex(snapshotId);
         List<RowPosSstIndex.SstFileEntry> files = index.getFiles(bucketId);
         if (files.isEmpty()) {
             return Collections.emptyList();
         }
 
-        FsPath roundDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + roundUuid);
-        FsPath bucketDir = new FsPath(roundDir, String.valueOf(bucketId));
+        FsPath snapshotDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + snapshotId);
+        FsPath bucketDir = new FsPath(snapshotDir, String.valueOf(bucketId));
         FileSystem fs = bucketDir.getFileSystem();
 
         File localDirFile = new File(localDir);
@@ -86,12 +86,12 @@ public class RowPosSstDownloader {
         return localPaths;
     }
 
-    /** Reads the index.json for the given round. */
-    public RowPosSstIndex readIndex(String roundUuid) throws IOException {
+    /** Reads the index.json for the given snapshot. */
+    public RowPosSstIndex readIndex(long snapshotId) throws IOException {
         FsPath indexPath =
                 new FsPath(
                         remoteLakeTableSnapshotDir,
-                        ROW_POS_DIR + "/" + roundUuid + "/" + INDEX_FILE);
+                        ROW_POS_DIR + "/" + snapshotId + "/" + INDEX_FILE);
         FileSystem fs = indexPath.getFileSystem();
 
         FSDataInputStream in = null;
