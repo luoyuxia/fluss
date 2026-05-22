@@ -125,6 +125,64 @@ public class LakeTableHelper {
     }
 
     /**
+     * Updates an existing lake table snapshot to mark it as readable by setting its readable
+     * offsets file path.
+     *
+     * <p>This is used in the DV orchestration flow: the snapshot is initially registered as
+     * non-readable ({@code readableOffsetsFilePath = null}), and after tablet servers complete the
+     * DV Prepare phase, this method is called to make the snapshot readable.
+     *
+     * @param tableId the table ID
+     * @param snapshotId the snapshot ID to update
+     * @param readableOffsetsFilePath the file path to the readable offsets
+     * @throws Exception if the ZK operation fails
+     */
+    public void markLakeTableSnapshotReadable(
+            long tableId, long snapshotId, FsPath readableOffsetsFilePath) throws Exception {
+        Optional<LakeTable> optLakeTable = zkClient.getLakeTable(tableId);
+        if (!optLakeTable.isPresent()) {
+            LOG.warn(
+                    "Lake table {} not found in ZK, cannot mark snapshot {} as readable.",
+                    tableId,
+                    snapshotId);
+            return;
+        }
+        List<LakeTable.LakeSnapshotMetadata> metadatas =
+                optLakeTable.get().getLakeSnapshotMetadatas();
+        if (metadatas == null || metadatas.isEmpty()) {
+            LOG.warn(
+                    "No snapshots found for table {}, cannot mark snapshot {} as readable.",
+                    tableId,
+                    snapshotId);
+            return;
+        }
+
+        List<LakeTable.LakeSnapshotMetadata> updatedMetadatas = new ArrayList<>(metadatas.size());
+        boolean found = false;
+        for (LakeTable.LakeSnapshotMetadata metadata : metadatas) {
+            if (metadata.getSnapshotId() == snapshotId) {
+                updatedMetadatas.add(
+                        new LakeTable.LakeSnapshotMetadata(
+                                snapshotId,
+                                metadata.getTieredOffsetsFilePath(),
+                                readableOffsetsFilePath));
+                found = true;
+            } else {
+                updatedMetadatas.add(metadata);
+            }
+        }
+        if (!found) {
+            LOG.warn(
+                    "Snapshot {} not found for table {}, cannot mark as readable.",
+                    snapshotId,
+                    tableId);
+            return;
+        }
+
+        zkClient.upsertLakeTable(tableId, new LakeTable(updatedMetadatas), true);
+    }
+
+    /**
      * Determines which snapshots should be retained or discarded based on the timeline according to
      * {@code earliestSnapshotIDToKeep}.
      */

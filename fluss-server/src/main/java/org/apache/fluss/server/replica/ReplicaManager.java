@@ -59,6 +59,7 @@ import org.apache.fluss.rpc.entity.PutKvResultForBucket;
 import org.apache.fluss.rpc.entity.TableStatsResultForBucket;
 import org.apache.fluss.rpc.entity.WriteResultForBucket;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
+import org.apache.fluss.rpc.messages.DvReadableSwitchResponse;
 import org.apache.fluss.rpc.messages.NotifyKvSnapshotOffsetResponse;
 import org.apache.fluss.rpc.messages.NotifyLakeTableOffsetResponse;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsResponse;
@@ -67,6 +68,8 @@ import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.coordinator.CoordinatorContext;
+import org.apache.fluss.server.entity.DvPrepareData;
+import org.apache.fluss.server.entity.DvReadableSwitchData;
 import org.apache.fluss.server.entity.FetchReqInfo;
 import org.apache.fluss.server.entity.LakeBucketOffset;
 import org.apache.fluss.server.entity.NotifyKvSnapshotOffsetData;
@@ -1070,6 +1073,12 @@ public class ReplicaManager implements ServerReconfigurable {
                             notifyLakeTableOffsetData.getCoordinatorEpoch(),
                             "notifyLakeTableOffset");
 
+                    // Handle DV prepare if present
+                    DvPrepareData dvPrepare = notifyLakeTableOffsetData.getDvPrepare();
+                    if (dvPrepare != null) {
+                        handleDvPrepare(dvPrepare);
+                    }
+
                     Map<TableBucket, LakeBucketOffset> lakeBucketOffsets =
                             notifyLakeTableOffsetData.getLakeBucketOffsets();
                     for (Map.Entry<TableBucket, LakeBucketOffset> lakeBucketOffsetEntry :
@@ -1094,6 +1103,35 @@ public class ReplicaManager implements ServerReconfigurable {
                         responseCallback.accept(new NotifyLakeTableOffsetResponse());
                     }
                 });
+    }
+
+    /** Handles the DV readable switch request from the coordinator. */
+    public void dvReadableSwitch(
+            DvReadableSwitchData data, Consumer<DvReadableSwitchResponse> responseCallback) {
+        inLock(
+                replicaStateChangeLock,
+                () -> {
+                    validateAndApplyCoordinatorEpoch(
+                            data.getCoordinatorEpoch(), "dvReadableSwitch");
+                    handleDvReadableSwitch(data);
+                    responseCallback.accept(new DvReadableSwitchResponse());
+                });
+    }
+
+    private void handleDvPrepare(DvPrepareData dvPrepare) {
+        // TODO: PR 6 - Download SST, write FileDict, resolve pending deletes
+        LOG.info(
+                "DV Prepare received for table {}, snapshot {}",
+                dvPrepare.getTableId(),
+                dvPrepare.getReadableSnapshotId());
+    }
+
+    private void handleDvReadableSwitch(DvReadableSwitchData data) {
+        // TODO: PR 6 - Ingest SST, batch resolve, set readable offset
+        LOG.info(
+                "DV ReadableSwitch received for table {}, snapshot {}",
+                data.getTableId(),
+                data.getReadableSnapshotId());
     }
 
     /**

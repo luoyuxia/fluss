@@ -23,6 +23,8 @@ import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.rpc.RpcClient;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.messages.ApiMessage;
+import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
+import org.apache.fluss.rpc.messages.DvReadableSwitchResponse;
 import org.apache.fluss.rpc.messages.NotifyKvSnapshotOffsetRequest;
 import org.apache.fluss.rpc.messages.NotifyKvSnapshotOffsetResponse;
 import org.apache.fluss.rpc.messages.NotifyLakeTableOffsetRequest;
@@ -166,6 +168,15 @@ public class CoordinatorChannelManager {
                 notifyLakeTableOffsetRequest,
                 TabletServerGateway::notifyLakeTableOffset,
                 responseConsumer);
+    }
+
+    /** Send DvReadableSwitchRequest to the server and handle the response. */
+    public void sendDvReadableSwitchRequest(
+            int receiveServerId,
+            DvReadableSwitchRequest request,
+            BiConsumer<DvReadableSwitchResponse, ? super Throwable> responseConsumer) {
+        sendRequest(
+                receiveServerId, request, TabletServerGateway::dvReadableSwitch, responseConsumer);
     }
 
     @VisibleForTesting

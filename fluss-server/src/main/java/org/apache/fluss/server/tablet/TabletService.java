@@ -35,6 +35,8 @@ import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.entity.PrefixLookupResultForBucket;
 import org.apache.fluss.rpc.entity.ResultForBucket;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
+import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
+import org.apache.fluss.rpc.messages.DvReadableSwitchResponse;
 import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.GetTableStatsRequest;
@@ -443,6 +445,15 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
             NotifyLakeTableOffsetRequest request) {
         CompletableFuture<NotifyLakeTableOffsetResponse> response = new CompletableFuture<>();
         replicaManager.notifyLakeTableOffset(getNotifyLakeTableOffset(request), response::complete);
+        return response;
+    }
+
+    @Override
+    public CompletableFuture<DvReadableSwitchResponse> dvReadableSwitch(
+            DvReadableSwitchRequest request) {
+        CompletableFuture<DvReadableSwitchResponse> response = new CompletableFuture<>();
+        replicaManager.dvReadableSwitch(
+                ServerRpcMessageUtils.getDvReadableSwitchData(request), response::complete);
         return response;
     }
 

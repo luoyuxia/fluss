@@ -20,6 +20,8 @@ package org.apache.fluss.server.entity;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.rpc.messages.NotifyLakeTableOffsetRequest;
 
+import javax.annotation.Nullable;
+
 import java.util.Map;
 
 /** The data for request {@link NotifyLakeTableOffsetRequest}. */
@@ -29,10 +31,20 @@ public class NotifyLakeTableOffsetData {
 
     private final Map<TableBucket, LakeBucketOffset> lakeBucketOffsets;
 
+    @Nullable private final DvPrepareData dvPrepare;
+
     public NotifyLakeTableOffsetData(
             int coordinatorEpoch, Map<TableBucket, LakeBucketOffset> lakeBucketOffsets) {
+        this(coordinatorEpoch, lakeBucketOffsets, null);
+    }
+
+    public NotifyLakeTableOffsetData(
+            int coordinatorEpoch,
+            Map<TableBucket, LakeBucketOffset> lakeBucketOffsets,
+            @Nullable DvPrepareData dvPrepare) {
         this.coordinatorEpoch = coordinatorEpoch;
         this.lakeBucketOffsets = lakeBucketOffsets;
+        this.dvPrepare = dvPrepare;
     }
 
     public int getCoordinatorEpoch() {
@@ -41,5 +53,10 @@ public class NotifyLakeTableOffsetData {
 
     public Map<TableBucket, LakeBucketOffset> getLakeBucketOffsets() {
         return lakeBucketOffsets;
+    }
+
+    @Nullable
+    public DvPrepareData getDvPrepare() {
+        return dvPrepare;
     }
 }

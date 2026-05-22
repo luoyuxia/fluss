@@ -594,6 +594,7 @@ message PbCommitLakeTableSnapshotRespForTable {
 message NotifyLakeTableOffsetRequest {
   required int32 coordinator_epoch = 1;
   repeated PbNotifyLakeTableOffsetReqForBucket notify_buckets_req = 2;
+  optional PbDvPrepare dv_prepare = 3;
 }
 
 message PbNotifyLakeTableOffsetReqForBucket {
@@ -1211,6 +1212,29 @@ message PbLakeTableSnapshotMetadata {
   // 1. If set, the system will keep all snapshots in the range [earliest_snapshot_id_to_keep, current_snapshot_id].
   // 2. If not set, the system defaults to a "Single Snapshot Retention" policy, keeping only the snapshot specified in this request.
   optional int64 earliest_snapshot_id_to_keep = 5;
+  optional PbDvPositionReport dv_position_report = 6;
+}
+
+message PbDvPositionReport {
+  repeated PbDvBucketOffset bucket_offsets = 1;
+}
+
+message PbDvBucketOffset {
+  required int32 bucket_id = 1;
+  required int64 readable_offset = 2;
+  repeated PbFileDictEntry new_file_dict_entries = 3;
+  repeated string old_files = 4;
+}
+
+message PbFileDictEntry {
+  required int32 file_id = 1;
+  required string file_path = 2;
+}
+
+message PbDvPrepare {
+  required int64 table_id = 1;
+  required int64 readable_snapshot_id = 2;
+  repeated PbDvBucketOffset bucket_offsets = 3;
 }
 
 message PbLakeTableSnapshotInfo {
@@ -1369,4 +1393,13 @@ message PbLiteralValue {
   optional int64 timestamp_millis_value = 11;      // Epoch millis
   optional int32 timestamp_nano_of_millis_value = 12; // Nano of millis
   optional bytes decimal_bytes = 13;   // Serialized decimal (non-compact mode)
+}
+
+message DvReadableSwitchRequest {
+  required int32 coordinator_epoch = 1;
+  required int64 table_id = 2;
+  required int64 readable_snapshot_id = 3;
+}
+
+message DvReadableSwitchResponse {
 }

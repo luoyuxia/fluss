@@ -65,6 +65,32 @@ public class CommitLakeTableSnapshotsData {
                 @Nullable Map<TableBucket, Long> tableMaxTieredTimestamps,
                 @Nullable LakeTable.LakeSnapshotMetadata lakeSnapshotMetadata,
                 @Nullable Long earliestSnapshotIDToKeep) {
+            addTableSnapshot(
+                    tableId,
+                    lakeTableSnapshot,
+                    tableMaxTieredTimestamps,
+                    lakeSnapshotMetadata,
+                    earliestSnapshotIDToKeep,
+                    null);
+        }
+
+        /**
+         * Add a table snapshot entry with optional DV position report.
+         *
+         * @param tableId the table ID
+         * @param lakeTableSnapshot the lake table snapshot (for V1 format, can be null in V2)
+         * @param tableMaxTieredTimestamps the max tiered timestamps for metrics (can be null)
+         * @param lakeSnapshotMetadata the lake snapshot metadata (for V2 format, can be null in v1)
+         * @param earliestSnapshotIDToKeep the earliest snapshot ID to keep (can be null)
+         * @param dvPositionReport the DV position report (can be null for non-DV tables)
+         */
+        public void addTableSnapshot(
+                long tableId,
+                @Nullable LakeTableSnapshot lakeTableSnapshot,
+                @Nullable Map<TableBucket, Long> tableMaxTieredTimestamps,
+                @Nullable LakeTable.LakeSnapshotMetadata lakeSnapshotMetadata,
+                @Nullable Long earliestSnapshotIDToKeep,
+                @Nullable DvPositionReportData dvPositionReport) {
             snapshotMap.put(
                     tableId,
                     new CommitLakeTableSnapshot(
@@ -73,7 +99,8 @@ public class CommitLakeTableSnapshotsData {
                                     ? tableMaxTieredTimestamps
                                     : Collections.emptyMap(),
                             lakeSnapshotMetadata,
-                            earliestSnapshotIDToKeep));
+                            earliestSnapshotIDToKeep,
+                            dvPositionReport));
         }
 
         /**
@@ -149,15 +176,32 @@ public class CommitLakeTableSnapshotsData {
         // The earliest snapshot ID to keep for Paimon DV tables. Null for non-Paimon-DV tables.
         @Nullable private final Long earliestSnapshotIDToKeep;
 
+        @Nullable private final DvPositionReportData dvPositionReport;
+
         public CommitLakeTableSnapshot(
                 @Nullable LakeTableSnapshot lakeTableSnapshot,
                 @Nullable Map<TableBucket, Long> tableMaxTieredTimestamps,
                 @Nullable LakeTable.LakeSnapshotMetadata lakeSnapshotMetadata,
                 @Nullable Long earliestSnapshotIDToKeep) {
+            this(
+                    lakeTableSnapshot,
+                    tableMaxTieredTimestamps,
+                    lakeSnapshotMetadata,
+                    earliestSnapshotIDToKeep,
+                    null);
+        }
+
+        public CommitLakeTableSnapshot(
+                @Nullable LakeTableSnapshot lakeTableSnapshot,
+                @Nullable Map<TableBucket, Long> tableMaxTieredTimestamps,
+                @Nullable LakeTable.LakeSnapshotMetadata lakeSnapshotMetadata,
+                @Nullable Long earliestSnapshotIDToKeep,
+                @Nullable DvPositionReportData dvPositionReport) {
             this.lakeTableSnapshot = lakeTableSnapshot;
             this.tableMaxTieredTimestamps = tableMaxTieredTimestamps;
             this.lakeSnapshotMetadata = lakeSnapshotMetadata;
             this.earliestSnapshotIDToKeep = earliestSnapshotIDToKeep;
+            this.dvPositionReport = dvPositionReport;
         }
 
         @Nullable
@@ -173,6 +217,11 @@ public class CommitLakeTableSnapshotsData {
         @Nullable
         public Long getEarliestSnapshotIDToKeep() {
             return earliestSnapshotIDToKeep;
+        }
+
+        @Nullable
+        public DvPositionReportData getDvPositionReport() {
+            return dvPositionReport;
         }
     }
 }

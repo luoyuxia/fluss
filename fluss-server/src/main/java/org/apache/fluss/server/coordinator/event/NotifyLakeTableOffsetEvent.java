@@ -20,6 +20,7 @@ package org.apache.fluss.server.coordinator.event;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
 
+import java.util.Collections;
 import java.util.Map;
 
 /** An event for notify lake table offset to local tablet servers. */
@@ -27,12 +28,21 @@ public class NotifyLakeTableOffsetEvent implements CoordinatorEvent {
 
     private final Map<Long, LakeTableSnapshot> lakeTableSnapshots;
     private final Map<Long, Map<TableBucket, Long>> tableMaxTieredTimestamps;
+    private final Map<Long, DvPrepareEvent> dvPrepareEvents;
 
     public NotifyLakeTableOffsetEvent(
             Map<Long, LakeTableSnapshot> lakeTableSnapshots,
             Map<Long, Map<TableBucket, Long>> tableMaxTieredTimestamps) {
+        this(lakeTableSnapshots, tableMaxTieredTimestamps, Collections.emptyMap());
+    }
+
+    public NotifyLakeTableOffsetEvent(
+            Map<Long, LakeTableSnapshot> lakeTableSnapshots,
+            Map<Long, Map<TableBucket, Long>> tableMaxTieredTimestamps,
+            Map<Long, DvPrepareEvent> dvPrepareEvents) {
         this.lakeTableSnapshots = lakeTableSnapshots;
         this.tableMaxTieredTimestamps = tableMaxTieredTimestamps;
+        this.dvPrepareEvents = dvPrepareEvents;
     }
 
     public Map<Long, LakeTableSnapshot> getLakeTableSnapshots() {
@@ -41,5 +51,9 @@ public class NotifyLakeTableOffsetEvent implements CoordinatorEvent {
 
     public Map<Long, Map<TableBucket, Long>> getTableMaxTieredTimestamps() {
         return tableMaxTieredTimestamps;
+    }
+
+    public Map<Long, DvPrepareEvent> getDvPrepareEvents() {
+        return dvPrepareEvents;
     }
 }

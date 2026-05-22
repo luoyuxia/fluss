@@ -28,6 +28,8 @@ import org.apache.fluss.rpc.messages.DatabaseExistsRequest;
 import org.apache.fluss.rpc.messages.DatabaseExistsResponse;
 import org.apache.fluss.rpc.messages.DescribeClusterConfigsRequest;
 import org.apache.fluss.rpc.messages.DescribeClusterConfigsResponse;
+import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
+import org.apache.fluss.rpc.messages.DvReadableSwitchResponse;
 import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.GetDatabaseInfoRequest;
@@ -459,5 +461,11 @@ public class TestTabletServerGateway implements TabletServerGateway {
     @Override
     public CompletableFuture<ScanKvResponse> scanKv(ScanKvRequest request) {
         return null;
+    }
+
+    @Override
+    public CompletableFuture<DvReadableSwitchResponse> dvReadableSwitch(
+            DvReadableSwitchRequest request) {
+        return CompletableFuture.completedFuture(new DvReadableSwitchResponse());
     }
 }

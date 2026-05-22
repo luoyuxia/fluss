@@ -18,6 +18,8 @@
 package org.apache.fluss.rpc.gateway;
 
 import org.apache.fluss.rpc.RpcGateway;
+import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
+import org.apache.fluss.rpc.messages.DvReadableSwitchResponse;
 import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
 import org.apache.fluss.rpc.messages.GetTableStatsRequest;
@@ -194,4 +196,12 @@ public interface TabletServerGateway extends RpcGateway, AdminReadOnlyGateway {
      */
     @RPC(api = ApiKeys.SCAN_KV)
     CompletableFuture<ScanKvResponse> scanKv(ScanKvRequest request);
+
+    /**
+     * Notify a tablet server to switch DV readable offset.
+     *
+     * @return the DV readable switch response
+     */
+    @RPC(api = ApiKeys.DV_READABLE_SWITCH)
+    CompletableFuture<DvReadableSwitchResponse> dvReadableSwitch(DvReadableSwitchRequest request);
 }
