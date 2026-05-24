@@ -24,6 +24,7 @@ import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.config.cluster.ServerReconfigurable;
 import org.apache.fluss.exception.ConfigException;
 import org.apache.fluss.exception.FencedLeaderEpochException;
+import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
 import org.apache.fluss.exception.InvalidCoordinatorException;
 import org.apache.fluss.exception.InvalidRequiredAcksException;
@@ -68,6 +69,7 @@ import org.apache.fluss.rpc.protocol.ApiKeys;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.coordinator.CoordinatorContext;
+import org.apache.fluss.server.entity.DvPositionReportData;
 import org.apache.fluss.server.entity.DvPrepareData;
 import org.apache.fluss.server.entity.DvReadableSwitchData;
 import org.apache.fluss.server.entity.FetchReqInfo;
@@ -82,6 +84,9 @@ import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.entity.UserContext;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
+import org.apache.fluss.server.kv.KvTablet;
+import org.apache.fluss.server.kv.dv.DvManager;
+import org.apache.fluss.server.kv.dv.RowPosSstDownloader;
 import org.apache.fluss.server.kv.scan.ScannerManager;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
 import org.apache.fluss.server.kv.snapshot.DefaultSnapshotContext;
@@ -1119,19 +1124,94 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     private void handleDvPrepare(DvPrepareData dvPrepare) {
-        // TODO: PR 6 - Download SST, write FileDict, resolve pending deletes
-        LOG.info(
-                "DV Prepare received for table {}, snapshot {}",
-                dvPrepare.getTableId(),
-                dvPrepare.getReadableSnapshotId());
+        long tableId = dvPrepare.getTableId();
+        long snapshotId = dvPrepare.getReadableSnapshotId();
+
+        for (Map.Entry<Integer, DvPositionReportData.DvBucketOffset> entry :
+                dvPrepare.getBucketOffsets().entrySet()) {
+            int bucketId = entry.getKey();
+            DvPositionReportData.DvBucketOffset bucketOffset = entry.getValue();
+
+            TableBucket tb = new TableBucket(tableId, bucketId);
+            try {
+                Replica replica = getReplicaOrException(tb);
+                KvTablet kvTablet = replica.getKvTablet();
+                checkNotNull(kvTablet, "KvTablet not available for %s", tb);
+                checkState(kvTablet.isDvEnabled(), "DV not enabled for %s", tb);
+                DvManager dvManager = kvTablet.getDvManager();
+
+                // Construct remote dir and downloader
+                PhysicalTablePath tablePath = replica.getPhysicalTablePath();
+                FsPath remoteLakeDir =
+                        FlussPaths.remoteLakeTableSnapshotDir(
+                                conf.getString(ConfigOptions.REMOTE_DATA_DIR),
+                                tablePath.getTablePath(),
+                                tableId);
+                RowPosSstDownloader downloader = new RowPosSstDownloader(remoteLakeDir);
+
+                String localTempDir = createDvPrepareLocalTempDir(tb, snapshotId);
+
+                dvManager.handlePrepare(
+                        bucketId, bucketOffset, downloader, snapshotId, localTempDir);
+
+                LOG.info("DV Prepare completed for {} snapshot {}", tb, snapshotId);
+            } catch (Exception e) {
+                LOG.error("DV Prepare failed for {} snapshot {}", tb, snapshotId, e);
+                throw new FlussRuntimeException(
+                        "DV Prepare failed for " + tb + " snapshot " + snapshotId, e);
+            }
+        }
     }
 
     private void handleDvReadableSwitch(DvReadableSwitchData data) {
-        // TODO: PR 6 - Ingest SST, batch resolve, set readable offset
-        LOG.info(
-                "DV ReadableSwitch received for table {}, snapshot {}",
-                data.getTableId(),
-                data.getReadableSnapshotId());
+        long tableId = data.getTableId();
+        long snapshotId = data.getReadableSnapshotId();
+
+        for (int bucketId : data.getBucketIds()) {
+            TableBucket tb = new TableBucket(tableId, bucketId);
+            try {
+                Replica replica = getReplicaOrException(tb);
+                KvTablet kvTablet = replica.getKvTablet();
+                checkNotNull(kvTablet, "KvTablet not available for %s", tb);
+                checkState(kvTablet.isDvEnabled(), "DV not enabled for %s", tb);
+                DvManager dvManager = kvTablet.getDvManager();
+
+                long readableOffset = dvManager.getPendingReadableOffset(bucketId);
+                dvManager.handleReadableSwitch(bucketId, snapshotId, readableOffset);
+
+                // Clean up local temp dir used by Prepare
+                cleanupDvPrepareLocalTempDir(tb, snapshotId);
+
+                LOG.info("DV ReadableSwitch completed for {} snapshot {}", tb, snapshotId);
+            } catch (Exception e) {
+                LOG.error("DV ReadableSwitch failed for {} snapshot {}", tb, snapshotId, e);
+                throw new FlussRuntimeException(
+                        "DV ReadableSwitch failed for " + tb + " snapshot " + snapshotId, e);
+            }
+        }
+    }
+
+    private File dvPrepareLocalTempDir(TableBucket tb, long snapshotId) {
+        return new File(
+                localDiskManager.dataDirs().get(0),
+                "dv-prepare/" + tb.getTableId() + "/" + tb.getBucket() + "/" + snapshotId);
+    }
+
+    private String createDvPrepareLocalTempDir(TableBucket tb, long snapshotId) {
+        File tempDir = dvPrepareLocalTempDir(tb, snapshotId);
+        tempDir.mkdirs();
+        return tempDir.getAbsolutePath();
+    }
+
+    private void cleanupDvPrepareLocalTempDir(TableBucket tb, long snapshotId) {
+        File tempDir = dvPrepareLocalTempDir(tb, snapshotId);
+        if (tempDir.exists()) {
+            try {
+                FileUtils.deleteDirectory(tempDir);
+            } catch (IOException e) {
+                LOG.warn("Failed to clean up DV Prepare temp dir: {}", tempDir, e);
+            }
+        }
     }
 
     /**

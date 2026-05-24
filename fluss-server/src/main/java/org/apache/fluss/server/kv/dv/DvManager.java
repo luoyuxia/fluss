@@ -18,13 +18,24 @@
 package org.apache.fluss.server.kv.dv;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.server.entity.DvPositionReportData;
+import org.apache.fluss.utils.CloseableIterator;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Core state machine managing Deletion Vector writes during the KvTablet write path.
+ * Core state machine managing Deletion Vector writes during the KvTablet write path, as well as the
+ * Prepare and Readable Switch phases for DV orchestration.
  *
  * <p>When a -U (update-before) or -D (delete) record is produced, this manager:
  *
@@ -35,12 +46,41 @@ import java.util.List;
  *   <li>If known: marks LakeDv, writes resolved PendingDeletes, deletes RowPosIndex entry
  *   <li>If unknown: writes pending PendingDeletes for future resolution
  * </ol>
+ *
+ * <p>During DV orchestration, the coordinator sends Prepare and Readable Switch requests:
+ *
+ * <ul>
+ *   <li><b>Prepare</b>: Downloads SST files from remote storage, writes FileDict entries, and
+ *       caches pending state for the subsequent Readable Switch.
+ *   <li><b>Readable Switch</b>: Ingests SST into RowPosIndex, batch-resolves PendingDeletes, cleans
+ *       up old files, and updates the readable snapshot state.
+ * </ul>
  */
 @Internal
 public class DvManager implements Closeable {
 
+    private static final Logger LOG = LoggerFactory.getLogger(DvManager.class);
+
     private final DvRocksDB dvRocksDB;
     private final DvRWLock dvRWLock;
+
+    // Snapshot ID for which Prepare has completed (updated as last step of handlePrepare)
+    private long preparedSnapshotId = -1;
+
+    // Current DV-readable snapshot ID (updated as last step of handleReadableSwitch)
+    private long readableSnapshotId = -1;
+
+    // Log start offset of the current readable snapshot (updated during handleReadableSwitch)
+    private long snapshotStartLogOffset = -1;
+
+    // SST file paths downloaded during Prepare, consumed by Readable Switch
+    private final Map<Integer, List<String>> pendingSstPaths = new HashMap<>();
+
+    // Old file IDs resolved during Prepare, consumed by Readable Switch for cleanup
+    private final Map<Integer, List<Integer>> pendingOldFileIds = new HashMap<>();
+
+    // Per-bucket readable offsets cached during Prepare, consumed by Readable Switch
+    private final Map<Integer, Long> pendingReadableOffsets = new HashMap<>();
 
     public DvManager(DvRocksDB dvRocksDB, DvRWLock dvRWLock) {
         this.dvRocksDB = dvRocksDB;
@@ -83,8 +123,247 @@ public class DvManager implements Closeable {
         }
     }
 
+    /**
+     * Handles DV Prepare phase for this tablet's bucket.
+     *
+     * <p>No DvRWLock needed: FileDict writes are RocksDB thread-safe and no other operation
+     * concurrently modifies FileDict; in-memory pending maps are only accessed sequentially by
+     * Prepare/Switch (coordinator orchestration).
+     *
+     * @param bucketId this tablet's bucket ID
+     * @param bucketOffset per-bucket DV data (readableOffset, newFileDictEntries, oldFiles)
+     * @param downloader SST downloader configured with remote dir
+     * @param snapshotId the readable snapshot ID for locating SST files
+     * @param localTempDir local directory for downloaded SST files
+     */
+    public void handlePrepare(
+            int bucketId,
+            DvPositionReportData.DvBucketOffset bucketOffset,
+            RowPosSstDownloader downloader,
+            long snapshotId,
+            String localTempDir)
+            throws IOException {
+
+        // Idempotency: preparedSnapshotId is updated as the last step,
+        // so if it already matches, the entire Prepare has completed before.
+        if (this.preparedSnapshotId == snapshotId) {
+            LOG.info("DV Prepare already completed for snapshot {}, skipping", snapshotId);
+            return;
+        }
+
+        // Download SST from remote storage
+        List<String> sstPaths = downloader.downloadBucketSst(snapshotId, bucketId, localTempDir);
+
+        // Write newFileDictEntries to FileDict CF
+        Map<Integer, String> newEntries = bucketOffset.getNewFileDictEntries();
+        for (Map.Entry<Integer, String> entry : newEntries.entrySet()) {
+            dvRocksDB.fileDict().put(entry.getKey(), entry.getValue());
+        }
+
+        // Resolve oldFiles: convert file_path to file_id
+        List<Integer> oldFileIds = new ArrayList<>();
+        for (String oldFilePath : bucketOffset.getOldFiles()) {
+            int fileId = dvRocksDB.fileDict().getFileId(oldFilePath);
+            if (fileId >= 0) {
+                oldFileIds.add(fileId);
+            }
+        }
+
+        // Store SST paths and old file IDs for Readable Switch
+        if (!sstPaths.isEmpty()) {
+            pendingSstPaths.put(bucketId, sstPaths);
+        }
+        if (!oldFileIds.isEmpty()) {
+            pendingOldFileIds.put(bucketId, oldFileIds);
+        }
+
+        // Cache readable offset for Readable Switch
+        pendingReadableOffsets.put(bucketId, bucketOffset.getReadableOffset());
+
+        // Mark Prepare as completed (must be last step for idempotency)
+        this.preparedSnapshotId = snapshotId;
+    }
+
+    /**
+     * Handles DV Readable Switch for this tablet's bucket.
+     *
+     * <p>All steps under DvRWLock write lock:
+     *
+     * <ol>
+     *   <li>Ingest SST into RowPosIndex
+     *   <li>Batch resolve PendingDeletes
+     *   <li>Cleanup oldFiles from LakeDv and PendingDeletes
+     *   <li>Cleanup expired LogDv
+     *   <li>Update readableSnapshotId and snapshotStartLogOffset
+     * </ol>
+     *
+     * @param bucketId this tablet's bucket ID
+     * @param readableSnapshotId the new readable snapshot ID
+     * @param readableOffset the per-bucket readable offset (= snapshotStartLogOffset)
+     */
+    public void handleReadableSwitch(int bucketId, long readableSnapshotId, long readableOffset)
+            throws IOException {
+
+        // Idempotency: readableSnapshotId is updated as the last step,
+        // so if it already matches, the entire Switch has completed before.
+        if (this.readableSnapshotId == readableSnapshotId) {
+            LOG.info(
+                    "DV ReadableSwitch already completed for snapshot {}, skipping",
+                    readableSnapshotId);
+            return;
+        }
+
+        dvRWLock.writeLock();
+        try {
+            // Step 1: Ingest SST into RowPosIndex
+            List<String> sstPaths = pendingSstPaths.remove(bucketId);
+            if (sstPaths != null && !sstPaths.isEmpty()) {
+                dvRocksDB.rowPosIndex().ingestExternalFile(sstPaths);
+            }
+
+            // Step 2: Batch resolve PendingDeletes
+            batchResolvePendingDeletes(readableOffset);
+
+            // Step 3: Cleanup oldFiles
+            List<Integer> oldFileIds = pendingOldFileIds.remove(bucketId);
+            if (oldFileIds != null) {
+                cleanupOldFiles(oldFileIds);
+            }
+
+            // Step 4: Cleanup expired LogDv
+            dvRocksDB.logDv().cleanup(readableOffset);
+
+            // Step 5: Update state
+            this.readableSnapshotId = readableSnapshotId;
+            this.snapshotStartLogOffset = readableOffset;
+
+            // Consume the pending readable offset
+            pendingReadableOffsets.remove(bucketId);
+        } finally {
+            dvRWLock.writeUnlock();
+        }
+    }
+
+    /**
+     * Batch resolves PendingDeletes against RowPosIndex.
+     *
+     * <p>For each pending entry in PendingDeletes:
+     *
+     * <ul>
+     *   <li>RowPosIndex hit: mark LakeDv, delete RowPosIndex, update PendingDeletes with filePos
+     *   <li>RowPosIndex miss + rowId &lt; readableOffset: orphan, delete PendingDeletes
+     *   <li>RowPosIndex miss + rowId &gt;= readableOffset: keep for next round
+     * </ul>
+     */
+    private void batchResolvePendingDeletes(long readableOffset) throws IOException {
+        // Phase 1: Iterate and collect changes (RocksDB iterator is snapshot-isolated)
+        List<ResolveAction> actions = new ArrayList<>();
+        try (CloseableIterator<PendingDeletes.PendingDeleteEntry> iter =
+                dvRocksDB.pendingDeletes().iterator()) {
+            while (iter.hasNext()) {
+                PendingDeletes.PendingDeleteEntry entry = iter.next();
+                // Only process entries that are still pending (position unknown)
+                if (!entry.isPending()) {
+                    continue;
+                }
+
+                long rowId = entry.getRowId();
+                FilePos hit = dvRocksDB.rowPosIndex().get(rowId);
+                if (hit != null) {
+                    actions.add(new ResolveAction(rowId, hit, true));
+                } else if (rowId < readableOffset) {
+                    actions.add(new ResolveAction(rowId, null, false));
+                }
+                // else: rowId >= readableOffset, keep for next round
+            }
+        }
+
+        // Phase 2: Apply all changes
+        for (ResolveAction action : actions) {
+            if (action.resolved) {
+                dvRocksDB
+                        .lakeDv()
+                        .markDeleted(action.filePos.fileId(), action.filePos.rowPosition());
+                dvRocksDB.rowPosIndex().delete(action.rowId);
+                dvRocksDB.pendingDeletes().put(action.rowId, action.filePos);
+            } else {
+                // Orphan: row was tiered but never in a data file
+                dvRocksDB.pendingDeletes().delete(action.rowId);
+            }
+        }
+    }
+
+    /**
+     * Cleans up LakeDv and PendingDeletes entries for old files removed by compaction.
+     *
+     * @param oldFileIds file IDs of the old files to clean up
+     */
+    private void cleanupOldFiles(List<Integer> oldFileIds) throws IOException {
+        Set<Integer> oldFileIdSet = new HashSet<>(oldFileIds);
+
+        // Remove LakeDv entries for old files
+        for (int fileId : oldFileIds) {
+            dvRocksDB.lakeDv().delete(fileId);
+        }
+
+        // Remove PendingDeletes entries pointing to old files
+        List<Long> toDelete = new ArrayList<>();
+        try (CloseableIterator<PendingDeletes.PendingDeleteEntry> iter =
+                dvRocksDB.pendingDeletes().iterator()) {
+            while (iter.hasNext()) {
+                PendingDeletes.PendingDeleteEntry entry = iter.next();
+                if (!entry.isPending()) {
+                    FilePos fp = entry.getFilePos();
+                    if (oldFileIdSet.contains(fp.fileId())) {
+                        toDelete.add(entry.getRowId());
+                    }
+                }
+            }
+        }
+        for (long rowId : toDelete) {
+            dvRocksDB.pendingDeletes().delete(rowId);
+        }
+    }
+
+    /**
+     * Returns the pending readable offset cached during Prepare for the given bucket. Returns -1 if
+     * no pending offset exists.
+     */
+    public long getPendingReadableOffset(int bucketId) {
+        Long offset = pendingReadableOffsets.get(bucketId);
+        return offset != null ? offset : -1;
+    }
+
+    /** Returns the current DV-readable snapshot ID. */
+    public long getReadableSnapshotId() {
+        return readableSnapshotId;
+    }
+
+    /** Returns the log start offset of the current readable snapshot. */
+    public long getSnapshotStartLogOffset() {
+        return snapshotStartLogOffset;
+    }
+
+    /** Returns the DV read-write lock. */
+    public DvRWLock getDvRWLock() {
+        return dvRWLock;
+    }
+
     @Override
     public void close() {
         // DvRocksDB lifecycle is managed externally by KvTablet
+    }
+
+    /** Internal action for batch resolve operations. */
+    private static class ResolveAction {
+        final long rowId;
+        final FilePos filePos;
+        final boolean resolved;
+
+        ResolveAction(long rowId, FilePos filePos, boolean resolved) {
+            this.rowId = rowId;
+            this.filePos = filePos;
+            this.resolved = resolved;
+        }
     }
 }

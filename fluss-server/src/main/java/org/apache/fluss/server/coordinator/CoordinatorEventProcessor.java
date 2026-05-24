@@ -2440,8 +2440,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
         long snapshotId = event.getSnapshotId();
         int coordinatorEpoch = coordinatorContext.getCoordinatorEpoch();
 
-        // Find target servers: for each bucket, check leader exists, collect all replicas
-        Set<Integer> targetServerIds = new HashSet<>();
+        // Build serverId -> bucketIds mapping
+        Map<Integer, Set<Integer>> serverBucketMap = new HashMap<>();
         for (Integer bucketId : event.getBucketIds()) {
             TableBucket tb = new TableBucket(tableId, bucketId);
             coordinatorContext
@@ -2451,42 +2451,75 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 List<Integer> assignment = coordinatorContext.getAssignment(tb);
                                 for (Integer serverId : assignment) {
                                     if (serverId >= 0) {
-                                        targetServerIds.add(serverId);
+                                        serverBucketMap
+                                                .computeIfAbsent(serverId, k -> new HashSet<>())
+                                                .add(bucketId);
                                     }
                                 }
                             });
         }
 
-        if (targetServerIds.isEmpty()) {
+        if (serverBucketMap.isEmpty()) {
             LOG.warn(
-                    "No target servers for DV Switch of table {}, snapshot {}. Skipping.",
+                    "No target servers for DV Switch of table {}, snapshot {}. Re-enqueueing.",
                     tableId,
                     snapshotId);
+            coordinatorEventManager.put(
+                    new DvSwitchEvent(
+                            tableId, snapshotId, event.getBucketIds(), event.getRetryCount() + 1));
             return;
         }
 
-        DvReadableSwitchRequest switchRequest =
-                new DvReadableSwitchRequest()
-                        .setCoordinatorEpoch(coordinatorEpoch)
-                        .setTableId(tableId)
-                        .setReadableSnapshotId(snapshotId);
-        for (int serverId : targetServerIds) {
+        List<CompletableFuture<Void>> switchFutures = new ArrayList<>();
+        for (Map.Entry<Integer, Set<Integer>> entry : serverBucketMap.entrySet()) {
+            int serverId = entry.getKey();
+            DvReadableSwitchRequest switchRequest =
+                    new DvReadableSwitchRequest()
+                            .setCoordinatorEpoch(coordinatorEpoch)
+                            .setTableId(tableId)
+                            .setReadableSnapshotId(snapshotId);
+            for (int bucketId : entry.getValue()) {
+                switchRequest.addBucketId(bucketId);
+            }
+
+            CompletableFuture<Void> f = new CompletableFuture<>();
             coordinatorChannelManager.sendDvReadableSwitchRequest(
                     serverId,
                     switchRequest,
                     (resp, throwable) -> {
                         if (throwable != null) {
-                            LOG.warn(
-                                    "Failed to send DV switch to server {} for table {}, snapshot {}",
-                                    serverId,
-                                    tableId,
-                                    snapshotId,
-                                    throwable);
+                            f.completeExceptionally(throwable);
+                        } else {
+                            f.complete(null);
                         }
                     });
+            switchFutures.add(f);
         }
-        pendingDvTables.remove(tableId);
-        LOG.info("DV orchestration completed for table {}, snapshot {}", tableId, snapshotId);
+
+        FutureUtils.completeAll(switchFutures)
+                .thenRun(
+                        () -> {
+                            pendingDvTables.remove(tableId);
+                            LOG.info(
+                                    "DV orchestration completed for table {}, snapshot {}",
+                                    tableId,
+                                    snapshotId);
+                        })
+                .exceptionally(
+                        throwable -> {
+                            int retryCount = event.getRetryCount() + 1;
+                            LOG.warn(
+                                    "DV Switch failed for table {}, snapshot {},"
+                                            + " retry {}. Re-enqueueing.",
+                                    tableId,
+                                    snapshotId,
+                                    retryCount,
+                                    throwable);
+                            coordinatorEventManager.put(
+                                    new DvSwitchEvent(
+                                            tableId, snapshotId, event.getBucketIds(), retryCount));
+                            return null;
+                        });
     }
 
     /**

@@ -2305,10 +2305,15 @@ public class ServerRpcMessageUtils {
 
     /** Extracts a {@link DvReadableSwitchData} from a {@link DvReadableSwitchRequest}. */
     public static DvReadableSwitchData getDvReadableSwitchData(DvReadableSwitchRequest request) {
+        List<Integer> bucketIds = new ArrayList<>();
+        for (int i = 0; i < request.getBucketIdsCount(); i++) {
+            bucketIds.add(request.getBucketIdAt(i));
+        }
         return new DvReadableSwitchData(
                 request.getCoordinatorEpoch(),
                 request.getTableId(),
-                request.getReadableSnapshotId());
+                request.getReadableSnapshotId(),
+                bucketIds);
     }
 
     /** Builds a {@link PbDvPrepare} proto from a {@link DvPrepareData}. */

@@ -136,12 +136,16 @@ class DvRpcMessageUtilsTest {
         request.setCoordinatorEpoch(5);
         request.setTableId(100L);
         request.setReadableSnapshotId(10L);
+        request.addBucketId(0);
+        request.addBucketId(2);
+        request.addBucketId(5);
 
         DvReadableSwitchData data = ServerRpcMessageUtils.getDvReadableSwitchData(request);
 
         assertThat(data.getCoordinatorEpoch()).isEqualTo(5);
         assertThat(data.getTableId()).isEqualTo(100L);
         assertThat(data.getReadableSnapshotId()).isEqualTo(10L);
+        assertThat(data.getBucketIds()).containsExactly(0, 2, 5);
     }
 
     @Test

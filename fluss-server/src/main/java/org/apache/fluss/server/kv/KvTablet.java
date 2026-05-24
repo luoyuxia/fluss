@@ -1026,6 +1026,17 @@ public final class KvTablet {
         return rocksDBKv;
     }
 
+    /** Returns the DvManager for this tablet, or null if DV is not enabled. */
+    @Nullable
+    public DvManager getDvManager() {
+        return dvManager;
+    }
+
+    /** Returns whether deletion vectors are enabled for this tablet. */
+    public boolean isDvEnabled() {
+        return dvEnabled;
+    }
+
     // only for testing.
     @VisibleForTesting
     @Nullable

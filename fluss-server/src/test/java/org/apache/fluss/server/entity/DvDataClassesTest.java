@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -129,11 +130,13 @@ class DvDataClassesTest {
 
     @Test
     void testDvReadableSwitchData() {
-        DvReadableSwitchData data = new DvReadableSwitchData(5, 100L, 10L);
+        List<Integer> bucketIds = Arrays.asList(0, 1, 3);
+        DvReadableSwitchData data = new DvReadableSwitchData(5, 100L, 10L, bucketIds);
 
         assertThat(data.getCoordinatorEpoch()).isEqualTo(5);
         assertThat(data.getTableId()).isEqualTo(100L);
         assertThat(data.getReadableSnapshotId()).isEqualTo(10L);
+        assertThat(data.getBucketIds()).containsExactly(0, 1, 3);
     }
 
     @Test

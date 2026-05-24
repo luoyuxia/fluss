@@ -20,6 +20,8 @@ package org.apache.fluss.server.entity;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
 
+import java.util.List;
+
 /** Data class for {@link DvReadableSwitchRequest}. */
 @Internal
 public class DvReadableSwitchData {
@@ -27,11 +29,14 @@ public class DvReadableSwitchData {
     private final int coordinatorEpoch;
     private final long tableId;
     private final long readableSnapshotId;
+    private final List<Integer> bucketIds;
 
-    public DvReadableSwitchData(int coordinatorEpoch, long tableId, long readableSnapshotId) {
+    public DvReadableSwitchData(
+            int coordinatorEpoch, long tableId, long readableSnapshotId, List<Integer> bucketIds) {
         this.coordinatorEpoch = coordinatorEpoch;
         this.tableId = tableId;
         this.readableSnapshotId = readableSnapshotId;
+        this.bucketIds = bucketIds;
     }
 
     public int getCoordinatorEpoch() {
@@ -44,5 +49,9 @@ public class DvReadableSwitchData {
 
     public long getReadableSnapshotId() {
         return readableSnapshotId;
+    }
+
+    public List<Integer> getBucketIds() {
+        return bucketIds;
     }
 }

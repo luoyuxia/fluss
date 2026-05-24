@@ -28,11 +28,17 @@ public class DvSwitchEvent implements CoordinatorEvent {
     private final long tableId;
     private final long snapshotId;
     private final Set<Integer> bucketIds;
+    private final int retryCount;
 
     public DvSwitchEvent(long tableId, long snapshotId, Set<Integer> bucketIds) {
+        this(tableId, snapshotId, bucketIds, 0);
+    }
+
+    public DvSwitchEvent(long tableId, long snapshotId, Set<Integer> bucketIds, int retryCount) {
         this.tableId = tableId;
         this.snapshotId = snapshotId;
         this.bucketIds = bucketIds;
+        this.retryCount = retryCount;
     }
 
     public long getTableId() {
@@ -45,5 +51,9 @@ public class DvSwitchEvent implements CoordinatorEvent {
 
     public Set<Integer> getBucketIds() {
         return bucketIds;
+    }
+
+    public int getRetryCount() {
+        return retryCount;
     }
 }
