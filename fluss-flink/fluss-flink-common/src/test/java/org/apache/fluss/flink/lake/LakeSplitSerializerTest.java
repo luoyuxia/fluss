@@ -32,6 +32,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.apache.fluss.client.table.scanner.log.LogScanner.EARLIEST_OFFSET;
 import static org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit.LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND;
@@ -149,6 +151,122 @@ class LakeSplitSerializerTest {
         assertThat(result.getCurrentLakeSplitIndex()).isEqualTo(1);
         assertThat(result.getRecordsToSkip()).isEqualTo(2);
         assertThat(result.isLakeSplitFinished()).isEqualTo(true);
+    }
+
+    @Test
+    void testSerializeAndDeserializeLakeSnapshotAndFlussLogSplitWithDv() throws IOException {
+        Map<String, byte[]> lakeDv = new HashMap<>();
+        lakeDv.put("file1.parquet", new byte[] {1, 2, 3});
+        lakeDv.put("file2.parquet", new byte[] {4, 5});
+        byte[] logDvBitmap = new byte[] {10, 20, 30};
+        DvSnapshotInfo dvSnapshot = new DvSnapshotInfo(lakeDv, logDvBitmap, 500L, 100L);
+
+        LakeSnapshotAndFlussLogSplit originalSplit =
+                new LakeSnapshotAndFlussLogSplit(
+                        tableBucket,
+                        "2025-08-18",
+                        Collections.singletonList(LAKE_SPLIT),
+                        EARLIEST_OFFSET,
+                        STOPPING_OFFSET,
+                        2,
+                        1,
+                        true,
+                        dvSnapshot);
+
+        DataOutputSerializer output = new DataOutputSerializer(STOPPING_OFFSET);
+        serializer.serialize(output, originalSplit);
+
+        SourceSplitBase deserializedSplit =
+                serializer.deserialize(
+                        LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND,
+                        tableBucket,
+                        "2025-08-18",
+                        new DataInputDeserializer(output.getCopyOfBuffer()));
+
+        assertThat(deserializedSplit).isInstanceOf(LakeSnapshotAndFlussLogSplit.class);
+        LakeSnapshotAndFlussLogSplit result = (LakeSnapshotAndFlussLogSplit) deserializedSplit;
+
+        assertThat(result.getTableBucket()).isEqualTo(tableBucket);
+        assertThat(result.getStartingOffset()).isEqualTo(EARLIEST_OFFSET);
+        assertThat(result.getStoppingOffset().get()).isEqualTo(STOPPING_OFFSET);
+
+        DvSnapshotInfo resultDv = result.getDvSnapshot();
+        assertThat(resultDv).isNotNull();
+        assertThat(resultDv.getLakeDv()).hasSize(2);
+        assertThat(resultDv.getLakeDv().get("file1.parquet")).isEqualTo(new byte[] {1, 2, 3});
+        assertThat(resultDv.getLakeDv().get("file2.parquet")).isEqualTo(new byte[] {4, 5});
+        assertThat(resultDv.getLogDvBitmap()).isEqualTo(new byte[] {10, 20, 30});
+        assertThat(resultDv.getLogEndOffset()).isEqualTo(500L);
+        assertThat(resultDv.getSnapshotStartOffset()).isEqualTo(100L);
+    }
+
+    @Test
+    void testSerializeAndDeserializeLakeSnapshotAndFlussLogSplitWithNullLogDvBitmap()
+            throws IOException {
+        Map<String, byte[]> lakeDv = new HashMap<>();
+        lakeDv.put("file1.parquet", new byte[] {1, 2, 3});
+        DvSnapshotInfo dvSnapshot = new DvSnapshotInfo(lakeDv, null, 300L, 50L);
+
+        LakeSnapshotAndFlussLogSplit originalSplit =
+                new LakeSnapshotAndFlussLogSplit(
+                        tableBucket,
+                        "2025-08-18",
+                        Collections.singletonList(LAKE_SPLIT),
+                        EARLIEST_OFFSET,
+                        STOPPING_OFFSET,
+                        0,
+                        0,
+                        false,
+                        dvSnapshot);
+
+        DataOutputSerializer output = new DataOutputSerializer(STOPPING_OFFSET);
+        serializer.serialize(output, originalSplit);
+
+        SourceSplitBase deserializedSplit =
+                serializer.deserialize(
+                        LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND,
+                        tableBucket,
+                        "2025-08-18",
+                        new DataInputDeserializer(output.getCopyOfBuffer()));
+
+        LakeSnapshotAndFlussLogSplit result = (LakeSnapshotAndFlussLogSplit) deserializedSplit;
+        DvSnapshotInfo resultDv = result.getDvSnapshot();
+        assertThat(resultDv).isNotNull();
+        assertThat(resultDv.getLakeDv()).hasSize(1);
+        assertThat(resultDv.getLogDvBitmap()).isNull();
+        assertThat(resultDv.getLogEndOffset()).isEqualTo(300L);
+        assertThat(resultDv.getSnapshotStartOffset()).isEqualTo(50L);
+    }
+
+    @Test
+    void testBackwardCompatibilityWithoutDvData() throws IOException {
+        // Serialize a split WITHOUT DV data (old format)
+        LakeSnapshotAndFlussLogSplit originalSplit =
+                new LakeSnapshotAndFlussLogSplit(
+                        tableBucket,
+                        "2025-08-18",
+                        Collections.singletonList(LAKE_SPLIT),
+                        EARLIEST_OFFSET,
+                        STOPPING_OFFSET,
+                        2,
+                        1,
+                        true);
+
+        DataOutputSerializer output = new DataOutputSerializer(STOPPING_OFFSET);
+        serializer.serialize(output, originalSplit);
+
+        // Deserialize - should produce a split with null dvSnapshot
+        SourceSplitBase deserializedSplit =
+                serializer.deserialize(
+                        LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND,
+                        tableBucket,
+                        "2025-08-18",
+                        new DataInputDeserializer(output.getCopyOfBuffer()));
+
+        LakeSnapshotAndFlussLogSplit result = (LakeSnapshotAndFlussLogSplit) deserializedSplit;
+        assertThat(result.getDvSnapshot()).isNull();
+        assertThat(result.getStartingOffset()).isEqualTo(EARLIEST_OFFSET);
+        assertThat(result.getStoppingOffset().get()).isEqualTo(STOPPING_OFFSET);
     }
 
     @Test

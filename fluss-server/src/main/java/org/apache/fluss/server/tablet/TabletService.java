@@ -39,6 +39,8 @@ import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
 import org.apache.fluss.rpc.messages.DvReadableSwitchResponse;
 import org.apache.fluss.rpc.messages.FetchLogRequest;
 import org.apache.fluss.rpc.messages.FetchLogResponse;
+import org.apache.fluss.rpc.messages.GetDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetTableStatsRequest;
 import org.apache.fluss.rpc.messages.GetTableStatsResponse;
 import org.apache.fluss.rpc.messages.InitWriterRequest;
@@ -454,6 +456,23 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         CompletableFuture<DvReadableSwitchResponse> response = new CompletableFuture<>();
         replicaManager.dvReadableSwitch(
                 ServerRpcMessageUtils.getDvReadableSwitchData(request), response::complete);
+        return response;
+    }
+
+    @Override
+    public CompletableFuture<GetDvSnapshotResponse> getDvSnapshot(GetDvSnapshotRequest request) {
+        CompletableFuture<GetDvSnapshotResponse> response = new CompletableFuture<>();
+        try {
+            Long partitionId = request.hasPartitionId() ? request.getPartitionId() : null;
+            response.complete(
+                    replicaManager.getDvSnapshot(
+                            request.getTableId(),
+                            partitionId,
+                            request.getBucketId(),
+                            request.getReadableSnapshotId()));
+        } catch (Exception e) {
+            response.completeExceptionally(e);
+        }
         return response;
     }
 

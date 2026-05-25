@@ -61,6 +61,7 @@ import org.apache.fluss.rpc.entity.TableStatsResultForBucket;
 import org.apache.fluss.rpc.entity.WriteResultForBucket;
 import org.apache.fluss.rpc.gateway.CoordinatorGateway;
 import org.apache.fluss.rpc.messages.DvReadableSwitchResponse;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
 import org.apache.fluss.rpc.messages.NotifyKvSnapshotOffsetResponse;
 import org.apache.fluss.rpc.messages.NotifyLakeTableOffsetResponse;
 import org.apache.fluss.rpc.messages.NotifyRemoteLogOffsetsResponse;
@@ -86,6 +87,7 @@ import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
 import org.apache.fluss.server.kv.KvTablet;
 import org.apache.fluss.server.kv.dv.DvManager;
+import org.apache.fluss.server.kv.dv.DvSnapshot;
 import org.apache.fluss.server.kv.dv.RowPosSstDownloader;
 import org.apache.fluss.server.kv.scan.ScannerManager;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
@@ -116,6 +118,7 @@ import org.apache.fluss.server.replica.fetcher.InitialFetchStatus;
 import org.apache.fluss.server.replica.fetcher.ReplicaFetcherManager;
 import org.apache.fluss.server.storage.LocalDiskManager;
 import org.apache.fluss.server.utils.FatalErrorHandler;
+import org.apache.fluss.server.utils.ServerRpcMessageUtils;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.data.lake.LakeTableSnapshot;
 import org.apache.fluss.utils.FileUtils;
@@ -1211,6 +1214,40 @@ public class ReplicaManager implements ServerReconfigurable {
             } catch (IOException e) {
                 LOG.warn("Failed to clean up DV Prepare temp dir: {}", tempDir, e);
             }
+        }
+    }
+
+    /**
+     * Gets the DV snapshot for a specific bucket for union read.
+     *
+     * @param tableId the table ID
+     * @param partitionId the partition ID, null for non-partitioned tables
+     * @param bucketId the bucket ID
+     * @param readableSnapshotId the requested readable snapshot ID
+     * @return a {@link GetDvSnapshotResponse} containing the DV snapshot data
+     */
+    public GetDvSnapshotResponse getDvSnapshot(
+            long tableId, @Nullable Long partitionId, int bucketId, long readableSnapshotId) {
+        TableBucket tb = new TableBucket(tableId, partitionId, bucketId);
+        try {
+            Replica replica = getReplicaOrException(tb);
+            KvTablet kvTablet = replica.getKvTablet();
+            checkNotNull(kvTablet, "KvTablet not available for %s", tb);
+            checkState(kvTablet.isDvEnabled(), "DV not enabled for %s", tb);
+            DvManager dvManager = kvTablet.getDvManager();
+
+            long logEndOffset = replica.getLocalLogEndOffset();
+
+            dvManager.getDvRWLock().readLock();
+            try {
+                DvSnapshot snapshot = dvManager.getDvForUnionRead(readableSnapshotId, logEndOffset);
+                return ServerRpcMessageUtils.buildGetDvSnapshotResponse(snapshot);
+            } finally {
+                dvManager.getDvRWLock().readUnlock();
+            }
+        } catch (Exception e) {
+            throw new FlussRuntimeException(
+                    "Failed to get DV snapshot for " + tb + " snapshot " + readableSnapshotId, e);
         }
     }
 

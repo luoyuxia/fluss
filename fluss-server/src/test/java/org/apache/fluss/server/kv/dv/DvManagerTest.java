@@ -17,17 +17,23 @@
 
 package org.apache.fluss.server.kv.dv;
 
+import org.apache.fluss.exception.StaleSnapshotException;
+import org.apache.fluss.server.utils.RoaringBitmapUtils;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.roaringbitmap.longlong.Roaring64Bitmap;
 
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link DvManager}. */
 class DvManagerTest {
@@ -205,5 +211,154 @@ class DvManagerTest {
         PendingDeletes.PendingDeleteEntry entry2 = dvRocksDB.pendingDeletes().get(rowId2);
         assertThat(entry2).isNotNull();
         assertThat(entry2.isPending()).isTrue();
+    }
+
+    // ---- getDvForUnionRead tests ----
+
+    @Test
+    void testGetDvForUnionReadWithLakeDvAndLogDv() throws Exception {
+        long snapshotId = 10L;
+        long snapshotStartOffset = 100L;
+        long logEndOffset = 500L;
+
+        // Set up readable snapshot state via handleReadableSwitch
+        dvManager.handleReadableSwitch(0, snapshotId, snapshotStartOffset);
+
+        // Populate FileDict: file_id -> file_path
+        dvRocksDB.fileDict().put(1, "data/file1.parquet");
+        dvRocksDB.fileDict().put(2, "data/file2.parquet");
+
+        // Populate LakeDv: file_id -> deleted positions
+        dvRocksDB.lakeDv().markDeleted(1, 10L);
+        dvRocksDB.lakeDv().markDeleted(1, 20L);
+        dvRocksDB.lakeDv().markDeleted(2, 5L);
+
+        // Populate LogDv: mark some offsets in [snapshotStartOffset, logEndOffset) as deleted
+        dvRocksDB.logDv().markDeleted(150L);
+        dvRocksDB.logDv().markDeleted(300L);
+
+        DvSnapshot snapshot = dvManager.getDvForUnionRead(snapshotId, logEndOffset);
+
+        // Verify LakeDv entries (file_id resolved to file_path)
+        Map<String, byte[]> lakeDv = snapshot.getLakeDvEntries();
+        assertThat(lakeDv).hasSize(2);
+        assertThat(lakeDv).containsKey("data/file1.parquet");
+        assertThat(lakeDv).containsKey("data/file2.parquet");
+
+        // Verify file1 bitmap contains positions 10 and 20
+        Roaring64Bitmap file1Bitmap = new Roaring64Bitmap();
+        RoaringBitmapUtils.deserializeRoaringBitmap64(
+                file1Bitmap, lakeDv.get("data/file1.parquet"));
+        assertThat(file1Bitmap.contains(10L)).isTrue();
+        assertThat(file1Bitmap.contains(20L)).isTrue();
+        assertThat(file1Bitmap.getLongCardinality()).isEqualTo(2);
+
+        // Verify file2 bitmap contains position 5
+        Roaring64Bitmap file2Bitmap = new Roaring64Bitmap();
+        RoaringBitmapUtils.deserializeRoaringBitmap64(
+                file2Bitmap, lakeDv.get("data/file2.parquet"));
+        assertThat(file2Bitmap.contains(5L)).isTrue();
+        assertThat(file2Bitmap.getLongCardinality()).isEqualTo(1);
+
+        // Verify LogDv bitmap contains offsets 150 and 300
+        assertThat(snapshot.getLogDvBitmap()).isNotNull();
+        Roaring64Bitmap logBitmap = new Roaring64Bitmap();
+        RoaringBitmapUtils.deserializeRoaringBitmap64(logBitmap, snapshot.getLogDvBitmap());
+        assertThat(logBitmap.contains(150L)).isTrue();
+        assertThat(logBitmap.contains(300L)).isTrue();
+        assertThat(logBitmap.getLongCardinality()).isEqualTo(2);
+
+        // Verify offsets
+        assertThat(snapshot.getLogEndOffset()).isEqualTo(logEndOffset);
+        assertThat(snapshot.getSnapshotStartOffset()).isEqualTo(snapshotStartOffset);
+    }
+
+    @Test
+    void testGetDvForUnionReadStaleSnapshot() throws Exception {
+        long snapshotId = 10L;
+        dvManager.handleReadableSwitch(0, snapshotId, 100L);
+
+        // Request with wrong snapshot ID
+        assertThatThrownBy(() -> dvManager.getDvForUnionRead(99L, 500L))
+                .isInstanceOf(StaleSnapshotException.class)
+                .satisfies(
+                        e -> {
+                            StaleSnapshotException stale = (StaleSnapshotException) e;
+                            assertThat(stale.getCurrentSnapshotId()).isEqualTo(snapshotId);
+                            assertThat(stale.getRequestedSnapshotId()).isEqualTo(99L);
+                        });
+    }
+
+    @Test
+    void testGetDvForUnionReadEmptyDv() throws Exception {
+        long snapshotId = 5L;
+        long snapshotStartOffset = 50L;
+        long logEndOffset = 200L;
+
+        dvManager.handleReadableSwitch(0, snapshotId, snapshotStartOffset);
+
+        // No LakeDv, no LogDv entries
+        DvSnapshot snapshot = dvManager.getDvForUnionRead(snapshotId, logEndOffset);
+
+        assertThat(snapshot.getLakeDvEntries()).isEmpty();
+        assertThat(snapshot.getLogDvBitmap()).isNull();
+        assertThat(snapshot.getLogEndOffset()).isEqualTo(logEndOffset);
+        assertThat(snapshot.getSnapshotStartOffset()).isEqualTo(snapshotStartOffset);
+    }
+
+    @Test
+    void testGetDvForUnionReadOnlyLakeDv() throws Exception {
+        long snapshotId = 7L;
+        long snapshotStartOffset = 100L;
+        long logEndOffset = 100L; // same as start → no log data gap
+
+        dvManager.handleReadableSwitch(0, snapshotId, snapshotStartOffset);
+
+        dvRocksDB.fileDict().put(3, "data/file3.parquet");
+        dvRocksDB.lakeDv().markDeleted(3, 42L);
+
+        DvSnapshot snapshot = dvManager.getDvForUnionRead(snapshotId, logEndOffset);
+
+        assertThat(snapshot.getLakeDvEntries()).hasSize(1);
+        assertThat(snapshot.getLakeDvEntries()).containsKey("data/file3.parquet");
+        // No log data gap → LogDv bitmap should be null
+        assertThat(snapshot.getLogDvBitmap()).isNull();
+    }
+
+    @Test
+    void testGetDvForUnionReadOnlyLogDv() throws Exception {
+        long snapshotId = 8L;
+        long snapshotStartOffset = 50L;
+        long logEndOffset = 300L;
+
+        dvManager.handleReadableSwitch(0, snapshotId, snapshotStartOffset);
+
+        // No LakeDv entries, but mark some log offsets
+        dvRocksDB.logDv().markDeleted(60L);
+        dvRocksDB.logDv().markDeleted(200L);
+
+        DvSnapshot snapshot = dvManager.getDvForUnionRead(snapshotId, logEndOffset);
+
+        assertThat(snapshot.getLakeDvEntries()).isEmpty();
+        assertThat(snapshot.getLogDvBitmap()).isNotNull();
+
+        Roaring64Bitmap logBitmap = new Roaring64Bitmap();
+        RoaringBitmapUtils.deserializeRoaringBitmap64(logBitmap, snapshot.getLogDvBitmap());
+        assertThat(logBitmap.contains(60L)).isTrue();
+        assertThat(logBitmap.contains(200L)).isTrue();
+    }
+
+    @Test
+    void testGetDvForUnionReadFileDictMissing() throws Exception {
+        long snapshotId = 9L;
+        dvManager.handleReadableSwitch(0, snapshotId, 100L);
+
+        // LakeDv has entry for file_id=99 but FileDict has no mapping for it
+        dvRocksDB.lakeDv().markDeleted(99, 1L);
+
+        DvSnapshot snapshot = dvManager.getDvForUnionRead(snapshotId, 500L);
+
+        // file_id 99 has no FileDict mapping, so it should be excluded
+        assertThat(snapshot.getLakeDvEntries()).isEmpty();
     }
 }

@@ -18,6 +18,7 @@
 
 package org.apache.fluss.flink.lake.split;
 
+import org.apache.fluss.flink.lake.DvSnapshotInfo;
 import org.apache.fluss.flink.source.split.SourceSplitBase;
 import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.metadata.TableBucket;
@@ -46,6 +47,9 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
     /** Whether the lake split has been finished. */
     private boolean isLakeSplitFinished;
 
+    /** DV snapshot data for DV-enabled tables, null otherwise. */
+    @Nullable private final DvSnapshotInfo dvSnapshot;
+
     private long startingOffset;
     private final long stoppingOffset;
 
@@ -64,7 +68,8 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
                 0,
                 0,
                 // if lake splits is null, no lake splits, also means LakeSplitFinished
-                snapshotSplits == null);
+                snapshotSplits == null,
+                null);
     }
 
     public LakeSnapshotAndFlussLogSplit(
@@ -76,6 +81,28 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
             long recordsToSkip,
             int currentLakeSplitIndex,
             boolean isLakeSplitFinished) {
+        this(
+                tableBucket,
+                partitionName,
+                snapshotSplits,
+                startingOffset,
+                stoppingOffset,
+                recordsToSkip,
+                currentLakeSplitIndex,
+                isLakeSplitFinished,
+                null);
+    }
+
+    public LakeSnapshotAndFlussLogSplit(
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            @Nullable List<LakeSplit> snapshotSplits,
+            long startingOffset,
+            long stoppingOffset,
+            long recordsToSkip,
+            int currentLakeSplitIndex,
+            boolean isLakeSplitFinished,
+            @Nullable DvSnapshotInfo dvSnapshot) {
         super(tableBucket, partitionName);
         this.lakeSnapshotSplits = snapshotSplits;
         this.startingOffset = startingOffset;
@@ -83,6 +110,7 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
         this.recordToSkip = recordsToSkip;
         this.currentLakeSplitIndex = currentLakeSplitIndex;
         this.isLakeSplitFinished = isLakeSplitFinished;
+        this.dvSnapshot = dvSnapshot;
     }
 
     public LakeSnapshotAndFlussLogSplit updateWithRecordsToSkip(long recordsToSkip) {
@@ -146,6 +174,12 @@ public class LakeSnapshotAndFlussLogSplit extends SourceSplitBase {
 
     public int getCurrentLakeSplitIndex() {
         return currentLakeSplitIndex;
+    }
+
+    /** Returns the DV snapshot data, or null if DV is not enabled. */
+    @Nullable
+    public DvSnapshotInfo getDvSnapshot() {
+        return dvSnapshot;
     }
 
     @Override

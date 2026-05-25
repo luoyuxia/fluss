@@ -104,7 +104,8 @@ public enum ApiKeys {
     GET_TABLE_STATS(1059, 0, 0, PUBLIC),
     ALTER_DATABASE(1060, 0, 0, PUBLIC),
     SCAN_KV(1061, 0, 0, PUBLIC),
-    DV_READABLE_SWITCH(1062, 0, 0, PRIVATE);
+    DV_READABLE_SWITCH(1062, 0, 0, PRIVATE),
+    GET_DV_SNAPSHOT(1063, 0, 0, PRIVATE);
 
     private static final Map<Integer, ApiKeys> ID_TO_TYPE =
             Arrays.stream(ApiKeys.values())

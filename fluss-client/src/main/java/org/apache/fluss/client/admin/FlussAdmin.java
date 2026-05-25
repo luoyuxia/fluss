@@ -68,6 +68,8 @@ import org.apache.fluss.rpc.messages.DropAclsRequest;
 import org.apache.fluss.rpc.messages.DropDatabaseRequest;
 import org.apache.fluss.rpc.messages.DropTableRequest;
 import org.apache.fluss.rpc.messages.GetDatabaseInfoRequest;
+import org.apache.fluss.rpc.messages.GetDvSnapshotRequest;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
 import org.apache.fluss.rpc.messages.GetKvSnapshotMetadataRequest;
 import org.apache.fluss.rpc.messages.GetLakeSnapshotRequest;
 import org.apache.fluss.rpc.messages.GetLatestKvSnapshotsRequest;
@@ -868,6 +870,31 @@ public class FlussAdmin implements Admin {
                 bucketToOffsetMap.get(resp.getBucketId()).complete(resp.getOffset());
             }
         }
+    }
+
+    @Override
+    public CompletableFuture<GetDvSnapshotResponse> getDvSnapshot(
+            TablePath tablePath,
+            long tableId,
+            @Nullable Long partitionId,
+            int bucketId,
+            long readableSnapshotId) {
+        TableBucket tb = new TableBucket(tableId, partitionId, bucketId);
+        int leader = metadataUpdater.leaderFor(tablePath, tb);
+        TabletServerGateway tsGateway = metadataUpdater.newTabletServerClientForNode(leader);
+        if (tsGateway == null) {
+            throw new LeaderNotAvailableException(
+                    "Server " + leader + " is not found in metadata cache.");
+        }
+        GetDvSnapshotRequest request =
+                new GetDvSnapshotRequest()
+                        .setTableId(tableId)
+                        .setBucketId(bucketId)
+                        .setReadableSnapshotId(readableSnapshotId);
+        if (partitionId != null) {
+            request.setPartitionId(partitionId);
+        }
+        return tsGateway.getDvSnapshot(request);
     }
 
     @VisibleForTesting

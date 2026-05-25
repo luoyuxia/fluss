@@ -18,9 +18,12 @@
 package org.apache.fluss.server.kv.dv;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.exception.StaleSnapshotException;
 import org.apache.fluss.server.entity.DvPositionReportData;
+import org.apache.fluss.server.utils.RoaringBitmapUtils;
 import org.apache.fluss.utils.CloseableIterator;
 
+import org.roaringbitmap.longlong.Roaring64Bitmap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -332,6 +335,45 @@ public class DvManager implements Closeable {
     public long getPendingReadableOffset(int bucketId) {
         Long offset = pendingReadableOffsets.get(bucketId);
         return offset != null ? offset : -1;
+    }
+
+    /**
+     * Gets a DV snapshot for union read. Must be called under DvRWLock read lock. Converts file_id
+     * to file_path via FileDict before returning.
+     *
+     * @param requestedSnapshotId the snapshot ID requested by the client
+     * @param logEndOffset the current log end offset from the LogTablet
+     * @return a {@link DvSnapshot} containing LakeDv, LogDv, and offset information
+     * @throws StaleSnapshotException if the requested snapshot ID does not match the current
+     *     readable snapshot
+     */
+    public DvSnapshot getDvForUnionRead(long requestedSnapshotId, long logEndOffset)
+            throws IOException, StaleSnapshotException {
+        // Verify snapshot consistency
+        if (readableSnapshotId != requestedSnapshotId) {
+            throw new StaleSnapshotException(readableSnapshotId, requestedSnapshotId);
+        }
+
+        // Snapshot LakeDv: read all entries, convert file_id -> file_path via FileDict
+        Map<Integer, Roaring64Bitmap> rawLakeDv = dvRocksDB.lakeDv().getAll();
+        Map<String, byte[]> resolvedLakeDv = new HashMap<>();
+        for (Map.Entry<Integer, Roaring64Bitmap> entry : rawLakeDv.entrySet()) {
+            String filePath = dvRocksDB.fileDict().getFilePath(entry.getKey());
+            if (filePath != null) {
+                resolvedLakeDv.put(
+                        filePath, RoaringBitmapUtils.serializeRoaringBitmap64(entry.getValue()));
+            }
+        }
+
+        // Snapshot LogDv: range [snapshotStartLogOffset, logEndOffset)
+        Roaring64Bitmap logDvBitmap =
+                dvRocksDB.logDv().snapshot(snapshotStartLogOffset, logEndOffset);
+        byte[] logDvBytes = null;
+        if (!logDvBitmap.isEmpty()) {
+            logDvBytes = RoaringBitmapUtils.serializeRoaringBitmap64(logDvBitmap);
+        }
+
+        return new DvSnapshot(resolvedLakeDv, logDvBytes, logEndOffset, snapshotStartLogOffset);
     }
 
     /** Returns the current DV-readable snapshot ID. */

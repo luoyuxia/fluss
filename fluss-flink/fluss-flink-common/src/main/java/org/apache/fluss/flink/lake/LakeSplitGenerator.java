@@ -20,7 +20,9 @@ package org.apache.fluss.flink.lake;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.initializer.OffsetsInitializer;
 import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.exception.FlussException;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
+import org.apache.fluss.exception.StaleSnapshotException;
 import org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit;
 import org.apache.fluss.flink.lake.split.LakeSnapshotSplit;
 import org.apache.fluss.flink.source.split.LogSplit;
@@ -30,13 +32,20 @@ import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
+import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
+import org.apache.fluss.rpc.messages.PbLakeDvEntry;
 import org.apache.fluss.utils.ExceptionUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,12 +61,20 @@ import static org.apache.fluss.metadata.ResolvedPartitionSpec.PARTITION_SPEC_SEP
 /** A generator for lake splits. */
 public class LakeSplitGenerator {
 
+    private static final Logger LOG = LoggerFactory.getLogger(LakeSplitGenerator.class);
+
+    private static final int MAX_OUTER_RETRIES = 3;
+    private static final int MAX_DV_FETCH_RETRIES = 10;
+    private static final long INITIAL_BACKOFF_MS = 500;
+    private static final long MAX_BACKOFF_MS = 10000;
+
     private final TableInfo tableInfo;
     private final Admin flussAdmin;
     private final OffsetsInitializer.BucketOffsetsRetriever bucketOffsetsRetriever;
     private final OffsetsInitializer stoppingOffsetInitializer;
     private final int bucketCount;
     private final Supplier<Set<PartitionInfo>> listPartitionSupplier;
+    private final boolean dvEnabled;
 
     private final LakeSource<LakeSplit> lakeSource;
 
@@ -76,54 +93,137 @@ public class LakeSplitGenerator {
         this.stoppingOffsetInitializer = stoppingOffsetInitializer;
         this.bucketCount = bucketCount;
         this.listPartitionSupplier = listPartitionSupplier;
+        this.dvEnabled = tableInfo.getTableConfig().isDeletionVectorsEnabled();
     }
 
     /**
      * Return A list of hybrid lake snapshot {@link LakeSnapshotSplit}, {@link
      * LakeSnapshotAndFlussLogSplit} and the corresponding Fluss {@link LogSplit} based on the lake
      * snapshot. Return null if no lake snapshot exists.
+     *
+     * <p>If DV is enabled, fetches DV snapshots from TabletServers with retry:
+     *
+     * <ul>
+     *   <li>Inner retry: per-bucket backoff for "not ready" (server hasn't completed Switch yet)
+     *   <li>Outer retry: refresh LakeSnapshot when snapshot has been superseded
+     * </ul>
      */
     @Nullable
     public List<SourceSplitBase> generateHybridLakeFlussSplits() throws Exception {
-        LakeSnapshot lakeSnapshotInfo;
-        try {
-            lakeSnapshotInfo = flussAdmin.getReadableLakeSnapshot(tableInfo.getTablePath()).get();
-        } catch (Exception exception) {
-            if (ExceptionUtils.stripExecutionException(exception)
-                    instanceof LakeTableSnapshotNotExistException) {
-                return null;
+        for (int outerRetry = 0; outerRetry < MAX_OUTER_RETRIES; outerRetry++) {
+            LakeSnapshot lakeSnapshotInfo;
+            try {
+                lakeSnapshotInfo =
+                        flussAdmin.getReadableLakeSnapshot(tableInfo.getTablePath()).get();
+            } catch (Exception exception) {
+                if (ExceptionUtils.stripExecutionException(exception)
+                        instanceof LakeTableSnapshotNotExistException) {
+                    return null;
+                }
+                throw exception;
             }
-            throw exception;
+
+            long snapshotId = lakeSnapshotInfo.getSnapshotId();
+
+            boolean isLogTable = !tableInfo.hasPrimaryKey();
+            boolean isPartitioned = tableInfo.isPartitioned();
+
+            Map<String, Map<Integer, List<LakeSplit>>> lakeSplits =
+                    groupLakeSplits(
+                            lakeSource
+                                    .createPlanner((LakeSource.PlannerContext) () -> snapshotId)
+                                    .plan());
+
+            Map<TableBucket, Long> tableBucketsOffset = lakeSnapshotInfo.getTableBucketsOffset();
+
+            // Pre-compute stopping offsets and partition info
+            Map<Long, String> partitionNameById = null;
+            Map<TableBucket, Long> allStoppingOffsets = new HashMap<>();
+            List<Integer> bucketIds =
+                    IntStream.range(0, bucketCount).boxed().collect(Collectors.toList());
+
+            if (isPartitioned) {
+                Set<PartitionInfo> partitionInfos = listPartitionSupplier.get();
+                partitionNameById =
+                        partitionInfos.stream()
+                                .collect(
+                                        Collectors.toMap(
+                                                PartitionInfo::getPartitionId,
+                                                PartitionInfo::getPartitionName));
+                for (Map.Entry<Long, String> entry : partitionNameById.entrySet()) {
+                    Map<Integer, Long> offsets =
+                            stoppingOffsetInitializer.getBucketOffsets(
+                                    entry.getValue(), bucketIds, bucketOffsetsRetriever);
+                    for (Map.Entry<Integer, Long> offsetEntry : offsets.entrySet()) {
+                        allStoppingOffsets.put(
+                                new TableBucket(
+                                        tableInfo.getTableId(),
+                                        entry.getKey(),
+                                        offsetEntry.getKey()),
+                                offsetEntry.getValue());
+                    }
+                }
+            } else {
+                Map<Integer, Long> offsets =
+                        stoppingOffsetInitializer.getBucketOffsets(
+                                null, bucketIds, bucketOffsetsRetriever);
+                for (Map.Entry<Integer, Long> offsetEntry : offsets.entrySet()) {
+                    allStoppingOffsets.put(
+                            new TableBucket(tableInfo.getTableId(), null, offsetEntry.getKey()),
+                            offsetEntry.getValue());
+                }
+            }
+
+            // Fetch DV data if enabled, only for buckets with data gap
+            Map<TableBucket, DvSnapshotInfo> bucketDvSnapshots = null;
+            if (dvEnabled) {
+                Set<TableBucket> bucketsNeedingDv =
+                        findBucketsNeedingDv(tableBucketsOffset, allStoppingOffsets);
+                if (!bucketsNeedingDv.isEmpty()) {
+                    try {
+                        bucketDvSnapshots = fetchDvForAllBuckets(snapshotId, bucketsNeedingDv);
+                    } catch (Exception e) {
+                        Throwable cause = ExceptionUtils.stripExecutionException(e);
+                        if (cause instanceof StaleSnapshotException) {
+                            StaleSnapshotException stale = (StaleSnapshotException) cause;
+                            if (stale.getRequestedSnapshotId() < stale.getCurrentSnapshotId()) {
+                                // Snapshot superseded, refresh and retry
+                                LOG.info(
+                                        "DV snapshot {} superseded (current: {}), refreshing.",
+                                        snapshotId,
+                                        stale.getCurrentSnapshotId());
+                                continue;
+                            }
+                        }
+                        throw e;
+                    }
+                }
+            }
+
+            if (isPartitioned) {
+                return generatePartitionTableSplit(
+                        lakeSplits,
+                        isLogTable,
+                        tableBucketsOffset,
+                        partitionNameById,
+                        allStoppingOffsets,
+                        bucketDvSnapshots);
+            } else {
+                Map<Integer, List<LakeSplit>> nonPartitionLakeSplits =
+                        lakeSplits.isEmpty() ? null : lakeSplits.values().iterator().next();
+                // non-partitioned table
+                return generateNoPartitionedTableSplit(
+                        nonPartitionLakeSplits,
+                        isLogTable,
+                        tableBucketsOffset,
+                        allStoppingOffsets,
+                        bucketDvSnapshots);
+            }
         }
-
-        boolean isLogTable = !tableInfo.hasPrimaryKey();
-        boolean isPartitioned = tableInfo.isPartitioned();
-
-        Map<String, Map<Integer, List<LakeSplit>>> lakeSplits =
-                groupLakeSplits(
-                        lakeSource
-                                .createPlanner(
-                                        (LakeSource.PlannerContext) lakeSnapshotInfo::getSnapshotId)
-                                .plan());
-
-        Map<TableBucket, Long> tableBucketsOffset = lakeSnapshotInfo.getTableBucketsOffset();
-        if (isPartitioned) {
-            Set<PartitionInfo> partitionInfos = listPartitionSupplier.get();
-            Map<Long, String> partitionNameById =
-                    partitionInfos.stream()
-                            .collect(
-                                    Collectors.toMap(
-                                            PartitionInfo::getPartitionId,
-                                            PartitionInfo::getPartitionName));
-            return generatePartitionTableSplit(
-                    lakeSplits, isLogTable, tableBucketsOffset, partitionNameById);
-        } else {
-            Map<Integer, List<LakeSplit>> nonPartitionLakeSplits =
-                    lakeSplits.isEmpty() ? null : lakeSplits.values().iterator().next();
-            // non-partitioned table
-            return generateNoPartitionedTableSplit(
-                    nonPartitionLakeSplits, isLogTable, tableBucketsOffset);
-        }
+        throw new FlussException(
+                "Failed to fetch DV snapshots after "
+                        + MAX_OUTER_RETRIES
+                        + " retries due to snapshot superseding");
     }
 
     private Map<String, Map<Integer, List<LakeSplit>>> groupLakeSplits(List<LakeSplit> lakeSplits) {
@@ -144,7 +244,9 @@ public class LakeSplitGenerator {
             Map<String, Map<Integer, List<LakeSplit>>> lakeSplits,
             boolean isLogTable,
             Map<TableBucket, Long> tableBucketSnapshotLogOffset,
-            Map<Long, String> partitionNameById) {
+            Map<Long, String> partitionNameById,
+            Map<TableBucket, Long> allStoppingOffsets,
+            @Nullable Map<TableBucket, DvSnapshotInfo> bucketDvSnapshots) {
         List<SourceSplitBase> splits = new ArrayList<>();
         Map<String, Long> flussPartitionIdByName =
                 partitionNameById.entrySet().stream()
@@ -164,13 +266,6 @@ public class LakeSplitGenerator {
             Long partitionId = flussPartitionIdByName.remove(partitionName);
             if (partitionId != null) {
                 // mean the partition also exist in fluss partition
-                Map<Integer, Long> bucketEndOffset =
-                        stoppingOffsetInitializer.getBucketOffsets(
-                                partitionName,
-                                IntStream.range(0, bucketCount)
-                                        .boxed()
-                                        .collect(Collectors.toList()),
-                                bucketOffsetsRetriever);
                 splits.addAll(
                         generateSplit(
                                 lakeSplitsOfPartition,
@@ -178,7 +273,8 @@ public class LakeSplitGenerator {
                                 partitionName,
                                 isLogTable,
                                 tableBucketSnapshotLogOffset,
-                                bucketEndOffset));
+                                allStoppingOffsets,
+                                bucketDvSnapshots));
 
             } else {
                 // only lake data
@@ -199,11 +295,6 @@ public class LakeSplitGenerator {
         for (Map.Entry<String, Long> partitionIdByNameEntry : flussPartitionIdByName.entrySet()) {
             String partitionName = partitionIdByNameEntry.getKey();
             Long partitionId = partitionIdByNameEntry.getValue();
-            Map<Integer, Long> bucketEndOffset =
-                    stoppingOffsetInitializer.getBucketOffsets(
-                            partitionName,
-                            IntStream.range(0, bucketCount).boxed().collect(Collectors.toList()),
-                            bucketOffsetsRetriever);
             splits.addAll(
                     generateSplit(
                             null,
@@ -212,7 +303,8 @@ public class LakeSplitGenerator {
                             isLogTable,
                             // pass empty map since we won't read lake splits
                             Collections.emptyMap(),
-                            bucketEndOffset));
+                            allStoppingOffsets,
+                            bucketDvSnapshots));
         }
         return splits;
     }
@@ -223,7 +315,8 @@ public class LakeSplitGenerator {
             @Nullable String partitionName,
             boolean isLogTable,
             Map<TableBucket, Long> tableBucketSnapshotLogOffset,
-            Map<Integer, Long> bucketEndOffset) {
+            Map<TableBucket, Long> allStoppingOffsets,
+            @Nullable Map<TableBucket, DvSnapshotInfo> bucketDvSnapshots) {
         List<SourceSplitBase> splits = new ArrayList<>();
         if (isLogTable) {
             if (lakeSplits != null) {
@@ -233,7 +326,10 @@ public class LakeSplitGenerator {
                 TableBucket tableBucket =
                         new TableBucket(tableInfo.getTableId(), partitionId, bucket);
                 Long snapshotLogOffset = tableBucketSnapshotLogOffset.get(tableBucket);
-                Long stoppingOffset = bucketEndOffset.get(bucket);
+                Long stoppingOffset = allStoppingOffsets.get(tableBucket);
+                if (stoppingOffset == null) {
+                    stoppingOffset = NO_STOPPING_OFFSET;
+                }
                 if (snapshotLogOffset == null) {
                     // no data committed to lake for this bucket, scan from fluss log
                     if (stoppingOffset == NO_STOPPING_OFFSET || stoppingOffset > 0) {
@@ -263,14 +359,20 @@ public class LakeSplitGenerator {
                 TableBucket tableBucket =
                         new TableBucket(tableInfo.getTableId(), partitionId, bucket);
                 Long snapshotLogOffset = tableBucketSnapshotLogOffset.get(tableBucket);
-                Long stoppingOffset = bucketEndOffset.get(bucket);
+                Long stoppingOffset = allStoppingOffsets.get(tableBucket);
+                if (stoppingOffset == null) {
+                    stoppingOffset = NO_STOPPING_OFFSET;
+                }
+                DvSnapshotInfo dvSnapshot =
+                        bucketDvSnapshots != null ? bucketDvSnapshots.get(tableBucket) : null;
                 splits.add(
                         generateSplitForPrimaryKeyTableBucket(
                                 lakeSplits != null ? lakeSplits.get(bucket) : null,
                                 tableBucket,
                                 partitionName,
                                 snapshotLogOffset,
-                                stoppingOffset));
+                                stoppingOffset,
+                                dvSnapshot));
             }
         }
 
@@ -299,7 +401,8 @@ public class LakeSplitGenerator {
             TableBucket tableBucket,
             @Nullable String partitionName,
             @Nullable Long snapshotLogOffset,
-            long stoppingOffset) {
+            long stoppingOffset,
+            @Nullable DvSnapshotInfo dvSnapshot) {
         // no snapshot data for this bucket or no a corresponding log offset in this bucket,
         // can only scan from change log
         if (snapshotLogOffset == null || snapshotLogOffset < 0) {
@@ -308,21 +411,122 @@ public class LakeSplitGenerator {
         }
 
         return new LakeSnapshotAndFlussLogSplit(
-                tableBucket, partitionName, lakeSplits, snapshotLogOffset, stoppingOffset);
+                tableBucket,
+                partitionName,
+                lakeSplits,
+                snapshotLogOffset,
+                stoppingOffset,
+                0,
+                0,
+                lakeSplits == null,
+                dvSnapshot);
     }
 
     private List<SourceSplitBase> generateNoPartitionedTableSplit(
             @Nullable Map<Integer, List<LakeSplit>> lakeSplits,
             boolean isLogTable,
-            Map<TableBucket, Long> tableBucketSnapshotLogOffset) {
-        // iterate all bucket
-        // assume bucket is from 0 to bucket count
-        Map<Integer, Long> bucketEndOffset =
-                stoppingOffsetInitializer.getBucketOffsets(
-                        null,
-                        IntStream.range(0, bucketCount).boxed().collect(Collectors.toList()),
-                        bucketOffsetsRetriever);
+            Map<TableBucket, Long> tableBucketSnapshotLogOffset,
+            Map<TableBucket, Long> allStoppingOffsets,
+            @Nullable Map<TableBucket, DvSnapshotInfo> bucketDvSnapshots) {
         return generateSplit(
-                lakeSplits, null, null, isLogTable, tableBucketSnapshotLogOffset, bucketEndOffset);
+                lakeSplits,
+                null,
+                null,
+                isLogTable,
+                tableBucketSnapshotLogOffset,
+                allStoppingOffsets,
+                bucketDvSnapshots);
+    }
+
+    // --------- DV fetch helpers ---------
+
+    /**
+     * Finds buckets that need DV data. Only buckets where the readable offset (snapshot log offset)
+     * differs from the latest offset (stopping offset) need DV filtering.
+     */
+    private Set<TableBucket> findBucketsNeedingDv(
+            Map<TableBucket, Long> tableBucketsOffset, Map<TableBucket, Long> allStoppingOffsets) {
+        Set<TableBucket> result = new HashSet<>();
+        for (Map.Entry<TableBucket, Long> entry : tableBucketsOffset.entrySet()) {
+            TableBucket tb = entry.getKey();
+            long snapshotLogOffset = entry.getValue();
+            Long stoppingOffset = allStoppingOffsets.get(tb);
+            // Only need DV when readable offset != latest offset
+            if (stoppingOffset == null
+                    || stoppingOffset == NO_STOPPING_OFFSET
+                    || snapshotLogOffset != stoppingOffset) {
+                result.add(tb);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Fetches DV snapshot for the specified table buckets. Per-bucket retry for "not ready" errors.
+     * Throws {@link StaleSnapshotException} (superseded) to caller for outer retry.
+     */
+    private Map<TableBucket, DvSnapshotInfo> fetchDvForAllBuckets(
+            long snapshotId, Set<TableBucket> tableBuckets) throws Exception {
+        TablePath tablePath = tableInfo.getTablePath();
+        Map<TableBucket, DvSnapshotInfo> results = new HashMap<>();
+        for (TableBucket tb : tableBuckets) {
+            results.put(tb, fetchDvForBucketWithRetry(tablePath, tb, snapshotId));
+        }
+        return results;
+    }
+
+    private DvSnapshotInfo fetchDvForBucketWithRetry(
+            TablePath tablePath, TableBucket tableBucket, long snapshotId) throws Exception {
+        long backoffMs = INITIAL_BACKOFF_MS;
+        for (int attempt = 0; attempt < MAX_DV_FETCH_RETRIES; attempt++) {
+            try {
+                GetDvSnapshotResponse resp =
+                        flussAdmin
+                                .getDvSnapshot(
+                                        tablePath,
+                                        tableBucket.getTableId(),
+                                        tableBucket.getPartitionId(),
+                                        tableBucket.getBucket(),
+                                        snapshotId)
+                                .get();
+                return toDvSnapshotInfo(resp);
+            } catch (Exception e) {
+                Throwable cause = ExceptionUtils.stripExecutionException(e);
+                if (cause instanceof StaleSnapshotException) {
+                    StaleSnapshotException stale = (StaleSnapshotException) cause;
+                    if (stale.getRequestedSnapshotId() > stale.getCurrentSnapshotId()) {
+                        // Server not ready yet, backoff and retry
+                        LOG.debug(
+                                "Bucket {} not ready for snapshot {} (current: {}), retry {}/{}",
+                                tableBucket,
+                                snapshotId,
+                                stale.getCurrentSnapshotId(),
+                                attempt + 1,
+                                MAX_DV_FETCH_RETRIES);
+                        Thread.sleep(backoffMs);
+                        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+                        continue;
+                    }
+                    // Snapshot superseded - re-throw to trigger outer retry
+                    throw e;
+                }
+                throw e;
+            }
+        }
+        throw new FlussException(
+                String.format(
+                        "Failed to fetch DV snapshot for bucket %s after %d retries",
+                        tableBucket, MAX_DV_FETCH_RETRIES));
+    }
+
+    private static DvSnapshotInfo toDvSnapshotInfo(GetDvSnapshotResponse resp) {
+        Map<String, byte[]> lakeDv = new HashMap<>();
+        for (int i = 0; i < resp.getLakeDvEntriesCount(); i++) {
+            PbLakeDvEntry entry = resp.getLakeDvEntryAt(i);
+            lakeDv.put(entry.getFilePath(), entry.getDeletedPositionsBitmap());
+        }
+        byte[] logDvBitmap = resp.hasLogDvBitmap() ? resp.getLogDvBitmap() : null;
+        return new DvSnapshotInfo(
+                lakeDv, logDvBitmap, resp.getLogEndOffset(), resp.getSnapshotStartOffset());
     }
 }

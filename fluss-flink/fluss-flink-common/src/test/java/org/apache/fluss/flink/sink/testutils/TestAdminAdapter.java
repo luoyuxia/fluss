@@ -47,6 +47,7 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.metadata.TableStats;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
 import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.security.acl.AclBindingFilter;
 
@@ -315,6 +316,16 @@ public class TestAdminAdapter implements Admin {
 
     @Override
     public CompletableFuture<LakeSnapshot> getReadableLakeSnapshot(TablePath tablePath) {
+        throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
+    }
+
+    @Override
+    public CompletableFuture<GetDvSnapshotResponse> getDvSnapshot(
+            TablePath tablePath,
+            long tableId,
+            @Nullable Long partitionId,
+            int bucketId,
+            long readableSnapshotId) {
         throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
     }
 }

@@ -67,6 +67,7 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.metadata.TableStats;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
 import org.apache.fluss.security.acl.AclBinding;
 import org.apache.fluss.security.acl.AclBindingFilter;
 
@@ -770,4 +771,22 @@ public interface Admin extends AutoCloseable {
      * @since 0.9
      */
     CompletableFuture<Void> deleteProducerOffsets(String producerId);
+
+    /**
+     * Gets a DV snapshot for a specific bucket. Routes the request to the bucket's leader
+     * TabletServer.
+     *
+     * @param tablePath the table path for leader discovery
+     * @param tableId the table ID
+     * @param partitionId the partition ID, null for non-partitioned tables
+     * @param bucketId the bucket ID
+     * @param readableSnapshotId the requested readable snapshot ID
+     * @return a CompletableFuture containing the DV snapshot response
+     */
+    CompletableFuture<GetDvSnapshotResponse> getDvSnapshot(
+            TablePath tablePath,
+            long tableId,
+            @Nullable Long partitionId,
+            int bucketId,
+            long readableSnapshotId);
 }

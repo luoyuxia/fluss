@@ -1231,6 +1231,12 @@ message PbFileDictEntry {
   required string file_path = 2;
 }
 
+message PbLakeDvEntry {
+  required string file_path = 1;
+  // Serialized Roaring64Bitmap of deleted row positions
+  required bytes deleted_positions_bitmap = 2;
+}
+
 message PbDvPrepare {
   required int64 table_id = 1;
   required int64 readable_snapshot_id = 2;
@@ -1403,4 +1409,22 @@ message DvReadableSwitchRequest {
 }
 
 message DvReadableSwitchResponse {
+}
+
+message GetDvSnapshotRequest {
+  required int64 table_id = 1;
+  required int32 bucket_id = 2;
+  required int64 readable_snapshot_id = 3;
+  optional int64 partition_id = 4;
+}
+
+message GetDvSnapshotResponse {
+  // LakeDv: per-file deleted position bitmaps (file_path as key, resolved via FileDict)
+  repeated PbLakeDvEntry lake_dv_entries = 1;
+  // LogDv: deleted log offsets bitmap (serialized Roaring64Bitmap)
+  optional bytes log_dv_bitmap = 2;
+  // The log end offset at snapshot time
+  required int64 log_end_offset = 3;
+  // The log start offset for this snapshot (snapshotStartLogOffset)
+  required int64 snapshot_start_offset = 4;
 }
