@@ -22,6 +22,7 @@ import org.apache.fluss.metadata.TablePath;
 
 import javax.annotation.Nullable;
 
+import java.util.Arrays;
 import java.util.Objects;
 
 /** The table split for tiering service. It's used to describe the log data of a table bucket. */
@@ -31,6 +32,7 @@ public class TieringLogSplit extends TieringSplit {
 
     private final long startingOffset;
     private final long stoppingOffset;
+    @Nullable private final byte[] logDvBitmap;
 
     public TieringLogSplit(
             TablePath tablePath,
@@ -72,9 +74,30 @@ public class TieringLogSplit extends TieringSplit {
             long stoppingOffset,
             int numberOfSplits,
             boolean skipCurrentRound) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                startingOffset,
+                stoppingOffset,
+                numberOfSplits,
+                skipCurrentRound,
+                null);
+    }
+
+    public TieringLogSplit(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            long startingOffset,
+            long stoppingOffset,
+            int numberOfSplits,
+            boolean skipCurrentRound,
+            @Nullable byte[] logDvBitmap) {
         super(tablePath, tableBucket, partitionName, numberOfSplits, skipCurrentRound);
         this.startingOffset = startingOffset;
         this.stoppingOffset = stoppingOffset;
+        this.logDvBitmap = logDvBitmap;
     }
 
     @Override
@@ -88,6 +111,24 @@ public class TieringLogSplit extends TieringSplit {
 
     public long getStoppingOffset() {
         return stoppingOffset;
+    }
+
+    @Nullable
+    public byte[] getLogDvBitmap() {
+        return logDvBitmap;
+    }
+
+    /** Returns a copy of this split with the given LogDv bitmap attached. */
+    public TieringLogSplit withLogDvBitmap(@Nullable byte[] logDvBitmap) {
+        return new TieringLogSplit(
+                tablePath,
+                tableBucket,
+                partitionName,
+                startingOffset,
+                stoppingOffset,
+                numberOfSplits,
+                skipCurrentRound,
+                logDvBitmap);
     }
 
     @Override
@@ -108,6 +149,8 @@ public class TieringLogSplit extends TieringSplit {
                 + startingOffset
                 + ", stoppingOffset="
                 + stoppingOffset
+                + ", logDvBitmap="
+                + (logDvBitmap != null ? logDvBitmap.length + " bytes" : "null")
                 + '}';
     }
 
@@ -120,7 +163,8 @@ public class TieringLogSplit extends TieringSplit {
                 startingOffset,
                 stoppingOffset,
                 numberOfSplits,
-                skipCurrentRound);
+                skipCurrentRound,
+                logDvBitmap);
     }
 
     @Override
@@ -132,11 +176,15 @@ public class TieringLogSplit extends TieringSplit {
             return false;
         }
         TieringLogSplit that = (TieringLogSplit) object;
-        return startingOffset == that.startingOffset && stoppingOffset == that.stoppingOffset;
+        return startingOffset == that.startingOffset
+                && stoppingOffset == that.stoppingOffset
+                && Arrays.equals(logDvBitmap, that.logDvBitmap);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), startingOffset, stoppingOffset);
+        int result = Objects.hash(super.hashCode(), startingOffset, stoppingOffset);
+        result = 31 * result + Arrays.hashCode(logDvBitmap);
+        return result;
     }
 }

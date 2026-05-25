@@ -53,7 +53,8 @@ public class AppendOnlyWriter extends RecordWriter<InternalRow> {
                 tableBucket,
                 partition,
                 partitionKeys,
-                flussRowType);
+                flussRowType,
+                false);
         this.fileStoreTable = fileStoreTable;
     }
 

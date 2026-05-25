@@ -1416,6 +1416,10 @@ message GetDvSnapshotRequest {
   required int32 bucket_id = 2;
   required int64 readable_snapshot_id = 3;
   optional int64 partition_id = 4;
+  // When set, returns LogDv-only for [log_dv_from_offset, log_dv_to_offset)
+  // and skips snapshot ID validation and LakeDv computation.
+  optional int64 log_dv_from_offset = 5;
+  optional int64 log_dv_to_offset = 6;
 }
 
 message GetDvSnapshotResponse {

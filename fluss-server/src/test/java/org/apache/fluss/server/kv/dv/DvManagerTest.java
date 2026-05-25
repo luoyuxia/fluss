@@ -349,6 +349,34 @@ class DvManagerTest {
     }
 
     @Test
+    void testGetLogDvSnapshot() throws Exception {
+        // Mark some offsets as deleted
+        long rowId1 = 50L;
+        long rowId2 = 150L;
+        long rowId3 = 250L;
+        List<DvEntry> entries =
+                Arrays.asList(new DvEntry(rowId1), new DvEntry(rowId2), new DvEntry(rowId3));
+        dvManager.handleChangelogSynced(entries);
+
+        // Get LogDv snapshot for range [0, 200)
+        byte[] bitmapBytes = dvManager.getLogDvSnapshot(0L, 200L);
+        assertThat(bitmapBytes).isNotNull();
+
+        Roaring64Bitmap bitmap = new Roaring64Bitmap();
+        RoaringBitmapUtils.deserializeRoaringBitmap64(bitmap, bitmapBytes);
+        assertThat(bitmap.contains(50L)).isTrue();
+        assertThat(bitmap.contains(150L)).isTrue();
+        assertThat(bitmap.contains(250L)).isFalse(); // outside range
+    }
+
+    @Test
+    void testGetLogDvSnapshotEmpty() throws Exception {
+        // No deleted offsets in range
+        byte[] bitmapBytes = dvManager.getLogDvSnapshot(0L, 100L);
+        assertThat(bitmapBytes).isNull();
+    }
+
+    @Test
     void testGetDvForUnionReadFileDictMissing() throws Exception {
         long snapshotId = 9L;
         dvManager.handleReadableSwitch(0, snapshotId, 100L);

@@ -19,6 +19,7 @@ package org.apache.fluss.lake.paimon.tiering.mergetree;
 
 import org.apache.fluss.lake.paimon.tiering.RecordWriter;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.types.RowType;
 
@@ -27,9 +28,12 @@ import org.apache.paimon.disk.IOManager;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.RowKeyExtractor;
 import org.apache.paimon.table.sink.TableWriteImpl;
+import org.apache.paimon.types.RowKind;
+import org.roaringbitmap.longlong.Roaring64Bitmap;
 
 import javax.annotation.Nullable;
 
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
 
@@ -48,19 +52,25 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
 
     private final IOManager ioManager;
 
+    @Nullable private final Roaring64Bitmap logDvBitmap;
+
     public MergeTreeWriter(
             FileStoreTable fileStoreTable,
             TableBucket tableBucket,
             @Nullable String partition,
             List<String> partitionKeys,
-            RowType flussRowType) {
+            RowType flussRowType,
+            boolean dvEnabled,
+            @Nullable byte[] logDvBitmapBytes) {
         this(
                 fileStoreTable,
                 createIOManager(fileStoreTable),
                 tableBucket,
                 partition,
                 partitionKeys,
-                flussRowType);
+                flussRowType,
+                dvEnabled,
+                logDvBitmapBytes);
     }
 
     MergeTreeWriter(
@@ -69,16 +79,29 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
             TableBucket tableBucket,
             @Nullable String partition,
             List<String> partitionKeys,
-            RowType flussRowType) {
+            RowType flussRowType,
+            boolean dvEnabled,
+            @Nullable byte[] logDvBitmapBytes) {
         super(
                 createTableWrite(fileStoreTable, ioManager),
                 fileStoreTable.rowType(),
                 tableBucket,
                 partition,
                 partitionKeys,
-                flussRowType);
+                flussRowType,
+                dvEnabled);
         this.rowKeyExtractor = fileStoreTable.createRowKeyExtractor();
         this.ioManager = ioManager;
+        if (logDvBitmapBytes != null) {
+            this.logDvBitmap = new Roaring64Bitmap();
+            try {
+                this.logDvBitmap.deserialize(ByteBuffer.wrap(logDvBitmapBytes));
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to deserialize LogDv bitmap", e);
+            }
+        } else {
+            this.logDvBitmap = null;
+        }
     }
 
     private static IOManager createIOManager(FileStoreTable fileStoreTable) {
@@ -110,6 +133,14 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
 
     @Override
     public void write(LogRecord record) throws Exception {
+        if (dvEnabled) {
+            writeDvMode(record);
+        } else {
+            writeNormalMode(record);
+        }
+    }
+
+    private void writeNormalMode(LogRecord record) throws Exception {
         flussRecordAsPaimonRow.setFlussRecord(record);
 
         rowKeyExtractor.setRecord(flussRecordAsPaimonRow);
@@ -121,6 +152,39 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
         // hacky, call internal method tableWrite.getWrite() to support
         // to write to given partition, otherwise, it'll always extract a partition from Paimon row
         // which may be costly
+        tableWrite.getWrite().write(partition, bucket, keyValue);
+    }
+
+    private void writeDvMode(LogRecord record) throws Exception {
+        ChangeType changeType = record.getChangeType();
+
+        // Skip -U (UPDATE_BEFORE): not written to Paimon in DV mode
+        if (changeType == ChangeType.UPDATE_BEFORE) {
+            return;
+        }
+
+        // For +I/+U: check LogDv filter
+        if (changeType == ChangeType.INSERT || changeType == ChangeType.UPDATE_AFTER) {
+            if (logDvBitmap != null && logDvBitmap.contains(record.logOffset())) {
+                // This record has been superseded by a later -U/-D, skip
+                return;
+            }
+        }
+
+        flussRecordAsPaimonRow.setFlussRecord(record);
+        rowKeyExtractor.setRecord(flussRecordAsPaimonRow);
+
+        // Use logOffset as sequence number for DV ordering
+        long seq = record.logOffset();
+        RowKind rowKind;
+        if (changeType == ChangeType.DELETE) {
+            rowKind = RowKind.DELETE;
+        } else {
+            // Both +I and +U written as INSERT
+            rowKind = RowKind.INSERT;
+        }
+
+        keyValue.replace(rowKeyExtractor.trimmedPrimaryKey(), seq, rowKind, flussRecordAsPaimonRow);
         tableWrite.getWrite().write(partition, bucket, keyValue);
     }
 }

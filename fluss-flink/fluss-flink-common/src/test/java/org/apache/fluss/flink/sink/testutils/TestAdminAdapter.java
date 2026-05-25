@@ -328,4 +328,15 @@ public class TestAdminAdapter implements Admin {
             long readableSnapshotId) {
         throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
     }
+
+    @Override
+    public CompletableFuture<GetDvSnapshotResponse> getLogDvBitmap(
+            TablePath tablePath,
+            long tableId,
+            @Nullable Long partitionId,
+            int bucketId,
+            long fromOffset,
+            long toOffset) {
+        throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
+    }
 }

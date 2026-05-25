@@ -62,4 +62,15 @@ public interface WriterInitContext {
      * @return the Fluss table info
      */
     TableInfo tableInfo();
+
+    /**
+     * Returns the serialized LogDv bitmap for filtering superseded records during DV tiering.
+     * Returns null if DV is not enabled or LogDv is not available.
+     *
+     * @return the serialized LogDv bitmap bytes, or null
+     */
+    @Nullable
+    default byte[] logDvBitmap() {
+        return null;
+    }
 }

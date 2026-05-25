@@ -34,20 +34,29 @@ import static org.apache.fluss.utils.Preconditions.checkState;
 public class FlussRecordAsPaimonRow extends FlussRowAsPaimonRow {
 
     private final int bucket;
+    private final boolean dvEnabled;
     private LogRecord logRecord;
     private int originRowFieldCount;
     private final int businessFieldCount;
     private final int bucketFieldIndex;
     private final int offsetFieldIndex;
     private final int timestampFieldIndex;
+    private final int rowidFieldIndex;
 
-    public FlussRecordAsPaimonRow(int bucket, RowType tableTowType) {
-        super(tableTowType);
+    public FlussRecordAsPaimonRow(int bucket, RowType tableRowType) {
+        this(bucket, tableRowType, false);
+    }
+
+    public FlussRecordAsPaimonRow(int bucket, RowType tableRowType, boolean dvEnabled) {
+        super(tableRowType);
         this.bucket = bucket;
-        this.businessFieldCount = tableRowType.getFieldCount() - SYSTEM_COLUMNS.size();
+        this.dvEnabled = dvEnabled;
+        int systemColumnCount = dvEnabled ? SYSTEM_COLUMNS.size() + 1 : SYSTEM_COLUMNS.size();
+        this.businessFieldCount = tableRowType.getFieldCount() - systemColumnCount;
         this.bucketFieldIndex = businessFieldCount;
         this.offsetFieldIndex = businessFieldCount + 1;
         this.timestampFieldIndex = businessFieldCount + 2;
+        this.rowidFieldIndex = dvEnabled ? businessFieldCount + 3 : -1;
     }
 
     public void setFlussRecord(LogRecord logRecord) {
@@ -120,6 +129,9 @@ public class FlussRecordAsPaimonRow extends FlussRowAsPaimonRow {
         } else if (pos == timestampFieldIndex) {
             //  timestamp system column
             return logRecord.timestamp();
+        } else if (dvEnabled && pos == rowidFieldIndex) {
+            // __rowid system column = logOffset (RowId)
+            return logRecord.logOffset();
         }
         if (pos >= originRowFieldCount) {
             throw new IllegalStateException(

@@ -897,6 +897,34 @@ public class FlussAdmin implements Admin {
         return tsGateway.getDvSnapshot(request);
     }
 
+    @Override
+    public CompletableFuture<GetDvSnapshotResponse> getLogDvBitmap(
+            TablePath tablePath,
+            long tableId,
+            @Nullable Long partitionId,
+            int bucketId,
+            long fromOffset,
+            long toOffset) {
+        TableBucket tb = new TableBucket(tableId, partitionId, bucketId);
+        int leader = metadataUpdater.leaderFor(tablePath, tb);
+        TabletServerGateway tsGateway = metadataUpdater.newTabletServerClientForNode(leader);
+        if (tsGateway == null) {
+            throw new LeaderNotAvailableException(
+                    "Server " + leader + " is not found in metadata cache.");
+        }
+        GetDvSnapshotRequest request =
+                new GetDvSnapshotRequest()
+                        .setTableId(tableId)
+                        .setBucketId(bucketId)
+                        .setReadableSnapshotId(-1)
+                        .setLogDvFromOffset(fromOffset)
+                        .setLogDvToOffset(toOffset);
+        if (partitionId != null) {
+            request.setPartitionId(partitionId);
+        }
+        return tsGateway.getDvSnapshot(request);
+    }
+
     @VisibleForTesting
     public AdminGateway getAdminGateway() {
         return gateway;

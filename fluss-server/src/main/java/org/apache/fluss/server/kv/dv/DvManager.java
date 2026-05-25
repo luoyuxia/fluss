@@ -376,6 +376,23 @@ public class DvManager implements Closeable {
         return new DvSnapshot(resolvedLakeDv, logDvBytes, logEndOffset, snapshotStartLogOffset);
     }
 
+    /**
+     * Returns a serialized LogDv bitmap for the given offset range [fromOffset, toOffset). Used by
+     * tiering to filter superseded records.
+     *
+     * @param fromOffset the start offset (inclusive)
+     * @param toOffset the end offset (exclusive)
+     * @return the serialized LogDv bitmap bytes, or null if no deleted offsets in range
+     */
+    @javax.annotation.Nullable
+    public byte[] getLogDvSnapshot(long fromOffset, long toOffset) throws IOException {
+        Roaring64Bitmap bitmap = dvRocksDB.logDv().snapshot(fromOffset, toOffset);
+        if (bitmap.isEmpty()) {
+            return null;
+        }
+        return RoaringBitmapUtils.serializeRoaringBitmap64(bitmap);
+    }
+
     /** Returns the current DV-readable snapshot ID. */
     public long getReadableSnapshotId() {
         return readableSnapshotId;

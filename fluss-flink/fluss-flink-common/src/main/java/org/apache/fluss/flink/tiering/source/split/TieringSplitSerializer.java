@@ -100,6 +100,15 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
             out.writeLong(tieringLogSplit.getStartingOffset());
             // write stopping offset
             out.writeLong(tieringLogSplit.getStoppingOffset());
+            // write logDvBitmap
+            byte[] logDvBitmap = tieringLogSplit.getLogDvBitmap();
+            if (logDvBitmap != null) {
+                out.writeBoolean(true);
+                out.writeInt(logDvBitmap.length);
+                out.write(logDvBitmap);
+            } else {
+                out.writeBoolean(false);
+            }
         }
 
         final byte[] result = out.getCopyOfBuffer();
@@ -156,8 +165,15 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
         } else {
             // deserialize starting offset
             long startingOffset = in.readLong();
-            // deserialize starting offset
+            // deserialize stopping offset
             long stoppingOffset = in.readLong();
+            // deserialize logDvBitmap
+            byte[] logDvBitmap = null;
+            if (in.readBoolean()) {
+                int len = in.readInt();
+                logDvBitmap = new byte[len];
+                in.readFully(logDvBitmap);
+            }
             return new TieringLogSplit(
                     tablePath,
                     tableBucket,
@@ -165,7 +181,8 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                     startingOffset,
                     stoppingOffset,
                     numberOfSplits,
-                    skipCurrentRound);
+                    skipCurrentRound,
+                    logDvBitmap);
         }
     }
 }

@@ -27,6 +27,7 @@ import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
 import org.apache.fluss.utils.ExceptionUtils;
 
 import org.apache.flink.util.FlinkRuntimeException;
@@ -211,6 +212,11 @@ public class TieringSplitGenerator {
                         .ifPresent(splits::add);
             }
 
+            // For DV-enabled PK tables, fetch LogDv bitmaps for TieringLogSplits
+            if (tableInfo.isDeletionVectorsEnabled()) {
+                splits = enrichSplitsWithLogDvBitmap(tableInfo.getTablePath(), splits);
+            }
+
         } else {
             // it's log table
             for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {
@@ -338,5 +344,47 @@ public class TieringSplitGenerator {
                 latestBucketOffset,
                 tableBucket);
         return Optional.empty();
+    }
+
+    private List<TieringSplit> enrichSplitsWithLogDvBitmap(
+            TablePath tablePath, List<TieringSplit> splits) {
+        List<TieringSplit> result = new ArrayList<>(splits.size());
+        for (TieringSplit split : splits) {
+            if (split.isTieringLogSplit()) {
+                TieringLogSplit logSplit = split.asTieringLogSplit();
+                byte[] logDvBitmap =
+                        fetchLogDvBitmap(
+                                tablePath,
+                                logSplit.getTableBucket(),
+                                logSplit.getStartingOffset(),
+                                logSplit.getStoppingOffset());
+                result.add(logSplit.withLogDvBitmap(logDvBitmap));
+            } else {
+                result.add(split);
+            }
+        }
+        return result;
+    }
+
+    @Nullable
+    private byte[] fetchLogDvBitmap(
+            TablePath tablePath, TableBucket bucket, long fromOffset, long toOffset) {
+        try {
+            GetDvSnapshotResponse resp =
+                    flussAdmin
+                            .getLogDvBitmap(
+                                    tablePath,
+                                    bucket.getTableId(),
+                                    bucket.getPartitionId(),
+                                    bucket.getBucket(),
+                                    fromOffset,
+                                    toOffset)
+                            .get();
+            return resp.hasLogDvBitmap() ? resp.getLogDvBitmap() : null;
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to fetch LogDv bitmap for {}, proceeding without filtering", bucket, e);
+            return null;
+        }
     }
 }

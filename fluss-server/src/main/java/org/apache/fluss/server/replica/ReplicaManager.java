@@ -1252,6 +1252,50 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
+     * Gets LogDv-only snapshot for tiering. Returns only the LogDv bitmap for the given offset
+     * range, skipping snapshot ID validation and LakeDv computation.
+     *
+     * @param tableId the table ID
+     * @param partitionId the partition ID, null for non-partitioned tables
+     * @param bucketId the bucket ID
+     * @param logDvFromOffset the start offset (inclusive)
+     * @param logDvToOffset the end offset (exclusive)
+     * @return a {@link GetDvSnapshotResponse} containing only the LogDv bitmap
+     */
+    public GetDvSnapshotResponse getLogDvSnapshot(
+            long tableId,
+            @Nullable Long partitionId,
+            int bucketId,
+            long logDvFromOffset,
+            long logDvToOffset) {
+        TableBucket tb = new TableBucket(tableId, partitionId, bucketId);
+        try {
+            Replica replica = getReplicaOrException(tb);
+            KvTablet kvTablet = replica.getKvTablet();
+            checkNotNull(kvTablet, "KvTablet not available for %s", tb);
+            checkState(kvTablet.isDvEnabled(), "DV not enabled for %s", tb);
+            DvManager dvManager = kvTablet.getDvManager();
+
+            dvManager.getDvRWLock().readLock();
+            try {
+                byte[] logDvBytes = dvManager.getLogDvSnapshot(logDvFromOffset, logDvToOffset);
+                GetDvSnapshotResponse resp =
+                        new GetDvSnapshotResponse()
+                                .setLogEndOffset(logDvToOffset)
+                                .setSnapshotStartOffset(logDvFromOffset);
+                if (logDvBytes != null) {
+                    resp.setLogDvBitmap(logDvBytes);
+                }
+                return resp;
+            } finally {
+                dvManager.getDvRWLock().readUnlock();
+            }
+        } catch (Exception e) {
+            throw new FlussRuntimeException("Failed to get LogDv snapshot for " + tb, e);
+        }
+    }
+
+    /**
      * Make the current server to become leader for a given set of replicas by:
      *
      * <pre>

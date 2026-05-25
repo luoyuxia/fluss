@@ -37,6 +37,7 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.types.DataType;
+import org.apache.paimon.types.DataTypes;
 import org.apache.paimon.types.RowKind;
 import org.apache.paimon.types.RowType;
 
@@ -47,6 +48,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static org.apache.fluss.lake.paimon.PaimonLakeCatalog.ROWID_COLUMN_NAME;
 import static org.apache.fluss.lake.paimon.PaimonLakeCatalog.SYSTEM_COLUMNS;
 
 /** Utils for conversion between Paimon and Fluss. */
@@ -198,7 +200,7 @@ public class PaimonConversions {
         for (org.apache.fluss.metadata.Schema.Column column :
                 tableDescriptor.getSchema().getColumns()) {
             String columnName = column.getName();
-            if (SYSTEM_COLUMNS.containsKey(columnName)) {
+            if (SYSTEM_COLUMNS.containsKey(columnName) || columnName.equals(ROWID_COLUMN_NAME)) {
                 throw new InvalidTableException(
                         "Column "
                                 + columnName
@@ -214,6 +216,8 @@ public class PaimonConversions {
         for (Map.Entry<String, DataType> systemColumn : SYSTEM_COLUMNS.entrySet()) {
             schemaBuilder.column(systemColumn.getKey(), systemColumn.getValue());
         }
+
+        // Note: __rowid column is added later after DV options are resolved (see below)
 
         // set pk
         if (tableDescriptor.hasPrimaryKey()) {
@@ -263,6 +267,11 @@ public class PaimonConversions {
                                 "Only support String type as partitioned key when 'deletion-vectors.enabled' is set to true for paimon, found '%s' is not String type.",
                                 invalidKey.get()));
             }
+        }
+
+        // Add __rowid system column for DV-enabled tables
+        if (options.get(CoreOptions.DELETION_VECTORS_ENABLED)) {
+            schemaBuilder.column(ROWID_COLUMN_NAME, DataTypes.BIGINT());
         }
 
         // set comment

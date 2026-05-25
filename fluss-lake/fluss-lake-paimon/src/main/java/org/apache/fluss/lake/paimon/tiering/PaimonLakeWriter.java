@@ -54,6 +54,8 @@ public class PaimonLakeWriter implements LakeWriter<PaimonWriteResult> {
 
         List<String> partitionKeys = fileStoreTable.partitionKeys();
         RowType flussRowType = writerInitContext.tableInfo().getRowType();
+        boolean dvEnabled = writerInitContext.tableInfo().isDeletionVectorsEnabled();
+        byte[] logDvBitmap = writerInitContext.logDvBitmap();
 
         this.recordWriter =
                 fileStoreTable.primaryKeys().isEmpty()
@@ -68,7 +70,9 @@ public class PaimonLakeWriter implements LakeWriter<PaimonWriteResult> {
                                 writerInitContext.tableBucket(),
                                 writerInitContext.partition(),
                                 partitionKeys,
-                                flussRowType);
+                                flussRowType,
+                                dvEnabled,
+                                logDvBitmap);
     }
 
     @Override

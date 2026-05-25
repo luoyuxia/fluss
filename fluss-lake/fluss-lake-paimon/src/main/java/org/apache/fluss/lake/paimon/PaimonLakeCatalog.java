@@ -59,6 +59,9 @@ import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
 public class PaimonLakeCatalog implements LakeCatalog {
 
     private static final Logger LOG = LoggerFactory.getLogger(PaimonLakeCatalog.class);
+    /** System column name for the RowId (logOffset) used in DV-enabled tables. */
+    public static final String ROWID_COLUMN_NAME = "__rowid";
+
     public static final LinkedHashMap<String, DataType> SYSTEM_COLUMNS = new LinkedHashMap<>();
 
     static {

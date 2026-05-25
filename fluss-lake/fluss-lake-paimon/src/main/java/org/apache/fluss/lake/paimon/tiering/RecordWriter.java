@@ -44,6 +44,7 @@ public abstract class RecordWriter<T> implements AutoCloseable {
     protected final int bucket;
     protected final List<String> partitionKeys;
     protected final BinaryRow partition;
+    protected final boolean dvEnabled;
     protected final FlussRecordAsPaimonRow flussRecordAsPaimonRow;
 
     public RecordWriter(
@@ -52,11 +53,13 @@ public abstract class RecordWriter<T> implements AutoCloseable {
             TableBucket tableBucket,
             @Nullable String partition,
             List<String> partitionKeys,
-            org.apache.fluss.types.RowType flussRowType) {
+            org.apache.fluss.types.RowType flussRowType,
+            boolean dvEnabled) {
         this.tableWrite = tableWrite;
         this.tableRowType = tableRowType;
         this.bucket = tableBucket.getBucket();
         this.partitionKeys = partitionKeys;
+        this.dvEnabled = dvEnabled;
         if (partition == null || partitionKeys.isEmpty()) {
             // non-partitioned table
             this.partition = BinaryRow.EMPTY_ROW;
@@ -65,7 +68,7 @@ public abstract class RecordWriter<T> implements AutoCloseable {
             this.partition = resolvePartition(partition, partitionKeys, flussRowType);
         }
         this.flussRecordAsPaimonRow =
-                new FlussRecordAsPaimonRow(tableBucket.getBucket(), tableRowType);
+                new FlussRecordAsPaimonRow(tableBucket.getBucket(), tableRowType, dvEnabled);
     }
 
     public abstract void write(LogRecord record) throws Exception;

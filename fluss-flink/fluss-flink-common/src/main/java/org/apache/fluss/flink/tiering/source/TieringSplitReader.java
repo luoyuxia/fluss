@@ -425,13 +425,20 @@ public class TieringSplitReader<WriteResult>
             TableBucket bucket, @Nullable String partitionName) throws IOException {
         LakeWriter<WriteResult> lakeWriter = lakeWriters.get(bucket);
         if (lakeWriter == null) {
+            byte[] logDvBitmap = null;
+            TableInfo tableInfo = checkNotNull(currentTable).getTableInfo();
+            TieringSplit split = currentTableSplitsByBucket.get(bucket);
+            if (split != null && split.isTieringLogSplit()) {
+                logDvBitmap = split.asTieringLogSplit().getLogDvBitmap();
+            }
             lakeWriter =
                     lakeTieringFactory.createLakeWriter(
                             new TieringWriterInitContext(
                                     currentTablePath,
                                     bucket,
                                     partitionName,
-                                    currentTable.getTableInfo()));
+                                    tableInfo,
+                                    logDvBitmap));
             lakeWriters.put(bucket, lakeWriter);
         }
         return lakeWriter;
