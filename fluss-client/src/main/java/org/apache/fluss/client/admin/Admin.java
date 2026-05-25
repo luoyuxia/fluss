@@ -791,22 +791,21 @@ public interface Admin extends AutoCloseable {
             long readableSnapshotId);
 
     /**
-     * Gets a LogDv-only bitmap for a specific bucket and offset range. Used by tiering to filter
-     * superseded records. Routes the request to the bucket's leader TabletServer.
+     * Gets LogDv bitmap and logEndOffset for a specific bucket. Used by tiering to get both the
+     * stoppingOffset and LogDv bitmap in a single RPC. The server computes LogDv bitmap for
+     * [fromOffset, logEndOffset) and returns both.
      *
      * @param tablePath the table path for leader discovery
      * @param tableId the table ID
      * @param partitionId the partition ID, null for non-partitioned tables
      * @param bucketId the bucket ID
-     * @param fromOffset the start offset (inclusive)
-     * @param toOffset the end offset (exclusive)
-     * @return a CompletableFuture containing the DV snapshot response with LogDv bitmap only
+     * @param fromOffset the start offset (inclusive), typically the last committed tiering offset
+     * @return a CompletableFuture containing logEndOffset and LogDv bitmap
      */
     CompletableFuture<GetDvSnapshotResponse> getLogDvBitmap(
             TablePath tablePath,
             long tableId,
             @Nullable Long partitionId,
             int bucketId,
-            long fromOffset,
-            long toOffset);
+            long fromOffset);
 }

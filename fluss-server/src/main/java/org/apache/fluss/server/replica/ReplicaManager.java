@@ -1252,22 +1252,18 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     /**
-     * Gets LogDv-only snapshot for tiering. Returns only the LogDv bitmap for the given offset
-     * range, skipping snapshot ID validation and LakeDv computation.
+     * Gets LogDv snapshot for tiering. Returns the LogDv bitmap for [fromOffset, logEndOffset) and
+     * the logEndOffset, so the caller gets both stoppingOffset and logDvBitmap in a single RPC.
      *
      * @param tableId the table ID
      * @param partitionId the partition ID, null for non-partitioned tables
      * @param bucketId the bucket ID
-     * @param logDvFromOffset the start offset (inclusive)
-     * @param logDvToOffset the end offset (exclusive)
-     * @return a {@link GetDvSnapshotResponse} containing only the LogDv bitmap
+     * @param logDvFromOffset the start offset (inclusive), typically the last committed tiering
+     *     offset
+     * @return a {@link GetDvSnapshotResponse} containing logEndOffset and LogDv bitmap
      */
     public GetDvSnapshotResponse getLogDvSnapshot(
-            long tableId,
-            @Nullable Long partitionId,
-            int bucketId,
-            long logDvFromOffset,
-            long logDvToOffset) {
+            long tableId, @Nullable Long partitionId, int bucketId, long logDvFromOffset) {
         TableBucket tb = new TableBucket(tableId, partitionId, bucketId);
         try {
             Replica replica = getReplicaOrException(tb);
@@ -1276,12 +1272,14 @@ public class ReplicaManager implements ServerReconfigurable {
             checkState(kvTablet.isDvEnabled(), "DV not enabled for %s", tb);
             DvManager dvManager = kvTablet.getDvManager();
 
+            long logEndOffset = replica.getLocalLogEndOffset();
+
             dvManager.getDvRWLock().readLock();
             try {
-                byte[] logDvBytes = dvManager.getLogDvSnapshot(logDvFromOffset, logDvToOffset);
+                byte[] logDvBytes = dvManager.getLogDvSnapshot(logDvFromOffset, logEndOffset);
                 GetDvSnapshotResponse resp =
                         new GetDvSnapshotResponse()
-                                .setLogEndOffset(logDvToOffset)
+                                .setLogEndOffset(logEndOffset)
                                 .setSnapshotStartOffset(logDvFromOffset);
                 if (logDvBytes != null) {
                     resp.setLogDvBitmap(logDvBytes);

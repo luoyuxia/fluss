@@ -54,7 +54,9 @@ public class TieringSplitState {
                     split.getPartitionName(),
                     split.getStartingOffset(),
                     split.getStoppingOffset(),
-                    split.getNumberOfSplits());
+                    split.getNumberOfSplits(),
+                    split.shouldSkipCurrentRound(),
+                    split.getLogDvBitmap());
         }
     }
 }

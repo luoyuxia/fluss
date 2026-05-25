@@ -903,8 +903,7 @@ public class FlussAdmin implements Admin {
             long tableId,
             @Nullable Long partitionId,
             int bucketId,
-            long fromOffset,
-            long toOffset) {
+            long fromOffset) {
         TableBucket tb = new TableBucket(tableId, partitionId, bucketId);
         int leader = metadataUpdater.leaderFor(tablePath, tb);
         TabletServerGateway tsGateway = metadataUpdater.newTabletServerClientForNode(leader);
@@ -917,8 +916,7 @@ public class FlussAdmin implements Admin {
                         .setTableId(tableId)
                         .setBucketId(bucketId)
                         .setReadableSnapshotId(-1)
-                        .setLogDvFromOffset(fromOffset)
-                        .setLogDvToOffset(toOffset);
+                        .setLogDvFromOffset(fromOffset);
         if (partitionId != null) {
             request.setPartitionId(partitionId);
         }

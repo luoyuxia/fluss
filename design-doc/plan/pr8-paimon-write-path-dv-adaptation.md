@@ -280,20 +280,26 @@ Keep backward-compatible 4-arg constructor that passes `null` for logDvBitmap.
 
 ## Step 8: LogDv Fetching in Tiering Path
 
+**Design**: Combine `endOffset` and `logDvBitmap` into a single `getDvSnapshot` RPC call to reduce round trips.
+For DV-enabled PK tables, the split generator calls `getDvSnapshot(fromOffset)` per bucket. The server
+determines `toOffset` from the current log end, computes LogDv bitmap for `[fromOffset, logEndOffset)`, and
+returns both `logEndOffset` (used as the split's `stoppingOffset`) and `logDvBitmap` in one response.
+The `fromOffset` is the last committed offset from the lake snapshot (i.e., the previous tiering's end offset).
+
 ### 8a. Extend `GetDvSnapshotRequest` proto
 **File**: `fluss-rpc/src/main/proto/FlussApi.proto`
 
-Add optional fields to `GetDvSnapshotRequest`:
+Add optional field to `GetDvSnapshotRequest`:
 ```proto
 message GetDvSnapshotRequest {
   required int64 table_id = 1;
   required int32 bucket_id = 2;
   required int64 readable_snapshot_id = 3;
   optional int64 partition_id = 4;
-  // When set, returns LogDv-only for [log_dv_from_offset, log_dv_to_offset)
-  // and skips snapshot ID validation and LakeDv computation.
+  // When set, returns LogDv bitmap for [log_dv_from_offset, logEndOffset)
+  // along with logEndOffset. Used by tiering to get both stoppingOffset
+  // and logDvBitmap in a single RPC.
   optional int64 log_dv_from_offset = 5;
-  optional int64 log_dv_to_offset = 6;
 }
 ```
 
@@ -315,171 +321,108 @@ public byte[] getLogDvSnapshot(long fromOffset, long toOffset) throws IOExceptio
 }
 ```
 
-### 8c. Handle in `ReplicaManager.getDvSnapshot()`
+### 8c. Handle in `ReplicaManager`
 **File**: `fluss-server/src/main/java/org/apache/fluss/server/replica/ReplicaManager.java`
 
-In the existing `getDvSnapshot()` method, add a branch: if `logDvFromOffset` and `logDvToOffset` are provided, call `dvManager.getLogDvSnapshot(from, to)` and return a response with only logDvBitmap (no LakeDv, no snapshot validation).
+Add `getLogDvSnapshot()` method: when `logDvFromOffset` is provided, use current log end offset
+as `toOffset`, call `dvManager.getLogDvSnapshot(fromOffset, logEndOffset)`, and return a response
+with `logDvBitmap` and `logEndOffset`. No LakeDv, no snapshot validation.
 
 ### 8d. Handle in `TabletService.getDvSnapshot()`
 **File**: `fluss-server/src/main/java/org/apache/fluss/server/tablet/TabletService.java`
 
-Extract the new optional fields from the request and pass to ReplicaManager.
+If request has `logDvFromOffset`, route to `replicaManager.getLogDvSnapshot()`.
 
 ### 8e. Add `Admin.getLogDvBitmap()` method
 **File**: `fluss-client/src/main/java/org/apache/fluss/client/admin/Admin.java`
 
 ```java
+/** Returns logEndOffset and logDvBitmap for [fromOffset, logEndOffset) in a single RPC. */
 CompletableFuture<GetDvSnapshotResponse> getLogDvBitmap(
         TablePath tablePath,
         long tableId,
         @Nullable Long partitionId,
         int bucketId,
-        long fromOffset,
-        long toOffset);
+        long fromOffset);
 ```
 
 ### 8f. Implement in `FlussAdmin`
 **File**: `fluss-client/src/main/java/org/apache/fluss/client/admin/FlussAdmin.java`
 
-Build `GetDvSnapshotRequest` with `log_dv_from_offset` and `log_dv_to_offset` set, `readable_snapshot_id` = -1 (unused in this mode).
+Build `GetDvSnapshotRequest` with `log_dv_from_offset` set, `readable_snapshot_id` = -1 (unused).
+Server determines `toOffset` from current log end.
 
 ### 8g. Add `logDvBitmap` to `TieringLogSplit`
 **File**: `fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/tiering/source/split/TieringLogSplit.java`
 
-LogDv bitmap should be fetched at split generation time (in the enumerator), not at write time. Add field to carry the bitmap through the split:
-
+Add field to carry the bitmap through the split:
 ```java
 @Nullable private final byte[] logDvBitmap;
 ```
 
-Add new constructor with `logDvBitmap` parameter. Keep existing constructors for backward compat (pass `null`). Add getter:
-```java
-@Nullable
-public byte[] getLogDvBitmap() {
-    return logDvBitmap;
-}
-```
-
-Update `copy(int numberOfSplits)` and `equals()`/`hashCode()` to include `logDvBitmap`.
+Add 8-arg constructor with `logDvBitmap`. Keep existing constructors (pass `null`). Add getter and `withLogDvBitmap()`.
+Update `copy()`, `equals()`, `hashCode()`, `toString()`.
 
 ### 8h. Serialize `logDvBitmap` in `TieringSplitSerializer`
 **File**: `fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/tiering/source/split/TieringSplitSerializer.java`
 
-In the log split branch of `serialize()`, after writing `stoppingOffset`:
-```java
-byte[] logDvBitmap = tieringLogSplit.getLogDvBitmap();
-if (logDvBitmap != null) {
-    out.writeBoolean(true);
-    out.writeInt(logDvBitmap.length);
-    out.write(logDvBitmap);
-} else {
-    out.writeBoolean(false);
-}
-```
+Serialize: `boolean hasLogDv + int length + byte[] data`. Deserialize: read back and pass to 8-arg constructor.
 
-In the log split branch of `deserialize()`:
-```java
-byte[] logDvBitmap = null;
-if (in.readBoolean()) {
-    int len = in.readInt();
-    logDvBitmap = new byte[len];
-    in.readFully(logDvBitmap);
-}
-return new TieringLogSplit(
-        tablePath, tableBucket, partitionName,
-        startingOffset, stoppingOffset, numberOfSplits,
-        skipCurrentRound, logDvBitmap);
-```
+### 8i. Preserve `logDvBitmap` in `TieringSplitState`
+**File**: `fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/tiering/source/state/TieringSplitState.java`
 
-Note: Per the serializer Javadoc, this is only used for enumerator→reader network transmission, so version compat is not a concern.
+`toSourceSplit()` must use the 8-arg constructor to preserve `logDvBitmap` and `skipCurrentRound`.
 
-### 8i. Fetch LogDv in `TieringSplitGenerator`
+### 8j. Fetch LogDv + endOffset in `TieringSplitGenerator`
 **File**: `fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/tiering/source/split/TieringSplitGenerator.java`
 
-In `generateTableSplit()`, after creating splits for primary key tables, fetch LogDv bitmap for DV-enabled tables:
+For DV-enabled PK tables, replace the separate `latestBucketsOffset` fetch + post-enrichment
+with a single `getLogDvBitmap(fromOffset)` call per bucket that returns both `logEndOffset`
+(as `stoppingOffset`) and `logDvBitmap`:
 
 ```java
-// For DV-enabled PK tables, fetch LogDv bitmaps for TieringLogSplits
+// In generateTableSplit(), for DV-enabled PK tables:
 if (tableInfo.hasPrimaryKey() && tableInfo.isDeletionVectorsEnabled()) {
-    splits = enrichSplitsWithLogDvBitmap(tableInfo.getTablePath(), splits);
-}
-```
+    for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {
+        TableBucket tableBucket = new TableBucket(tableInfo.getTableId(), partitionId, bucket);
+        Long lastCommittedBucketOffset = lakeSnapshotInfo != null
+                ? lakeSnapshotInfo.getTableBucketsOffset().get(tableBucket) : null;
+        long fromOffset = lastCommittedBucketOffset != null
+                ? lastCommittedBucketOffset : EARLIEST_OFFSET;
 
-Add helper method:
-```java
-private List<TieringSplit> enrichSplitsWithLogDvBitmap(
-        TablePath tablePath, List<TieringSplit> splits) {
-    List<TieringSplit> result = new ArrayList<>(splits.size());
-    for (TieringSplit split : splits) {
-        if (split.isTieringLogSplit()) {
-            TieringLogSplit logSplit = split.asTieringLogSplit();
-            byte[] logDvBitmap = fetchLogDvBitmap(
-                    tablePath, logSplit.getTableBucket(),
-                    logSplit.getStartingOffset(), logSplit.getStoppingOffset());
-            result.add(logSplit.withLogDvBitmap(logDvBitmap));
-        } else {
-            result.add(split);
+        // Single RPC: get both logEndOffset and logDvBitmap
+        GetDvSnapshotResponse resp = flussAdmin.getLogDvBitmap(
+                tableInfo.getTablePath(), tableInfo.getTableId(),
+                partitionId, bucket, fromOffset).get();
+
+        long stoppingOffset = resp.getLogEndOffset();
+        byte[] logDvBitmap = resp.hasLogDvBitmap() ? resp.getLogDvBitmap() : null;
+
+        if (fromOffset < stoppingOffset) {
+            splits.add(new TieringLogSplit(
+                    tableInfo.getTablePath(), tableBucket, partitionName,
+                    fromOffset, stoppingOffset, 0, false, logDvBitmap));
         }
     }
-    return result;
-}
-
-@Nullable
-private byte[] fetchLogDvBitmap(
-        TablePath tablePath, TableBucket bucket,
-        long fromOffset, long toOffset) {
-    try {
-        GetDvSnapshotResponse resp = flussAdmin.getLogDvBitmap(
-                tablePath, bucket.getTableId(),
-                bucket.getPartitionId(), bucket.getBucket(),
-                fromOffset, toOffset).get();
-        return resp.hasLogDvBitmap() ? resp.getLogDvBitmap() : null;
-    } catch (Exception e) {
-        LOG.warn("Failed to fetch LogDv bitmap for {}, proceeding without filtering", bucket, e);
-        return null;
-    }
 }
 ```
 
-Add a `withLogDvBitmap()` method on `TieringLogSplit`:
-```java
-public TieringLogSplit withLogDvBitmap(@Nullable byte[] logDvBitmap) {
-    return new TieringLogSplit(
-            tablePath, tableBucket, partitionName,
-            startingOffset, stoppingOffset, numberOfSplits,
-            skipCurrentRound, logDvBitmap);
-}
-```
+This replaces the existing `generateSplitForPrimaryKeyTableBucket` + `enrichSplitsWithLogDvBitmap`
+flow for DV-enabled tables. Non-DV PK tables continue to use the existing flow unchanged.
 
-### 8j. Read LogDv from split in `TieringSplitReader`
+### 8k. Read LogDv from split in `TieringSplitReader`
 **File**: `fluss-flink/fluss-flink-common/src/main/java/org/apache/fluss/flink/tiering/source/TieringSplitReader.java`
 
-In `getOrCreateLakeWriter()`, get the bitmap from the split instead of fetching via RPC:
+In `getOrCreateLakeWriter()`, get the bitmap from the split:
 ```java
-private LakeWriter<WriteResult> getOrCreateLakeWriter(
-        TableBucket bucket, @Nullable String partitionName) throws IOException {
-    LakeWriter<WriteResult> lakeWriter = lakeWriters.get(bucket);
-    if (lakeWriter == null) {
-        byte[] logDvBitmap = null;
-        TableInfo tableInfo = currentTable.getTableInfo();
-        TieringSplit split = currentTableSplitsByBucket.get(bucket);
-        if (split != null && split.isTieringLogSplit()) {
-            logDvBitmap = split.asTieringLogSplit().getLogDvBitmap();
-        }
-        lakeWriter = lakeTieringFactory.createLakeWriter(
-                new TieringWriterInitContext(
-                        currentTablePath,
-                        bucket,
-                        partitionName,
-                        tableInfo,
-                        logDvBitmap));
-        lakeWriters.put(bucket, lakeWriter);
-    }
-    return lakeWriter;
+byte[] logDvBitmap = null;
+TieringSplit split = currentTableSplitsByBucket.get(bucket);
+if (split != null && split.isTieringLogSplit()) {
+    logDvBitmap = split.asTieringLogSplit().getLogDvBitmap();
 }
 ```
 
-No `fetchLogDvBitmap()` method needed — the reader simply reads what the enumerator already fetched.
+No RPC needed — the reader reads what the enumerator already fetched.
 
 ---
 
@@ -566,7 +509,8 @@ Test cases:
 | `fluss-flink/fluss-flink-common/.../tiering/source/TieringWriterInitContext.java` | MODIFY | Add logDvBitmap field |
 | `fluss-flink/fluss-flink-common/.../tiering/source/split/TieringLogSplit.java` | MODIFY | Add `logDvBitmap` field |
 | `fluss-flink/fluss-flink-common/.../tiering/source/split/TieringSplitSerializer.java` | MODIFY | Serialize `logDvBitmap` |
-| `fluss-flink/fluss-flink-common/.../tiering/source/split/TieringSplitGenerator.java` | MODIFY | Fetch LogDv at split generation |
+| `fluss-flink/fluss-flink-common/.../tiering/source/split/TieringSplitGenerator.java` | MODIFY | Combined RPC: fetch endOffset + LogDv |
+| `fluss-flink/fluss-flink-common/.../tiering/source/state/TieringSplitState.java` | MODIFY | Preserve `logDvBitmap` in `toSourceSplit()` |
 | `fluss-flink/fluss-flink-common/.../tiering/source/TieringSplitReader.java` | MODIFY | Read LogDv from split |
 | `fluss-rpc/.../proto/FlussApi.proto` | MODIFY | Add optional offset range fields |
 | `fluss-server/.../kv/dv/DvManager.java` | MODIFY | `getLogDvSnapshot()` |

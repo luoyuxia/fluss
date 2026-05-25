@@ -464,15 +464,14 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         CompletableFuture<GetDvSnapshotResponse> response = new CompletableFuture<>();
         try {
             Long partitionId = request.hasPartitionId() ? request.getPartitionId() : null;
-            if (request.hasLogDvFromOffset() && request.hasLogDvToOffset()) {
-                // LogDv-only mode for tiering
+            if (request.hasLogDvFromOffset()) {
+                // LogDv-only mode for tiering: returns logEndOffset + logDvBitmap
                 response.complete(
                         replicaManager.getLogDvSnapshot(
                                 request.getTableId(),
                                 partitionId,
                                 request.getBucketId(),
-                                request.getLogDvFromOffset(),
-                                request.getLogDvToOffset()));
+                                request.getLogDvFromOffset()));
             } else {
                 // Full DV snapshot for union read
                 response.complete(

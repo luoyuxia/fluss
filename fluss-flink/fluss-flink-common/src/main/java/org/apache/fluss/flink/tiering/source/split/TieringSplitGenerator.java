@@ -184,6 +184,7 @@ public class TieringSplitGenerator {
         if (tableInfo.hasPrimaryKey()) {
             // it's primary key table
             checkState(latestKvSnapshots != null);
+            boolean dvEnabled = tableInfo.isDeletionVectorsEnabled();
             for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {
                 TableBucket tableBucket =
                         new TableBucket(tableInfo.getTableId(), partitionId, bucket);
@@ -191,30 +192,36 @@ public class TieringSplitGenerator {
                         lakeSnapshotInfo != null
                                 ? lakeSnapshotInfo.getTableBucketsOffset().get(tableBucket)
                                 : null;
-                Long latestSnapshotId =
-                        latestKvSnapshots.getSnapshotId(bucket).isPresent()
-                                ? latestKvSnapshots.getSnapshotId(bucket).getAsLong()
-                                : null;
-                Long offsetOfLatestSnapshotId =
-                        latestKvSnapshots.getSnapshotId(bucket).isPresent()
-                                ? latestKvSnapshots.getLogOffset(bucket).getAsLong()
-                                : null;
-                Long latestBucketOffset = latestBucketsOffset.get(bucket);
 
-                generateSplitForPrimaryKeyTableBucket(
-                                tableInfo.getTablePath(),
-                                tableBucket,
-                                partitionName,
-                                latestSnapshotId,
-                                offsetOfLatestSnapshotId,
-                                lastCommittedBucketOffset,
-                                latestBucketOffset)
-                        .ifPresent(splits::add);
-            }
+                if (dvEnabled) {
+                    // DV-enabled: combined RPC to get both stoppingOffset and logDvBitmap
+                    generateSplitForDvEnabledBucket(
+                                    tableInfo.getTablePath(),
+                                    tableBucket,
+                                    partitionName,
+                                    lastCommittedBucketOffset)
+                            .ifPresent(splits::add);
+                } else {
+                    Long latestSnapshotId =
+                            latestKvSnapshots.getSnapshotId(bucket).isPresent()
+                                    ? latestKvSnapshots.getSnapshotId(bucket).getAsLong()
+                                    : null;
+                    Long offsetOfLatestSnapshotId =
+                            latestKvSnapshots.getSnapshotId(bucket).isPresent()
+                                    ? latestKvSnapshots.getLogOffset(bucket).getAsLong()
+                                    : null;
+                    Long latestBucketOffset = latestBucketsOffset.get(bucket);
 
-            // For DV-enabled PK tables, fetch LogDv bitmaps for TieringLogSplits
-            if (tableInfo.isDeletionVectorsEnabled()) {
-                splits = enrichSplitsWithLogDvBitmap(tableInfo.getTablePath(), splits);
+                    generateSplitForPrimaryKeyTableBucket(
+                                    tableInfo.getTablePath(),
+                                    tableBucket,
+                                    partitionName,
+                                    latestSnapshotId,
+                                    offsetOfLatestSnapshotId,
+                                    lastCommittedBucketOffset,
+                                    latestBucketOffset)
+                            .ifPresent(splits::add);
+                }
             }
 
         } else {
@@ -346,45 +353,49 @@ public class TieringSplitGenerator {
         return Optional.empty();
     }
 
-    private List<TieringSplit> enrichSplitsWithLogDvBitmap(
-            TablePath tablePath, List<TieringSplit> splits) {
-        List<TieringSplit> result = new ArrayList<>(splits.size());
-        for (TieringSplit split : splits) {
-            if (split.isTieringLogSplit()) {
-                TieringLogSplit logSplit = split.asTieringLogSplit();
-                byte[] logDvBitmap =
-                        fetchLogDvBitmap(
-                                tablePath,
-                                logSplit.getTableBucket(),
-                                logSplit.getStartingOffset(),
-                                logSplit.getStoppingOffset());
-                result.add(logSplit.withLogDvBitmap(logDvBitmap));
-            } else {
-                result.add(split);
-            }
-        }
-        return result;
-    }
-
-    @Nullable
-    private byte[] fetchLogDvBitmap(
-            TablePath tablePath, TableBucket bucket, long fromOffset, long toOffset) {
+    /**
+     * Generates a split for a DV-enabled PK table bucket using a combined RPC that returns both
+     * logEndOffset (as stoppingOffset) and logDvBitmap in a single call.
+     */
+    private Optional<TieringSplit> generateSplitForDvEnabledBucket(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            @Nullable Long lastCommittedBucketOffset) {
+        long fromOffset =
+                lastCommittedBucketOffset != null ? lastCommittedBucketOffset : EARLIEST_OFFSET;
         try {
             GetDvSnapshotResponse resp =
                     flussAdmin
                             .getLogDvBitmap(
                                     tablePath,
-                                    bucket.getTableId(),
-                                    bucket.getPartitionId(),
-                                    bucket.getBucket(),
-                                    fromOffset,
-                                    toOffset)
+                                    tableBucket.getTableId(),
+                                    tableBucket.getPartitionId(),
+                                    tableBucket.getBucket(),
+                                    fromOffset)
                             .get();
-            return resp.hasLogDvBitmap() ? resp.getLogDvBitmap() : null;
+            long stoppingOffset = resp.getLogEndOffset();
+            if (fromOffset >= stoppingOffset || stoppingOffset <= 0) {
+                LOG.debug(
+                        "No new data for DV-enabled bucket {}, fromOffset={}, logEndOffset={}",
+                        tableBucket,
+                        fromOffset,
+                        stoppingOffset);
+                return Optional.empty();
+            }
+            byte[] logDvBitmap = resp.hasLogDvBitmap() ? resp.getLogDvBitmap() : null;
+            return Optional.of(
+                    new TieringLogSplit(
+                            tablePath,
+                            tableBucket,
+                            partitionName,
+                            fromOffset,
+                            stoppingOffset,
+                            0,
+                            false,
+                            logDvBitmap));
         } catch (Exception e) {
-            LOG.warn(
-                    "Failed to fetch LogDv bitmap for {}, proceeding without filtering", bucket, e);
-            return null;
+            throw new FlinkRuntimeException("Failed to get LogDv snapshot for " + tableBucket, e);
         }
     }
 }
