@@ -28,6 +28,7 @@ import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.IOUtils;
 
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
@@ -42,8 +43,11 @@ import org.apache.paimon.types.DataTypes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
@@ -157,6 +161,23 @@ public class PaimonLakeCatalog implements LakeCatalog {
             throw new InvalidAlterTableException(e.getMessage(), e);
         } catch (Catalog.TableNotExistException e) {
             throw new TableNotExistException("Table " + tablePath + " does not exist.");
+        }
+    }
+
+    @Nullable
+    @Override
+    public String loadSnapshotProperty(TablePath tablePath, String propertyKey) {
+        try {
+            Table table = paimonCatalog.getTable(toPaimon(tablePath));
+            FileStoreTable fileStoreTable = (FileStoreTable) table;
+            Snapshot snapshot = fileStoreTable.snapshotManager().latestSnapshot();
+            if (snapshot == null) {
+                return null;
+            }
+            Map<String, String> properties = snapshot.properties();
+            return properties != null ? properties.get(propertyKey) : null;
+        } catch (Catalog.TableNotExistException e) {
+            return null;
         }
     }
 

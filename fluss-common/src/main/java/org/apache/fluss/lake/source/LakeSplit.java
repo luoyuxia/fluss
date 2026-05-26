@@ -19,6 +19,8 @@ package org.apache.fluss.lake.source;
 
 import org.apache.fluss.annotation.PublicEvolving;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 
 /**
@@ -55,4 +57,18 @@ public interface LakeSplit extends java.io.Serializable {
      *     belong to a specific partition in non-partitioned table.
      */
     List<String> partition();
+
+    /**
+     * Returns the file name of the data file in this split.
+     *
+     * <p>For delta scan splits (used in DV mode), each split contains exactly one file, and this
+     * method returns that file's name. Reader uses the fileName to build fileId to fileName
+     * mappings for the DV position index.
+     *
+     * @return the file name, or null if not applicable
+     */
+    @Nullable
+    default String fileName() {
+        return null;
+    }
 }

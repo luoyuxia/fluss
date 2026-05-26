@@ -21,7 +21,10 @@ package org.apache.fluss.lake.paimon.source;
 import org.apache.fluss.lake.source.LakeSplit;
 
 import org.apache.paimon.data.BinaryRow;
+import org.apache.paimon.io.DataFileMeta;
 import org.apache.paimon.table.source.DataSplit;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -65,6 +68,16 @@ public class PaimonSplit implements LakeSplit {
             partitions.add(partition.getString(i).toString());
         }
         return partitions;
+    }
+
+    @Nullable
+    @Override
+    public String fileName() {
+        List<DataFileMeta> files = dataSplit.dataFiles();
+        if (files.size() == 1) {
+            return files.get(0).fileName();
+        }
+        return null;
     }
 
     public DataSplit dataSplit() {

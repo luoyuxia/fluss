@@ -59,6 +59,18 @@ public interface LakeCatalog extends AutoCloseable {
     void alterTable(TablePath tablePath, List<TableChange> tableChanges, Context context)
             throws TableNotExistException;
 
+    /**
+     * Loads a snapshot property value from the lake table's latest snapshot.
+     *
+     * @param tablePath the table to read from
+     * @param propertyKey the property key
+     * @return the property value, or null if not set
+     */
+    @Nullable
+    default String loadSnapshotProperty(TablePath tablePath, String propertyKey) {
+        return null;
+    }
+
     @Override
     default void close() throws Exception {
         // default do nothing

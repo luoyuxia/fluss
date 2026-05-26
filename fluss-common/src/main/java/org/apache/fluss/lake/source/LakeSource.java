@@ -21,6 +21,8 @@ import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.predicate.Predicate;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
@@ -81,6 +83,22 @@ public interface LakeSource<Split extends LakeSplit> extends Serializable {
      * @return The serializer for the split
      */
     SimpleVersionedSerializer<Split> getSplitSerializer();
+
+    /**
+     * Plans delta since the last committed snapshot. Detects compaction and returns splits to scan
+     * and deleted files to clean up.
+     *
+     * <p>Each split contains exactly one compaction output file. Reader uses {@link
+     * #createRecordReader} to read splits, scanning the {@code __rowid} column to build RowId to
+     * FilePos mappings.
+     *
+     * @param fromSnapshotId the last snapshot ID committed to Fluss (-1 if none)
+     * @return delta plan with splits and deleted files, or null if no compaction detected
+     */
+    @Nullable
+    default DataDeltaPlan<Split> planDelta(long fromSnapshotId) {
+        return null;
+    }
 
     /**
      * Context interface for planners, providing the snapshot id of the table in data-lake to plan

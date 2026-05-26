@@ -21,6 +21,9 @@ import org.apache.fluss.annotation.PublicEvolving;
 import org.apache.fluss.lake.committer.CommitterInitContext;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
+import org.apache.fluss.lake.source.LakeSource;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -71,4 +74,18 @@ public interface LakeTieringFactory<WriteResult, CommittableT> extends Serializa
      * @return the serializer for committable objects
      */
     SimpleVersionedSerializer<CommittableT> getCommittableSerializer();
+
+    /**
+     * Creates a {@link LakeSource} for delta planning. The returned LakeSource can be used by the
+     * Committer to detect compaction deltas via {@link LakeSource#planDelta}.
+     *
+     * @param committerInitContext the context for initializing the committer
+     * @return the lake source for delta planning, or null if not supported
+     * @throws IOException if an I/O error occurs
+     */
+    @Nullable
+    default LakeSource<?> createLakeSource(CommitterInitContext committerInitContext)
+            throws IOException {
+        return null;
+    }
 }

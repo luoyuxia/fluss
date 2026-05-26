@@ -20,7 +20,9 @@ package org.apache.fluss.lake.paimon.tiering;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.committer.CommitterInitContext;
 import org.apache.fluss.lake.committer.LakeCommitter;
+import org.apache.fluss.lake.paimon.source.PaimonLakeSource;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
+import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.lake.writer.WriterInitContext;
@@ -59,5 +61,11 @@ public class PaimonLakeTieringFactory
     @Override
     public SimpleVersionedSerializer<PaimonCommittable> getCommittableSerializer() {
         return new PaimonCommittableSerializer();
+    }
+
+    @Override
+    public LakeSource<?> createLakeSource(CommitterInitContext committerInitContext) {
+        return new PaimonLakeSource(
+                committerInitContext.lakeTieringConfig(), committerInitContext.tablePath());
     }
 }
