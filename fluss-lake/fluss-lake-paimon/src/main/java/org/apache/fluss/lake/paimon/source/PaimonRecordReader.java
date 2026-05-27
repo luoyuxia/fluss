@@ -20,6 +20,7 @@ package org.apache.fluss.lake.paimon.source;
 
 import org.apache.fluss.lake.paimon.utils.PaimonRowAsFlussRow;
 import org.apache.fluss.lake.source.RecordReader;
+import org.apache.fluss.lake.source.RowWithPosResult;
 import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.record.GenericRecord;
 import org.apache.fluss.record.LogRecord;
@@ -28,6 +29,7 @@ import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.predicate.Predicate;
+import org.apache.paimon.reader.FileRecordIterator;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.source.ReadBuilder;
 import org.apache.paimon.table.source.TableRead;
@@ -37,6 +39,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.NoSuchElementException;
 import java.util.stream.IntStream;
 
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toChangeType;
@@ -46,6 +49,8 @@ import static org.apache.fluss.metadata.TableDescriptor.TIMESTAMP_COLUMN_NAME;
 /** Record reader for paimon table. */
 public class PaimonRecordReader implements RecordReader {
 
+    protected final FileStoreTable fileStoreTable;
+    protected final @Nullable PaimonSplit split;
     protected PaimonRowAsFlussRecordIterator iterator;
     protected @Nullable int[][] project;
     protected RowType paimonRowType;
@@ -56,6 +61,9 @@ public class PaimonRecordReader implements RecordReader {
             @Nullable int[][] project,
             @Nullable Predicate predicate)
             throws IOException {
+        this.fileStoreTable = fileStoreTable;
+        this.split = split;
+        this.project = project;
         ReadBuilder readBuilder = fileStoreTable.newReadBuilder();
         RowType paimonFullRowType = fileStoreTable.rowType();
         if (project != null) {
@@ -86,6 +94,21 @@ public class PaimonRecordReader implements RecordReader {
         return iterator;
     }
 
+    @Override
+    public CloseableIterator<RowWithPosResult> readWithPos() throws IOException {
+        // Use the caller's projection directly (without extra __offset/__timestamp
+        // columns that read() adds via applyProject).
+        ReadBuilder readBuilder = fileStoreTable.newReadBuilder();
+        if (project != null) {
+            int[] projection = Arrays.stream(project).mapToInt(p -> p[0]).toArray();
+            readBuilder.withProjection(projection);
+        }
+
+        org.apache.paimon.reader.RecordReader<InternalRow> batchReader =
+                readBuilder.newRead().createReader(split.dataSplit());
+        return new PaimonRowWithPosIterator(batchReader);
+    }
+
     private ReadBuilder applyProject(
             ReadBuilder readBuilder, int[][] projects, RowType paimonFullRowType) {
         int[] projectIds = Arrays.stream(projects).mapToInt(project -> project[0]).toArray();
@@ -100,6 +123,88 @@ public class PaimonRecordReader implements RecordReader {
                         .toArray();
 
         return readBuilder.withProjection(paimonProject);
+    }
+
+    /**
+     * Lazy iterator wrapping Paimon's batch reader, yielding each row with its physical file
+     * position.
+     *
+     * <p>Position comes from {@link FileRecordIterator#returnedPosition()} when the underlying
+     * batch iterator implements {@link FileRecordIterator}. Otherwise, a sequential row counter is
+     * used as fallback.
+     */
+    private static class PaimonRowWithPosIterator implements CloseableIterator<RowWithPosResult> {
+
+        private final org.apache.paimon.reader.RecordReader<InternalRow> batchReader;
+        private final PaimonRowAsFlussRow rowWrapper = new PaimonRowAsFlussRow();
+        private final RowWithPosResult reusable = new RowWithPosResult();
+
+        private org.apache.paimon.reader.RecordReader.RecordIterator<InternalRow> currentBatch;
+        private long rowCounter;
+        private boolean advanced;
+        private boolean hasNext;
+
+        PaimonRowWithPosIterator(org.apache.paimon.reader.RecordReader<InternalRow> batchReader) {
+            this.batchReader = batchReader;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (!advanced) {
+                advanceNext();
+            }
+            return hasNext;
+        }
+
+        @Override
+        public RowWithPosResult next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            advanced = false;
+            return reusable;
+        }
+
+        private void advanceNext() {
+            advanced = true;
+            hasNext = false;
+            try {
+                while (true) {
+                    if (currentBatch != null) {
+                        InternalRow row = currentBatch.next();
+                        if (row != null) {
+                            long position;
+                            if (currentBatch instanceof FileRecordIterator) {
+                                position =
+                                        ((FileRecordIterator<?>) currentBatch).returnedPosition();
+                            } else {
+                                position = rowCounter;
+                            }
+                            rowCounter++;
+                            reusable.set(rowWrapper.replaceRow(row), position);
+                            hasNext = true;
+                            return;
+                        }
+                        currentBatch.releaseBatch();
+                    }
+                    currentBatch = batchReader.readBatch();
+                    if (currentBatch == null) {
+                        return;
+                    }
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to read batch.", e);
+            }
+        }
+
+        @Override
+        public void close() {
+            try {
+                batchReader.close();
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to close batch reader.", e);
+            }
+        }
     }
 
     /** Iterator for paimon row as fluss record. */

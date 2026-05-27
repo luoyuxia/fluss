@@ -63,8 +63,9 @@ public class RowPosResult implements Serializable {
     }
 
     /**
-     * Holds __rowid values for a single compaction output file. The {@code rowIds} array contains
-     * __rowid values in row order, where the array index is the row position within the file.
+     * Holds __rowid values and their physical row positions for a single compaction output file.
+     * The {@code rowIds} and {@code rowPositions} arrays are parallel: {@code rowIds[i]} is the
+     * __rowid at physical position {@code rowPositions[i]} in the file.
      */
     public static class FileRowPos implements Serializable {
 
@@ -77,15 +78,23 @@ public class RowPosResult implements Serializable {
         private final String fileName;
 
         /**
-         * The __rowid values in row order. Uses {@code long[]} instead of {@code List<Long>} for
-         * memory efficiency — arrays can contain millions of entries.
+         * The __rowid values. Uses {@code long[]} instead of {@code List<Long>} for memory
+         * efficiency — arrays can contain millions of entries.
          */
         private final long[] rowIds;
 
-        public FileRowPos(int fileId, String fileName, long[] rowIds) {
+        /**
+         * The physical row positions in the file, parallel to {@code rowIds}. {@code
+         * rowPositions[i]} is the 0-based physical position of the row with {@code rowIds[i]} in
+         * the data file.
+         */
+        private final long[] rowPositions;
+
+        public FileRowPos(int fileId, String fileName, long[] rowIds, long[] rowPositions) {
             this.fileId = fileId;
             this.fileName = fileName;
             this.rowIds = rowIds;
+            this.rowPositions = rowPositions;
         }
 
         public int getFileId() {
@@ -98,6 +107,10 @@ public class RowPosResult implements Serializable {
 
         public long[] getRowIds() {
             return rowIds;
+        }
+
+        public long[] getRowPositions() {
+            return rowPositions;
         }
     }
 }

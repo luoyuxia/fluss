@@ -207,6 +207,7 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
                             bucket,
                             diffSplit.bucketPath(),
                             isBucketUnAware,
+                            diffSplit.rawConvertible(),
                             newSplits);
 
                     // beforeFiles = deleted files (in from but not in compact)
@@ -243,6 +244,7 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
                             dataSplit.bucket(),
                             dataSplit.bucketPath(),
                             isBucketUnAware,
+                            dataSplit.rawConvertible(),
                             newSplits);
                 }
             }
@@ -269,6 +271,7 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
             int bucket,
             String bucketPath,
             boolean isBucketUnAware,
+            boolean rawConvertible,
             List<PaimonSplit> outSplits) {
         for (int i = 0; i < dataFiles.size(); i++) {
             DataFileMeta fileMeta = dataFiles.get(i);
@@ -277,6 +280,7 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
                             .withSnapshot(snapshotId)
                             .withPartition(partition)
                             .withBucket(bucket)
+                            .rawConvertible(rawConvertible)
                             .withBucketPath(bucketPath)
                             .withDataFiles(Collections.singletonList(fileMeta));
             if (dvFiles != null && i < dvFiles.size()) {

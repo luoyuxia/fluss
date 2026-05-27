@@ -580,7 +580,6 @@ public class TieringCommitOperator<WriteResult, Committable>
                     .add(serialized);
         }
 
-
         // todo: get file id from catalog latest snapshot
         int nextFileId = nextFileIdByTable.getOrDefault(tableId, 0);
         int totalFileCount = splits.size();

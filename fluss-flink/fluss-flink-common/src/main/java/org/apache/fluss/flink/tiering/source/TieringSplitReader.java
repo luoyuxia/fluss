@@ -33,14 +33,12 @@ import org.apache.fluss.flink.tiering.source.split.TieringSplit;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.source.LakeSplit;
-import org.apache.fluss.lake.source.RecordReader;
+import org.apache.fluss.lake.source.RowWithPosResult;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
-import org.apache.fluss.record.LogRecord;
-import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
@@ -651,6 +649,18 @@ public class TieringSplitReader<WriteResult>
 
     private <Split extends LakeSplit> TableBucketWriteResultWithSplitIds processRowPosSplitInternal(
             TieringRowPosSplit rowPosSplit, LakeSource<Split> lakeSource) throws IOException {
+        // Project only the __rowid column for efficiency.
+        // Lake schema = user columns + 3 system columns (__bucket, __offset, __timestamp) + __rowid
+        int flussColumnCount =
+                connection
+                        .getTable(rowPosSplit.getTablePath())
+                        .getTableInfo()
+                        .getSchema()
+                        .getColumns()
+                        .size();
+        int rowIdColumnIndex = flussColumnCount + 3;
+        lakeSource.withProject(new int[][] {{rowIdColumnIndex}});
+
         SimpleVersionedSerializer<Split> splitSerializer = lakeSource.getSplitSerializer();
         int[] fileIds = rowPosSplit.getFileIds();
         byte[][] serializedLakeSplits = rowPosSplit.getSerializedLakeSplits();
@@ -661,25 +671,30 @@ public class TieringSplitReader<WriteResult>
                     splitSerializer.deserialize(
                             splitSerializer.getVersion(), serializedLakeSplits[idx]);
 
-            RecordReader recordReader = lakeSource.createRecordReader(() -> lakeSplit);
+            // readWithPos() returns a lazy iterator with position tracking.
+            org.apache.fluss.lake.source.RecordReader recordReader =
+                    lakeSource.createRecordReader(() -> lakeSplit);
+
             List<Long> rowIdsList = new ArrayList<>();
-            try (CloseableIterator<LogRecord> iter = recordReader.read()) {
+            List<Long> posList = new ArrayList<>();
+            try (CloseableIterator<RowWithPosResult> iter = recordReader.readWithPos()) {
                 while (iter.hasNext()) {
-                    LogRecord record = iter.next();
-                    InternalRow row = record.getRow();
-                    // __rowid is the last column in the schema
-                    long rowId = row.getLong(row.getFieldCount() - 1);
-                    rowIdsList.add(rowId);
+                    RowWithPosResult rwp = iter.next();
+                    rowIdsList.add(rwp.getRow().getLong(0));
+                    posList.add(rwp.getPos());
                 }
             }
 
             long[] rowIds = new long[rowIdsList.size()];
+            long[] rowPositions = new long[posList.size()];
             for (int i = 0; i < rowIdsList.size(); i++) {
                 rowIds[i] = rowIdsList.get(i);
+                rowPositions[i] = posList.get(i);
             }
 
             fileResults.add(
-                    new RowPosResult.FileRowPos(fileIds[idx], lakeSplit.fileName(), rowIds));
+                    new RowPosResult.FileRowPos(
+                            fileIds[idx], lakeSplit.fileName(), rowIds, rowPositions));
         }
 
         RowPosResult rowPosResult =

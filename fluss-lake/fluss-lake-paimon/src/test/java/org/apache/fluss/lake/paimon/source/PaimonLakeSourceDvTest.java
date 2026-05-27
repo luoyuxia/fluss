@@ -21,6 +21,7 @@ package org.apache.fluss.lake.paimon.source;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.source.DataDeltaPlan;
 import org.apache.fluss.lake.source.RecordReader;
+import org.apache.fluss.lake.source.RowWithPosResult;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.LogRecord;
 import org.apache.fluss.utils.CloseableIterator;
@@ -57,8 +58,8 @@ import static org.apache.fluss.lake.paimon.utils.PaimonTestUtils.writeAndCommitD
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Test for {@link PaimonLakeSource#planDelta(long)}. */
-class PaimonLakeSourcePlanDeltaTest {
+/** Test for {@link PaimonLakeSource} deletion vector related functionality. */
+class PaimonLakeSourceDvTest {
 
     private static final String DEFAULT_DB = "test_db";
 
@@ -352,7 +353,122 @@ class PaimonLakeSourcePlanDeltaTest {
         }
     }
 
+    @Test
+    void testReadWithPosReflectsPhysicalPositionWithDv() throws Exception {
+        // Create DV table with lookup changelog-producer so that
+        // ForceUpLevel0Compaction generates DVs on existing files.
+        Identifier tableId = Identifier.create(DEFAULT_DB, "readwithpos_dv");
+        Schema schema =
+                Schema.newBuilder()
+                        .column("c1", DataTypes.INT())
+                        .column("c2", DataTypes.STRING())
+                        .column("__bucket", DataTypes.INT())
+                        .column("__offset", DataTypes.BIGINT())
+                        .column("__timestamp", DataTypes.TIMESTAMP(6))
+                        .primaryKey("c1")
+                        .option("bucket", "1")
+                        .option("deletion-vectors.enabled", "true")
+                        .option("changelog-producer", "lookup")
+                        .build();
+        paimonCatalog.createTable(tableId, schema, false);
+        FileStoreTable table = (FileStoreTable) paimonCatalog.getTable(tableId);
+
+        // Step 1: Write 10 rows (c1=0..9) and compact to create a single data file.
+        // Rows are sorted by PK (c1) in the file, so c1=i is at physical position i.
+        writeAndCommitData(
+                table, Collections.singletonMap(0, generateRowsWithSystemColumns(0, 10)));
+        compact(table, 0);
+
+        // Step 2: Update c1=2,5,7. With lookup changelog-producer,
+        // ForceUpLevel0Compaction creates DVs on the original file for these keys.
+        long now = System.currentTimeMillis();
+        List<GenericRow> updates = new ArrayList<>();
+        for (int c1 : new int[] {2, 5, 7}) {
+            updates.add(
+                    GenericRow.of(
+                            c1,
+                            BinaryString.fromString("updated_" + c1),
+                            0,
+                            (long) (c1 + 100),
+                            Timestamp.fromEpochMillis(now)));
+        }
+        writeAndCommitData(table, Collections.singletonMap(0, updates));
+        compact(table, 0);
+
+        // Step 3: Use planDelta to get single-file splits, separate DV and non-DV splits
+        PaimonLakeSource lakeSource = newLakeSource("readwithpos_dv");
+        DataDeltaPlan<PaimonSplit> deltaPlan = lakeSource.planDelta(0);
+        assertThat(deltaPlan).isNotNull();
+
+        PaimonSplit dvSplit = null;
+        PaimonSplit nonDvSplit = null;
+        for (PaimonSplit split : deltaPlan.getSplits()) {
+            if (hasDeletionFiles(split)) {
+                dvSplit = split;
+            } else {
+                nonDvSplit = split;
+            }
+        }
+        assertThat(dvSplit).as("Expected a split with DV files").isNotNull();
+        assertThat(nonDvSplit).as("Expected a split without DV files").isNotNull();
+
+        // Step 4a: Read DV split with readWithPos.
+        // DV filtering is applied, so DV-deleted rows (c1=2,5,7) are skipped.
+        // Positions reflect physical file positions with gaps for deleted rows.
+        final PaimonSplit dvSplitToRead = dvSplit;
+        RecordReader dvReader = lakeSource.createRecordReader(() -> dvSplitToRead);
+        List<Long> dvPositions = new ArrayList<>();
+        List<Integer> dvC1Values = new ArrayList<>();
+        try (CloseableIterator<RowWithPosResult> iter = dvReader.readWithPos()) {
+            while (iter.hasNext()) {
+                RowWithPosResult rwp = iter.next();
+                dvPositions.add(rwp.getPos());
+                dvC1Values.add(rwp.getRow().getInt(0));
+            }
+        }
+
+        assertThat(dvC1Values)
+                .as("DV split should return non-deleted rows only")
+                .containsExactly(0, 1, 3, 4, 6, 8, 9);
+        assertThat(dvPositions)
+                .as("DV split positions should have gaps for deleted rows")
+                .containsExactly(0L, 1L, 3L, 4L, 6L, 8L, 9L);
+
+        // Step 4b: Read non-DV split with readWithPos.
+        // No DV filtering, positions should be sequential with no gaps.
+        final PaimonSplit nonDvSplitToRead = nonDvSplit;
+        RecordReader nonDvReader = lakeSource.createRecordReader(() -> nonDvSplitToRead);
+        List<Long> nonDvPositions = new ArrayList<>();
+        List<Integer> nonDvC1Values = new ArrayList<>();
+        try (CloseableIterator<RowWithPosResult> iter = nonDvReader.readWithPos()) {
+            while (iter.hasNext()) {
+                RowWithPosResult rwp = iter.next();
+                nonDvPositions.add(rwp.getPos());
+                nonDvC1Values.add(rwp.getRow().getInt(0));
+            }
+        }
+
+        assertThat(nonDvC1Values)
+                .as("Non-DV split should contain the updated rows")
+                .containsExactlyInAnyOrder(2, 5, 7);
+        assertThat(nonDvPositions)
+                .as("Non-DV split positions should be sequential with no gaps")
+                .containsExactly(0L, 1L, 2L);
+    }
+
     // ---- helpers ----
+
+    private static boolean hasDeletionFiles(PaimonSplit split) {
+        List<DeletionFile> dvFiles = split.dataSplit().deletionFiles().orElse(null);
+        if (dvFiles != null) {
+            for (DeletionFile df : dvFiles) {
+                if (df != null) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     private PaimonLakeSource newLakeSource(String tableName) {
         return new PaimonLakeSource(paimonConfig, TablePath.of(DEFAULT_DB, tableName));

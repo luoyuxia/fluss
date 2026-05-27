@@ -53,8 +53,8 @@ public class TieringSplitState {
                     split.getTablePath(),
                     split.getTableBucket(),
                     split.getPartitionName(),
-                    split.getFileId(),
-                    split.getSerializedLakeSplit(),
+                    split.getFileIds(),
+                    split.getSerializedLakeSplits(),
                     split.getTotalExpectedResults());
         } else {
             final TieringLogSplit split = (TieringLogSplit) tieringSplit;

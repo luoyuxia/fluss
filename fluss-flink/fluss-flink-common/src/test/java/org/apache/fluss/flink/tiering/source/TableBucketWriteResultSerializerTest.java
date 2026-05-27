@@ -87,9 +87,11 @@ class TableBucketWriteResultSerializerTest {
 
         // multi-file RowPosResult
         RowPosResult.FileRowPos file1 =
-                new RowPosResult.FileRowPos(10, "file1.parquet", new long[] {100, 200, 300});
+                new RowPosResult.FileRowPos(
+                        10, "file1.parquet", new long[] {100, 200, 300}, new long[] {0, 1, 2});
         RowPosResult.FileRowPos file2 =
-                new RowPosResult.FileRowPos(11, "file2.parquet", new long[] {400, 500});
+                new RowPosResult.FileRowPos(
+                        11, "file2.parquet", new long[] {400, 500}, new long[] {0, 1});
         RowPosResult rowPosResult = new RowPosResult(Arrays.asList(file1, file2), "partition1", 2);
 
         TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
@@ -112,11 +114,13 @@ class TableBucketWriteResultSerializerTest {
         assertThat(deserializedFile1.getFileId()).isEqualTo(10);
         assertThat(deserializedFile1.getFileName()).isEqualTo("file1.parquet");
         assertThat(deserializedFile1.getRowIds()).containsExactly(100, 200, 300);
+        assertThat(deserializedFile1.getRowPositions()).containsExactly(0, 1, 2);
 
         RowPosResult.FileRowPos deserializedFile2 = deserializedRowPos.getFileResults().get(1);
         assertThat(deserializedFile2.getFileId()).isEqualTo(11);
         assertThat(deserializedFile2.getFileName()).isEqualTo("file2.parquet");
         assertThat(deserializedFile2.getRowIds()).containsExactly(400, 500);
+        assertThat(deserializedFile2.getRowPositions()).containsExactly(0, 1);
     }
 
     @Test
@@ -126,7 +130,11 @@ class TableBucketWriteResultSerializerTest {
 
         // single-file RowPosResult (non-partitioned)
         RowPosResult.FileRowPos file1 =
-                new RowPosResult.FileRowPos(5, "output.parquet", new long[] {1, 2, 3, 4, 5});
+                new RowPosResult.FileRowPos(
+                        5,
+                        "output.parquet",
+                        new long[] {1, 2, 3, 4, 5},
+                        new long[] {0, 1, 2, 3, 4});
         RowPosResult rowPosResult = new RowPosResult(Collections.singletonList(file1), null, 2);
 
         TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
@@ -146,5 +154,7 @@ class TableBucketWriteResultSerializerTest {
         assertThat(deserializedRowPos.getFileResults()).hasSize(1);
         assertThat(deserializedRowPos.getFileResults().get(0).getRowIds())
                 .containsExactly(1, 2, 3, 4, 5);
+        assertThat(deserializedRowPos.getFileResults().get(0).getRowPositions())
+                .containsExactly(0, 1, 2, 3, 4);
     }
 }

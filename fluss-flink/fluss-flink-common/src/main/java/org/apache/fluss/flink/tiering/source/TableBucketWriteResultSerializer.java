@@ -110,9 +110,11 @@ public class TableBucketWriteResultSerializer<WriteResult>
                 out.writeInt(fileRowPos.getFileId());
                 out.writeUTF(fileRowPos.getFileName());
                 long[] rowIds = fileRowPos.getRowIds();
+                long[] rowPositions = fileRowPos.getRowPositions();
                 out.writeInt(rowIds.length);
-                for (long rowId : rowIds) {
-                    out.writeLong(rowId);
+                for (int i = 0; i < rowIds.length; i++) {
+                    out.writeLong(rowIds[i]);
+                    out.writeLong(rowPositions[i]);
                 }
             }
         } else {
@@ -180,10 +182,13 @@ public class TableBucketWriteResultSerializer<WriteResult>
                 String fileName = in.readUTF();
                 int rowIdsLength = in.readInt();
                 long[] rowIds = new long[rowIdsLength];
+                long[] rowPositions = new long[rowIdsLength];
                 for (int i = 0; i < rowIdsLength; i++) {
                     rowIds[i] = in.readLong();
+                    rowPositions[i] = in.readLong();
                 }
-                fileResults.add(new RowPosResult.FileRowPos(fileId, fileName, rowIds));
+                fileResults.add(
+                        new RowPosResult.FileRowPos(fileId, fileName, rowIds, rowPositions));
             }
             rowPosResult = new RowPosResult(fileResults, rowPosPartitionName, rowPosBucketId);
         }
