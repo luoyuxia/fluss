@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.kv.dv;
 
+import org.apache.fluss.lake.dv.RowPosSstIndex;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;

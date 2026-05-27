@@ -18,6 +18,9 @@
 package org.apache.fluss.server.kv.dv;
 
 import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.lake.dv.RowPosSstFileWriter;
+import org.apache.fluss.lake.dv.RowPosSstIndex;
+import org.apache.fluss.lake.dv.RowPosSstUploader;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,10 +63,7 @@ class RowPosSstUploadDownloadTest {
 
         // Generate SST files locally
         List<RowPosSstFileWriter.RowPosEntry> entries =
-                Arrays.asList(
-                        new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(1, 10L)),
-                        new RowPosSstFileWriter.RowPosEntry(2L, new FilePos(1, 20L)),
-                        new RowPosSstFileWriter.RowPosEntry(3L, new FilePos(2, 30L)));
+                Arrays.asList(entry(1L, 1, 10L), entry(2L, 1, 20L), entry(3L, 2, 30L));
 
         List<RowPosSstFileWriter.SstFileMeta> metas;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(localSstDir)) {
@@ -100,11 +100,7 @@ class RowPosSstUploadDownloadTest {
         new File(localSstDir0).mkdirs();
         List<RowPosSstFileWriter.SstFileMeta> metas0;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(localSstDir0)) {
-            metas0 =
-                    writer.write(
-                            Arrays.asList(
-                                    new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(1, 10L)),
-                                    new RowPosSstFileWriter.RowPosEntry(2L, new FilePos(1, 20L))));
+            metas0 = writer.write(Arrays.asList(entry(1L, 1, 10L), entry(2L, 1, 20L)));
         }
 
         // Bucket 1 SST
@@ -112,11 +108,7 @@ class RowPosSstUploadDownloadTest {
         new File(localSstDir1).mkdirs();
         List<RowPosSstFileWriter.SstFileMeta> metas1;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(localSstDir1)) {
-            metas1 =
-                    writer.write(
-                            Collections.singletonList(
-                                    new RowPosSstFileWriter.RowPosEntry(
-                                            100L, new FilePos(5, 500L))));
+            metas1 = writer.write(Collections.singletonList(entry(100L, 5, 500L)));
         }
 
         // Upload both buckets
@@ -155,10 +147,7 @@ class RowPosSstUploadDownloadTest {
         new File(localSstDir).mkdirs();
         List<RowPosSstFileWriter.SstFileMeta> metas;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(localSstDir)) {
-            metas =
-                    writer.write(
-                            Collections.singletonList(
-                                    new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(1, 10L))));
+            metas = writer.write(Collections.singletonList(entry(1L, 1, 10L)));
         }
 
         long snapshotId = 300L;
@@ -183,22 +172,14 @@ class RowPosSstUploadDownloadTest {
         new File(localSstDir0).mkdirs();
         List<RowPosSstFileWriter.SstFileMeta> metas0;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(localSstDir0)) {
-            metas0 =
-                    writer.write(
-                            Collections.singletonList(
-                                    new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(1, 10L))));
+            metas0 = writer.write(Collections.singletonList(entry(1L, 1, 10L)));
         }
 
         String localSstDir2 = tempDir.resolve("local_sst_2").toString();
         new File(localSstDir2).mkdirs();
         List<RowPosSstFileWriter.SstFileMeta> metas2;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(localSstDir2)) {
-            metas2 =
-                    writer.write(
-                            Arrays.asList(
-                                    new RowPosSstFileWriter.RowPosEntry(10L, new FilePos(2, 100L)),
-                                    new RowPosSstFileWriter.RowPosEntry(
-                                            20L, new FilePos(2, 200L))));
+            metas2 = writer.write(Arrays.asList(entry(10L, 2, 100L), entry(20L, 2, 200L)));
         }
 
         long snapshotId = 400L;
@@ -218,5 +199,11 @@ class RowPosSstUploadDownloadTest {
         assertThat(index.getFiles(2)).hasSize(1);
         assertThat(index.getFiles(2).get(0).getFileName()).isEqualTo("sst_0.sst");
         assertThat(index.getFiles(1)).isEmpty();
+    }
+
+    /** Helper to create a RowPosEntry using the fluss-common FilePos. */
+    private static RowPosSstFileWriter.RowPosEntry entry(long rowId, int fileId, long rowPosition) {
+        return new RowPosSstFileWriter.RowPosEntry(
+                rowId, new org.apache.fluss.lake.dv.FilePos(fileId, rowPosition));
     }
 }

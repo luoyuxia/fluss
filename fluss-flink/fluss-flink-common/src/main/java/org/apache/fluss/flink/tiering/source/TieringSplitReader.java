@@ -30,9 +30,14 @@ import org.apache.fluss.flink.tiering.source.split.TieringLogSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringRowPosSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSnapshotSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
+import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.lake.dv.FilePos;
+import org.apache.fluss.lake.dv.RowPosSstFileWriter;
+import org.apache.fluss.lake.dv.RowPosSstUploader;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.source.LakeSplit;
+import org.apache.fluss.lake.source.RowPosResult;
 import org.apache.fluss.lake.source.RowWithPosResult;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
@@ -40,6 +45,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.CloseableIterator;
+import org.apache.fluss.utils.FileUtils;
 
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
@@ -50,7 +56,9 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -651,58 +659,70 @@ public class TieringSplitReader<WriteResult>
             TieringRowPosSplit rowPosSplit, LakeSource<Split> lakeSource) throws IOException {
         // Project only the __rowid column for efficiency.
         // Lake schema = user columns + 3 system columns (__bucket, __offset, __timestamp) + __rowid
-        int flussColumnCount =
-                connection
-                        .getTable(rowPosSplit.getTablePath())
-                        .getTableInfo()
-                        .getSchema()
-                        .getColumns()
-                        .size();
+        int flussColumnCount = rowPosSplit.getFlussColumnCount();
         int rowIdColumnIndex = flussColumnCount + 3;
         lakeSource.withProject(new int[][] {{rowIdColumnIndex}});
 
         SimpleVersionedSerializer<Split> splitSerializer = lakeSource.getSplitSerializer();
         int[] fileIds = rowPosSplit.getFileIds();
         byte[][] serializedLakeSplits = rowPosSplit.getSerializedLakeSplits();
+        int bucketId = rowPosSplit.getTableBucket().getBucket();
 
-        List<RowPosResult.FileRowPos> fileResults = new ArrayList<>(fileIds.length);
+        // 1. Read all files, collect RowPosEntry objects and file dict entries
+        List<RowPosSstFileWriter.RowPosEntry> allEntries = new ArrayList<>();
+        Map<Integer, String> newFileDictEntries = new HashMap<>();
+
         for (int idx = 0; idx < fileIds.length; idx++) {
             Split lakeSplit =
                     splitSerializer.deserialize(
                             splitSerializer.getVersion(), serializedLakeSplits[idx]);
+            int fileId = fileIds[idx];
+            String fileName = lakeSplit.fileName();
+            newFileDictEntries.put(fileId, fileName);
 
             // readWithPos() returns a lazy iterator with position tracking.
             org.apache.fluss.lake.source.RecordReader recordReader =
                     lakeSource.createRecordReader(() -> lakeSplit);
-
-            List<Long> rowIdsList = new ArrayList<>();
-            List<Long> posList = new ArrayList<>();
             try (CloseableIterator<RowWithPosResult> iter = recordReader.readWithPos()) {
                 while (iter.hasNext()) {
                     RowWithPosResult rwp = iter.next();
-                    rowIdsList.add(rwp.getRow().getLong(0));
-                    posList.add(rwp.getPos());
+                    long rowId = rwp.getRow().getLong(0);
+                    long pos = rwp.getPos();
+                    allEntries.add(
+                            new RowPosSstFileWriter.RowPosEntry(rowId, new FilePos(fileId, pos)));
                 }
             }
-
-            long[] rowIds = new long[rowIdsList.size()];
-            long[] rowPositions = new long[posList.size()];
-            for (int i = 0; i < rowIdsList.size(); i++) {
-                rowIds[i] = rowIdsList.get(i);
-                rowPositions[i] = posList.get(i);
-            }
-
-            fileResults.add(
-                    new RowPosResult.FileRowPos(
-                            fileIds[idx], lakeSplit.fileName(), rowIds, rowPositions));
         }
 
-        RowPosResult rowPosResult =
-                new RowPosResult(
-                        fileResults,
-                        rowPosSplit.getPartitionName(),
-                        rowPosSplit.getTableBucket().getBucket());
+        // 2. Sort entries by rowId
+        Collections.sort(allEntries);
 
+        // 3. Write SSTs to temp dir
+        File tempDir = Files.createTempDirectory("fluss-sst-" + bucketId).toFile();
+        List<RowPosSstFileWriter.SstFileMeta> sstMetas;
+        try {
+            RowPosSstFileWriter writer = new RowPosSstFileWriter(tempDir.getPath());
+            sstMetas = writer.write(allEntries);
+
+            // 4. Upload SSTs to remote storage (per-bucket, no index.json)
+            FsPath remoteBasePath = new FsPath(rowPosSplit.getRemoteUploadBasePath());
+            RowPosSstUploader uploader = new RowPosSstUploader(remoteBasePath);
+            uploader.uploadBucketSsts(
+                    rowPosSplit.getCompactSnapshotId(),
+                    bucketId,
+                    new RowPosSstUploader.BucketSstData(tempDir.getPath(), sstMetas));
+        } finally {
+            FileUtils.deleteDirectoryQuietly(tempDir);
+        }
+
+        // 5. Build result with SST metadata
+        List<RowPosResult.SstMeta> resultMetas = new ArrayList<>();
+        for (RowPosSstFileWriter.SstFileMeta meta : sstMetas) {
+            resultMetas.add(new RowPosResult.SstMeta(meta.getFileName(), meta.getFileSize()));
+        }
+        RowPosResult rowPosResult = new RowPosResult(bucketId, newFileDictEntries, resultMetas);
+
+        // 6. Wrap in TableBucketWriteResult and return
         TableBucketWriteResult<WriteResult> result =
                 new TableBucketWriteResult<>(
                         rowPosSplit.getTablePath(),

@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.kv.dv;
 
+import org.apache.fluss.lake.dv.RowPosSstFileWriter;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,8 +71,7 @@ class RowPosSstFileWriterTest {
         new File(outputDir).mkdirs();
 
         List<RowPosSstFileWriter.RowPosEntry> entries =
-                Collections.singletonList(
-                        new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(10, 100L)));
+                Collections.singletonList(entry(1L, 10, 100L));
 
         List<RowPosSstFileWriter.SstFileMeta> metas;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(outputDir)) {
@@ -94,10 +95,10 @@ class RowPosSstFileWriterTest {
 
         List<RowPosSstFileWriter.RowPosEntry> entries =
                 Arrays.asList(
-                        new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(1, 10L)),
-                        new RowPosSstFileWriter.RowPosEntry(2L, new FilePos(1, 20L)),
-                        new RowPosSstFileWriter.RowPosEntry(3L, new FilePos(2, 30L)),
-                        new RowPosSstFileWriter.RowPosEntry(100L, new FilePos(5, 500L)));
+                        entry(1L, 1, 10L),
+                        entry(2L, 1, 20L),
+                        entry(3L, 2, 30L),
+                        entry(100L, 5, 500L));
 
         List<RowPosSstFileWriter.SstFileMeta> metas;
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(outputDir)) {
@@ -122,9 +123,7 @@ class RowPosSstFileWriterTest {
 
         // Unsorted entries should cause RocksDB to throw
         List<RowPosSstFileWriter.RowPosEntry> entries =
-                Arrays.asList(
-                        new RowPosSstFileWriter.RowPosEntry(3L, new FilePos(1, 30L)),
-                        new RowPosSstFileWriter.RowPosEntry(1L, new FilePos(1, 10L)));
+                Arrays.asList(entry(3L, 1, 30L), entry(1L, 1, 10L));
 
         try (RowPosSstFileWriter writer = new RowPosSstFileWriter(outputDir)) {
             assertThatThrownBy(() -> writer.write(entries)).isInstanceOf(IOException.class);
@@ -140,7 +139,7 @@ class RowPosSstFileWriterTest {
         int totalEntries = RowPosSstFileWriter.MAX_ENTRIES_PER_SST + 100;
         List<RowPosSstFileWriter.RowPosEntry> entries = new ArrayList<>(totalEntries);
         for (long i = 0; i < totalEntries; i++) {
-            entries.add(new RowPosSstFileWriter.RowPosEntry(i, new FilePos(1, i)));
+            entries.add(entry(i, 1, i));
         }
 
         List<RowPosSstFileWriter.SstFileMeta> metas;
@@ -166,5 +165,11 @@ class RowPosSstFileWriterTest {
                 .isEqualTo(new FilePos(1, RowPosSstFileWriter.MAX_ENTRIES_PER_SST));
         assertThat(dvRocksDB.rowPosIndex().get((long) totalEntries - 1))
                 .isEqualTo(new FilePos(1, totalEntries - 1));
+    }
+
+    /** Helper to create a RowPosEntry using the fluss-common FilePos. */
+    private static RowPosSstFileWriter.RowPosEntry entry(long rowId, int fileId, long rowPosition) {
+        return new RowPosSstFileWriter.RowPosEntry(
+                rowId, new org.apache.fluss.lake.dv.FilePos(fileId, rowPosition));
     }
 }

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.server.kv.dv;
+package org.apache.fluss.lake.dv;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;

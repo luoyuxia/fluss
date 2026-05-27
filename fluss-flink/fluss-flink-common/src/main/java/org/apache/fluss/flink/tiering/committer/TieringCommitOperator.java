@@ -22,27 +22,32 @@ import org.apache.fluss.client.ConnectionFactory;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.metadata.LakeSnapshot;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.config.FlussConfigUtils;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
 import org.apache.fluss.flink.tiering.event.FinishedTieringEvent;
 import org.apache.fluss.flink.tiering.event.RowPosRequestEvent;
-import org.apache.fluss.flink.tiering.source.RowPosResult;
 import org.apache.fluss.flink.tiering.source.TableBucketWriteResult;
 import org.apache.fluss.flink.tiering.source.TieringSource;
+import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.committer.TieringStats;
+import org.apache.fluss.lake.dv.RowPosSstIndex;
+import org.apache.fluss.lake.dv.RowPosSstUploader;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.source.DataDeltaPlan;
 import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.source.LakeSplit;
+import org.apache.fluss.lake.source.RowPosResult;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.ExceptionUtils;
+import org.apache.fluss.utils.FlussPaths;
 
 import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
@@ -53,6 +58,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -112,6 +118,8 @@ public class TieringCommitOperator<WriteResult, Committable>
     private final Map<Long, Integer> nextFileIdByTable;
     // tableId -> table path (for deferred commit after DV scan completes)
     private final Map<Long, TablePath> pendingTablePaths;
+    // tableId -> compact snapshot id (for index.json writing after DV scan completes)
+    private final Map<Long, Long> pendingCompactSnapshotIds;
 
     /**
      * The result of one table's commit round, holding the lake committable (nullable for empty
@@ -142,6 +150,7 @@ public class TieringCommitOperator<WriteResult, Committable>
         this.pendingDeletedFiles = new HashMap<>();
         this.nextFileIdByTable = new HashMap<>();
         this.pendingTablePaths = new HashMap<>();
+        this.pendingCompactSnapshotIds = new HashMap<>();
         this.flussConfig = flussConf;
         this.lakeTieringConfig = lakeTieringConfig;
         this.setup(
@@ -471,28 +480,34 @@ public class TieringCommitOperator<WriteResult, Committable>
     }
 
     /**
-     * Processes all collected RowPos results for a table. Commits the deferred write results to the
-     * lake together with DV scan data. SST building will be implemented in a later PR.
+     * Processes all collected RowPos results for a table. SSTs have already been uploaded by
+     * Readers. This method writes the cross-bucket index.json, then commits the deferred write
+     * results to the lake.
      */
     private void processRowPosResults(long tableId) {
         List<RowPosResult> results = pendingRowPosResults.remove(tableId);
         Map<String, Map<Integer, List<String>>> deletedFiles = pendingDeletedFiles.remove(tableId);
         expectedRowPosResultCounts.remove(tableId);
         TablePath tablePath = pendingTablePaths.remove(tableId);
+        Long compactSnapshotId = pendingCompactSnapshotIds.remove(tableId);
 
         LOG.info(
-                "Received all {} RowPos scan results for table {}. "
-                        + "Deleted files: {}. SST building to be implemented.",
+                "Received all {} RowPos scan results for table {} (snapshot={}). "
+                        + "Deleted files: {}.",
                 results != null ? results.size() : 0,
                 tableId,
+                compactSnapshotId,
                 deletedFiles);
 
-        // TODO: build SSTs from scan results and include in commit in a later PR
-
-        // commit the deferred write results to the lake
-        List<TableBucketWriteResult<WriteResult>> writeResults =
-                collectedTableBucketWriteResults.get(tableId);
         try {
+            // SSTs already uploaded by Readers. Write index.json.
+            if (results != null && !results.isEmpty() && compactSnapshotId != null) {
+                writeIndexJson(tableId, tablePath, compactSnapshotId, results);
+            }
+
+            // commit the deferred write results to the lake
+            List<TableBucketWriteResult<WriteResult>> writeResults =
+                    collectedTableBucketWriteResults.get(tableId);
             commitAndFinish(tableId, tablePath, writeResults);
         } catch (Exception e) {
             collectedTableBucketWriteResults.remove(tableId);
@@ -506,6 +521,38 @@ public class TieringCommitOperator<WriteResult, Committable>
                     tableId,
                     e);
         }
+    }
+
+    /**
+     * Writes the index.json file after all Readers have uploaded their per-bucket SST files. The
+     * index records which buckets participated in this snapshot and lists their SST files.
+     */
+    private void writeIndexJson(
+            long tableId, TablePath tablePath, long compactSnapshotId, List<RowPosResult> results)
+            throws IOException {
+        String remoteDataDir = FlussConfigUtils.getDefaultRemoteDataDir(flussConfig);
+        FsPath remoteLakeTableSnapshotDir =
+                FlussPaths.remoteLakeTableSnapshotDir(remoteDataDir, tablePath, tableId);
+        RowPosSstUploader uploader = new RowPosSstUploader(remoteLakeTableSnapshotDir);
+
+        // Build index from all results
+        Map<Integer, List<RowPosSstIndex.SstFileEntry>> bucketEntries = new HashMap<>();
+        for (RowPosResult result : results) {
+            List<RowPosSstIndex.SstFileEntry> entries = new ArrayList<>();
+            for (RowPosResult.SstMeta meta : result.getSstMetas()) {
+                entries.add(
+                        new RowPosSstIndex.SstFileEntry(meta.getFileName(), meta.getFileSize()));
+            }
+            bucketEntries.put(result.getBucketId(), entries);
+        }
+        RowPosSstIndex index = new RowPosSstIndex(bucketEntries);
+        uploader.writeIndex(compactSnapshotId, index);
+
+        LOG.info(
+                "Wrote index.json for table {} (snapshot={}) with {} buckets.",
+                tablePath,
+                compactSnapshotId,
+                bucketEntries.size());
     }
 
     /**
@@ -524,6 +571,8 @@ public class TieringCommitOperator<WriteResult, Committable>
                 return false;
             }
 
+            int flussColumnCount = tableInfo.getSchema().getColumns().size();
+
             LakeSource<?> lakeSource = lakeTieringFactory.createLakeSource(tablePath);
             if (lakeSource == null) {
                 return false;
@@ -534,7 +583,8 @@ public class TieringCommitOperator<WriteResult, Committable>
             long fromSnapshotId =
                     flussCurrentLakeSnapshot != null ? flussCurrentLakeSnapshot.getSnapshotId() : 0;
 
-            return triggerRowPosScanIfNeeded(tableId, tablePath, lakeSource, fromSnapshotId);
+            return triggerRowPosScanIfNeeded(
+                    tableId, tablePath, lakeSource, fromSnapshotId, flussColumnCount);
         } catch (Exception e) {
             LOG.warn(
                     "Failed to trigger row position scan for table {} ({}). "
@@ -548,7 +598,11 @@ public class TieringCommitOperator<WriteResult, Committable>
 
     @SuppressWarnings("unchecked")
     private <Split extends LakeSplit> boolean triggerRowPosScanIfNeeded(
-            long tableId, TablePath tablePath, LakeSource<Split> lakeSource, long fromSnapshotId)
+            long tableId,
+            TablePath tablePath,
+            LakeSource<Split> lakeSource,
+            long fromSnapshotId,
+            int flussColumnCount)
             throws Exception {
         DataDeltaPlan<Split> deltaPlan = lakeSource.planDelta(fromSnapshotId);
         if (deltaPlan == null) {
@@ -590,14 +644,27 @@ public class TieringCommitOperator<WriteResult, Committable>
             expectedBatchCount += bucketMap.size();
         }
 
-        // store expected count and deleted files locally
+        long compactSnapshotId = deltaPlan.getCompactSnapshotId();
+
+        // store expected count, deleted files, and compact snapshot id locally
         expectedRowPosResultCounts.put(tableId, expectedBatchCount);
         pendingDeletedFiles.put(tableId, deltaPlan.getDeletedFiles());
+        pendingCompactSnapshotIds.put(tableId, compactSnapshotId);
+
+        String remoteDataDir = FlussConfigUtils.getDefaultRemoteDataDir(flussConfig);
+        String remoteUploadBasePath =
+                FlussPaths.remoteLakeTableSnapshotDir(remoteDataDir, tablePath, tableId).toString();
 
         // send event to Enumerator
         RowPosRequestEvent event =
                 new RowPosRequestEvent(
-                        tableId, tablePath, nextFileId, serializedByPartitionAndBucket);
+                        tableId,
+                        tablePath,
+                        nextFileId,
+                        serializedByPartitionAndBucket,
+                        compactSnapshotId,
+                        remoteUploadBasePath,
+                        flussColumnCount);
         operatorEventGateway.sendEventToCoordinator(new SourceEventWrapper(event));
 
         // update next file id counter (increments by total files, not batches)

@@ -48,17 +48,32 @@ public class TieringRowPosSplit extends TieringSplit {
     /** Total expected results for this scan round, used by the Committer for coordination. */
     private final int totalExpectedResults;
 
+    /** The lake snapshot ID of the compaction, used as the SST upload directory name. */
+    private final long compactSnapshotId;
+
+    /** The remote base path for SST upload. */
+    private final String remoteUploadBasePath;
+
+    /** The number of user-defined columns in the Fluss schema (excludes system columns). */
+    private final int flussColumnCount;
+
     public TieringRowPosSplit(
             TablePath tablePath,
             TableBucket tableBucket,
             @Nullable String partitionName,
             int[] fileIds,
             byte[][] serializedLakeSplits,
-            int totalExpectedResults) {
+            int totalExpectedResults,
+            long compactSnapshotId,
+            String remoteUploadBasePath,
+            int flussColumnCount) {
         super(tablePath, tableBucket, partitionName, totalExpectedResults, false);
         this.fileIds = fileIds;
         this.serializedLakeSplits = serializedLakeSplits;
         this.totalExpectedResults = totalExpectedResults;
+        this.compactSnapshotId = compactSnapshotId;
+        this.remoteUploadBasePath = remoteUploadBasePath;
+        this.flussColumnCount = flussColumnCount;
     }
 
     @Override
@@ -78,6 +93,18 @@ public class TieringRowPosSplit extends TieringSplit {
         return totalExpectedResults;
     }
 
+    public long getCompactSnapshotId() {
+        return compactSnapshotId;
+    }
+
+    public String getRemoteUploadBasePath() {
+        return remoteUploadBasePath;
+    }
+
+    public int getFlussColumnCount() {
+        return flussColumnCount;
+    }
+
     @Override
     public TieringRowPosSplit copy(int numberOfSplits) {
         return new TieringRowPosSplit(
@@ -86,7 +113,10 @@ public class TieringRowPosSplit extends TieringSplit {
                 partitionName,
                 fileIds,
                 serializedLakeSplits,
-                numberOfSplits);
+                numberOfSplits,
+                compactSnapshotId,
+                remoteUploadBasePath,
+                flussColumnCount);
     }
 
     @Override
@@ -105,6 +135,13 @@ public class TieringRowPosSplit extends TieringSplit {
                 + serializedLakeSplits.length
                 + ", totalExpectedResults="
                 + totalExpectedResults
+                + ", compactSnapshotId="
+                + compactSnapshotId
+                + ", remoteUploadBasePath='"
+                + remoteUploadBasePath
+                + '\''
+                + ", flussColumnCount="
+                + flussColumnCount
                 + '}';
     }
 
@@ -118,13 +155,22 @@ public class TieringRowPosSplit extends TieringSplit {
         }
         TieringRowPosSplit that = (TieringRowPosSplit) object;
         return totalExpectedResults == that.totalExpectedResults
+                && compactSnapshotId == that.compactSnapshotId
+                && flussColumnCount == that.flussColumnCount
                 && Arrays.equals(fileIds, that.fileIds)
-                && Arrays.deepEquals(serializedLakeSplits, that.serializedLakeSplits);
+                && Arrays.deepEquals(serializedLakeSplits, that.serializedLakeSplits)
+                && Objects.equals(remoteUploadBasePath, that.remoteUploadBasePath);
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(super.hashCode(), totalExpectedResults);
+        int result =
+                Objects.hash(
+                        super.hashCode(),
+                        totalExpectedResults,
+                        compactSnapshotId,
+                        remoteUploadBasePath,
+                        flussColumnCount);
         result = 31 * result + Arrays.hashCode(fileIds);
         result = 31 * result + Arrays.deepHashCode(serializedLakeSplits);
         return result;

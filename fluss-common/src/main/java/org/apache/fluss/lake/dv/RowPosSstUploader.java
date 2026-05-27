@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.server.kv.dv;
+package org.apache.fluss.lake.dv;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.fs.FSDataOutputStream;
@@ -104,6 +104,49 @@ public class RowPosSstUploader {
         // Write index.json last for atomic visibility
         RowPosSstIndex index = new RowPosSstIndex(indexEntries);
         FsPath indexPath = new FsPath(snapshotDir, INDEX_FILE);
+        byte[] indexBytes = index.toJsonBytes();
+        try (FSDataOutputStream out = fs.create(indexPath, FileSystem.WriteMode.NO_OVERWRITE)) {
+            out.write(indexBytes);
+        }
+    }
+
+    /**
+     * Uploads one bucket's SST files to remote storage without writing index.json. Called by Reader
+     * for per-bucket parallel upload.
+     *
+     * @param snapshotId the lake snapshot ID used as the directory name
+     * @param bucketId the bucket ID
+     * @param data the local SST data for the bucket
+     */
+    public void uploadBucketSsts(long snapshotId, int bucketId, BucketSstData data)
+            throws IOException {
+        FsPath snapshotDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + snapshotId);
+        FsPath bucketDir = new FsPath(snapshotDir, String.valueOf(bucketId));
+
+        FileSystem fs = bucketDir.getFileSystem();
+        fs.mkdirs(bucketDir);
+
+        for (RowPosSstFileWriter.SstFileMeta meta : data.getSstMetas()) {
+            FsPath remoteSstPath = new FsPath(bucketDir, meta.getFileName());
+            File localFile = new File(data.getLocalSstDir(), meta.getFileName());
+            uploadFile(fs, localFile, remoteSstPath);
+        }
+    }
+
+    /**
+     * Writes the index.json file for a snapshot. Called by Committer after all Readers have
+     * finished uploading their bucket SST files.
+     *
+     * @param snapshotId the lake snapshot ID
+     * @param index the index containing all bucket SST file entries
+     */
+    public void writeIndex(long snapshotId, RowPosSstIndex index) throws IOException {
+        FsPath snapshotDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + snapshotId);
+        FsPath indexPath = new FsPath(snapshotDir, INDEX_FILE);
+
+        FileSystem fs = indexPath.getFileSystem();
+        fs.mkdirs(snapshotDir);
+
         byte[] indexBytes = index.toJsonBytes();
         try (FSDataOutputStream out = fs.create(indexPath, FileSystem.WriteMode.NO_OVERWRITE)) {
             out.write(indexBytes);

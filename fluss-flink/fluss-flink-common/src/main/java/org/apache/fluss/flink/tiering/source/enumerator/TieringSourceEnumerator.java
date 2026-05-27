@@ -323,6 +323,9 @@ public class TieringSourceEnumerator
         long tableId = event.getTableId();
         TablePath tablePath = event.getTablePath();
         int nextFileId = event.getNextFileId();
+        long compactSnapshotId = event.getCompactSnapshotId();
+        String remoteUploadBasePath = event.getRemoteUploadBasePath();
+        int flussColumnCount = event.getFlussColumnCount();
         Map<String, Map<Integer, List<byte[]>>> splitsByPartitionAndBucket =
                 event.getSerializedSplitsByPartitionAndBucket();
 
@@ -358,7 +361,10 @@ public class TieringSourceEnumerator
                                 partitionName,
                                 fileIds,
                                 serializedLakeSplits,
-                                totalBatchCount);
+                                totalBatchCount,
+                                compactSnapshotId,
+                                remoteUploadBasePath,
+                                flussColumnCount);
                 rowPosSplits.add(rowPosSplit);
             }
         }

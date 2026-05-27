@@ -106,6 +106,9 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                 out.write(serializedLakeSplits[i]);
             }
             out.writeInt(rowPosSplit.getTotalExpectedResults());
+            out.writeLong(rowPosSplit.getCompactSnapshotId());
+            out.writeUTF(rowPosSplit.getRemoteUploadBasePath());
+            out.writeInt(rowPosSplit.getFlussColumnCount());
         } else {
             // Log split
             TieringLogSplit tieringLogSplit = split.asTieringLogSplit();
@@ -186,13 +189,19 @@ public class TieringSplitSerializer implements SimpleVersionedSerializer<Tiering
                 in.readFully(serializedLakeSplits[i]);
             }
             int totalExpectedResults = in.readInt();
+            long compactSnapshotId = in.readLong();
+            String remoteUploadBasePath = in.readUTF();
+            int flussColumnCount = in.readInt();
             return new TieringRowPosSplit(
                     tablePath,
                     tableBucket,
                     partitionName,
                     fileIds,
                     serializedLakeSplits,
-                    totalExpectedResults);
+                    totalExpectedResults,
+                    compactSnapshotId,
+                    remoteUploadBasePath,
+                    flussColumnCount);
         } else {
             // deserialize starting offset
             long startingOffset = in.readLong();

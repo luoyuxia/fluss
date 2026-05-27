@@ -253,7 +253,7 @@ public class PaimonLakeSource implements LakeSource<PaimonSplit> {
                 return null;
             }
 
-            return new DataDeltaPlan<>(newSplits, deletedFiles);
+            return new DataDeltaPlan<>(latestCompactSnapshotId, newSplits, deletedFiles);
         } catch (Exception e) {
             throw new RuntimeException("Failed to plan delta for " + tablePath, e);
         }

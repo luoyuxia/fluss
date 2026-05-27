@@ -41,6 +41,9 @@ import java.util.Map;
 @PublicEvolving
 public class DataDeltaPlan<Split extends LakeSplit> {
 
+    /** The lake snapshot ID of the compaction that produced these files. */
+    private final long compactSnapshotId;
+
     /** Compaction output files, each split contains exactly one file. */
     private final List<Split> splits;
 
@@ -51,9 +54,18 @@ public class DataDeltaPlan<Split extends LakeSplit> {
      */
     private final Map<String, Map<Integer, List<String>>> deletedFiles;
 
-    public DataDeltaPlan(List<Split> splits, Map<String, Map<Integer, List<String>>> deletedFiles) {
+    public DataDeltaPlan(
+            long compactSnapshotId,
+            List<Split> splits,
+            Map<String, Map<Integer, List<String>>> deletedFiles) {
+        this.compactSnapshotId = compactSnapshotId;
         this.splits = splits;
         this.deletedFiles = deletedFiles;
+    }
+
+    /** Returns the lake snapshot ID of the compaction that produced these files. */
+    public long getCompactSnapshotId() {
+        return compactSnapshotId;
     }
 
     /** Returns the splits to scan. Each split contains exactly one compaction output file. */

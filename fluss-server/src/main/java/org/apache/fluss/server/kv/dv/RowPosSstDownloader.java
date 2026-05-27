@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.fs.FSDataInputStream;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.lake.dv.RowPosSstIndex;
 import org.apache.fluss.utils.IOUtils;
 
 import java.io.ByteArrayOutputStream;

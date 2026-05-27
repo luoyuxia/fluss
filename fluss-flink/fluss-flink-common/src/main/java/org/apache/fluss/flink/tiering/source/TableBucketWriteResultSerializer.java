@@ -17,6 +17,7 @@
 
 package org.apache.fluss.flink.tiering.source;
 
+import org.apache.fluss.lake.source.RowPosResult;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 
@@ -26,7 +27,9 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /** The serializer for {@link TableBucketWriteResult}. */
 public class TableBucketWriteResultSerializer<WriteResult>
@@ -93,29 +96,24 @@ public class TableBucketWriteResultSerializer<WriteResult>
         // serialize number of write results
         out.writeInt(tableBucketWriteResult.numberOfWriteResults());
 
-        // serialize RowPosResult
+        // serialize RowPosResult (SstMeta-based format)
         RowPosResult rowPosResult = tableBucketWriteResult.getRowPosResult();
         if (rowPosResult != null) {
             out.writeBoolean(true);
-            if (rowPosResult.getPartitionName() != null) {
-                out.writeBoolean(true);
-                out.writeUTF(rowPosResult.getPartitionName());
-            } else {
-                out.writeBoolean(false);
-            }
             out.writeInt(rowPosResult.getBucketId());
-            List<RowPosResult.FileRowPos> fileResults = rowPosResult.getFileResults();
-            out.writeInt(fileResults.size());
-            for (RowPosResult.FileRowPos fileRowPos : fileResults) {
-                out.writeInt(fileRowPos.getFileId());
-                out.writeUTF(fileRowPos.getFileName());
-                long[] rowIds = fileRowPos.getRowIds();
-                long[] rowPositions = fileRowPos.getRowPositions();
-                out.writeInt(rowIds.length);
-                for (int i = 0; i < rowIds.length; i++) {
-                    out.writeLong(rowIds[i]);
-                    out.writeLong(rowPositions[i]);
-                }
+            // serialize newFileDictEntries
+            Map<Integer, String> newFileDictEntries = rowPosResult.getNewFileDictEntries();
+            out.writeInt(newFileDictEntries.size());
+            for (Map.Entry<Integer, String> entry : newFileDictEntries.entrySet()) {
+                out.writeInt(entry.getKey());
+                out.writeUTF(entry.getValue());
+            }
+            // serialize sstMetas
+            List<RowPosResult.SstMeta> sstMetas = rowPosResult.getSstMetas();
+            out.writeInt(sstMetas.size());
+            for (RowPosResult.SstMeta meta : sstMetas) {
+                out.writeUTF(meta.getFileName());
+                out.writeLong(meta.getFileSize());
             }
         } else {
             out.writeBoolean(false);
@@ -167,30 +165,27 @@ public class TableBucketWriteResultSerializer<WriteResult>
         // deserialize number of write results
         int numberOfWriteResults = in.readInt();
 
-        // deserialize RowPosResult
+        // deserialize RowPosResult (SstMeta-based format)
         RowPosResult rowPosResult = null;
         if (in.readBoolean()) {
-            String rowPosPartitionName = null;
-            if (in.readBoolean()) {
-                rowPosPartitionName = in.readUTF();
-            }
             int rowPosBucketId = in.readInt();
-            int fileResultCount = in.readInt();
-            List<RowPosResult.FileRowPos> fileResults = new ArrayList<>(fileResultCount);
-            for (int f = 0; f < fileResultCount; f++) {
+            // deserialize newFileDictEntries
+            int dictSize = in.readInt();
+            Map<Integer, String> newFileDictEntries = new HashMap<>(dictSize);
+            for (int d = 0; d < dictSize; d++) {
                 int fileId = in.readInt();
                 String fileName = in.readUTF();
-                int rowIdsLength = in.readInt();
-                long[] rowIds = new long[rowIdsLength];
-                long[] rowPositions = new long[rowIdsLength];
-                for (int i = 0; i < rowIdsLength; i++) {
-                    rowIds[i] = in.readLong();
-                    rowPositions[i] = in.readLong();
-                }
-                fileResults.add(
-                        new RowPosResult.FileRowPos(fileId, fileName, rowIds, rowPositions));
+                newFileDictEntries.put(fileId, fileName);
             }
-            rowPosResult = new RowPosResult(fileResults, rowPosPartitionName, rowPosBucketId);
+            // deserialize sstMetas
+            int sstMetaCount = in.readInt();
+            List<RowPosResult.SstMeta> sstMetas = new ArrayList<>(sstMetaCount);
+            for (int s = 0; s < sstMetaCount; s++) {
+                String sstFileName = in.readUTF();
+                long sstFileSize = in.readLong();
+                sstMetas.add(new RowPosResult.SstMeta(sstFileName, sstFileSize));
+            }
+            rowPosResult = new RowPosResult(rowPosBucketId, newFileDictEntries, sstMetas);
         }
 
         return new TableBucketWriteResult<>(

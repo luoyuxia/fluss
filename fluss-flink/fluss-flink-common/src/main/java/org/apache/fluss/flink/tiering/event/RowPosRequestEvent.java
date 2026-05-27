@@ -52,15 +52,30 @@ public class RowPosRequestEvent implements SourceEvent {
      */
     private final Map<String, Map<Integer, List<byte[]>>> serializedSplitsByPartitionAndBucket;
 
+    /** The lake snapshot ID of the compaction, used as the SST upload directory name. */
+    private final long compactSnapshotId;
+
+    /** The remote base path for SST upload (FlussPaths.remoteLakeTableSnapshotDir()). */
+    private final String remoteUploadBasePath;
+
+    /** The number of user-defined columns in the Fluss schema (excludes system columns). */
+    private final int flussColumnCount;
+
     public RowPosRequestEvent(
             long tableId,
             TablePath tablePath,
             int nextFileId,
-            Map<String, Map<Integer, List<byte[]>>> serializedSplitsByPartitionAndBucket) {
+            Map<String, Map<Integer, List<byte[]>>> serializedSplitsByPartitionAndBucket,
+            long compactSnapshotId,
+            String remoteUploadBasePath,
+            int flussColumnCount) {
         this.tableId = tableId;
         this.tablePath = tablePath;
         this.nextFileId = nextFileId;
         this.serializedSplitsByPartitionAndBucket = serializedSplitsByPartitionAndBucket;
+        this.compactSnapshotId = compactSnapshotId;
+        this.remoteUploadBasePath = remoteUploadBasePath;
+        this.flussColumnCount = flussColumnCount;
     }
 
     public long getTableId() {
@@ -77,5 +92,17 @@ public class RowPosRequestEvent implements SourceEvent {
 
     public Map<String, Map<Integer, List<byte[]>>> getSerializedSplitsByPartitionAndBucket() {
         return serializedSplitsByPartitionAndBucket;
+    }
+
+    public long getCompactSnapshotId() {
+        return compactSnapshotId;
+    }
+
+    public String getRemoteUploadBasePath() {
+        return remoteUploadBasePath;
+    }
+
+    public int getFlussColumnCount() {
+        return flussColumnCount;
     }
 }

@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.server.kv.dv;
+package org.apache.fluss.lake.dv;
 
 import org.apache.fluss.annotation.Internal;
 
@@ -41,7 +41,7 @@ import java.util.List;
 @Internal
 public class RowPosSstFileWriter implements Closeable {
 
-    static final int MAX_ENTRIES_PER_SST = 1_000_000;
+    public static final int MAX_ENTRIES_PER_SST = 1_000_000;
 
     private final String outputDir;
 
@@ -76,8 +76,7 @@ public class RowPosSstFileWriter implements Closeable {
                 writer.open(filePath);
                 for (int i = offset; i < end; i++) {
                     RowPosEntry entry = sortedEntries.get(i);
-                    writer.put(
-                            RowPosIndex.encodeRowId(entry.getRowId()), entry.getFilePos().encode());
+                    writer.put(FilePos.encodeRowId(entry.getRowId()), entry.getFilePos().encode());
                 }
                 writer.finish();
             } catch (RocksDBException e) {

@@ -18,6 +18,7 @@
 package org.apache.fluss.flink.tiering.source;
 
 import org.apache.fluss.flink.tiering.TestingWriteResult;
+import org.apache.fluss.lake.source.RowPosResult;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 
@@ -27,6 +28,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -85,14 +88,17 @@ class TableBucketWriteResultSerializerTest {
         TablePath tablePath = TablePath.of("db1", "tb1");
         TableBucket tableBucket = new TableBucket(1, 100L, 2);
 
-        // multi-file RowPosResult
-        RowPosResult.FileRowPos file1 =
-                new RowPosResult.FileRowPos(
-                        10, "file1.parquet", new long[] {100, 200, 300}, new long[] {0, 1, 2});
-        RowPosResult.FileRowPos file2 =
-                new RowPosResult.FileRowPos(
-                        11, "file2.parquet", new long[] {400, 500}, new long[] {0, 1});
-        RowPosResult rowPosResult = new RowPosResult(Arrays.asList(file1, file2), "partition1", 2);
+        // RowPosResult with multiple SST files
+        Map<Integer, String> fileDictEntries = new HashMap<>();
+        fileDictEntries.put(10, "file1.parquet");
+        fileDictEntries.put(11, "file2.parquet");
+        RowPosResult rowPosResult =
+                new RowPosResult(
+                        2,
+                        fileDictEntries,
+                        Arrays.asList(
+                                new RowPosResult.SstMeta("sst_0.sst", 12345),
+                                new RowPosResult.SstMeta("sst_1.sst", 67890)));
 
         TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
                 new TableBucketWriteResult<>(
@@ -106,36 +112,30 @@ class TableBucketWriteResultSerializerTest {
         assertThat(deserialized.isRowPosResult()).isTrue();
         RowPosResult deserializedRowPos = deserialized.getRowPosResult();
         assertThat(deserializedRowPos).isNotNull();
-        assertThat(deserializedRowPos.getPartitionName()).isEqualTo("partition1");
         assertThat(deserializedRowPos.getBucketId()).isEqualTo(2);
-        assertThat(deserializedRowPos.getFileResults()).hasSize(2);
-
-        RowPosResult.FileRowPos deserializedFile1 = deserializedRowPos.getFileResults().get(0);
-        assertThat(deserializedFile1.getFileId()).isEqualTo(10);
-        assertThat(deserializedFile1.getFileName()).isEqualTo("file1.parquet");
-        assertThat(deserializedFile1.getRowIds()).containsExactly(100, 200, 300);
-        assertThat(deserializedFile1.getRowPositions()).containsExactly(0, 1, 2);
-
-        RowPosResult.FileRowPos deserializedFile2 = deserializedRowPos.getFileResults().get(1);
-        assertThat(deserializedFile2.getFileId()).isEqualTo(11);
-        assertThat(deserializedFile2.getFileName()).isEqualTo("file2.parquet");
-        assertThat(deserializedFile2.getRowIds()).containsExactly(400, 500);
-        assertThat(deserializedFile2.getRowPositions()).containsExactly(0, 1);
+        assertThat(deserializedRowPos.getNewFileDictEntries()).hasSize(2);
+        assertThat(deserializedRowPos.getNewFileDictEntries().get(10)).isEqualTo("file1.parquet");
+        assertThat(deserializedRowPos.getNewFileDictEntries().get(11)).isEqualTo("file2.parquet");
+        assertThat(deserializedRowPos.getSstMetas()).hasSize(2);
+        assertThat(deserializedRowPos.getSstMetas().get(0).getFileName()).isEqualTo("sst_0.sst");
+        assertThat(deserializedRowPos.getSstMetas().get(0).getFileSize()).isEqualTo(12345);
+        assertThat(deserializedRowPos.getSstMetas().get(1).getFileName()).isEqualTo("sst_1.sst");
+        assertThat(deserializedRowPos.getSstMetas().get(1).getFileSize()).isEqualTo(67890);
     }
 
     @Test
-    void testSerializeAndDeserializeWithSingleFileRowPosResult() throws Exception {
+    void testSerializeAndDeserializeWithSingleSstRowPosResult() throws Exception {
         TablePath tablePath = TablePath.of("db1", "tb1");
         TableBucket tableBucket = new TableBucket(1, 2);
 
-        // single-file RowPosResult (non-partitioned)
-        RowPosResult.FileRowPos file1 =
-                new RowPosResult.FileRowPos(
-                        5,
-                        "output.parquet",
-                        new long[] {1, 2, 3, 4, 5},
-                        new long[] {0, 1, 2, 3, 4});
-        RowPosResult rowPosResult = new RowPosResult(Collections.singletonList(file1), null, 2);
+        // single-SST RowPosResult (non-partitioned)
+        Map<Integer, String> fileDictEntries = new HashMap<>();
+        fileDictEntries.put(5, "output.parquet");
+        RowPosResult rowPosResult =
+                new RowPosResult(
+                        2,
+                        fileDictEntries,
+                        Collections.singletonList(new RowPosResult.SstMeta("sst_0.sst", 1000)));
 
         TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
                 new TableBucketWriteResult<>(
@@ -149,12 +149,11 @@ class TableBucketWriteResultSerializerTest {
         assertThat(deserialized.isRowPosResult()).isTrue();
         RowPosResult deserializedRowPos = deserialized.getRowPosResult();
         assertThat(deserializedRowPos).isNotNull();
-        assertThat(deserializedRowPos.getPartitionName()).isNull();
         assertThat(deserializedRowPos.getBucketId()).isEqualTo(2);
-        assertThat(deserializedRowPos.getFileResults()).hasSize(1);
-        assertThat(deserializedRowPos.getFileResults().get(0).getRowIds())
-                .containsExactly(1, 2, 3, 4, 5);
-        assertThat(deserializedRowPos.getFileResults().get(0).getRowPositions())
-                .containsExactly(0, 1, 2, 3, 4);
+        assertThat(deserializedRowPos.getNewFileDictEntries()).hasSize(1);
+        assertThat(deserializedRowPos.getNewFileDictEntries().get(5)).isEqualTo("output.parquet");
+        assertThat(deserializedRowPos.getSstMetas()).hasSize(1);
+        assertThat(deserializedRowPos.getSstMetas().get(0).getFileName()).isEqualTo("sst_0.sst");
+        assertThat(deserializedRowPos.getSstMetas().get(0).getFileSize()).isEqualTo(1000);
     }
 }

@@ -18,6 +18,8 @@
 package org.apache.fluss.server.kv.dv;
 
 import org.apache.fluss.fs.FsPath;
+import org.apache.fluss.lake.dv.RowPosSstFileWriter;
+import org.apache.fluss.lake.dv.RowPosSstUploader;
 import org.apache.fluss.server.entity.DvPositionReportData;
 
 import org.junit.jupiter.api.AfterEach;
@@ -62,12 +64,7 @@ class DvManagerPrepareAndSwitchTest {
         // Upload SST to simulate remote storage
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
         uploadTestSst(
-                remoteDir,
-                1L,
-                0,
-                Arrays.asList(
-                        new RowPosSstFileWriter.RowPosEntry(10L, new FilePos(1, 100L)),
-                        new RowPosSstFileWriter.RowPosEntry(20L, new FilePos(2, 200L))));
+                remoteDir, 1L, 0, Arrays.asList(sstEntry(10L, 1, 100L), sstEntry(20L, 2, 200L)));
 
         // Pre-populate FileDict with an old file mapping (for oldFiles resolution)
         dvRocksDB.fileDict().put(99, "/old/file.parquet");
@@ -98,12 +95,7 @@ class DvManagerPrepareAndSwitchTest {
     @Test
     void testPrepareIdempotency() throws Exception {
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
-        uploadTestSst(
-                remoteDir,
-                1L,
-                0,
-                Collections.singletonList(
-                        new RowPosSstFileWriter.RowPosEntry(10L, new FilePos(1, 100L))));
+        uploadTestSst(remoteDir, 1L, 0, Collections.singletonList(sstEntry(10L, 1, 100L)));
 
         Map<Integer, String> newFileDictEntries = Collections.singletonMap(1, "/data/f1.parquet");
         DvPositionReportData.DvBucketOffset bucketOffset =
@@ -128,12 +120,7 @@ class DvManagerPrepareAndSwitchTest {
         // Setup: upload SST with RowPos data
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
         uploadTestSst(
-                remoteDir,
-                1L,
-                0,
-                Arrays.asList(
-                        new RowPosSstFileWriter.RowPosEntry(10L, new FilePos(1, 100L)),
-                        new RowPosSstFileWriter.RowPosEntry(20L, new FilePos(2, 200L))));
+                remoteDir, 1L, 0, Arrays.asList(sstEntry(10L, 1, 100L), sstEntry(20L, 2, 200L)));
 
         // Simulate pending deletes from handleChangelogSynced
         dvRocksDB.pendingDeletes().putPending(10L); // rowId 10: pending, will be resolved
@@ -184,12 +171,7 @@ class DvManagerPrepareAndSwitchTest {
     @Test
     void testReadableSwitchIdempotency() throws Exception {
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
-        uploadTestSst(
-                remoteDir,
-                1L,
-                0,
-                Collections.singletonList(
-                        new RowPosSstFileWriter.RowPosEntry(10L, new FilePos(1, 100L))));
+        uploadTestSst(remoteDir, 1L, 0, Collections.singletonList(sstEntry(10L, 1, 100L)));
 
         DvPositionReportData.DvBucketOffset bucketOffset =
                 new DvPositionReportData.DvBucketOffset(
@@ -224,12 +206,7 @@ class DvManagerPrepareAndSwitchTest {
 
         // Upload SST
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
-        uploadTestSst(
-                remoteDir,
-                1L,
-                0,
-                Collections.singletonList(
-                        new RowPosSstFileWriter.RowPosEntry(50L, new FilePos(1, 500L))));
+        uploadTestSst(remoteDir, 1L, 0, Collections.singletonList(sstEntry(50L, 1, 500L)));
 
         Map<Integer, String> newFileDictEntries = Collections.singletonMap(1, "/data/f1.parquet");
         DvPositionReportData.DvBucketOffset bucketOffset =
@@ -258,12 +235,7 @@ class DvManagerPrepareAndSwitchTest {
 
         // Upload empty SST (no bucket 0 data)
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
-        uploadTestSst(
-                remoteDir,
-                1L,
-                0,
-                Collections.singletonList(
-                        new RowPosSstFileWriter.RowPosEntry(50L, new FilePos(1, 500L))));
+        uploadTestSst(remoteDir, 1L, 0, Collections.singletonList(sstEntry(50L, 1, 500L)));
 
         DvPositionReportData.DvBucketOffset bucketOffset =
                 new DvPositionReportData.DvBucketOffset(
@@ -296,12 +268,7 @@ class DvManagerPrepareAndSwitchTest {
 
         // Step 2: Prepare — SST with RowPos for rowId 10 (but not 20)
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
-        uploadTestSst(
-                remoteDir,
-                1L,
-                0,
-                Collections.singletonList(
-                        new RowPosSstFileWriter.RowPosEntry(10L, new FilePos(1, 100L))));
+        uploadTestSst(remoteDir, 1L, 0, Collections.singletonList(sstEntry(10L, 1, 100L)));
 
         DvPositionReportData.DvBucketOffset bucketOffset =
                 new DvPositionReportData.DvBucketOffset(
@@ -335,12 +302,7 @@ class DvManagerPrepareAndSwitchTest {
     void testEmptySstPrepareAndSwitch() throws Exception {
         // Upload SST with data only for bucket 1, but we'll prepare bucket 0
         FsPath remoteDir = new FsPath(tempDir.resolve("remote").toUri());
-        uploadTestSst(
-                remoteDir,
-                1L,
-                1,
-                Collections.singletonList(
-                        new RowPosSstFileWriter.RowPosEntry(10L, new FilePos(1, 100L))));
+        uploadTestSst(remoteDir, 1L, 1, Collections.singletonList(sstEntry(10L, 1, 100L)));
 
         DvPositionReportData.DvBucketOffset bucketOffset =
                 new DvPositionReportData.DvBucketOffset(
@@ -377,5 +339,12 @@ class DvManagerPrepareAndSwitchTest {
         Map<Integer, RowPosSstUploader.BucketSstData> bucketSstMap = new HashMap<>();
         bucketSstMap.put(bucketId, new RowPosSstUploader.BucketSstData(localSstDir, metas));
         uploader.upload(snapshotId, bucketSstMap);
+    }
+
+    /** Helper to create a RowPosEntry using the fluss-common FilePos. */
+    private static RowPosSstFileWriter.RowPosEntry sstEntry(
+            long rowId, int fileId, long rowPosition) {
+        return new RowPosSstFileWriter.RowPosEntry(
+                rowId, new org.apache.fluss.lake.dv.FilePos(fileId, rowPosition));
     }
 }
