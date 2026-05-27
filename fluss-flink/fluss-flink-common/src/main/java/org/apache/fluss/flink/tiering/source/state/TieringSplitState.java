@@ -18,6 +18,7 @@
 package org.apache.fluss.flink.tiering.source.state;
 
 import org.apache.fluss.flink.tiering.source.split.TieringLogSplit;
+import org.apache.fluss.flink.tiering.source.split.TieringRowPosSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSnapshotSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
 
@@ -46,6 +47,15 @@ public class TieringSplitState {
                     split.getSnapshotId(),
                     split.getLogOffsetOfSnapshot(),
                     split.getNumberOfSplits());
+        } else if (tieringSplit.isTieringRowPosSplit()) {
+            final TieringRowPosSplit split = (TieringRowPosSplit) this.tieringSplit;
+            return new TieringRowPosSplit(
+                    split.getTablePath(),
+                    split.getTableBucket(),
+                    split.getPartitionName(),
+                    split.getFileId(),
+                    split.getSerializedLakeSplit(),
+                    split.getTotalExpectedResults());
         } else {
             final TieringLogSplit split = (TieringLogSplit) tieringSplit;
             return new TieringLogSplit(

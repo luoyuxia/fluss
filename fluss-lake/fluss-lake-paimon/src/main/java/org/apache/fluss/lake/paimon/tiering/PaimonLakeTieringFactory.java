@@ -26,6 +26,7 @@ import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.lake.writer.WriterInitContext;
+import org.apache.fluss.metadata.TablePath;
 
 import java.io.IOException;
 
@@ -35,9 +36,11 @@ public class PaimonLakeTieringFactory
 
     private static final long serialVersionUID = 1L;
 
+    private final Configuration paimonConfig;
     private final PaimonCatalogProvider paimonCatalogProvider;
 
     public PaimonLakeTieringFactory(Configuration paimonConfig) {
+        this.paimonConfig = paimonConfig;
         this.paimonCatalogProvider = new PaimonCatalogProvider(paimonConfig);
     }
 
@@ -67,5 +70,10 @@ public class PaimonLakeTieringFactory
     public LakeSource<?> createLakeSource(CommitterInitContext committerInitContext) {
         return new PaimonLakeSource(
                 committerInitContext.lakeTieringConfig(), committerInitContext.tablePath());
+    }
+
+    @Override
+    public LakeSource<?> createLakeSource(TablePath tablePath) {
+        return new PaimonLakeSource(paimonConfig, tablePath);
     }
 }

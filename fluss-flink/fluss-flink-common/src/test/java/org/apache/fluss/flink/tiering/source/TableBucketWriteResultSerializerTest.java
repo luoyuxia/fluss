@@ -21,8 +21,12 @@ import org.apache.fluss.flink.tiering.TestingWriteResult;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+
+import java.util.Arrays;
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,5 +78,73 @@ class TableBucketWriteResultSerializerTest {
         assertThat(deserialized.partitionName()).isEqualTo(partitionName);
         assertThat(deserialized.writeResult()).isNull();
         assertThat(deserialized.numberOfWriteResults()).isEqualTo(30);
+    }
+
+    @Test
+    void testSerializeAndDeserializeWithRowPosResult() throws Exception {
+        TablePath tablePath = TablePath.of("db1", "tb1");
+        TableBucket tableBucket = new TableBucket(1, 100L, 2);
+
+        // multi-file RowPosResult
+        RowPosResult.FileRowPos file1 =
+                new RowPosResult.FileRowPos(10, "file1.parquet", new long[] {100, 200, 300});
+        RowPosResult.FileRowPos file2 =
+                new RowPosResult.FileRowPos(11, "file2.parquet", new long[] {400, 500});
+        RowPosResult rowPosResult = new RowPosResult(Arrays.asList(file1, file2), "partition1", 2);
+
+        TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
+                new TableBucketWriteResult<>(
+                        tablePath, tableBucket, "partition1", null, -1, -1, 3, rowPosResult);
+
+        byte[] serialized = tableBucketWriteResultSerializer.serialize(tableBucketWriteResult);
+        TableBucketWriteResult<TestingWriteResult> deserialized =
+                tableBucketWriteResultSerializer.deserialize(
+                        tableBucketWriteResultSerializer.getVersion(), serialized);
+
+        assertThat(deserialized.isRowPosResult()).isTrue();
+        RowPosResult deserializedRowPos = deserialized.getRowPosResult();
+        assertThat(deserializedRowPos).isNotNull();
+        assertThat(deserializedRowPos.getPartitionName()).isEqualTo("partition1");
+        assertThat(deserializedRowPos.getBucketId()).isEqualTo(2);
+        assertThat(deserializedRowPos.getFileResults()).hasSize(2);
+
+        RowPosResult.FileRowPos deserializedFile1 = deserializedRowPos.getFileResults().get(0);
+        assertThat(deserializedFile1.getFileId()).isEqualTo(10);
+        assertThat(deserializedFile1.getFileName()).isEqualTo("file1.parquet");
+        assertThat(deserializedFile1.getRowIds()).containsExactly(100, 200, 300);
+
+        RowPosResult.FileRowPos deserializedFile2 = deserializedRowPos.getFileResults().get(1);
+        assertThat(deserializedFile2.getFileId()).isEqualTo(11);
+        assertThat(deserializedFile2.getFileName()).isEqualTo("file2.parquet");
+        assertThat(deserializedFile2.getRowIds()).containsExactly(400, 500);
+    }
+
+    @Test
+    void testSerializeAndDeserializeWithSingleFileRowPosResult() throws Exception {
+        TablePath tablePath = TablePath.of("db1", "tb1");
+        TableBucket tableBucket = new TableBucket(1, 2);
+
+        // single-file RowPosResult (non-partitioned)
+        RowPosResult.FileRowPos file1 =
+                new RowPosResult.FileRowPos(5, "output.parquet", new long[] {1, 2, 3, 4, 5});
+        RowPosResult rowPosResult = new RowPosResult(Collections.singletonList(file1), null, 2);
+
+        TableBucketWriteResult<TestingWriteResult> tableBucketWriteResult =
+                new TableBucketWriteResult<>(
+                        tablePath, tableBucket, null, null, -1, -1, 1, rowPosResult);
+
+        byte[] serialized = tableBucketWriteResultSerializer.serialize(tableBucketWriteResult);
+        TableBucketWriteResult<TestingWriteResult> deserialized =
+                tableBucketWriteResultSerializer.deserialize(
+                        tableBucketWriteResultSerializer.getVersion(), serialized);
+
+        assertThat(deserialized.isRowPosResult()).isTrue();
+        RowPosResult deserializedRowPos = deserialized.getRowPosResult();
+        assertThat(deserializedRowPos).isNotNull();
+        assertThat(deserializedRowPos.getPartitionName()).isNull();
+        assertThat(deserializedRowPos.getBucketId()).isEqualTo(2);
+        assertThat(deserializedRowPos.getFileResults()).hasSize(1);
+        assertThat(deserializedRowPos.getFileResults().get(0).getRowIds())
+                .containsExactly(1, 2, 3, 4, 5);
     }
 }

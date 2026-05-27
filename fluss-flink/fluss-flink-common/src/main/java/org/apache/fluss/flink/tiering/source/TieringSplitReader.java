@@ -27,13 +27,20 @@ import org.apache.fluss.flink.source.reader.BoundedSplitReader;
 import org.apache.fluss.flink.source.reader.RecordAndPos;
 import org.apache.fluss.flink.tiering.source.metrics.TieringMetrics;
 import org.apache.fluss.flink.tiering.source.split.TieringLogSplit;
+import org.apache.fluss.flink.tiering.source.split.TieringRowPosSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSnapshotSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
+import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
+import org.apache.fluss.lake.source.LakeSource;
+import org.apache.fluss.lake.source.LakeSplit;
+import org.apache.fluss.lake.source.RecordReader;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.record.LogRecord;
+import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.utils.CloseableIterator;
 
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
@@ -48,6 +55,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -108,6 +116,7 @@ public class TieringSplitReader<WriteResult>
     private final Set<TieringSplit> currentEmptySplits;
 
     private final TieringMetrics tieringMetrics;
+    private final Queue<TieringRowPosSplit> pendingRowPosSplits;
 
     public TieringSplitReader(
             Connection connection,
@@ -136,10 +145,16 @@ public class TieringSplitReader<WriteResult>
         this.reachTieringMaxDurationTables = new HashSet<>();
         this.pollTimeout = pollTimeout;
         this.tieringMetrics = tieringMetrics;
+        this.pendingRowPosSplits = new ArrayDeque<>();
     }
 
     @Override
     public RecordsWithSplitIds<TableBucketWriteResult<WriteResult>> fetch() throws IOException {
+        // process RowPos splits first
+        if (!pendingRowPosSplits.isEmpty()) {
+            return processRowPosSplit(pendingRowPosSplits.poll());
+        }
+
         // check empty splits
         if (!currentEmptySplits.isEmpty()) {
             LOG.info("Empty split(s) {} finished.", currentEmptySplits);
@@ -189,6 +204,10 @@ public class TieringSplitReader<WriteResult>
         }
         for (TieringSplit split : splitsChange.splits()) {
             LOG.info("add split {}", split.splitId());
+            if (split.isTieringRowPosSplit()) {
+                pendingRowPosSplits.add(split.asTieringRowPosSplit());
+                continue;
+            }
             if (split.shouldSkipCurrentRound()) {
                 // if the split is forced to ignore,
                 // mark it as empty
@@ -611,6 +630,78 @@ public class TieringSplitReader<WriteResult>
         }
 
         // don't need to close connection, will be closed by TieringSourceReader
+    }
+
+    /**
+     * Processes a row position scan split by reading the compaction output files from the lake and
+     * extracting __rowid values. Each split may contain multiple files for the same bucket.
+     */
+    @SuppressWarnings("unchecked")
+    private TableBucketWriteResultWithSplitIds processRowPosSplit(TieringRowPosSplit rowPosSplit)
+            throws IOException {
+        LakeSource<?> lakeSource = lakeTieringFactory.createLakeSource(rowPosSplit.getTablePath());
+        if (lakeSource == null) {
+            throw new IOException(
+                    "LakeSource is null for table "
+                            + rowPosSplit.getTablePath()
+                            + ". Cannot process RowPos split.");
+        }
+        return processRowPosSplitInternal(rowPosSplit, (LakeSource<LakeSplit>) lakeSource);
+    }
+
+    private <Split extends LakeSplit> TableBucketWriteResultWithSplitIds processRowPosSplitInternal(
+            TieringRowPosSplit rowPosSplit, LakeSource<Split> lakeSource) throws IOException {
+        SimpleVersionedSerializer<Split> splitSerializer = lakeSource.getSplitSerializer();
+        int[] fileIds = rowPosSplit.getFileIds();
+        byte[][] serializedLakeSplits = rowPosSplit.getSerializedLakeSplits();
+
+        List<RowPosResult.FileRowPos> fileResults = new ArrayList<>(fileIds.length);
+        for (int idx = 0; idx < fileIds.length; idx++) {
+            Split lakeSplit =
+                    splitSerializer.deserialize(
+                            splitSerializer.getVersion(), serializedLakeSplits[idx]);
+
+            RecordReader recordReader = lakeSource.createRecordReader(() -> lakeSplit);
+            List<Long> rowIdsList = new ArrayList<>();
+            try (CloseableIterator<LogRecord> iter = recordReader.read()) {
+                while (iter.hasNext()) {
+                    LogRecord record = iter.next();
+                    InternalRow row = record.getRow();
+                    // __rowid is the last column in the schema
+                    long rowId = row.getLong(row.getFieldCount() - 1);
+                    rowIdsList.add(rowId);
+                }
+            }
+
+            long[] rowIds = new long[rowIdsList.size()];
+            for (int i = 0; i < rowIdsList.size(); i++) {
+                rowIds[i] = rowIdsList.get(i);
+            }
+
+            fileResults.add(
+                    new RowPosResult.FileRowPos(fileIds[idx], lakeSplit.fileName(), rowIds));
+        }
+
+        RowPosResult rowPosResult =
+                new RowPosResult(
+                        fileResults,
+                        rowPosSplit.getPartitionName(),
+                        rowPosSplit.getTableBucket().getBucket());
+
+        TableBucketWriteResult<WriteResult> result =
+                new TableBucketWriteResult<>(
+                        rowPosSplit.getTablePath(),
+                        rowPosSplit.getTableBucket(),
+                        rowPosSplit.getPartitionName(),
+                        null,
+                        -1,
+                        -1,
+                        rowPosSplit.getTotalExpectedResults(),
+                        rowPosResult);
+
+        return new TableBucketWriteResultWithSplitIds(
+                Collections.singletonMap(rowPosSplit.getTableBucket(), result),
+                Collections.singletonMap(rowPosSplit.getTableBucket(), rowPosSplit.splitId()));
     }
 
     private void subscribeLog(TieringLogSplit logSplit) {

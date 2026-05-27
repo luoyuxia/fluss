@@ -109,6 +109,43 @@ class TieringSplitSerializerTest {
                 .isEqualTo(expectedSplitString);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testTieringRowPosSplitSerde(Boolean isPartitionedTable) throws Exception {
+        TableBucket bucket = isPartitionedTable ? partitionedTableBucket : tableBucket;
+        TablePath path = isPartitionedTable ? partitionedTablePath : tablePath;
+        String partitionName = isPartitionedTable ? "1024" : null;
+
+        // batch with multiple files
+        int[] fileIds = {10, 11, 12};
+        byte[][] serializedLakeSplits = {
+            new byte[] {1, 2, 3}, new byte[] {4, 5, 6, 7}, new byte[] {8}
+        };
+        TieringRowPosSplit tieringSplit =
+                new TieringRowPosSplit(
+                        path, bucket, partitionName, fileIds, serializedLakeSplits, 5);
+
+        byte[] serialized = serializer.serialize(tieringSplit);
+        TieringRowPosSplit deserializedSplit =
+                (TieringRowPosSplit) serializer.deserialize(serializer.getVersion(), serialized);
+        assertThat(deserializedSplit).isEqualTo(tieringSplit);
+    }
+
+    @Test
+    void testTieringRowPosSplitSingleFileSerde() throws Exception {
+        // batch with a single file
+        int[] fileIds = {42};
+        byte[][] serializedLakeSplits = {new byte[] {10, 20, 30}};
+        TieringRowPosSplit tieringSplit =
+                new TieringRowPosSplit(
+                        tablePath, tableBucket, null, fileIds, serializedLakeSplits, 1);
+
+        byte[] serialized = serializer.serialize(tieringSplit);
+        TieringRowPosSplit deserializedSplit =
+                (TieringRowPosSplit) serializer.deserialize(serializer.getVersion(), serialized);
+        assertThat(deserializedSplit).isEqualTo(tieringSplit);
+    }
+
     @Test
     void testSkipCurrentRoundSerde() throws Exception {
         // Test TieringSnapshotSplit with skipCurrentRound set at creation

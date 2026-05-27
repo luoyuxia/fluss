@@ -57,6 +57,10 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
     // for the round of tiering is finished
     private final int numberOfWriteResults;
 
+    // optional row position scan result, non-null when this record carries RowPos data
+    // from Reader back to Committer
+    @Nullable private final RowPosResult rowPosResult;
+
     public TableBucketWriteResult(
             TablePath tablePath,
             TableBucket tableBucket,
@@ -65,6 +69,26 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
             long logEndOffset,
             long maxTimestamp,
             int numberOfWriteResults) {
+        this(
+                tablePath,
+                tableBucket,
+                partitionName,
+                writeResult,
+                logEndOffset,
+                maxTimestamp,
+                numberOfWriteResults,
+                null);
+    }
+
+    public TableBucketWriteResult(
+            TablePath tablePath,
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            @Nullable WriteResult writeResult,
+            long logEndOffset,
+            long maxTimestamp,
+            int numberOfWriteResults,
+            @Nullable RowPosResult rowPosResult) {
         this.tablePath = tablePath;
         this.tableBucket = tableBucket;
         this.partitionName = partitionName;
@@ -72,6 +96,7 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
         this.logEndOffset = logEndOffset;
         this.maxTimestamp = maxTimestamp;
         this.numberOfWriteResults = numberOfWriteResults;
+        this.rowPosResult = rowPosResult;
     }
 
     public TablePath tablePath() {
@@ -102,5 +127,16 @@ public class TableBucketWriteResult<WriteResult> implements Serializable {
 
     public long maxTimestamp() {
         return maxTimestamp;
+    }
+
+    /** Returns whether this write result carries a RowPos scan result. */
+    public boolean isRowPosResult() {
+        return rowPosResult != null;
+    }
+
+    /** Returns the RowPos scan result, or null if this is a normal write result. */
+    @Nullable
+    public RowPosResult getRowPosResult() {
+        return rowPosResult;
     }
 }

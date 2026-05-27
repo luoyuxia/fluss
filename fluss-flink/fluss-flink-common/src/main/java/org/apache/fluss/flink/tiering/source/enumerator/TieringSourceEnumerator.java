@@ -26,11 +26,14 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.flink.metrics.FlinkMetricRegistry;
 import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
 import org.apache.fluss.flink.tiering.event.FinishedTieringEvent;
+import org.apache.fluss.flink.tiering.event.RowPosRequestEvent;
 import org.apache.fluss.flink.tiering.event.TieringReachMaxDurationEvent;
+import org.apache.fluss.flink.tiering.source.split.TieringRowPosSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import org.apache.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
 import org.apache.fluss.lake.committer.TieringStats;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.GatewayClientProxy;
@@ -281,6 +284,10 @@ public class TieringSourceEnumerator
             }
         }
 
+        if (sourceEvent instanceof RowPosRequestEvent) {
+            handleRowPosRequest((RowPosRequestEvent) sourceEvent);
+        }
+
         if (sourceEvent instanceof FailedTieringEvent) {
             FailedTieringEvent failedEvent = (FailedTieringEvent) sourceEvent;
             long failedTableId = failedEvent.getTableId();
@@ -305,6 +312,68 @@ public class TieringSourceEnumerator
             this.context.callAsync(
                     this::requestTieringTableSplitsViaHeartBeat, this::generateAndAssignSplits);
         }
+    }
+
+    /**
+     * Handles a {@link RowPosRequestEvent} from the Committer. Batches all files for the same
+     * bucket into a single {@link TieringRowPosSplit} and adds them to pendingSplits for
+     * assignment.
+     */
+    private void handleRowPosRequest(RowPosRequestEvent event) {
+        long tableId = event.getTableId();
+        TablePath tablePath = event.getTablePath();
+        int nextFileId = event.getNextFileId();
+        Map<String, Map<Integer, List<byte[]>>> splitsByPartitionAndBucket =
+                event.getSerializedSplitsByPartitionAndBucket();
+
+        // count total batched splits (one per partition+bucket combo)
+        int totalBatchCount = 0;
+        for (Map<Integer, List<byte[]>> bucketMap : splitsByPartitionAndBucket.values()) {
+            totalBatchCount += bucketMap.size();
+        }
+
+        int fileIdCounter = nextFileId;
+        List<TieringRowPosSplit> rowPosSplits = new ArrayList<>();
+        for (Map.Entry<String, Map<Integer, List<byte[]>>> partitionEntry :
+                splitsByPartitionAndBucket.entrySet()) {
+            String partitionName = partitionEntry.getKey();
+            for (Map.Entry<Integer, List<byte[]>> bucketEntry :
+                    partitionEntry.getValue().entrySet()) {
+                int bucketId = bucketEntry.getKey();
+                TableBucket tableBucket = new TableBucket(tableId, null, bucketId);
+                List<byte[]> bucketSplits = bucketEntry.getValue();
+
+                // batch all files for the same bucket into one split
+                int[] fileIds = new int[bucketSplits.size()];
+                byte[][] serializedLakeSplits = new byte[bucketSplits.size()][];
+                for (int i = 0; i < bucketSplits.size(); i++) {
+                    fileIds[i] = fileIdCounter++;
+                    serializedLakeSplits[i] = bucketSplits.get(i);
+                }
+
+                TieringRowPosSplit rowPosSplit =
+                        new TieringRowPosSplit(
+                                tablePath,
+                                tableBucket,
+                                partitionName,
+                                fileIds,
+                                serializedLakeSplits,
+                                totalBatchCount);
+                rowPosSplits.add(rowPosSplit);
+            }
+        }
+
+        LOG.info(
+                "Received RowPosRequestEvent for table {} ({}): {} batched splits "
+                        + "(total files={}), nextFileId={}",
+                tablePath,
+                tableId,
+                rowPosSplits.size(),
+                fileIdCounter - nextFileId,
+                nextFileId);
+
+        pendingSplits.addAll(rowPosSplits);
+        assignSplits();
     }
 
     private void handleSourceReaderFailOver() {

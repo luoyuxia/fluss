@@ -124,6 +124,8 @@ public final class TieringSourceReader<WriteResult>
             return new TieringSplitState(split);
         } else if (split.isTieringLogSplit()) {
             return new TieringSplitState(split);
+        } else if (split.isTieringRowPosSplit()) {
+            return new TieringSplitState(split);
         } else {
             throw new UnsupportedOperationException("Unsupported split type: " + split);
         }

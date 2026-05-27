@@ -25,12 +25,18 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.flink.tiering.event.FailedTieringEvent;
 import org.apache.fluss.flink.tiering.event.FinishedTieringEvent;
+import org.apache.fluss.flink.tiering.event.RowPosRequestEvent;
+import org.apache.fluss.flink.tiering.source.RowPosResult;
 import org.apache.fluss.flink.tiering.source.TableBucketWriteResult;
 import org.apache.fluss.flink.tiering.source.TieringSource;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
 import org.apache.fluss.lake.committer.TieringStats;
+import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
+import org.apache.fluss.lake.source.DataDeltaPlan;
+import org.apache.fluss.lake.source.LakeSource;
+import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
 import org.apache.fluss.metadata.TableBucket;
@@ -95,6 +101,18 @@ public class TieringCommitOperator<WriteResult, Committable>
     private final Map<Long, List<TableBucketWriteResult<WriteResult>>>
             collectedTableBucketWriteResults;
 
+    // RowPos scan state
+    // tableId -> collected RowPos results
+    private final Map<Long, List<RowPosResult>> pendingRowPosResults;
+    // tableId -> expected count of RowPos results
+    private final Map<Long, Integer> expectedRowPosResultCounts;
+    // tableId -> partition -> bucket -> deleted file names
+    private final Map<Long, Map<String, Map<Integer, List<String>>>> pendingDeletedFiles;
+    // tableId -> next file id counter
+    private final Map<Long, Integer> nextFileIdByTable;
+    // tableId -> table path (for deferred commit after DV scan completes)
+    private final Map<Long, TablePath> pendingTablePaths;
+
     /**
      * The result of one table's commit round, holding the lake committable (nullable for empty
      * commits where no data was written) and the associated tiering statistics.
@@ -119,6 +137,11 @@ public class TieringCommitOperator<WriteResult, Committable>
         this.lakeTieringFactory = lakeTieringFactory;
         this.flussTableLakeSnapshotCommitter = new FlussTableLakeSnapshotCommitter(flussConf);
         this.collectedTableBucketWriteResults = new HashMap<>();
+        this.pendingRowPosResults = new HashMap<>();
+        this.expectedRowPosResultCounts = new HashMap<>();
+        this.pendingDeletedFiles = new HashMap<>();
+        this.nextFileIdByTable = new HashMap<>();
+        this.pendingTablePaths = new HashMap<>();
         this.flussConfig = flussConf;
         this.lakeTieringConfig = lakeTieringConfig;
         this.setup(
@@ -142,6 +165,13 @@ public class TieringCommitOperator<WriteResult, Committable>
     public void processElement(StreamRecord<TableBucketWriteResult<WriteResult>> streamRecord)
             throws Exception {
         TableBucketWriteResult<WriteResult> tableBucketWriteResult = streamRecord.getValue();
+
+        // check if this is a RowPos scan result from Reader
+        if (tableBucketWriteResult.isRowPosResult()) {
+            handleRowPosResult(tableBucketWriteResult);
+            return;
+        }
+
         TableBucket tableBucket = tableBucketWriteResult.tableBucket();
         long tableId = tableBucket.getTableId();
         registerTableBucketWriteResult(tableId, tableBucketWriteResult);
@@ -151,23 +181,22 @@ public class TieringCommitOperator<WriteResult, Committable>
                 collectTableAllBucketWriteResult(tableId);
 
         if (committableWriteResults != null) {
+            TablePath tablePath = tableBucketWriteResult.tablePath();
             try {
-                CommitResult commitResult =
-                        commitWriteResults(
-                                tableId,
-                                tableBucketWriteResult.tablePath(),
-                                committableWriteResults);
-                // only emit downstream when actual data was written
-                if (commitResult.committable != null) {
-                    output.collect(
-                            new StreamRecord<>(new CommittableMessage<>(commitResult.committable)));
+                // check if DV scan is needed before committing
+                boolean scanTriggered =
+                        mayTriggerRowPosScan(tableId, tablePath, committableWriteResults);
+                if (scanTriggered) {
+                    // DV scan pending — defer commit until scan results are collected,
+                    // so the commit includes both write results and DV data
+                    pendingTablePaths.put(tableId, tablePath);
+                } else {
+                    // no DV scan needed — commit and finish immediately
+                    commitAndFinish(tableId, tablePath, committableWriteResults);
                 }
-                // notify that the table id has been finished tier
-                operatorEventGateway.sendEventToCoordinator(
-                        new SourceEventWrapper(
-                                new FinishedTieringEvent(tableId, commitResult.stats)));
             } catch (Exception e) {
                 // if any exception happens, send to source coordinator to mark it as failed
+                collectedTableBucketWriteResults.remove(tableId);
                 operatorEventGateway.sendEventToCoordinator(
                         new SourceEventWrapper(
                                 new FailedTieringEvent(
@@ -175,8 +204,6 @@ public class TieringCommitOperator<WriteResult, Committable>
                 LOG.warn(
                         "Fail to commit tiering write result, will try to tier again in next round.",
                         e);
-            } finally {
-                collectedTableBucketWriteResults.remove(tableId);
             }
         }
     }
@@ -407,6 +434,187 @@ public class TieringCommitOperator<WriteResult, Committable>
         } else {
             return null;
         }
+    }
+
+    /**
+     * Commits write results to the lake and Fluss, emits downstream, sends FinishedTieringEvent,
+     * and cleans up state. Used both for immediate commit (no DV scan) and deferred commit (after
+     * DV scan completes).
+     */
+    private void commitAndFinish(
+            long tableId,
+            TablePath tablePath,
+            List<TableBucketWriteResult<WriteResult>> committableWriteResults)
+            throws Exception {
+        CommitResult commitResult = commitWriteResults(tableId, tablePath, committableWriteResults);
+        if (commitResult.committable != null) {
+            output.collect(new StreamRecord<>(new CommittableMessage<>(commitResult.committable)));
+        }
+        collectedTableBucketWriteResults.remove(tableId);
+        operatorEventGateway.sendEventToCoordinator(
+                new SourceEventWrapper(new FinishedTieringEvent(tableId, commitResult.stats)));
+    }
+
+    /**
+     * Handles a RowPos scan result received from a Reader. Collects results by tableId and triggers
+     * processing when all expected results have been received.
+     */
+    private void handleRowPosResult(TableBucketWriteResult<WriteResult> tableBucketWriteResult) {
+        RowPosResult rowPosResult = tableBucketWriteResult.getRowPosResult();
+        long tableId = tableBucketWriteResult.tableBucket().getTableId();
+        pendingRowPosResults.computeIfAbsent(tableId, k -> new ArrayList<>()).add(rowPosResult);
+
+        Integer expectedCount = expectedRowPosResultCounts.get(tableId);
+        if (expectedCount != null && pendingRowPosResults.get(tableId).size() >= expectedCount) {
+            processRowPosResults(tableId);
+        }
+    }
+
+    /**
+     * Processes all collected RowPos results for a table. Commits the deferred write results to the
+     * lake together with DV scan data. SST building will be implemented in a later PR.
+     */
+    private void processRowPosResults(long tableId) {
+        List<RowPosResult> results = pendingRowPosResults.remove(tableId);
+        Map<String, Map<Integer, List<String>>> deletedFiles = pendingDeletedFiles.remove(tableId);
+        expectedRowPosResultCounts.remove(tableId);
+        TablePath tablePath = pendingTablePaths.remove(tableId);
+
+        LOG.info(
+                "Received all {} RowPos scan results for table {}. "
+                        + "Deleted files: {}. SST building to be implemented.",
+                results != null ? results.size() : 0,
+                tableId,
+                deletedFiles);
+
+        // TODO: build SSTs from scan results and include in commit in a later PR
+
+        // commit the deferred write results to the lake
+        List<TableBucketWriteResult<WriteResult>> writeResults =
+                collectedTableBucketWriteResults.get(tableId);
+        try {
+            commitAndFinish(tableId, tablePath, writeResults);
+        } catch (Exception e) {
+            collectedTableBucketWriteResults.remove(tableId);
+            operatorEventGateway.sendEventToCoordinator(
+                    new SourceEventWrapper(
+                            new FailedTieringEvent(tableId, ExceptionUtils.stringifyException(e))));
+            LOG.warn(
+                    "Failed to commit after RowPos scan for table {} ({}). "
+                            + "Will try to tier again in next round.",
+                    tablePath,
+                    tableId,
+                    e);
+        }
+    }
+
+    /**
+     * Checks if DV is enabled for the table and triggers a row position scan if compaction is
+     * detected. Called at the end of a successful commitWriteResults().
+     *
+     * @return true if a RowPos scan was triggered (FinishedTieringEvent should be deferred)
+     */
+    private boolean mayTriggerRowPosScan(
+            long tableId,
+            TablePath tablePath,
+            List<TableBucketWriteResult<WriteResult>> committableWriteResults) {
+        try {
+            TableInfo tableInfo = admin.getTableInfo(tablePath).get();
+            if (!tableInfo.isDeletionVectorsEnabled()) {
+                return false;
+            }
+
+            LakeSource<?> lakeSource = lakeTieringFactory.createLakeSource(tablePath);
+            if (lakeSource == null) {
+                return false;
+            }
+
+            // use the previous lake snapshot as fromSnapshotId
+            LakeSnapshot flussCurrentLakeSnapshot = getLatestLakeSnapshot(tablePath);
+            long fromSnapshotId =
+                    flussCurrentLakeSnapshot != null ? flussCurrentLakeSnapshot.getSnapshotId() : 0;
+
+            return triggerRowPosScanIfNeeded(tableId, tablePath, lakeSource, fromSnapshotId);
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to trigger row position scan for table {} ({}). "
+                            + "Will retry in next tiering round.",
+                    tablePath,
+                    tableId,
+                    e);
+            return false;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private <Split extends LakeSplit> boolean triggerRowPosScanIfNeeded(
+            long tableId, TablePath tablePath, LakeSource<Split> lakeSource, long fromSnapshotId)
+            throws Exception {
+        DataDeltaPlan<Split> deltaPlan = lakeSource.planDelta(fromSnapshotId);
+        if (deltaPlan == null) {
+            return false;
+        }
+
+        List<Split> splits = deltaPlan.getSplits();
+        if (splits.isEmpty()) {
+            return false;
+        }
+
+        SimpleVersionedSerializer<Split> splitSerializer = lakeSource.getSplitSerializer();
+
+        // group serialized splits by partition and bucket
+        Map<String, Map<Integer, List<byte[]>>> serializedByPartitionAndBucket = new HashMap<>();
+        for (Split split : splits) {
+            byte[] serialized = splitSerializer.serialize(split);
+            // LakeSplit.partition() returns list of partition values; use joined form as key
+            // For non-partitioned, partition() returns empty list → key is null
+            List<String> partitionValues = split.partition();
+            String partitionName =
+                    (partitionValues == null || partitionValues.isEmpty())
+                            ? null
+                            : String.join("/", partitionValues);
+            int bucketId = split.bucket();
+            serializedByPartitionAndBucket
+                    .computeIfAbsent(partitionName, k -> new HashMap<>())
+                    .computeIfAbsent(bucketId, k -> new ArrayList<>())
+                    .add(serialized);
+        }
+
+
+        // todo: get file id from catalog latest snapshot
+        int nextFileId = nextFileIdByTable.getOrDefault(tableId, 0);
+        int totalFileCount = splits.size();
+
+        // expected results = number of batched splits (one per partition+bucket combo)
+        int expectedBatchCount = 0;
+        for (Map<Integer, List<byte[]>> bucketMap : serializedByPartitionAndBucket.values()) {
+            expectedBatchCount += bucketMap.size();
+        }
+
+        // store expected count and deleted files locally
+        expectedRowPosResultCounts.put(tableId, expectedBatchCount);
+        pendingDeletedFiles.put(tableId, deltaPlan.getDeletedFiles());
+
+        // send event to Enumerator
+        RowPosRequestEvent event =
+                new RowPosRequestEvent(
+                        tableId, tablePath, nextFileId, serializedByPartitionAndBucket);
+        operatorEventGateway.sendEventToCoordinator(new SourceEventWrapper(event));
+
+        // update next file id counter (increments by total files, not batches)
+        nextFileIdByTable.put(tableId, nextFileId + totalFileCount);
+
+        LOG.info(
+                "Triggered RowPos scan for table {} ({}): {} batched splits ({} files), "
+                        + "nextFileId={}, deletedFiles={}",
+                tablePath,
+                tableId,
+                expectedBatchCount,
+                totalFileCount,
+                nextFileId,
+                deltaPlan.getDeletedFiles());
+
+        return true;
     }
 
     @Override

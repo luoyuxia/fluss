@@ -25,6 +25,8 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /** The serializer for {@link TableBucketWriteResult}. */
 public class TableBucketWriteResultSerializer<WriteResult>
@@ -33,7 +35,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
 
-    private static final int CURRENT_VERSION = 1;
+    private static final int CURRENT_VERSION = 0;
 
     private final org.apache.fluss.lake.serializer.SimpleVersionedSerializer<WriteResult>
             writeResultSerializer;
@@ -91,6 +93,32 @@ public class TableBucketWriteResultSerializer<WriteResult>
         // serialize number of write results
         out.writeInt(tableBucketWriteResult.numberOfWriteResults());
 
+        // serialize RowPosResult
+        RowPosResult rowPosResult = tableBucketWriteResult.getRowPosResult();
+        if (rowPosResult != null) {
+            out.writeBoolean(true);
+            if (rowPosResult.getPartitionName() != null) {
+                out.writeBoolean(true);
+                out.writeUTF(rowPosResult.getPartitionName());
+            } else {
+                out.writeBoolean(false);
+            }
+            out.writeInt(rowPosResult.getBucketId());
+            List<RowPosResult.FileRowPos> fileResults = rowPosResult.getFileResults();
+            out.writeInt(fileResults.size());
+            for (RowPosResult.FileRowPos fileRowPos : fileResults) {
+                out.writeInt(fileRowPos.getFileId());
+                out.writeUTF(fileRowPos.getFileName());
+                long[] rowIds = fileRowPos.getRowIds();
+                out.writeInt(rowIds.length);
+                for (long rowId : rowIds) {
+                    out.writeLong(rowId);
+                }
+            }
+        } else {
+            out.writeBoolean(false);
+        }
+
         final byte[] result = out.getCopyOfBuffer();
         out.clear();
         return result;
@@ -136,6 +164,30 @@ public class TableBucketWriteResultSerializer<WriteResult>
         long maxTimestamp = in.readLong();
         // deserialize number of write results
         int numberOfWriteResults = in.readInt();
+
+        // deserialize RowPosResult
+        RowPosResult rowPosResult = null;
+        if (in.readBoolean()) {
+            String rowPosPartitionName = null;
+            if (in.readBoolean()) {
+                rowPosPartitionName = in.readUTF();
+            }
+            int rowPosBucketId = in.readInt();
+            int fileResultCount = in.readInt();
+            List<RowPosResult.FileRowPos> fileResults = new ArrayList<>(fileResultCount);
+            for (int f = 0; f < fileResultCount; f++) {
+                int fileId = in.readInt();
+                String fileName = in.readUTF();
+                int rowIdsLength = in.readInt();
+                long[] rowIds = new long[rowIdsLength];
+                for (int i = 0; i < rowIdsLength; i++) {
+                    rowIds[i] = in.readLong();
+                }
+                fileResults.add(new RowPosResult.FileRowPos(fileId, fileName, rowIds));
+            }
+            rowPosResult = new RowPosResult(fileResults, rowPosPartitionName, rowPosBucketId);
+        }
+
         return new TableBucketWriteResult<>(
                 tablePath,
                 tableBucket,
@@ -143,6 +195,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
                 writeResult,
                 logEndOffset,
                 maxTimestamp,
-                numberOfWriteResults);
+                numberOfWriteResults,
+                rowPosResult);
     }
 }
