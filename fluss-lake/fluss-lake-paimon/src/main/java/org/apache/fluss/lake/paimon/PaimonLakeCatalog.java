@@ -43,8 +43,7 @@ import org.apache.paimon.types.DataTypes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
-
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -164,20 +163,18 @@ public class PaimonLakeCatalog implements LakeCatalog {
         }
     }
 
-    @Nullable
     @Override
-    public String loadSnapshotProperty(TablePath tablePath, String propertyKey) {
+    public Map<String, String> loadSnapshotProperties(TablePath tablePath) {
         try {
             Table table = paimonCatalog.getTable(toPaimon(tablePath));
             FileStoreTable fileStoreTable = (FileStoreTable) table;
             Snapshot snapshot = fileStoreTable.snapshotManager().latestSnapshot();
-            if (snapshot == null) {
-                return null;
+            if (snapshot == null || snapshot.properties() == null) {
+                return Collections.emptyMap();
             }
-            Map<String, String> properties = snapshot.properties();
-            return properties != null ? properties.get(propertyKey) : null;
+            return snapshot.properties();
         } catch (Catalog.TableNotExistException e) {
-            return null;
+            return Collections.emptyMap();
         }
     }
 

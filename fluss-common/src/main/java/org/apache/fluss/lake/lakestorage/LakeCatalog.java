@@ -27,7 +27,9 @@ import org.apache.fluss.security.acl.FlussPrincipal;
 
 import javax.annotation.Nullable;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A catalog interface to modify metadata in external datalake.
@@ -60,15 +62,13 @@ public interface LakeCatalog extends AutoCloseable {
             throws TableNotExistException;
 
     /**
-     * Loads a snapshot property value from the lake table's latest snapshot.
+     * Loads all snapshot properties from the lake table's latest snapshot.
      *
      * @param tablePath the table to read from
-     * @param propertyKey the property key
-     * @return the property value, or null if not set
+     * @return the snapshot properties map, or an empty map if no snapshot exists
      */
-    @Nullable
-    default String loadSnapshotProperty(TablePath tablePath, String propertyKey) {
-        return null;
+    default Map<String, String> loadSnapshotProperties(TablePath tablePath) {
+        return Collections.emptyMap();
     }
 
     @Override

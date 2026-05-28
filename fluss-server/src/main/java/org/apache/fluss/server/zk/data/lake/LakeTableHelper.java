@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static org.apache.fluss.metrics.registry.MetricRegistry.LOG;
 
@@ -45,9 +46,20 @@ public class LakeTableHelper {
     private final ZooKeeperClient zkClient;
     private final String remoteDataDir;
 
+    /**
+     * Per-table locks to serialize ZK read-modify-write operations on the same table. This prevents
+     * race conditions between concurrent operations such as {@link #registerLakeTableSnapshotV2}
+     * and {@link #markLakeTableSnapshotReadable}.
+     */
+    private final Map<Long, Object> tableLocks = new ConcurrentHashMap<>();
+
     public LakeTableHelper(ZooKeeperClient zkClient, String remoteDataDir) {
         this.zkClient = zkClient;
         this.remoteDataDir = remoteDataDir;
+    }
+
+    private Object getTableLock(long tableId) {
+        return tableLocks.computeIfAbsent(tableId, k -> new Object());
     }
 
     /**
@@ -60,18 +72,20 @@ public class LakeTableHelper {
      */
     public void registerLakeTableSnapshotV1(long tableId, LakeTableSnapshot lakeTableSnapshot)
             throws Exception {
-        Optional<LakeTable> optPreviousLakeTable = zkClient.getLakeTable(tableId);
-        // Merge with previous snapshot if exists
-        if (optPreviousLakeTable.isPresent()) {
-            TableBucketOffsets tableBucketOffsets =
-                    mergeTableBucketOffsets(
-                            optPreviousLakeTable.get(),
-                            new TableBucketOffsets(
-                                    tableId, lakeTableSnapshot.getBucketLogEndOffset()));
-            lakeTableSnapshot = new LakeTableSnapshot(tableId, tableBucketOffsets.getOffsets());
+        synchronized (getTableLock(tableId)) {
+            Optional<LakeTable> optPreviousLakeTable = zkClient.getLakeTable(tableId);
+            // Merge with previous snapshot if exists
+            if (optPreviousLakeTable.isPresent()) {
+                TableBucketOffsets tableBucketOffsets =
+                        mergeTableBucketOffsets(
+                                optPreviousLakeTable.get(),
+                                new TableBucketOffsets(
+                                        tableId, lakeTableSnapshot.getBucketLogEndOffset()));
+                lakeTableSnapshot = new LakeTableSnapshot(tableId, tableBucketOffsets.getOffsets());
+            }
+            zkClient.upsertLakeTable(
+                    tableId, new LakeTable(lakeTableSnapshot), optPreviousLakeTable.isPresent());
         }
-        zkClient.upsertLakeTable(
-                tableId, new LakeTable(lakeTableSnapshot), optPreviousLakeTable.isPresent());
     }
 
     public void registerLakeTableSnapshotV2(
@@ -94,31 +108,34 @@ public class LakeTableHelper {
             LakeTable.LakeSnapshotMetadata lakeSnapshotMetadata,
             @Nullable Long earliestSnapshotIDToKeep)
             throws Exception {
-        Optional<LakeTable> optPreviousTable = zkClient.getLakeTable(tableId);
-        List<LakeTable.LakeSnapshotMetadata> previousMetadatas =
-                optPreviousTable
-                        .map(LakeTable::getLakeSnapshotMetadatas)
-                        .orElse(Collections.emptyList());
+        List<LakeTable.LakeSnapshotMetadata> snapshotsToDiscard;
+        synchronized (getTableLock(tableId)) {
+            Optional<LakeTable> optPreviousTable = zkClient.getLakeTable(tableId);
+            List<LakeTable.LakeSnapshotMetadata> previousMetadatas =
+                    optPreviousTable
+                            .map(LakeTable::getLakeSnapshotMetadatas)
+                            .orElse(Collections.emptyList());
 
-        // Determine which snapshots to keep and which to discard (but don't discard yet)
+            Tuple2<List<LakeTable.LakeSnapshotMetadata>, List<LakeTable.LakeSnapshotMetadata>>
+                    result =
+                            determineSnapshotsToKeepAndDiscard(
+                                    previousMetadatas,
+                                    lakeSnapshotMetadata,
+                                    earliestSnapshotIDToKeep);
 
-        Tuple2<List<LakeTable.LakeSnapshotMetadata>, List<LakeTable.LakeSnapshotMetadata>> result =
-                determineSnapshotsToKeepAndDiscard(
-                        previousMetadatas, lakeSnapshotMetadata, earliestSnapshotIDToKeep);
+            List<LakeTable.LakeSnapshotMetadata> keptSnapshots = result.f0;
+            snapshotsToDiscard = result.f1;
 
-        List<LakeTable.LakeSnapshotMetadata> keptSnapshots = result.f0;
-        List<LakeTable.LakeSnapshotMetadata> snapshotsToDiscard = result.f1;
-
-        LakeTable lakeTable = new LakeTable(keptSnapshots);
-        try {
-            // First, upsert to ZK. Only after success, we discard old snapshots.
-            zkClient.upsertLakeTable(tableId, lakeTable, optPreviousTable.isPresent());
-        } catch (Exception e) {
-            LOG.warn("Failed to upsert lake table snapshot to zk.", e);
-            throw e;
+            LakeTable lakeTable = new LakeTable(keptSnapshots);
+            try {
+                zkClient.upsertLakeTable(tableId, lakeTable, optPreviousTable.isPresent());
+            } catch (Exception e) {
+                LOG.warn("Failed to upsert lake table snapshot to zk.", e);
+                throw e;
+            }
         }
 
-        // After successful upsert, discard snapshots
+        // Discard old snapshots outside the lock (IO operations)
         for (LakeTable.LakeSnapshotMetadata metadata : snapshotsToDiscard) {
             metadata.discard();
         }
@@ -139,47 +156,50 @@ public class LakeTableHelper {
      */
     public void markLakeTableSnapshotReadable(
             long tableId, long snapshotId, FsPath readableOffsetsFilePath) throws Exception {
-        Optional<LakeTable> optLakeTable = zkClient.getLakeTable(tableId);
-        if (!optLakeTable.isPresent()) {
-            LOG.warn(
-                    "Lake table {} not found in ZK, cannot mark snapshot {} as readable.",
-                    tableId,
-                    snapshotId);
-            return;
-        }
-        List<LakeTable.LakeSnapshotMetadata> metadatas =
-                optLakeTable.get().getLakeSnapshotMetadatas();
-        if (metadatas == null || metadatas.isEmpty()) {
-            LOG.warn(
-                    "No snapshots found for table {}, cannot mark snapshot {} as readable.",
-                    tableId,
-                    snapshotId);
-            return;
-        }
-
-        List<LakeTable.LakeSnapshotMetadata> updatedMetadatas = new ArrayList<>(metadatas.size());
-        boolean found = false;
-        for (LakeTable.LakeSnapshotMetadata metadata : metadatas) {
-            if (metadata.getSnapshotId() == snapshotId) {
-                updatedMetadatas.add(
-                        new LakeTable.LakeSnapshotMetadata(
-                                snapshotId,
-                                metadata.getTieredOffsetsFilePath(),
-                                readableOffsetsFilePath));
-                found = true;
-            } else {
-                updatedMetadatas.add(metadata);
+        synchronized (getTableLock(tableId)) {
+            Optional<LakeTable> optLakeTable = zkClient.getLakeTable(tableId);
+            if (!optLakeTable.isPresent()) {
+                LOG.warn(
+                        "Lake table {} not found in ZK, cannot mark snapshot {} as readable.",
+                        tableId,
+                        snapshotId);
+                return;
             }
-        }
-        if (!found) {
-            LOG.warn(
-                    "Snapshot {} not found for table {}, cannot mark as readable.",
-                    snapshotId,
-                    tableId);
-            return;
-        }
+            List<LakeTable.LakeSnapshotMetadata> metadatas =
+                    optLakeTable.get().getLakeSnapshotMetadatas();
+            if (metadatas == null || metadatas.isEmpty()) {
+                LOG.warn(
+                        "No snapshots found for table {}, cannot mark snapshot {} as readable.",
+                        tableId,
+                        snapshotId);
+                return;
+            }
 
-        zkClient.upsertLakeTable(tableId, new LakeTable(updatedMetadatas), true);
+            List<LakeTable.LakeSnapshotMetadata> updatedMetadatas =
+                    new ArrayList<>(metadatas.size());
+            boolean found = false;
+            for (LakeTable.LakeSnapshotMetadata metadata : metadatas) {
+                if (metadata.getSnapshotId() == snapshotId) {
+                    updatedMetadatas.add(
+                            new LakeTable.LakeSnapshotMetadata(
+                                    snapshotId,
+                                    metadata.getTieredOffsetsFilePath(),
+                                    readableOffsetsFilePath));
+                    found = true;
+                } else {
+                    updatedMetadatas.add(metadata);
+                }
+            }
+            if (!found) {
+                LOG.warn(
+                        "Snapshot {} not found for table {}, cannot mark as readable.",
+                        snapshotId,
+                        tableId);
+                return;
+            }
+
+            zkClient.upsertLakeTable(tableId, new LakeTable(updatedMetadatas), true);
+        }
     }
 
     /**

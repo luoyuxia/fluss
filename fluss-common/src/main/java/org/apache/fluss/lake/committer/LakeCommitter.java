@@ -42,6 +42,9 @@ public interface LakeCommitter<WriteResult, CommittableT> extends AutoCloseable 
      */
     String FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY = "fluss-offsets";
 
+    /** The property key for the next file ID counter used by DV FileDict. */
+    String FLUSS_LAKE_SNAP_NEXT_FILE_ID_PROPERTY = "fluss-next-file-id";
+
     /**
      * Converts a list of write results to a committable object.
      *

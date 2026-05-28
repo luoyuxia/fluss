@@ -1107,9 +1107,8 @@ public class ReplicaManager implements ServerReconfigurable {
                         lakeBucketOffset
                                 .getMaxTimestamp()
                                 .ifPresent(logTablet::updateLakeMaxTimestamp);
-
-                        responseCallback.accept(new NotifyLakeTableOffsetResponse());
                     }
+                    responseCallback.accept(new NotifyLakeTableOffsetResponse());
                 });
     }
 

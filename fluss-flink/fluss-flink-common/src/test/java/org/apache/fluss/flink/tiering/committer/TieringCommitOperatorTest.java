@@ -87,7 +87,9 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                         parameters,
                         FLUSS_CLUSTER_EXTENSION.getClientConfig(),
                         new org.apache.fluss.config.Configuration(),
-                        new TestingLakeTieringFactory());
+                        new TestingLakeTieringFactory(),
+                        new org.apache.fluss.config.Configuration(),
+                        "lance");
         committerOperator.open();
     }
 
@@ -273,7 +275,9 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                         parameters,
                         FLUSS_CLUSTER_EXTENSION.getClientConfig(),
                         new org.apache.fluss.config.Configuration(),
-                        new TestingLakeTieringFactory(testingLakeCommitter));
+                        new TestingLakeTieringFactory(testingLakeCommitter),
+                        new org.apache.fluss.config.Configuration(),
+                        "lance");
         committerOperator.open();
 
         for (int bucket = 0; bucket < 3; bucket++) {
@@ -341,7 +345,9 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                         parameters,
                         FLUSS_CLUSTER_EXTENSION.getClientConfig(),
                         new org.apache.fluss.config.Configuration(),
-                        new TestingLakeTieringFactory(testingLakeCommitter));
+                        new TestingLakeTieringFactory(testingLakeCommitter),
+                        new org.apache.fluss.config.Configuration(),
+                        "lance");
         committerOperator.open();
 
         int numberOfWriteResults = 6;

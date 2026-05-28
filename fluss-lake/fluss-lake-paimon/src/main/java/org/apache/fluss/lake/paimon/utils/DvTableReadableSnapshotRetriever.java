@@ -504,7 +504,13 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
 
         Map<BinaryRow, Map<Integer, List<ManifestEntry>>> manifestsByBucket =
                 FileStoreScan.Plan.groupByPartFiles(
-                        fileStoreTable.copy(scanOptions).store().newScan().plan().files());
+                        fileStoreTable
+                                .copy(scanOptions)
+                                .store()
+                                .newScan()
+                                .withSnapshot(snapshot.id())
+                                .plan()
+                                .files());
 
         for (Map.Entry<BinaryRow, Map<Integer, List<ManifestEntry>>> manifestsByBucketEntry :
                 manifestsByBucket.entrySet()) {

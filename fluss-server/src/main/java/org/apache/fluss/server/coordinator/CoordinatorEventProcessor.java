@@ -1904,6 +1904,16 @@ public class CoordinatorEventProcessor implements EventProcessor {
         }
         coordinatorRequestBatch.sendNotifyLakeTableOffsetRequest(
                 coordinatorContext.getCoordinatorEpoch());
+
+        // Handle DV tables that are in dvPrepareEvents but NOT in lakeTableSnapshots.
+        // This happens when a compaction (readable) snapshot is committed with empty
+        // logEndOffsets — no V1 LakeTableSnapshot is produced, but DV Prepare still
+        // needs to be delivered to tablet servers.
+        for (Map.Entry<Long, DvPrepareEvent> dvEntry : dvPrepareEvents.entrySet()) {
+            if (!lakeTableSnapshots.containsKey(dvEntry.getKey())) {
+                processDvPrepareEvent(dvEntry.getValue());
+            }
+        }
     }
 
     /**
@@ -2229,7 +2239,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
         // Remove failed DV tables
         Map<Long, DvPrepareEvent> effectiveDvEvents = new HashMap<>(dvPrepareEvents);
         effectiveDvEvents.keySet().removeAll(failedTableIds);
-        if (!committedLakeTableSnapshots.isEmpty()) {
+        if (!committedLakeTableSnapshots.isEmpty() || !effectiveDvEvents.isEmpty()) {
             coordinatorEventManager.put(
                     new NotifyLakeTableOffsetEvent(
                             committedLakeTableSnapshots,
