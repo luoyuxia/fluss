@@ -37,6 +37,7 @@ import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.lake.dv.FilePos;
 import org.apache.fluss.lake.dv.RowPosSstFileWriter;
 import org.apache.fluss.lake.dv.RowPosSstUploader;
+import org.apache.fluss.lake.paimon.utils.PaimonTestUtils;
 import org.apache.fluss.lake.source.RowPosResult;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.Schema;
@@ -73,6 +74,7 @@ import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.CommitMessage;
+import org.apache.paimon.table.source.DataSplit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -314,6 +316,10 @@ class TieringCommitDvFlowTest {
         assertThat(latestTable.snapshotManager().tryGetSnapshot(2).commitKind())
                 .isEqualTo(org.apache.paimon.Snapshot.CommitKind.COMPACT);
 
+        // Get actual Paimon data file name from compacted snapshot 2.
+        // This name must match what planDelta returns as deletedFiles in Round 3.
+        String round1PaimonFileName = getFirstDataFileName(latestTable, 2L, 0);
+
         // ----- Write Round 2 data to Fluss log (rows 2, 3, 4, 5 + update row 3) -----
         // Row id=2 overlaps with Round 1. The KV tablet's handleChangelogSynced marks
         // the old +I's log offset in logDv and creates a PendingDeletes entry. During
@@ -334,7 +340,16 @@ class TieringCommitDvFlowTest {
         // ----- Round 2: Tier rows 2-5 -> DV scan triggered -----
         // planDelta(1) detects COMPACT snapshot 2, triggers RowPos scan.
         // Paimon: snapshot 3 (APPEND) will be created during deferred commit.
-        PaimonWriteResult wr2 = prepareWriteResult(paimonTable, generateRows(2, 6));
+        // Write the same records as the Fluss log so Paimon compaction produces
+        // correct values (matches real TieringWriter behavior).
+        List<GenericRow> round2PaimonRows =
+                Arrays.asList(
+                        GenericRow.of(2, BinaryString.fromString("value2_updated")),
+                        GenericRow.of(3, BinaryString.fromString("value3")),
+                        GenericRow.of(4, BinaryString.fromString("value4")),
+                        GenericRow.of(5, BinaryString.fromString("value5")),
+                        GenericRow.of(3, BinaryString.fromString("value3_updated")));
+        PaimonWriteResult wr2 = prepareWriteResult(paimonTable, round2PaimonRows);
         committerOperator.processElement(
                 new StreamRecord<>(
                         new TableBucketWriteResult<>(
@@ -351,6 +366,7 @@ class TieringCommitDvFlowTest {
         // ----- Create and upload real SST file (simulating what the Reader does) -----
         // The SST maps log offsets of rows in the compacted Paimon data to Paimon file
         // positions. Row id=0 was at log offset 0, id=1 at offset 1, id=2 at offset 2.
+        // fileId=0 is the first allocated ID (operator starts nextFileId from 0).
         long compactSnapshotId = 2L;
         String remoteDataDir = FLUSS_CLUSTER_EXTENSION.getRemoteDataDir();
         FsPath remoteLakeDir =
@@ -382,7 +398,8 @@ class TieringCommitDvFlowTest {
             rowPosSstMetas.add(new RowPosResult.SstMeta(meta.getFileName(), meta.getFileSize()));
         }
         RowPosResult rowPos =
-                new RowPosResult(0, Collections.singletonMap(0, "file-a.sst"), rowPosSstMetas);
+                new RowPosResult(
+                        0, Collections.singletonMap(0, round1PaimonFileName), rowPosSstMetas);
         committerOperator.processElement(
                 new StreamRecord<>(
                         new TableBucketWriteResult<>(tablePath, tb, null, null, 0, 0, 0, rowPos)));
@@ -414,7 +431,7 @@ class TieringCommitDvFlowTest {
 
         // ----- Verify: DV snapshot for overlapping row id=2 -----
         // After DV Prepare + Readable Switch, the tablet server should have:
-        // - lakeDv: file "file-a.sst" with position 2 marked as deleted, because
+        // - lakeDv: the L5 data file with position 2 marked as deleted, because
         //   row id=2's old +I (at log offset 2) was resolved via RowPosIndex → FilePos(0, 2)
         // - logDv: empty — the superseded log offset 2 < readableOffset, so it was
         //   cleaned up during handleReadableSwitch
@@ -425,12 +442,13 @@ class TieringCommitDvFlowTest {
                             admin.getDvSnapshot(tablePath, tableId, null, 0, 2L).get();
                     assertThat(dvResp.getSnapshotStartOffset()).isEqualTo(round1LogEndOffset);
 
-                    // lakeDv: file "file-a.sst" should have position 2 marked as deleted.
+                    // lakeDv: the L5 data file should have position 2 marked as deleted.
                     // Row id=2 was originally at log offset 2 → SST maps it to FilePos(0, 2).
                     // During handleReadableSwitch, batchResolvePendingDeletes resolved this
                     // entry and marked file_id=0 / position=2 in lakeDv.
                     assertThat(dvResp.getLakeDvEntriesCount()).isEqualTo(1);
-                    assertThat(dvResp.getLakeDvEntryAt(0).getFilePath()).isEqualTo("file-a.sst");
+                    assertThat(dvResp.getLakeDvEntryAt(0).getFilePath())
+                            .isEqualTo(round1PaimonFileName);
                     byte[] bitmapBytes = dvResp.getLakeDvEntryAt(0).getDeletedPositionsBitmap();
                     assertThat(bitmapBytes).isNotNull();
                     Roaring64Bitmap lakeBitmap = new Roaring64Bitmap();
@@ -448,6 +466,127 @@ class TieringCommitDvFlowTest {
                     logBitmap.deserialize(java.nio.ByteBuffer.wrap(dvResp.getLogDvBitmap()));
                     assertThat(logBitmap.getLongCardinality()).isEqualTo(1L);
                     assertThat(logBitmap.contains(row3SupersededOffset)).isTrue();
+                });
+
+        // ----- Round 3: Second compaction → oldFiles cleanup -----
+        // Compact the L0 from snapshot 3 (rows 2-5) → snapshot 4 (COMPACT).
+        // The previous APPEND before this COMPACT is snapshot 3, which IS registered
+        // as a Fluss lake snapshot. This is required by DvTableReadableSnapshotRetriever
+        // which needs to look up tiered offsets for the previous APPEND snapshot.
+        latestTable = (FileStoreTable) paimonCatalog.getTable(paimonTableId);
+        compact(latestTable, 0);
+
+        assertThat(latestTable.snapshotManager().latestSnapshotId()).isEqualTo(4L);
+        assertThat(latestTable.snapshotManager().tryGetSnapshot(4).commitKind())
+                .isEqualTo(org.apache.paimon.Snapshot.CommitKind.COMPACT);
+
+        // Get actual Paimon data file name from compacted snapshot 4 (new compacted file).
+        String round3PaimonFileName = getFirstDataFileName(latestTable, 4L, 0);
+
+        // ----- Write Round 3 data to Fluss log (rows 6, 7) -----
+        upsertWriter.upsert(flussRow(6, "value6")).get();
+        UpsertResult round3Last = upsertWriter.upsert(flussRow(7, "value7")).get();
+        long round3LogEndOffset = round3Last.getLogEndOffset();
+
+        // ----- Round 3: Tier rows 6-7 → planDelta(3) detects COMPACT snapshot 4 -----
+        // DIFF between snapshot 3 and snapshot 4:
+        //   dataFiles: new L5 files (compaction output, rows 0-5)
+        //   beforeFiles: old L5 from snapshot 2 + old L0 from snapshot 3
+        // The old L5 files become deletedFiles/oldFiles.
+        PaimonWriteResult wr3 = prepareWriteResult(paimonTable, generateRows(6, 8));
+        committerOperator.processElement(
+                new StreamRecord<>(
+                        new TableBucketWriteResult<>(
+                                tablePath, tb, null, wr3, round3LogEndOffset, 300L, 1)));
+
+        // planDelta(3) detects COMPACT snapshot 4 → RowPosRequestEvent sent, commit deferred
+        RowPosRequestEvent rowPosEvent3 = assertLastEventIs(RowPosRequestEvent.class);
+        assertThat(rowPosEvent3.getTableId()).isEqualTo(tableId);
+
+        // ----- Create and upload SST for Round 3 compacted files -----
+        // The compacted file uses fileId=1 (Round 1 used fileId=0; the operator tracks
+        // nextFileId and increments it for each new compacted file).
+        // Map the original log offsets (0, 1, 2) to positions in the new file.
+        long compactSnapshotId3 = 4L;
+        File localSstDir3 = Files.createTempDirectory("sst-upload-3").toFile();
+        List<RowPosSstFileWriter.SstFileMeta> sstMetas3;
+        try (RowPosSstFileWriter writer = new RowPosSstFileWriter(localSstDir3.getPath())) {
+            List<RowPosSstFileWriter.RowPosEntry> entries3 = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                entries3.add(
+                        new RowPosSstFileWriter.RowPosEntry((long) i, new FilePos(1, (long) i)));
+            }
+            sstMetas3 = writer.write(entries3);
+        }
+
+        uploader.uploadBucketSsts(
+                compactSnapshotId3,
+                0,
+                new RowPosSstUploader.BucketSstData(localSstDir3.getPath(), sstMetas3));
+
+        // ----- Send RowPos result → deferred commit completes -----
+        List<RowPosResult.SstMeta> rowPosSstMetas3 = new ArrayList<>();
+        for (RowPosSstFileWriter.SstFileMeta meta : sstMetas3) {
+            rowPosSstMetas3.add(new RowPosResult.SstMeta(meta.getFileName(), meta.getFileSize()));
+        }
+        RowPosResult rowPos3 =
+                new RowPosResult(
+                        0, Collections.singletonMap(1, round3PaimonFileName), rowPosSstMetas3);
+        committerOperator.processElement(
+                new StreamRecord<>(
+                        new TableBucketWriteResult<>(tablePath, tb, null, null, 0, 0, 0, rowPos3)));
+        assertLastEventIs(FinishedTieringEvent.class);
+
+        // ----- Verify: tiered snapshot advances to 5 (APPEND) -----
+        CommonTestUtils.retry(
+                Duration.ofSeconds(30),
+                () -> {
+                    LakeSnapshot tieredSnapshot3 = admin.getLatestLakeSnapshot(tablePath).get();
+                    assertThat(tieredSnapshot3.getSnapshotId()).isEqualTo(5L);
+                    assertThat(tieredSnapshot3.getTableBucketsOffset())
+                            .isEqualTo(Collections.singletonMap(tb, round3LogEndOffset));
+                });
+
+        // ----- Verify: readable snapshot advances to 4 (COMPACT) -----
+        CommonTestUtils.retry(
+                Duration.ofSeconds(30),
+                () -> {
+                    LakeSnapshot readableSnapshot3 = admin.getReadableLakeSnapshot(tablePath).get();
+                    assertThat(readableSnapshot3.getSnapshotId()).isEqualTo(4L);
+                    assertThat(readableSnapshot3.getTableBucketsOffset())
+                            .isEqualTo(Collections.singletonMap(tb, round2LogEndOffset));
+                });
+
+        // ----- Verify: DV snapshot after Round 3 — old file cleaned up -----
+        // After DV Prepare + Readable Switch for snapshot 4:
+        // - round1PaimonFileName (fileId=0) was in deletedFiles from planDelta(3)
+        // - cleanupOldFiles() should have removed:
+        //   * LakeDv entries for fileId=0 (the position-2 deletion from Round 2)
+        //   * PendingDeletes entries pointing to fileId=0
+        //   * FileDict entries for fileId=0 (this PR)
+        // - round3PaimonFileName (fileId=1) is the new compacted file
+        // - row3SupersededOffset < round2LogEndOffset → cleaned up from logDv
+        CommonTestUtils.retry(
+                Duration.ofSeconds(30),
+                () -> {
+                    GetDvSnapshotResponse dvResp3 =
+                            admin.getDvSnapshot(tablePath, tableId, null, 0, 4L).get();
+                    assertThat(dvResp3.getSnapshotStartOffset()).isEqualTo(round2LogEndOffset);
+
+                    // lakeDv: should be empty. The only entry (fileId=0, position 2)
+                    // was cleaned up by cleanupOldFiles. Rows 6-7 are new inserts
+                    // with no overlapping lake data, so no new lakeDv entries.
+                    assertThat(dvResp3.getLakeDvEntriesCount()).isEqualTo(0);
+
+                    // logDv: should be empty. row3SupersededOffset < round2LogEndOffset
+                    // was cleaned up during handleReadableSwitch. Rows 6-7 have no
+                    // superseded writes, so no new logDv entries.
+                    byte[] logDvBytes3 = dvResp3.getLogDvBitmap();
+                    if (logDvBytes3 != null && logDvBytes3.length > 0) {
+                        Roaring64Bitmap logBitmap3 = new Roaring64Bitmap();
+                        logBitmap3.deserialize(java.nio.ByteBuffer.wrap(logDvBytes3));
+                        assertThat(logBitmap3.getLongCardinality()).isEqualTo(0L);
+                    }
                 });
 
         flussTable.close();
@@ -506,6 +645,21 @@ class TieringCommitDvFlowTest {
             rows.add(GenericRow.of(i, BinaryString.fromString("value" + i)));
         }
         return rows;
+    }
+
+    /** Returns the first data file name from the given Paimon snapshot for the specified bucket. */
+    private static String getFirstDataFileName(FileStoreTable table, long snapshotId, int bucket) {
+        Map<String, String> scanOpts = new HashMap<>();
+        scanOpts.put(CoreOptions.SCAN_SNAPSHOT_ID.key(), String.valueOf(snapshotId));
+        FileStoreTable scanTable = table.copy(scanOpts);
+        for (org.apache.paimon.table.source.Split split : scanTable.newScan().plan().splits()) {
+            DataSplit dataSplit = (DataSplit) split;
+            if (dataSplit.bucket() == bucket && !dataSplit.dataFiles().isEmpty()) {
+                return dataSplit.dataFiles().get(0).fileName();
+            }
+        }
+        throw new AssertionError(
+                "No data file found for snapshot " + snapshotId + " bucket " + bucket);
     }
 
     /** Compacts the specified bucket using {@link PaimonTestUtils.CompactHelper}. */

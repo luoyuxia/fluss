@@ -224,6 +224,13 @@ class DvManagerPrepareAndSwitchTest {
 
         // PendingDeletes entry pointing to old file should be deleted
         assertThat(dvRocksDB.pendingDeletes().get(100L)).isNull();
+
+        // FileDict entries for old file (fileId=99) should be deleted
+        assertThat(dvRocksDB.fileDict().getFilePath(99)).isNull();
+        assertThat(dvRocksDB.fileDict().getFileId("/old/file.parquet")).isEqualTo(-1);
+
+        // FileDict entries for new file (fileId=1) should be kept
+        assertThat(dvRocksDB.fileDict().getFilePath(1)).isEqualTo("/data/f1.parquet");
     }
 
     @Test

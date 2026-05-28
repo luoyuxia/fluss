@@ -112,6 +112,21 @@ public class FileDict {
         }
     }
 
+    /** Deletes the bidirectional mapping for the given fileId. */
+    public void delete(int fileId) throws IOException {
+        String filePath = getFilePath(fileId);
+        if (filePath == null) {
+            return;
+        }
+        try (WriteBatch batch = new WriteBatch()) {
+            batch.delete(cfHandle, encodePathToIdKey(filePath));
+            batch.delete(cfHandle, encodeIdToPathKey(fileId));
+            db.write(writeOptions, batch);
+        } catch (RocksDBException e) {
+            throw new IOException("Failed to delete FileDict entry for fileId " + fileId, e);
+        }
+    }
+
     private void putToBatch(WriteBatch batch, int fileId, String filePath) throws IOException {
         byte[] pathToIdKey = encodePathToIdKey(filePath);
         byte[] idToPathKey = encodeIdToPathKey(fileId);

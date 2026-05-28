@@ -326,6 +326,11 @@ public class DvManager implements Closeable {
         for (long rowId : toDelete) {
             dvRocksDB.pendingDeletes().delete(rowId);
         }
+
+        // Remove FileDict entries for old files
+        for (int fileId : oldFileIds) {
+            dvRocksDB.fileDict().delete(fileId);
+        }
     }
 
     /**
