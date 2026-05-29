@@ -61,6 +61,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
     // whether the projection is push downed to the server side and the returned data is pruned.
     private final boolean projectionPushDowned;
     private final SchemaGetter schemaGetter;
+    // whether deletion vectors are enabled for the table
+    private final boolean dvEnabled;
     private final ConcurrentHashMap<Integer, VectorSchemaRoot> vectorSchemaRootMap =
             new ConcurrentHashMap<>();
 
@@ -94,6 +96,7 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
             AllocationManager.Factory allocationManagerFactory) {
         RowType rowType = tableInfo.getRowType();
         LogFormat logFormat = tableInfo.getTableConfig().getLogFormat();
+        boolean dvEnabled = tableInfo.isDeletionVectorsEnabled();
         // only for arrow log format, the projection can be push downed to the server side
         boolean projectionPushDowned = projection != null && logFormat == LogFormat.ARROW;
         int schemaId = tableInfo.getSchemaId();
@@ -113,7 +116,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
                         selectedFields,
                         false,
                         schemaGetter,
-                        allocationManagerFactory);
+                        allocationManagerFactory,
+                        dvEnabled);
             } else {
                 // arrow data that returned from server has been projected (in order)
                 RowType projectedRowType = projection.projectInOrder(rowType);
@@ -125,14 +129,16 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
                         selectedFields,
                         projectionPushDowned,
                         schemaGetter,
-                        allocationManagerFactory);
+                        allocationManagerFactory,
+                        dvEnabled);
             }
         } else if (logFormat == LogFormat.INDEXED) {
             int[] selectedFields = projection.getProjection();
-            return createIndexedReadContext(rowType, schemaId, selectedFields, schemaGetter);
+            return createIndexedReadContext(
+                    rowType, schemaId, selectedFields, schemaGetter, dvEnabled);
         } else if (logFormat == LogFormat.COMPACTED) {
             int[] selectedFields = projection.getProjection();
-            return createCompactedRowReadContext(rowType, schemaId, selectedFields);
+            return createCompactedRowReadContext(rowType, schemaId, selectedFields, dvEnabled);
         } else {
             throw new IllegalArgumentException("Unsupported log format: " + logFormat);
         }
@@ -144,7 +150,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
             int[] selectedFields,
             boolean projectionPushDowned,
             SchemaGetter schemaGetter,
-            AllocationManager.Factory allocationManagerFactory) {
+            AllocationManager.Factory allocationManagerFactory,
+            boolean dvEnabled) {
         // TODO: use a more reasonable memory limit
         BufferAllocator allocator =
                 BufferAllocatorUtil.createBufferAllocator(allocationManagerFactory);
@@ -156,7 +163,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
                 allocator,
                 fieldGetters,
                 projectionPushDowned,
-                schemaGetter);
+                schemaGetter,
+                dvEnabled);
     }
 
     /**
@@ -177,7 +185,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
                 selectedFields,
                 false,
                 schemaGetter,
-                new ChunkedAllocationManager.ChunkedFactory());
+                new ChunkedAllocationManager.ChunkedFactory(),
+                false);
     }
 
     @VisibleForTesting
@@ -193,7 +202,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
                 selectedFields,
                 projectionPushDowned,
                 schemaGetter,
-                new ChunkedAllocationManager.ChunkedFactory());
+                new ChunkedAllocationManager.ChunkedFactory(),
+                false);
     }
 
     /**
@@ -207,21 +217,22 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
     public static LogRecordReadContext createIndexedReadContext(
             RowType rowType, int schemaId, SchemaGetter schemaGetter) {
         int[] selectedFields = IntStream.range(0, rowType.getFieldCount()).toArray();
-        return createIndexedReadContext(rowType, schemaId, selectedFields, schemaGetter);
+        return createIndexedReadContext(rowType, schemaId, selectedFields, schemaGetter, false);
     }
 
     /** Creates a LogRecordReadContext for COMPACTED log format. */
     public static LogRecordReadContext createCompactedRowReadContext(
             RowType rowType, int schemaId) {
         int[] selectedFields = IntStream.range(0, rowType.getFieldCount()).toArray();
-        return createCompactedRowReadContext(rowType, schemaId, selectedFields, null);
+        return createCompactedRowReadContext(rowType, schemaId, selectedFields, null, false);
     }
 
     /** Creates a LogRecordReadContext for COMPACTED log format with schema evolution support. */
     public static LogRecordReadContext createCompactedRowReadContext(
             RowType rowType, int schemaId, SchemaGetter schemaGetter) {
         int[] selectedFields = IntStream.range(0, rowType.getFieldCount()).toArray();
-        return createCompactedRowReadContext(rowType, schemaId, selectedFields, schemaGetter);
+        return createCompactedRowReadContext(
+                rowType, schemaId, selectedFields, schemaGetter, false);
     }
 
     /**
@@ -233,11 +244,22 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
      * @param schemaGetter the schema getter of to get schema by schemaId
      */
     public static LogRecordReadContext createIndexedReadContext(
-            RowType rowType, int schemaId, int[] selectedFields, SchemaGetter schemaGetter) {
+            RowType rowType,
+            int schemaId,
+            int[] selectedFields,
+            SchemaGetter schemaGetter,
+            boolean dvEnabled) {
         FieldGetter[] fieldGetters = buildProjectedFieldGetters(rowType, selectedFields);
         // for INDEXED log format, the projection is NEVER push downed to the server side
         return new LogRecordReadContext(
-                LogFormat.INDEXED, rowType, schemaId, null, fieldGetters, false, schemaGetter);
+                LogFormat.INDEXED,
+                rowType,
+                schemaId,
+                null,
+                fieldGetters,
+                false,
+                schemaGetter,
+                dvEnabled);
     }
 
     /**
@@ -249,7 +271,20 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
      */
     public static LogRecordReadContext createCompactedRowReadContext(
             RowType rowType, int schemaId, int[] selectedFields) {
-        return createCompactedRowReadContext(rowType, schemaId, selectedFields, null);
+        return createCompactedRowReadContext(rowType, schemaId, selectedFields, null, false);
+    }
+
+    /**
+     * Creates a LogRecordReadContext for COMPACTED log format.
+     *
+     * @param rowType the schema of the read data
+     * @param schemaId the schemaId of the table
+     * @param selectedFields the final selected fields of the read data
+     * @param dvEnabled whether deletion vectors are enabled
+     */
+    public static LogRecordReadContext createCompactedRowReadContext(
+            RowType rowType, int schemaId, int[] selectedFields, boolean dvEnabled) {
+        return createCompactedRowReadContext(rowType, schemaId, selectedFields, null, dvEnabled);
     }
 
     /**
@@ -259,16 +294,25 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
      * @param schemaId the schemaId of the table
      * @param selectedFields the final selected fields of the read data
      * @param schemaGetter the schema getter to resolve evolved batch schemas
+     * @param dvEnabled whether deletion vectors are enabled
      */
     public static LogRecordReadContext createCompactedRowReadContext(
             RowType rowType,
             int schemaId,
             int[] selectedFields,
-            @Nullable SchemaGetter schemaGetter) {
+            @Nullable SchemaGetter schemaGetter,
+            boolean dvEnabled) {
         FieldGetter[] fieldGetters = buildProjectedFieldGetters(rowType, selectedFields);
         // for COMPACTED log format, the projection is NEVER push downed to the server side
         return new LogRecordReadContext(
-                LogFormat.COMPACTED, rowType, schemaId, null, fieldGetters, false, schemaGetter);
+                LogFormat.COMPACTED,
+                rowType,
+                schemaId,
+                null,
+                fieldGetters,
+                false,
+                schemaGetter,
+                dvEnabled);
     }
 
     private LogRecordReadContext(
@@ -278,7 +322,8 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
             BufferAllocator bufferAllocator,
             FieldGetter[] selectedFieldGetters,
             boolean projectionPushDowned,
-            SchemaGetter schemaGetter) {
+            SchemaGetter schemaGetter,
+            boolean dvEnabled) {
         this.logFormat = logFormat;
         this.dataRowType = targetDataRowType;
         this.targetSchemaId = targetSchemaId;
@@ -286,11 +331,17 @@ public class LogRecordReadContext implements LogRecordBatch.ReadContext, AutoClo
         this.selectedFieldGetters = selectedFieldGetters;
         this.projectionPushDowned = projectionPushDowned;
         this.schemaGetter = schemaGetter;
+        this.dvEnabled = dvEnabled;
     }
 
     @Override
     public LogFormat getLogFormat() {
         return logFormat;
+    }
+
+    @Override
+    public boolean isDvEnabled() {
+        return dvEnabled;
     }
 
     @Override
