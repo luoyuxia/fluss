@@ -221,12 +221,18 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
 
     @Nullable
     private Snapshot getCommittedLatestSnapshotOfLake(String commitUser) throws IOException {
-        // get the latest snapshot committed by fluss or latest committed id
+        // Get the latest APPEND snapshot committed by the Fluss user, skipping COMPACT
+        // snapshots. When auto-compaction is enabled, the writer produces both APPEND and
+        // COMPACT snapshots during a single commit. Only APPEND snapshots represent data
+        // boundaries that Fluss tracks; COMPACT snapshots are internal Paimon artifacts.
+        // If we returned a COMPACT snapshot here, getMissingLakeSnapshot() would detect it
+        // as "missing" and fail the tiering job.
         SnapshotManager snapshotManager = fileStoreTable.snapshotManager();
         Long userCommittedSnapshotIdOrLatestCommitId =
-                fileStoreTable
-                        .snapshotManager()
-                        .pickOrLatest((snapshot -> snapshot.commitUser().equals(commitUser)));
+                snapshotManager.pickOrLatest(
+                        (snapshot ->
+                                snapshot.commitUser().equals(commitUser)
+                                        && snapshot.commitKind() != Snapshot.CommitKind.COMPACT));
         // no any snapshot, return null directly
         if (userCommittedSnapshotIdOrLatestCommitId == null) {
             return null;
@@ -235,8 +241,10 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
         // pick the snapshot
         Snapshot snapshot = snapshotManager.tryGetSnapshot(userCommittedSnapshotIdOrLatestCommitId);
 
-        if (!snapshot.commitUser().equals(commitUser)) {
-            // the snapshot is still not committed by Fluss, return directly
+        if (!snapshot.commitUser().equals(commitUser)
+                || snapshot.commitKind() == Snapshot.CommitKind.COMPACT) {
+            // The snapshot is not committed by Fluss, or is a COMPACT from auto-compaction.
+            // In both cases, return null to indicate no missing APPEND snapshot.
             return null;
         }
         return snapshot;
@@ -287,7 +295,13 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
         }
     }
 
-    /** A {@link CommitCallback} to save paimon commit snapshot info. */
+    /**
+     * A {@link CommitCallback} to save paimon commit snapshot info.
+     *
+     * <p>Only captures APPEND snapshot IDs. When auto-compaction is enabled, Paimon produces both
+     * APPEND and COMPACT snapshots in a single commit. Fluss only tracks APPEND snapshots as data
+     * boundaries; COMPACT snapshots are internal Paimon artifacts.
+     */
     public static class PaimonCommitCallback implements CommitCallback {
 
         @Override
@@ -296,7 +310,11 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
                 List<ManifestEntry> deltaFiles,
                 List<IndexManifestEntry> indexFiles,
                 Snapshot snapshot) {
-            currentCommitSnapshotId.set(snapshot.id());
+            // Skip COMPACT snapshots from auto-compaction. Paimon always creates the
+            // APPEND snapshot first, so currentCommitSnapshotId will hold the APPEND ID.
+            if (snapshot.commitKind() != Snapshot.CommitKind.COMPACT) {
+                currentCommitSnapshotId.set(snapshot.id());
+            }
         }
 
         @Override

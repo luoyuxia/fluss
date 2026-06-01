@@ -174,14 +174,17 @@ public class PaimonRecordReader implements RecordReader {
                         InternalRow row = currentBatch.next();
                         if (row != null) {
                             long position;
+                            String fileName = null;
                             if (currentBatch instanceof FileRecordIterator) {
-                                position =
-                                        ((FileRecordIterator<?>) currentBatch).returnedPosition();
+                                FileRecordIterator<?> fileIter =
+                                        (FileRecordIterator<?>) currentBatch;
+                                position = fileIter.returnedPosition();
+                                fileName = fileIter.filePath().getName();
                             } else {
                                 position = rowCounter;
                             }
                             rowCounter++;
-                            reusable.set(rowWrapper.replaceRow(row), position);
+                            reusable.set(rowWrapper.replaceRow(row), position, fileName);
                             hasNext = true;
                             return;
                         }

@@ -56,6 +56,19 @@ public class LakeSplitSerializer {
             byte[] serializeBytes = sourceSplitSerializer.serialize(lakeSplit.getLakeSplit());
             out.writeInt(serializeBytes.length);
             out.write(serializeBytes);
+            // Serialize lakeDvMap (appended for backward compatibility)
+            Map<String, byte[]> lakeDvMap = lakeSplit.getLakeDvMap();
+            if (lakeDvMap == null) {
+                out.writeBoolean(false);
+            } else {
+                out.writeBoolean(true);
+                out.writeInt(lakeDvMap.size());
+                for (Map.Entry<String, byte[]> entry : lakeDvMap.entrySet()) {
+                    out.writeUTF(entry.getKey());
+                    out.writeInt(entry.getValue().length);
+                    out.write(entry.getValue());
+                }
+            }
         } else if (split instanceof LakeSnapshotAndFlussLogSplit) {
             // writing file store source split
             LakeSnapshotAndFlussLogSplit lakeSnapshotAndFlussLogSplit =
@@ -127,7 +140,20 @@ public class LakeSplitSerializer {
             byte[] serializeBytes = new byte[input.readInt()];
             input.read(serializeBytes);
             LakeSplit lakeSplit = sourceSplitSerializer.deserialize(version, serializeBytes);
-            return new LakeSnapshotSplit(tableBucket, partition, lakeSplit, splitIndex);
+            // Backward compatible lakeDvMap deserialization
+            Map<String, byte[]> lakeDvMap = null;
+            if (input.available() > 0 && input.readBoolean()) {
+                int size = input.readInt();
+                lakeDvMap = new HashMap<>(size);
+                for (int i = 0; i < size; i++) {
+                    String fileName = input.readUTF();
+                    byte[] bitmap = new byte[input.readInt()];
+                    input.readFully(bitmap);
+                    lakeDvMap.put(fileName, bitmap);
+                }
+            }
+            return new LakeSnapshotSplit(
+                    tableBucket, partition, lakeSplit, splitIndex, 0, lakeDvMap);
         } else if (splitKind == LAKE_SNAPSHOT_FLUSS_LOG_SPLIT_KIND) {
             List<LakeSplit> lakeSplits = null;
             if (input.readBoolean()) {

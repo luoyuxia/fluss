@@ -22,6 +22,7 @@ import org.apache.fluss.metadata.TableBucket;
 
 import javax.annotation.Nullable;
 
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -35,8 +36,14 @@ public class LogSplit extends SourceSplitBase {
     private final long startingOffset;
     private final long stoppingOffset;
 
+    /**
+     * Serialized Roaring64Bitmap of deleted log offsets for DV batch read. Null means no DV
+     * filtering is needed.
+     */
+    @Nullable private final byte[] logDvBitmap;
+
     public LogSplit(TableBucket tableBucket, @Nullable String partitionName, long startingOffset) {
-        this(tableBucket, partitionName, startingOffset, NO_STOPPING_OFFSET);
+        this(tableBucket, partitionName, startingOffset, NO_STOPPING_OFFSET, null);
     }
 
     public LogSplit(
@@ -44,9 +51,19 @@ public class LogSplit extends SourceSplitBase {
             @Nullable String partitionName,
             long startingOffset,
             long stoppingOffset) {
+        this(tableBucket, partitionName, startingOffset, stoppingOffset, null);
+    }
+
+    public LogSplit(
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            long startingOffset,
+            long stoppingOffset,
+            @Nullable byte[] logDvBitmap) {
         super(tableBucket, partitionName);
         this.startingOffset = startingOffset;
         this.stoppingOffset = stoppingOffset;
+        this.logDvBitmap = logDvBitmap;
     }
 
     public long getStartingOffset() {
@@ -55,6 +72,20 @@ public class LogSplit extends SourceSplitBase {
 
     public Optional<Long> getStoppingOffset() {
         return stoppingOffset >= 0 ? Optional.of(stoppingOffset) : Optional.empty();
+    }
+
+    /**
+     * Returns the serialized Roaring64Bitmap of deleted log offsets. Null means no DV filtering is
+     * needed.
+     */
+    @Nullable
+    public byte[] getLogDvBitmap() {
+        return logDvBitmap;
+    }
+
+    /** Returns true if this is a DV batch read split (log DV data is available). */
+    public boolean isDvBatchRead() {
+        return logDvBitmap != null;
     }
 
     @Override
@@ -80,12 +111,15 @@ public class LogSplit extends SourceSplitBase {
         }
         LogSplit logSplit = (LogSplit) object;
         return startingOffset == logSplit.startingOffset
-                && stoppingOffset == logSplit.stoppingOffset;
+                && stoppingOffset == logSplit.stoppingOffset
+                && Arrays.equals(logDvBitmap, logSplit.logDvBitmap);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), startingOffset, stoppingOffset);
+        int result = Objects.hash(super.hashCode(), startingOffset, stoppingOffset);
+        result = 31 * result + Arrays.hashCode(logDvBitmap);
+        return result;
     }
 
     @Override
@@ -100,6 +134,8 @@ public class LogSplit extends SourceSplitBase {
                 + startingOffset
                 + ", stoppingOffset="
                 + stoppingOffset
+                + ", hasDvBitmap="
+                + (logDvBitmap != null)
                 + '}';
     }
 }

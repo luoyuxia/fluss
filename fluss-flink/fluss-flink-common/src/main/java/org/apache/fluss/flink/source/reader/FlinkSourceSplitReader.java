@@ -40,6 +40,7 @@ import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.predicate.Predicate;
+import org.apache.fluss.record.ChangeType;
 import org.apache.fluss.types.RowType;
 import org.apache.fluss.utils.CloseableIterator;
 import org.apache.fluss.utils.ExceptionUtils;
@@ -50,12 +51,14 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsChange;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.util.FlinkRuntimeException;
+import org.roaringbitmap.longlong.Roaring64Bitmap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -116,6 +119,11 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
     private final Set<String> removedSplits = new HashSet<>();
     // Set to collect table buckets that are unsubscribed.
     private Set<TableBucket> unsubscribedTableBuckets = new HashSet<>();
+
+    // DV batch read: per-bucket log deletion vector bitmaps
+    private final Map<TableBucket, Roaring64Bitmap> logDvBitmaps = new HashMap<>();
+    // DV batch read: buckets that need DELETE/UPDATE_BEFORE filtering
+    private final Set<TableBucket> dvBatchReadBuckets = new HashSet<>();
 
     public FlinkSourceSplitReader(
             Configuration flussConf,
@@ -267,6 +275,21 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
                             String.format(
                                     "Invalid stopping offset %d for bucket %s",
                                     stoppingOffset, tableBucket));
+                }
+            }
+            // Store DV batch read info if available
+            if (logSplit.isDvBatchRead()) {
+                dvBatchReadBuckets.add(tableBucket);
+                byte[] logDvBytes = logSplit.getLogDvBitmap();
+                if (logDvBytes != null && logDvBytes.length > 0) {
+                    Roaring64Bitmap bitmap = new Roaring64Bitmap();
+                    try {
+                        bitmap.deserialize(ByteBuffer.wrap(logDvBytes));
+                    } catch (IOException e) {
+                        throw new FlinkRuntimeException(
+                                "Failed to deserialize logDv bitmap for bucket " + tableBucket, e);
+                    }
+                    logDvBitmaps.put(tableBucket, bitmap);
                 }
             }
         }
@@ -443,6 +466,11 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
             splitIdByTableBucket.put(scanBucket, splitId);
             tableScanBuckets.add(scanBucket);
             List<ScanRecord> bucketScanRecords = scanRecords.records(scanBucket);
+            // Apply DV filtering for DV batch read buckets
+            if (dvBatchReadBuckets.contains(scanBucket)) {
+                bucketScanRecords =
+                        filterDvBatchRecords(bucketScanRecords, logDvBitmaps.get(scanBucket));
+            }
             if (!bucketScanRecords.isEmpty()) {
                 final ScanRecord lastRecord = bucketScanRecords.get(bucketScanRecords.size() - 1);
                 // We keep the maximum message timestamp in the fetch for calculating lags
@@ -607,6 +635,39 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
                             + sourceOutputType
                             + flussSchemaMsg);
         }
+    }
+
+    /**
+     * Filters log records for DV batch read: skips records whose offsets are in the logDv bitmap,
+     * skips DELETE/UPDATE_BEFORE records, and normalizes UPDATE_AFTER to INSERT (batch read only
+     * outputs current state as INSERT rows).
+     */
+    private List<ScanRecord> filterDvBatchRecords(
+            List<ScanRecord> records, @Nullable Roaring64Bitmap logDvBitmap) {
+        List<ScanRecord> filtered = new ArrayList<>();
+        for (ScanRecord record : records) {
+            // Skip records whose offsets are marked as deleted in logDv
+            if (logDvBitmap != null && logDvBitmap.contains(record.logOffset())) {
+                continue;
+            }
+            // Skip DELETE and UPDATE_BEFORE records for batch read
+            if (record.getChangeType() == ChangeType.DELETE
+                    || record.getChangeType() == ChangeType.UPDATE_BEFORE) {
+                continue;
+            }
+            // Normalize UPDATE_AFTER to INSERT for batch read output
+            if (record.getChangeType() == ChangeType.UPDATE_AFTER) {
+                record =
+                        new ScanRecord(
+                                record.logOffset(),
+                                record.timestamp(),
+                                ChangeType.INSERT,
+                                record.getRow(),
+                                record.getSizeInBytes());
+            }
+            filtered.add(record);
+        }
+        return filtered;
     }
 
     @VisibleForTesting

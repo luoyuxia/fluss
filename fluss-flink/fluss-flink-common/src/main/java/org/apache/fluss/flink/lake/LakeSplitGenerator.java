@@ -365,7 +365,7 @@ public class LakeSplitGenerator {
                 }
                 DvSnapshotInfo dvSnapshot =
                         bucketDvSnapshots != null ? bucketDvSnapshots.get(tableBucket) : null;
-                splits.add(
+                splits.addAll(
                         generateSplitForPrimaryKeyTableBucket(
                                 lakeSplits != null ? lakeSplits.get(bucket) : null,
                                 tableBucket,
@@ -396,7 +396,7 @@ public class LakeSplitGenerator {
         return splits;
     }
 
-    private SourceSplitBase generateSplitForPrimaryKeyTableBucket(
+    private List<SourceSplitBase> generateSplitForPrimaryKeyTableBucket(
             @Nullable List<LakeSplit> lakeSplits,
             TableBucket tableBucket,
             @Nullable String partitionName,
@@ -406,20 +406,72 @@ public class LakeSplitGenerator {
         // no snapshot data for this bucket or no a corresponding log offset in this bucket,
         // can only scan from change log
         if (snapshotLogOffset == null || snapshotLogOffset < 0) {
-            return new LakeSnapshotAndFlussLogSplit(
-                    tableBucket, partitionName, null, EARLIEST_OFFSET, stoppingOffset);
+            return Collections.singletonList(
+                    new LakeSnapshotAndFlussLogSplit(
+                            tableBucket, partitionName, null, EARLIEST_OFFSET, stoppingOffset));
         }
 
-        return new LakeSnapshotAndFlussLogSplit(
+        // No DV available: fall back to sort-merge via LakeSnapshotAndFlussLogSplit
+        if (dvSnapshot == null) {
+            return Collections.singletonList(
+                    new LakeSnapshotAndFlussLogSplit(
+                            tableBucket,
+                            partitionName,
+                            lakeSplits,
+                            snapshotLogOffset,
+                            stoppingOffset,
+                            0,
+                            0,
+                            lakeSplits == null,
+                            null));
+        }
+
+        // DV available: split into independent lake + log splits with DV filtering
+        LOG.info(
+                "Using DV-based split for bucket {}: lakeDvSize={}, logDvPresent={}, "
+                        + "snapshotLogOffset={}, stoppingOffset={}, dvLogEndOffset={}",
                 tableBucket,
-                partitionName,
-                lakeSplits,
+                dvSnapshot.getLakeDv().size(),
+                dvSnapshot.getLogDvBitmap() != null,
                 snapshotLogOffset,
                 stoppingOffset,
-                0,
-                0,
-                lakeSplits == null,
-                dvSnapshot);
+                dvSnapshot.getLogEndOffset());
+        List<SourceSplitBase> splits = new ArrayList<>();
+
+        // Truncate stoppingOffset to DV coverage range
+        if (stoppingOffset > 0) {
+            stoppingOffset = Math.min(stoppingOffset, dvSnapshot.getLogEndOffset());
+        }
+
+        // Generate LakeSnapshotSplit(s) with lakeDv map
+        if (lakeSplits != null) {
+            Map<String, byte[]> lakeDvMap = dvSnapshot.getLakeDv();
+            int index = 0;
+            for (LakeSplit lakeSplit : lakeSplits) {
+                splits.add(
+                        new LakeSnapshotSplit(
+                                tableBucket, partitionName, lakeSplit, index++, 0, lakeDvMap));
+            }
+        }
+
+        // Generate LogSplit with logDv bitmap.
+        // Use empty byte[] when logDvBitmap is null to indicate DV batch read mode
+        // (enables DELETE/UPDATE_BEFORE filtering even when no specific offsets to skip).
+        if (stoppingOffset == NO_STOPPING_OFFSET || snapshotLogOffset < stoppingOffset) {
+            byte[] logDvBitmap = dvSnapshot.getLogDvBitmap();
+            if (logDvBitmap == null) {
+                logDvBitmap = new byte[0];
+            }
+            splits.add(
+                    new LogSplit(
+                            tableBucket,
+                            partitionName,
+                            snapshotLogOffset,
+                            stoppingOffset,
+                            logDvBitmap));
+        }
+
+        return splits;
     }
 
     private List<SourceSplitBase> generateNoPartitionedTableSplit(

@@ -20,6 +20,8 @@ package org.apache.fluss.lake.source;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.row.InternalRow;
 
+import javax.annotation.Nullable;
+
 /**
  * A row together with its physical position in the data file, returned by {@link
  * RecordReader#readWithPos()}.
@@ -32,6 +34,7 @@ public class RowWithPosResult {
 
     private InternalRow row;
     private long pos;
+    @Nullable private String fileName;
 
     /** Returns the projected row data. */
     public InternalRow getRow() {
@@ -43,10 +46,25 @@ public class RowWithPosResult {
         return pos;
     }
 
+    /** Returns the file name this row belongs to. Null when not available. */
+    @Nullable
+    public String getFileName() {
+        return fileName;
+    }
+
     /** Sets the row and position. Used by iterator implementations for object reuse. */
     public RowWithPosResult set(InternalRow row, long pos) {
         this.row = row;
         this.pos = pos;
+        this.fileName = null;
+        return this;
+    }
+
+    /** Sets the row, position, and file name. Used by iterator implementations for object reuse. */
+    public RowWithPosResult set(InternalRow row, long pos, @Nullable String fileName) {
+        this.row = row;
+        this.pos = pos;
+        this.fileName = fileName;
         return this;
     }
 }

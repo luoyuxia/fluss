@@ -74,6 +74,13 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- RoaringBitmap -->
+        <dependency>
+            <groupId>org.roaringbitmap</groupId>
+            <artifactId>RoaringBitmap</artifactId>
+            <version>${roaringbitmap.version}</version>
+        </dependency>
+
         <!-- Paimon -->
         <dependency>
             <groupId>org.apache.paimon</groupId>

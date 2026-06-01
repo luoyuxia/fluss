@@ -25,6 +25,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.row.InternalRow;
+import org.apache.fluss.rpc.messages.GetDvSnapshotResponse;
 import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.testutils.common.CommonTestUtils;
 import org.apache.fluss.types.DataTypes;
@@ -34,7 +35,9 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.roaringbitmap.longlong.Roaring64Bitmap;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -76,10 +79,12 @@ class FlinkUnionReadDvAutoCompactionITCase extends FlinkUnionReadTestBase {
      *
      * <ol>
      *   <li>Create a DV-enabled table with auto-compaction (1 bucket)
-     *   <li>Write initial data (keys 0-4), wait for tiering sync
+     *   <li>Write initial data (keys 0-4), wait for tiering sync (produces APPEND 1 + COMPACT 2)
      *   <li>Write overlapping updates (keys 0,1,3 updated, key 5 added), wait for tiering sync
-     *   <li>Write more data (keys 6-10) to trigger auto-compaction
-     *   <li>Wait for readable snapshot produced by auto-compaction
+     *       (produces APPEND 3 + COMPACT 4; readable snapshot = COMPACT 2)
+     *   <li>Verify DV: lake DV has 3 deleted positions for overwritten keys in COMPACT 2's file
+     *   <li>Write more data (keys 6-10), wait for readable snapshot to advance past COMPACT 2
+     *   <li>Verify DV: lake DV cleaned up (0 entries), no overlapping keys in Round 3
      *   <li>Write post-snapshot data (keys 11-15) and verify union read
      * </ol>
      */
@@ -126,6 +131,64 @@ class FlinkUnionReadDvAutoCompactionITCase extends FlinkUnionReadTestBase {
             waitUntilBucketSynced(tablePath, tableId, bucketNum, false);
             assertReplicaStatus(bucketLogEndOffset);
 
+            // Step 3.5: Verify lake DV and log DV are correctly generated.
+            // Each tiering round produces APPEND then COMPACT snapshots:
+            //   Round 1: APPEND 1 + COMPACT 2 (keys 0-4, base file)
+            //   Round 2: APPEND 3 + COMPACT 4 (keys 0,1,5,3 updates)
+            // The readable snapshot is COMPACT 2 (found by Round 2's commit
+            // via findPreviousSnapshot). Keys 0, 1, 3 were overwritten in
+            // Round 2 → their original positions in COMPACT 2's base file
+            // should be marked as deleted in lake DV.
+            long[] firstReadableId = new long[1];
+            CommonTestUtils.retry(
+                    Duration.ofMinutes(2),
+                    () -> {
+                        LakeSnapshot lakeSnapshot = admin.getReadableLakeSnapshot(tablePath).get();
+                        long readableSnapshotId = lakeSnapshot.getSnapshotId();
+                        assertThat(readableSnapshotId).isGreaterThan(0);
+                        firstReadableId[0] = readableSnapshotId;
+
+                        GetDvSnapshotResponse dvResp =
+                                admin.getDvSnapshot(tablePath, tableId, null, 0, readableSnapshotId)
+                                        .get();
+
+                        // snapshotStartOffset should be > 0 (Round 1's logEndOffset)
+                        assertThat(dvResp.getSnapshotStartOffset()).isGreaterThan(0);
+
+                        // Lake DV: 3 overwritten keys (0, 1, 3) → 3 deleted positions
+                        assertThat(dvResp.getLakeDvEntriesCount()).isGreaterThan(0);
+                        long totalDeleted = 0;
+                        for (int i = 0; i < dvResp.getLakeDvEntriesCount(); i++) {
+                            byte[] bitmapBytes =
+                                    dvResp.getLakeDvEntryAt(i).getDeletedPositionsBitmap();
+                            assertThat(bitmapBytes).isNotNull();
+                            Roaring64Bitmap bitmap = new Roaring64Bitmap();
+                            bitmap.deserialize(ByteBuffer.wrap(bitmapBytes));
+                            totalDeleted += bitmap.getLongCardinality();
+                        }
+                        assertThat(totalDeleted).isEqualTo(3L);
+
+                        // Log DV: all superseded offsets (0, 1, 3) are < readableOffset,
+                        // so they should be cleaned up. Log DV should be empty.
+                        if (dvResp.hasLogDvBitmap()) {
+                            byte[] logDvBytes = dvResp.getLogDvBitmap();
+                            if (logDvBytes != null && logDvBytes.length > 0) {
+                                Roaring64Bitmap logBitmap = new Roaring64Bitmap();
+                                logBitmap.deserialize(ByteBuffer.wrap(logDvBytes));
+                                assertThat(logBitmap.getLongCardinality()).isEqualTo(0L);
+                            }
+                        }
+                    });
+
+            // Step 3.6: Verify union read with DV filtering.
+            // At this point, the readable snapshot (COMPACT 2) has 3 lake DV entries
+            // marking keys 0, 1, 3 as deleted. The DvFilteredIterator should filter
+            // these 3 rows from the lake file, and the log should provide the updated
+            // values. This exercises the actual DV bitmap filtering code path.
+            CloseableIterator<Row> dvRowIter =
+                    streamTEnv.executeSql("select * from " + tableName).collect();
+            assertResultsIgnoreOrder(dvRowIter, toString(writtenRows), true);
+
             // Step 4: Round 3 - Write more data to drive auto-compaction
             writtenRows.addAll(writeRows(tablePath, 6, 11, "v"));
 
@@ -133,12 +196,38 @@ class FlinkUnionReadDvAutoCompactionITCase extends FlinkUnionReadTestBase {
             waitUntilBucketSynced(tablePath, tableId, bucketNum, false);
             assertReplicaStatus(bucketLogEndOffset);
 
-            // Step 5: Wait for readable snapshot produced by auto-compaction
+            // Step 5: Wait for readable snapshot to advance after re-compaction.
+            // Round 3 (keys 6-10) are all new keys with no overlap, so after
+            // re-compaction the old lake DV entries (keys 0,1,3) should be cleaned up.
             CommonTestUtils.retry(
                     Duration.ofMinutes(2),
                     () -> {
                         LakeSnapshot snapshot = admin.getReadableLakeSnapshot(tablePath).get();
-                        assertThat(snapshot.getSnapshotId()).isGreaterThan(0);
+                        assertThat(snapshot.getSnapshotId()).isGreaterThan(firstReadableId[0]);
+
+                        GetDvSnapshotResponse dvResp =
+                                admin.getDvSnapshot(
+                                                tablePath,
+                                                tableId,
+                                                null,
+                                                0,
+                                                snapshot.getSnapshotId())
+                                        .get();
+                        assertThat(dvResp.getSnapshotStartOffset()).isGreaterThan(0);
+
+                        // Lake DV: old entries for keys 0,1,3 should be cleaned up
+                        // after re-compaction. No new overlapping keys in Round 3.
+                        assertThat(dvResp.getLakeDvEntriesCount()).isEqualTo(0);
+
+                        // Log DV should also be empty.
+                        if (dvResp.hasLogDvBitmap()) {
+                            byte[] logDvBytes = dvResp.getLogDvBitmap();
+                            if (logDvBytes != null && logDvBytes.length > 0) {
+                                Roaring64Bitmap logBitmap = new Roaring64Bitmap();
+                                logBitmap.deserialize(ByteBuffer.wrap(logDvBytes));
+                                assertThat(logBitmap.getLongCardinality()).isEqualTo(0L);
+                            }
+                        }
                     });
 
             // Step 6: Write post-readable-snapshot data

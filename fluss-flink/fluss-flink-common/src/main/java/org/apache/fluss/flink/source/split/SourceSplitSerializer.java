@@ -81,6 +81,15 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
                 out.writeLong(logSplit.getStartingOffset());
                 // write stopping offset
                 out.writeLong(logSplit.getStoppingOffset().orElse(LogSplit.NO_STOPPING_OFFSET));
+                // write logDvBitmap (appended for backward compatibility)
+                byte[] logDvBitmap = logSplit.getLogDvBitmap();
+                if (logDvBitmap == null) {
+                    out.writeBoolean(false);
+                } else {
+                    out.writeBoolean(true);
+                    out.writeInt(logDvBitmap.length);
+                    out.write(logDvBitmap);
+                }
             }
         } else {
             LakeSplitSerializer lakeSplitSerializer =
@@ -143,7 +152,14 @@ public class SourceSplitSerializer implements SimpleVersionedSerializer<SourceSp
         } else if (splitKind == LOG_SPLIT_FLAG) {
             long startingOffset = in.readLong();
             long stoppingOffset = in.readLong();
-            return new LogSplit(tableBucket, partitionName, startingOffset, stoppingOffset);
+            // Backward compatible logDvBitmap deserialization
+            byte[] logDvBitmap = null;
+            if (in.available() > 0 && in.readBoolean()) {
+                logDvBitmap = new byte[in.readInt()];
+                in.readFully(logDvBitmap);
+            }
+            return new LogSplit(
+                    tableBucket, partitionName, startingOffset, stoppingOffset, logDvBitmap);
         } else {
             LakeSplitSerializer lakeSplitSerializer =
                     new LakeSplitSerializer(checkNotNull(lakeSource).getSplitSerializer());

@@ -23,6 +23,8 @@ import org.apache.fluss.metadata.TableBucket;
 
 import javax.annotation.Nullable;
 
+import java.util.Map;
+
 /** A split for reading a snapshot of lake. */
 public class LakeSnapshotSplit extends SourceSplitBase {
 
@@ -34,12 +36,18 @@ public class LakeSnapshotSplit extends SourceSplitBase {
 
     private final int splitIndex;
 
+    /**
+     * Per-file lake deletion vectors. Key is the file name, value is the serialized Roaring64Bitmap
+     * of deleted row positions. Null means no DV data is available.
+     */
+    @Nullable private final Map<String, byte[]> lakeDvMap;
+
     public LakeSnapshotSplit(
             TableBucket tableBucket,
             @Nullable String partitionName,
             LakeSplit lakeSplit,
             int splitIndex) {
-        this(tableBucket, partitionName, lakeSplit, splitIndex, 0);
+        this(tableBucket, partitionName, lakeSplit, splitIndex, 0, null);
     }
 
     public LakeSnapshotSplit(
@@ -48,10 +56,21 @@ public class LakeSnapshotSplit extends SourceSplitBase {
             LakeSplit lakeSplit,
             int splitIndex,
             long recordsToSkip) {
+        this(tableBucket, partitionName, lakeSplit, splitIndex, recordsToSkip, null);
+    }
+
+    public LakeSnapshotSplit(
+            TableBucket tableBucket,
+            @Nullable String partitionName,
+            LakeSplit lakeSplit,
+            int splitIndex,
+            long recordsToSkip,
+            @Nullable Map<String, byte[]> lakeDvMap) {
         super(tableBucket, partitionName);
         this.lakeSplit = lakeSplit;
         this.splitIndex = splitIndex;
         this.recordsToSkip = recordsToSkip;
+        this.lakeDvMap = lakeDvMap;
     }
 
     public LakeSplit getLakeSplit() {
@@ -64,6 +83,15 @@ public class LakeSnapshotSplit extends SourceSplitBase {
 
     public int getSplitIndex() {
         return splitIndex;
+    }
+
+    /**
+     * Returns per-file lake deletion vectors. Key is the file name, value is the serialized
+     * Roaring64Bitmap of deleted row positions. Null means no DV data is available.
+     */
+    @Nullable
+    public Map<String, byte[]> getLakeDvMap() {
+        return lakeDvMap;
     }
 
     @Override

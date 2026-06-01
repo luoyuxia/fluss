@@ -21,7 +21,9 @@ import org.apache.fluss.client.initializer.OffsetsInitializer;
 import org.apache.fluss.client.metadata.LakeSnapshot;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.flink.lake.split.LakeSnapshotAndFlussLogSplit;
+import org.apache.fluss.flink.lake.split.LakeSnapshotSplit;
 import org.apache.fluss.flink.sink.testutils.TestAdminAdapter;
+import org.apache.fluss.flink.source.split.LogSplit;
 import org.apache.fluss.flink.source.split.SourceSplitBase;
 import org.apache.fluss.lake.source.TestingLakeSource;
 import org.apache.fluss.metadata.PartitionInfo;
@@ -87,13 +89,16 @@ class LakeSplitGeneratorTest {
         LakeSplitGenerator generator = createGenerator(true, false, admin, stoppingOffsets);
         List<SourceSplitBase> splits = generator.generateHybridLakeFlussSplits();
 
-        assertThat(splits).hasSize(BUCKET_COUNT);
-        for (SourceSplitBase split : splits) {
-            assertThat(split).isInstanceOf(LakeSnapshotAndFlussLogSplit.class);
-            LakeSnapshotAndFlussLogSplit hybridSplit = (LakeSnapshotAndFlussLogSplit) split;
-            DvSnapshotInfo dvSnapshot = hybridSplit.getDvSnapshot();
-            assertThat(dvSnapshot).isNotNull();
-            assertThat(dvSnapshot.getLakeDv()).hasSize(1);
+        // DV enabled: each bucket produces LakeSnapshotSplit + LogSplit = 6 splits total
+        assertThat(splits).hasSize(BUCKET_COUNT * 2);
+        for (int b = 0; b < BUCKET_COUNT; b++) {
+            LakeSnapshotSplit lakeSplit = findLakeSnapshotSplitForBucket(splits, b);
+            assertThat(lakeSplit.getLakeDvMap()).isNotNull();
+            assertThat(lakeSplit.getLakeDvMap()).hasSize(1);
+            assertThat(lakeSplit.getLakeDvMap()).containsKey("file" + b + ".parquet");
+
+            LogSplit logSplit = findLogSplitForBucket(splits, b);
+            assertThat(logSplit).isNotNull();
         }
 
         // Verify all 3 buckets were fetched
@@ -153,20 +158,28 @@ class LakeSplitGeneratorTest {
         LakeSplitGenerator generator = createGenerator(true, false, admin, stoppingOffsets);
         List<SourceSplitBase> splits = generator.generateHybridLakeFlussSplits();
 
-        assertThat(splits).hasSize(BUCKET_COUNT);
-        // Bucket 0: has DV
-        LakeSnapshotAndFlussLogSplit split0 = findSplitForBucket(splits, 0);
-        assertThat(split0.getDvSnapshot()).isNotNull();
-        assertThat(split0.getDvSnapshot().getLakeDv()).containsKey("file0.parquet");
+        // Bucket 0: DV → LakeSnapshotSplit + LogSplit (2 splits)
+        // Bucket 1: no DV (no gap) → LakeSnapshotAndFlussLogSplit (1 split)
+        // Bucket 2: DV → LakeSnapshotSplit + LogSplit (2 splits)
+        assertThat(splits).hasSize(5);
 
-        // Bucket 1: no DV (no gap)
-        LakeSnapshotAndFlussLogSplit split1 = findSplitForBucket(splits, 1);
+        // Bucket 0: has DV - split into separate lake + log
+        LakeSnapshotSplit lakeSplit0 = findLakeSnapshotSplitForBucket(splits, 0);
+        assertThat(lakeSplit0.getLakeDvMap()).isNotNull();
+        assertThat(lakeSplit0.getLakeDvMap()).containsKey("file0.parquet");
+        LogSplit logSplit0 = findLogSplitForBucket(splits, 0);
+        assertThat(logSplit0).isNotNull();
+
+        // Bucket 1: no DV (no gap) - still LakeSnapshotAndFlussLogSplit
+        LakeSnapshotAndFlussLogSplit split1 = findHybridSplitForBucket(splits, 1);
         assertThat(split1.getDvSnapshot()).isNull();
 
-        // Bucket 2: has DV
-        LakeSnapshotAndFlussLogSplit split2 = findSplitForBucket(splits, 2);
-        assertThat(split2.getDvSnapshot()).isNotNull();
-        assertThat(split2.getDvSnapshot().getLakeDv()).containsKey("file2.parquet");
+        // Bucket 2: has DV - split into separate lake + log
+        LakeSnapshotSplit lakeSplit2 = findLakeSnapshotSplitForBucket(splits, 2);
+        assertThat(lakeSplit2.getLakeDvMap()).isNotNull();
+        assertThat(lakeSplit2.getLakeDvMap()).containsKey("file2.parquet");
+        LogSplit logSplit2 = findLogSplitForBucket(splits, 2);
+        assertThat(logSplit2).isNotNull();
 
         // Verify only buckets 0 and 2 were fetched
         assertThat(admin.dvFetchedBuckets)
@@ -283,7 +296,7 @@ class LakeSplitGeneratorTest {
 
     // ---- Helper methods ----
 
-    private LakeSnapshotAndFlussLogSplit findSplitForBucket(
+    private LakeSnapshotAndFlussLogSplit findHybridSplitForBucket(
             List<SourceSplitBase> splits, int bucketId) {
         for (SourceSplitBase split : splits) {
             if (split.getTableBucket().getBucket() == bucketId
@@ -291,7 +304,27 @@ class LakeSplitGeneratorTest {
                 return (LakeSnapshotAndFlussLogSplit) split;
             }
         }
-        throw new IllegalStateException("No split found for bucket " + bucketId);
+        throw new IllegalStateException("No hybrid split found for bucket " + bucketId);
+    }
+
+    private LakeSnapshotSplit findLakeSnapshotSplitForBucket(
+            List<SourceSplitBase> splits, int bucketId) {
+        for (SourceSplitBase split : splits) {
+            if (split.getTableBucket().getBucket() == bucketId
+                    && split instanceof LakeSnapshotSplit) {
+                return (LakeSnapshotSplit) split;
+            }
+        }
+        throw new IllegalStateException("No LakeSnapshotSplit found for bucket " + bucketId);
+    }
+
+    private LogSplit findLogSplitForBucket(List<SourceSplitBase> splits, int bucketId) {
+        for (SourceSplitBase split : splits) {
+            if (split.getTableBucket().getBucket() == bucketId && split instanceof LogSplit) {
+                return (LogSplit) split;
+            }
+        }
+        throw new IllegalStateException("No LogSplit found for bucket " + bucketId);
     }
 
     private LakeSplitGenerator createGenerator(
