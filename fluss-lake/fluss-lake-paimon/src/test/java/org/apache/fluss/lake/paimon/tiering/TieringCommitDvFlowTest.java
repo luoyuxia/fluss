@@ -389,6 +389,7 @@ class TieringCommitDvFlowTest {
         // Upload SST file to remote (Reader's job; index.json is written by the operator)
         uploader.uploadBucketSsts(
                 compactSnapshotId,
+                null,
                 0,
                 new RowPosSstUploader.BucketSstData(localSstDir.getPath(), sstMetas));
 
@@ -399,7 +400,11 @@ class TieringCommitDvFlowTest {
         }
         RowPosResult rowPos =
                 new RowPosResult(
-                        0, Collections.singletonMap(0, round1PaimonFileName), rowPosSstMetas);
+                        0,
+                        null,
+                        null,
+                        Collections.singletonMap(0, round1PaimonFileName),
+                        rowPosSstMetas);
         committerOperator.processElement(
                 new StreamRecord<>(
                         new TableBucketWriteResult<>(tablePath, tb, null, null, 0, 0, 0, rowPos)));
@@ -521,6 +526,7 @@ class TieringCommitDvFlowTest {
 
         uploader.uploadBucketSsts(
                 compactSnapshotId3,
+                null,
                 0,
                 new RowPosSstUploader.BucketSstData(localSstDir3.getPath(), sstMetas3));
 
@@ -531,7 +537,11 @@ class TieringCommitDvFlowTest {
         }
         RowPosResult rowPos3 =
                 new RowPosResult(
-                        0, Collections.singletonMap(1, round3PaimonFileName), rowPosSstMetas3);
+                        0,
+                        null,
+                        null,
+                        Collections.singletonMap(1, round3PaimonFileName),
+                        rowPosSstMetas3);
         committerOperator.processElement(
                 new StreamRecord<>(
                         new TableBucketWriteResult<>(tablePath, tb, null, null, 0, 0, 0, rowPos3)));

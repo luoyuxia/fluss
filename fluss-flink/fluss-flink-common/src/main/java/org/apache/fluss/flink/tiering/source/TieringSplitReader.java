@@ -698,6 +698,7 @@ public class TieringSplitReader<WriteResult>
         Collections.sort(allEntries);
 
         // 3. Write SSTs to temp dir
+        Long partitionId = rowPosSplit.getTableBucket().getPartitionId();
         File tempDir = Files.createTempDirectory("fluss-sst-" + bucketId).toFile();
         List<RowPosSstFileWriter.SstFileMeta> sstMetas;
         try {
@@ -709,6 +710,7 @@ public class TieringSplitReader<WriteResult>
             RowPosSstUploader uploader = new RowPosSstUploader(remoteBasePath);
             uploader.uploadBucketSsts(
                     rowPosSplit.getCompactSnapshotId(),
+                    partitionId,
                     bucketId,
                     new RowPosSstUploader.BucketSstData(tempDir.getPath(), sstMetas));
         } finally {
@@ -720,7 +722,13 @@ public class TieringSplitReader<WriteResult>
         for (RowPosSstFileWriter.SstFileMeta meta : sstMetas) {
             resultMetas.add(new RowPosResult.SstMeta(meta.getFileName(), meta.getFileSize()));
         }
-        RowPosResult rowPosResult = new RowPosResult(bucketId, newFileDictEntries, resultMetas);
+        RowPosResult rowPosResult =
+                new RowPosResult(
+                        bucketId,
+                        partitionId,
+                        rowPosSplit.getPartitionName(),
+                        newFileDictEntries,
+                        resultMetas);
 
         // 6. Wrap in TableBucketWriteResult and return
         TableBucketWriteResult<WriteResult> result =

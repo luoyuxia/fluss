@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.entity;
 
+import org.apache.fluss.metadata.TableBucket;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -37,27 +39,36 @@ class DvDataClassesTest {
         dictEntries0.put(1, "/sst/f1.sst");
         dictEntries0.put(2, "/sst/f2.sst");
 
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         bucketOffsets.put(
-                0,
+                new TableBucket(1L, 0),
                 new DvPositionReportData.DvBucketOffset(
                         100L, dictEntries0, Arrays.asList("/sst/old1.sst")));
         bucketOffsets.put(
-                1,
+                new TableBucket(1L, 1),
                 new DvPositionReportData.DvBucketOffset(
                         200L, Collections.emptyMap(), Collections.emptyList()));
 
         DvPositionReportData data = new DvPositionReportData(bucketOffsets);
 
         assertThat(data.getBucketOffsets()).hasSize(2);
-        assertThat(data.getBucketOffsets().get(0).getReadableOffset()).isEqualTo(100L);
-        assertThat(data.getBucketOffsets().get(0).getNewFileDictEntries()).hasSize(2);
-        assertThat(data.getBucketOffsets().get(0).getNewFileDictEntries().get(1))
+        assertThat(data.getBucketOffsets().get(new TableBucket(1L, 0)).getReadableOffset())
+                .isEqualTo(100L);
+        assertThat(data.getBucketOffsets().get(new TableBucket(1L, 0)).getNewFileDictEntries())
+                .hasSize(2);
+        assertThat(
+                        data.getBucketOffsets()
+                                .get(new TableBucket(1L, 0))
+                                .getNewFileDictEntries()
+                                .get(1))
                 .isEqualTo("/sst/f1.sst");
-        assertThat(data.getBucketOffsets().get(0).getOldFiles()).contains("/sst/old1.sst");
-        assertThat(data.getBucketOffsets().get(1).getReadableOffset()).isEqualTo(200L);
-        assertThat(data.getBucketOffsets().get(1).getNewFileDictEntries()).isEmpty();
-        assertThat(data.getBucketOffsets().get(1).getOldFiles()).isEmpty();
+        assertThat(data.getBucketOffsets().get(new TableBucket(1L, 0)).getOldFiles())
+                .contains("/sst/old1.sst");
+        assertThat(data.getBucketOffsets().get(new TableBucket(1L, 1)).getReadableOffset())
+                .isEqualTo(200L);
+        assertThat(data.getBucketOffsets().get(new TableBucket(1L, 1)).getNewFileDictEntries())
+                .isEmpty();
+        assertThat(data.getBucketOffsets().get(new TableBucket(1L, 1)).getOldFiles()).isEmpty();
     }
 
     @Test
@@ -80,9 +91,9 @@ class DvDataClassesTest {
         Map<Integer, String> dictEntries = new HashMap<>();
         dictEntries.put(10, "/dict/f10.sst");
 
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         bucketOffsets.put(
-                3,
+                new TableBucket(42L, 3),
                 new DvPositionReportData.DvBucketOffset(
                         500L, dictEntries, Arrays.asList("/dict/old.sst")));
 
@@ -91,59 +102,81 @@ class DvDataClassesTest {
         assertThat(data.getTableId()).isEqualTo(42L);
         assertThat(data.getReadableSnapshotId()).isEqualTo(7L);
         assertThat(data.getBucketOffsets()).hasSize(1);
-        assertThat(data.getBucketOffsets().get(3).getReadableOffset()).isEqualTo(500L);
-        assertThat(data.getBucketOffsets().get(3).getNewFileDictEntries().get(10))
+        assertThat(data.getBucketOffsets().get(new TableBucket(42L, 3)).getReadableOffset())
+                .isEqualTo(500L);
+        assertThat(
+                        data.getBucketOffsets()
+                                .get(new TableBucket(42L, 3))
+                                .getNewFileDictEntries()
+                                .get(10))
                 .isEqualTo("/dict/f10.sst");
-        assertThat(data.getBucketOffsets().get(3).getOldFiles()).contains("/dict/old.sst");
+        assertThat(data.getBucketOffsets().get(new TableBucket(42L, 3)).getOldFiles())
+                .contains("/dict/old.sst");
     }
 
     @Test
     void testDvPrepareDataFilterByBuckets() {
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         bucketOffsets.put(
-                0,
+                new TableBucket(42L, 0),
                 new DvPositionReportData.DvBucketOffset(
                         100L, Collections.singletonMap(1, "/sst/f1"), Arrays.asList("/old1")));
         bucketOffsets.put(
-                1,
+                new TableBucket(42L, 1),
                 new DvPositionReportData.DvBucketOffset(
                         200L, Collections.singletonMap(2, "/sst/f2"), Arrays.asList("/old2")));
         bucketOffsets.put(
-                2,
+                new TableBucket(42L, 2),
                 new DvPositionReportData.DvBucketOffset(
                         300L, Collections.emptyMap(), Collections.emptyList()));
 
         DvPrepareData data = new DvPrepareData(42L, 7L, bucketOffsets);
 
-        DvPrepareData filtered = data.filterByBuckets(new HashSet<>(Arrays.asList(0, 2)));
+        DvPrepareData filtered =
+                data.filterByBuckets(
+                        new HashSet<>(
+                                Arrays.asList(new TableBucket(42L, 0), new TableBucket(42L, 2))));
 
         assertThat(filtered.getTableId()).isEqualTo(42L);
         assertThat(filtered.getReadableSnapshotId()).isEqualTo(7L);
         assertThat(filtered.getBucketOffsets()).hasSize(2);
-        assertThat(filtered.getBucketOffsets()).containsKey(0);
-        assertThat(filtered.getBucketOffsets()).containsKey(2);
-        assertThat(filtered.getBucketOffsets()).doesNotContainKey(1);
-        assertThat(filtered.getBucketOffsets().get(0).getNewFileDictEntries().get(1))
+        assertThat(filtered.getBucketOffsets()).containsKey(new TableBucket(42L, 0));
+        assertThat(filtered.getBucketOffsets()).containsKey(new TableBucket(42L, 2));
+        assertThat(filtered.getBucketOffsets()).doesNotContainKey(new TableBucket(42L, 1));
+        assertThat(
+                        filtered.getBucketOffsets()
+                                .get(new TableBucket(42L, 0))
+                                .getNewFileDictEntries()
+                                .get(1))
                 .isEqualTo("/sst/f1");
-        assertThat(filtered.getBucketOffsets().get(0).getOldFiles()).contains("/old1");
+        assertThat(filtered.getBucketOffsets().get(new TableBucket(42L, 0)).getOldFiles())
+                .contains("/old1");
     }
 
     @Test
     void testDvReadableSwitchData() {
-        List<Integer> bucketIds = Arrays.asList(0, 1, 3);
-        DvReadableSwitchData data = new DvReadableSwitchData(5, 100L, 10L, bucketIds);
+        List<TableBucket> tableBuckets =
+                Arrays.asList(
+                        new TableBucket(100L, 0),
+                        new TableBucket(100L, 1),
+                        new TableBucket(100L, 3));
+        DvReadableSwitchData data = new DvReadableSwitchData(5, 100L, 10L, tableBuckets);
 
         assertThat(data.getCoordinatorEpoch()).isEqualTo(5);
         assertThat(data.getTableId()).isEqualTo(100L);
         assertThat(data.getReadableSnapshotId()).isEqualTo(10L);
-        assertThat(data.getBucketIds()).containsExactly(0, 1, 3);
+        assertThat(data.getTableBuckets())
+                .containsExactly(
+                        new TableBucket(100L, 0),
+                        new TableBucket(100L, 1),
+                        new TableBucket(100L, 3));
     }
 
     @Test
     void testCommitLakeTableSnapshotsDataWithDvReport() {
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         bucketOffsets.put(
-                0,
+                new TableBucket(42L, 0),
                 new DvPositionReportData.DvBucketOffset(
                         100L,
                         Collections.singletonMap(1, "/sst/f1.sst"),
@@ -178,9 +211,9 @@ class DvDataClassesTest {
 
     @Test
     void testNotifyLakeTableOffsetDataWithDvPrepare() {
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         bucketOffsets.put(
-                0,
+                new TableBucket(42L, 0),
                 new DvPositionReportData.DvBucketOffset(
                         100L, Collections.emptyMap(), Collections.emptyList()));
 

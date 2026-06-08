@@ -24,6 +24,8 @@ import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.lake.dv.RowPosSstIndex;
 import org.apache.fluss.utils.IOUtils;
 
+import javax.annotation.Nullable;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -55,20 +57,22 @@ public class RowPosSstDownloader {
      * Downloads SST files for a specific bucket within a snapshot to a local directory.
      *
      * @param snapshotId the lake snapshot ID
+     * @param partitionId the partition ID, or null for non-partitioned tables
      * @param bucketId the bucket to download
      * @param localDir local directory to store downloaded SST files
      * @return list of local SST file paths; empty if the bucket is not in the index
      */
-    public List<String> downloadBucketSst(long snapshotId, int bucketId, String localDir)
+    public List<String> downloadBucketSst(
+            long snapshotId, @Nullable Long partitionId, int bucketId, String localDir)
             throws IOException {
-        RowPosSstIndex index = readIndex(snapshotId);
+        RowPosSstIndex index = readIndex(snapshotId, partitionId);
         List<RowPosSstIndex.SstFileEntry> files = index.getFiles(bucketId);
         if (files.isEmpty()) {
             return Collections.emptyList();
         }
 
-        FsPath snapshotDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + snapshotId);
-        FsPath bucketDir = new FsPath(snapshotDir, String.valueOf(bucketId));
+        FsPath baseDir = buildBaseDir(snapshotId, partitionId);
+        FsPath bucketDir = new FsPath(baseDir, String.valueOf(bucketId));
         FileSystem fs = bucketDir.getFileSystem();
 
         File localDirFile = new File(localDir);
@@ -88,11 +92,10 @@ public class RowPosSstDownloader {
     }
 
     /** Reads the index.json for the given snapshot. */
-    public RowPosSstIndex readIndex(long snapshotId) throws IOException {
-        FsPath indexPath =
-                new FsPath(
-                        remoteLakeTableSnapshotDir,
-                        ROW_POS_DIR + "/" + snapshotId + "/" + INDEX_FILE);
+    public RowPosSstIndex readIndex(long snapshotId, @Nullable Long partitionId)
+            throws IOException {
+        FsPath baseDir = buildBaseDir(snapshotId, partitionId);
+        FsPath indexPath = new FsPath(baseDir, INDEX_FILE);
         FileSystem fs = indexPath.getFileSystem();
 
         FSDataInputStream in = null;
@@ -106,6 +109,15 @@ public class RowPosSstDownloader {
             IOUtils.closeQuietly(in);
             IOUtils.closeQuietly(out);
         }
+    }
+
+    /** Builds the base directory path for a snapshot, optionally scoped to a partition. */
+    private FsPath buildBaseDir(long snapshotId, @Nullable Long partitionId) {
+        String path = ROW_POS_DIR + "/" + snapshotId;
+        if (partitionId != null) {
+            path += "/" + partitionId;
+        }
+        return new FsPath(remoteLakeTableSnapshotDir, path);
     }
 
     private void downloadFile(FileSystem fs, FsPath remotePath, File localFile) throws IOException {

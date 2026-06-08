@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.utils;
 
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.rpc.messages.CommitLakeTableSnapshotRequest;
 import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
 import org.apache.fluss.rpc.messages.NotifyLakeTableOffsetRequest;
@@ -69,7 +70,8 @@ class DvRpcMessageUtilsTest {
         DvPositionReportData dvReport = snapshot.getDvPositionReport();
         assertThat(dvReport.getBucketOffsets()).hasSize(1);
 
-        DvPositionReportData.DvBucketOffset bo = dvReport.getBucketOffsets().get(0);
+        DvPositionReportData.DvBucketOffset bo =
+                dvReport.getBucketOffsets().get(new TableBucket(42L, 0));
         assertThat(bo.getReadableOffset()).isEqualTo(100L);
         assertThat(bo.getNewFileDictEntries()).hasSize(1);
         assertThat(bo.getNewFileDictEntries().get(1)).isEqualTo("/sst/f1");
@@ -113,7 +115,7 @@ class DvRpcMessageUtilsTest {
         assertThat(data.getDvPrepare().getReadableSnapshotId()).isEqualTo(7L);
 
         DvPositionReportData.DvBucketOffset parsedBo =
-                data.getDvPrepare().getBucketOffsets().get(0);
+                data.getDvPrepare().getBucketOffsets().get(new TableBucket(42L, 0));
         assertThat(parsedBo.getReadableOffset()).isEqualTo(100L);
         assertThat(parsedBo.getNewFileDictEntries().get(1)).isEqualTo("/sst/f1");
         assertThat(parsedBo.getOldFiles()).contains("/sst/old.sst");
@@ -145,7 +147,11 @@ class DvRpcMessageUtilsTest {
         assertThat(data.getCoordinatorEpoch()).isEqualTo(5);
         assertThat(data.getTableId()).isEqualTo(100L);
         assertThat(data.getReadableSnapshotId()).isEqualTo(10L);
-        assertThat(data.getBucketIds()).containsExactly(0, 2, 5);
+        assertThat(data.getTableBuckets())
+                .containsExactly(
+                        new TableBucket(100L, 0),
+                        new TableBucket(100L, 2),
+                        new TableBucket(100L, 5));
     }
 
     @Test
@@ -154,13 +160,13 @@ class DvRpcMessageUtilsTest {
         dictEntries0.put(1, "/sst/f1");
         dictEntries0.put(2, "/sst/f2");
 
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         bucketOffsets.put(
-                0,
+                new TableBucket(42L, 0),
                 new DvPositionReportData.DvBucketOffset(
                         100L, dictEntries0, Arrays.asList("/sst/old1.sst")));
         bucketOffsets.put(
-                1,
+                new TableBucket(42L, 1),
                 new DvPositionReportData.DvBucketOffset(
                         200L, Collections.emptyMap(), Collections.emptyList()));
 
@@ -188,9 +194,9 @@ class DvRpcMessageUtilsTest {
         Map<Integer, String> dictEntries = new HashMap<>();
         dictEntries.put(5, "/path/to/sst");
 
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         bucketOffsets.put(
-                3,
+                new TableBucket(100L, 3),
                 new DvPositionReportData.DvBucketOffset(
                         999L, dictEntries, Arrays.asList("/old/path")));
 
@@ -211,7 +217,8 @@ class DvRpcMessageUtilsTest {
         assertThat(parsed.getReadableSnapshotId()).isEqualTo(50L);
         assertThat(parsed.getBucketOffsets()).hasSize(1);
 
-        DvPositionReportData.DvBucketOffset parsedBo = parsed.getBucketOffsets().get(3);
+        DvPositionReportData.DvBucketOffset parsedBo =
+                parsed.getBucketOffsets().get(new TableBucket(100L, 3));
         assertThat(parsedBo.getReadableOffset()).isEqualTo(999L);
         assertThat(parsedBo.getNewFileDictEntries()).hasSize(1);
         assertThat(parsedBo.getNewFileDictEntries().get(5)).isEqualTo("/path/to/sst");

@@ -17,6 +17,8 @@
 
 package org.apache.fluss.server.coordinator.event;
 
+import org.apache.fluss.metadata.TableBucket;
+
 import java.util.Set;
 
 /**
@@ -27,17 +29,18 @@ public class DvSwitchEvent implements CoordinatorEvent {
 
     private final long tableId;
     private final long snapshotId;
-    private final Set<Integer> bucketIds;
+    private final Set<TableBucket> tableBuckets;
     private final int retryCount;
 
-    public DvSwitchEvent(long tableId, long snapshotId, Set<Integer> bucketIds) {
-        this(tableId, snapshotId, bucketIds, 0);
+    public DvSwitchEvent(long tableId, long snapshotId, Set<TableBucket> tableBuckets) {
+        this(tableId, snapshotId, tableBuckets, 0);
     }
 
-    public DvSwitchEvent(long tableId, long snapshotId, Set<Integer> bucketIds, int retryCount) {
+    public DvSwitchEvent(
+            long tableId, long snapshotId, Set<TableBucket> tableBuckets, int retryCount) {
         this.tableId = tableId;
         this.snapshotId = snapshotId;
-        this.bucketIds = bucketIds;
+        this.tableBuckets = tableBuckets;
         this.retryCount = retryCount;
     }
 
@@ -49,8 +52,8 @@ public class DvSwitchEvent implements CoordinatorEvent {
         return snapshotId;
     }
 
-    public Set<Integer> getBucketIds() {
-        return bucketIds;
+    public Set<TableBucket> getTableBuckets() {
+        return tableBuckets;
     }
 
     public int getRetryCount() {

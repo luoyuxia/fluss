@@ -1780,7 +1780,8 @@ public class ServerRpcMessageUtils {
             DvPositionReportData dvPositionReport = null;
             if (pbLakeTableSnapshotMetadata.hasDvPositionReport()) {
                 dvPositionReport =
-                        parseDvPositionReport(pbLakeTableSnapshotMetadata.getDvPositionReport());
+                        parseDvPositionReport(
+                                tableId, pbLakeTableSnapshotMetadata.getDvPositionReport());
             }
 
             // If this table already exists in builder (from V1), update it; otherwise add new
@@ -2278,21 +2279,26 @@ public class ServerRpcMessageUtils {
     // ---- DV helpers ----
 
     /** Parses a {@link PbDvPositionReport} proto into a {@link DvPositionReportData}. */
-    public static DvPositionReportData parseDvPositionReport(PbDvPositionReport pb) {
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+    public static DvPositionReportData parseDvPositionReport(long tableId, PbDvPositionReport pb) {
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         for (PbDvBucketOffset bo : pb.getBucketOffsetsList()) {
-            bucketOffsets.put(bo.getBucketId(), parseDvBucketOffset(bo));
+            Long partitionId = bo.hasPartitionId() ? bo.getPartitionId() : null;
+            TableBucket tb = new TableBucket(tableId, partitionId, bo.getBucketId());
+            bucketOffsets.put(tb, parseDvBucketOffset(bo));
         }
         return new DvPositionReportData(bucketOffsets);
     }
 
     /** Parses a {@link PbDvPrepare} proto into a {@link DvPrepareData}. */
     public static DvPrepareData parseDvPrepare(PbDvPrepare pb) {
-        Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
+        long tableId = pb.getTableId();
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets = new HashMap<>();
         for (PbDvBucketOffset bo : pb.getBucketOffsetsList()) {
-            bucketOffsets.put(bo.getBucketId(), parseDvBucketOffset(bo));
+            Long partitionId = bo.hasPartitionId() ? bo.getPartitionId() : null;
+            TableBucket tb = new TableBucket(tableId, partitionId, bo.getBucketId());
+            bucketOffsets.put(tb, parseDvBucketOffset(bo));
         }
-        return new DvPrepareData(pb.getTableId(), pb.getReadableSnapshotId(), bucketOffsets);
+        return new DvPrepareData(tableId, pb.getReadableSnapshotId(), bucketOffsets);
     }
 
     private static DvPositionReportData.DvBucketOffset parseDvBucketOffset(PbDvBucketOffset bo) {
@@ -2307,15 +2313,19 @@ public class ServerRpcMessageUtils {
 
     /** Extracts a {@link DvReadableSwitchData} from a {@link DvReadableSwitchRequest}. */
     public static DvReadableSwitchData getDvReadableSwitchData(DvReadableSwitchRequest request) {
-        List<Integer> bucketIds = new ArrayList<>();
-        for (int i = 0; i < request.getBucketIdsCount(); i++) {
-            bucketIds.add(request.getBucketIdAt(i));
+        long tableId = request.getTableId();
+        int bucketCount = request.getBucketIdsCount();
+        int partitionCount = request.getPartitionIdsCount();
+        List<TableBucket> tableBuckets = new ArrayList<>(bucketCount);
+        for (int i = 0; i < bucketCount; i++) {
+            Long partitionId = (partitionCount > 0) ? request.getPartitionIdAt(i) : null;
+            tableBuckets.add(new TableBucket(tableId, partitionId, request.getBucketIdAt(i)));
         }
         return new DvReadableSwitchData(
                 request.getCoordinatorEpoch(),
-                request.getTableId(),
+                tableId,
                 request.getReadableSnapshotId(),
-                bucketIds);
+                tableBuckets);
     }
 
     /** Builds a {@link PbDvPrepare} proto from a {@link DvPrepareData}. */
@@ -2325,13 +2335,17 @@ public class ServerRpcMessageUtils {
                         .setTableId(data.getTableId())
                         .setReadableSnapshotId(data.getReadableSnapshotId());
 
-        for (Map.Entry<Integer, DvPositionReportData.DvBucketOffset> entry :
+        for (Map.Entry<TableBucket, DvPositionReportData.DvBucketOffset> entry :
                 data.getBucketOffsets().entrySet()) {
+            TableBucket tb = entry.getKey();
             DvPositionReportData.DvBucketOffset bucketOffset = entry.getValue();
             PbDvBucketOffset pbBucket =
                     pb.addBucketOffset()
-                            .setBucketId(entry.getKey())
+                            .setBucketId(tb.getBucket())
                             .setReadableOffset(bucketOffset.getReadableOffset());
+            if (tb.getPartitionId() != null) {
+                pbBucket.setPartitionId(tb.getPartitionId());
+            }
             for (Map.Entry<Integer, String> dictEntry :
                     bucketOffset.getNewFileDictEntries().entrySet()) {
                 pbBucket.addNewFileDictEntry()

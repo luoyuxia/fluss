@@ -80,7 +80,7 @@ class RowPosSstUploadDownloadTest {
         // Download to a different local directory
         String downloadDir = tempDir.resolve("download").toString();
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
-        List<String> localPaths = downloader.downloadBucketSst(snapshotId, 0, downloadDir);
+        List<String> localPaths = downloader.downloadBucketSst(snapshotId, null, 0, downloadDir);
 
         assertThat(localPaths).hasSize(1);
 
@@ -122,7 +122,7 @@ class RowPosSstUploadDownloadTest {
         // Download and verify bucket 0
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String downloadDir0 = tempDir.resolve("download_0").toString();
-        List<String> paths0 = downloader.downloadBucketSst(snapshotId, 0, downloadDir0);
+        List<String> paths0 = downloader.downloadBucketSst(snapshotId, null, 0, downloadDir0);
         assertThat(paths0).hasSize(1);
 
         dvRocksDB.rowPosIndex().ingestExternalFile(paths0);
@@ -131,7 +131,7 @@ class RowPosSstUploadDownloadTest {
 
         // Download and verify bucket 1
         String downloadDir1 = tempDir.resolve("download_1").toString();
-        List<String> paths1 = downloader.downloadBucketSst(snapshotId, 1, downloadDir1);
+        List<String> paths1 = downloader.downloadBucketSst(snapshotId, null, 1, downloadDir1);
         assertThat(paths1).hasSize(1);
 
         dvRocksDB.rowPosIndex().ingestExternalFile(paths1);
@@ -159,7 +159,7 @@ class RowPosSstUploadDownloadTest {
         // Try to download non-existing bucket 99
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String downloadDir = tempDir.resolve("download").toString();
-        List<String> paths = downloader.downloadBucketSst(snapshotId, 99, downloadDir);
+        List<String> paths = downloader.downloadBucketSst(snapshotId, null, 99, downloadDir);
         assertThat(paths).isEmpty();
     }
 
@@ -191,7 +191,7 @@ class RowPosSstUploadDownloadTest {
 
         // Read index directly
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
-        RowPosSstIndex index = downloader.readIndex(snapshotId);
+        RowPosSstIndex index = downloader.readIndex(snapshotId, null);
 
         assertThat(index.getBucketIds()).containsExactlyInAnyOrder(0, 2);
         assertThat(index.getFiles(0)).hasSize(1);

@@ -19,6 +19,8 @@ package org.apache.fluss.lake.source;
 
 import org.apache.fluss.annotation.PublicEvolving;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 import java.util.Map;
 
@@ -33,6 +35,12 @@ public class RowPosResult {
 
     private final int bucketId;
 
+    /** Partition ID for partitioned tables, null for non-partitioned tables. */
+    @Nullable private final Long partitionId;
+
+    /** Partition name for partitioned tables, null for non-partitioned tables. */
+    @Nullable private final String partitionName;
+
     /** New fileId to fileName mappings for compaction output files. */
     private final Map<Integer, String> newFileDictEntries;
 
@@ -40,8 +48,14 @@ public class RowPosResult {
     private final List<SstMeta> sstMetas;
 
     public RowPosResult(
-            int bucketId, Map<Integer, String> newFileDictEntries, List<SstMeta> sstMetas) {
+            int bucketId,
+            @Nullable Long partitionId,
+            @Nullable String partitionName,
+            Map<Integer, String> newFileDictEntries,
+            List<SstMeta> sstMetas) {
         this.bucketId = bucketId;
+        this.partitionId = partitionId;
+        this.partitionName = partitionName;
         this.newFileDictEntries = newFileDictEntries;
         this.sstMetas = sstMetas;
     }
@@ -49,6 +63,18 @@ public class RowPosResult {
     /** Returns the bucket id this result belongs to. */
     public int getBucketId() {
         return bucketId;
+    }
+
+    /** Returns the partition ID, or null for non-partitioned tables. */
+    @Nullable
+    public Long getPartitionId() {
+        return partitionId;
+    }
+
+    /** Returns the partition name, or null for non-partitioned tables. */
+    @Nullable
+    public String getPartitionName() {
+        return partitionName;
     }
 
     /** Returns the new fileId to fileName mappings. */

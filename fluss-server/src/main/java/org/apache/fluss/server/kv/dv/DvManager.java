@@ -27,6 +27,8 @@ import org.roaringbitmap.longlong.Roaring64Bitmap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -141,6 +143,7 @@ public class DvManager implements Closeable {
      */
     public void handlePrepare(
             int bucketId,
+            @Nullable Long partitionId,
             DvPositionReportData.DvBucketOffset bucketOffset,
             RowPosSstDownloader downloader,
             long snapshotId,
@@ -155,7 +158,8 @@ public class DvManager implements Closeable {
         }
 
         // Download SST from remote storage
-        List<String> sstPaths = downloader.downloadBucketSst(snapshotId, bucketId, localTempDir);
+        List<String> sstPaths =
+                downloader.downloadBucketSst(snapshotId, partitionId, bucketId, localTempDir);
 
         // Write newFileDictEntries to FileDict CF
         Map<Integer, String> newEntries = bucketOffset.getNewFileDictEntries();

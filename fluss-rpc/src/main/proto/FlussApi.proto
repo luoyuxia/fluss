@@ -1224,6 +1224,7 @@ message PbDvBucketOffset {
   required int64 readable_offset = 2;
   repeated PbFileDictEntry new_file_dict_entries = 3;
   repeated string old_files = 4;
+  optional int64 partition_id = 5;
 }
 
 message PbFileDictEntry {
@@ -1406,6 +1407,7 @@ message DvReadableSwitchRequest {
   required int64 table_id = 2;
   required int64 readable_snapshot_id = 3;
   repeated int32 bucket_ids = 4;
+  repeated int64 partition_ids = 5;
 }
 
 message DvReadableSwitchResponse {

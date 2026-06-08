@@ -95,6 +95,8 @@ class TableBucketWriteResultSerializerTest {
         RowPosResult rowPosResult =
                 new RowPosResult(
                         2,
+                        100L,
+                        "partition1",
                         fileDictEntries,
                         Arrays.asList(
                                 new RowPosResult.SstMeta("sst_0.sst", 12345),
@@ -113,6 +115,8 @@ class TableBucketWriteResultSerializerTest {
         RowPosResult deserializedRowPos = deserialized.getRowPosResult();
         assertThat(deserializedRowPos).isNotNull();
         assertThat(deserializedRowPos.getBucketId()).isEqualTo(2);
+        assertThat(deserializedRowPos.getPartitionId()).isEqualTo(100L);
+        assertThat(deserializedRowPos.getPartitionName()).isEqualTo("partition1");
         assertThat(deserializedRowPos.getNewFileDictEntries()).hasSize(2);
         assertThat(deserializedRowPos.getNewFileDictEntries().get(10)).isEqualTo("file1.parquet");
         assertThat(deserializedRowPos.getNewFileDictEntries().get(11)).isEqualTo("file2.parquet");
@@ -134,6 +138,8 @@ class TableBucketWriteResultSerializerTest {
         RowPosResult rowPosResult =
                 new RowPosResult(
                         2,
+                        null,
+                        null,
                         fileDictEntries,
                         Collections.singletonList(new RowPosResult.SstMeta("sst_0.sst", 1000)));
 
@@ -150,6 +156,8 @@ class TableBucketWriteResultSerializerTest {
         RowPosResult deserializedRowPos = deserialized.getRowPosResult();
         assertThat(deserializedRowPos).isNotNull();
         assertThat(deserializedRowPos.getBucketId()).isEqualTo(2);
+        assertThat(deserializedRowPos.getPartitionId()).isNull();
+        assertThat(deserializedRowPos.getPartitionName()).isNull();
         assertThat(deserializedRowPos.getNewFileDictEntries()).hasSize(1);
         assertThat(deserializedRowPos.getNewFileDictEntries().get(5)).isEqualTo("output.parquet");
         assertThat(deserializedRowPos.getSstMetas()).hasSize(1);

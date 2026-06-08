@@ -1929,10 +1929,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
         DvPrepareData dvPrepare = dvPrepareEvent.getDvPrepare();
         int coordinatorEpoch = coordinatorContext.getCoordinatorEpoch();
 
-        // Collect per-server bucket offset requests and per-server bucket IDs for
+        // Collect per-server bucket offset requests and per-server TableBuckets for
         // DvPrepare filtering — each server only receives DvPrepare for buckets it hosts.
         Map<Integer, List<PbNotifyLakeTableOffsetReqForBucket>> serverBucketReqs = new HashMap<>();
-        Map<Integer, Set<Integer>> serverBucketIds = new HashMap<>();
+        Map<Integer, Set<TableBucket>> serverTableBuckets = new HashMap<>();
         for (TableBucket tb : lakeTableSnapshot.getBucketLogEndOffset().keySet()) {
             coordinatorContext
                     .getBucketLeaderAndIsr(tb)
@@ -1949,9 +1949,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                         serverBucketReqs
                                                 .computeIfAbsent(serverId, k -> new ArrayList<>())
                                                 .add(bucketReq);
-                                        serverBucketIds
+                                        serverTableBuckets
                                                 .computeIfAbsent(serverId, k -> new HashSet<>())
-                                                .add(tb.getBucket());
+                                                .add(tb);
                                     }
                                 }
                             });
@@ -1984,7 +1984,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                             .addAllNotifyBucketsReqs(entry.getValue());
             // Build per-server DvPrepare with only this server's bucket offsets
             DvPrepareData perServerDvPrepare =
-                    dvPrepare.filterByBuckets(serverBucketIds.get(serverId));
+                    dvPrepare.filterByBuckets(serverTableBuckets.get(serverId));
             request.setDvPrepare(ServerRpcMessageUtils.buildDvPrepareMessage(perServerDvPrepare));
 
             CompletableFuture<Void> f = new CompletableFuture<>();
@@ -2335,9 +2335,8 @@ public class CoordinatorEventProcessor implements EventProcessor {
         int coordinatorEpoch = coordinatorContext.getCoordinatorEpoch();
 
         // Group buckets by server: each server only receives DvPrepare for its own buckets
-        Map<Integer, Set<Integer>> serverBucketIds = new HashMap<>();
-        for (Integer bucketId : dvPrepare.getBucketOffsets().keySet()) {
-            TableBucket tb = new TableBucket(tableId, bucketId);
+        Map<Integer, Set<TableBucket>> serverTableBuckets = new HashMap<>();
+        for (TableBucket tb : dvPrepare.getBucketOffsets().keySet()) {
             coordinatorContext
                     .getBucketLeaderAndIsr(tb)
                     .ifPresent(
@@ -2345,15 +2344,15 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                 List<Integer> assignment = coordinatorContext.getAssignment(tb);
                                 for (Integer serverId : assignment) {
                                     if (serverId >= 0) {
-                                        serverBucketIds
+                                        serverTableBuckets
                                                 .computeIfAbsent(serverId, k -> new HashSet<>())
-                                                .add(bucketId);
+                                                .add(tb);
                                     }
                                 }
                             });
         }
 
-        if (serverBucketIds.isEmpty()) {
+        if (serverTableBuckets.isEmpty()) {
             LOG.warn(
                     "No target servers for DV Prepare of table {}, snapshot {}."
                             + " Re-enqueueing.",
@@ -2371,7 +2370,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
 
         // Send per-server filtered DvPrepare
         List<CompletableFuture<Void>> prepareFutures = new ArrayList<>();
-        for (Map.Entry<Integer, Set<Integer>> entry : serverBucketIds.entrySet()) {
+        for (Map.Entry<Integer, Set<TableBucket>> entry : serverTableBuckets.entrySet()) {
             int serverId = entry.getKey();
             DvPrepareData perServerDvPrepare = dvPrepare.filterByBuckets(entry.getValue());
             NotifyLakeTableOffsetRequest request =
@@ -2450,10 +2449,9 @@ public class CoordinatorEventProcessor implements EventProcessor {
         long snapshotId = event.getSnapshotId();
         int coordinatorEpoch = coordinatorContext.getCoordinatorEpoch();
 
-        // Build serverId -> bucketIds mapping
-        Map<Integer, Set<Integer>> serverBucketMap = new HashMap<>();
-        for (Integer bucketId : event.getBucketIds()) {
-            TableBucket tb = new TableBucket(tableId, bucketId);
+        // Build serverId -> TableBuckets mapping
+        Map<Integer, Set<TableBucket>> serverBucketMap = new HashMap<>();
+        for (TableBucket tb : event.getTableBuckets()) {
             coordinatorContext
                     .getBucketLeaderAndIsr(tb)
                     .ifPresent(
@@ -2463,7 +2461,7 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                     if (serverId >= 0) {
                                         serverBucketMap
                                                 .computeIfAbsent(serverId, k -> new HashSet<>())
-                                                .add(bucketId);
+                                                .add(tb);
                                     }
                                 }
                             });
@@ -2476,20 +2474,26 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     snapshotId);
             coordinatorEventManager.put(
                     new DvSwitchEvent(
-                            tableId, snapshotId, event.getBucketIds(), event.getRetryCount() + 1));
+                            tableId,
+                            snapshotId,
+                            event.getTableBuckets(),
+                            event.getRetryCount() + 1));
             return;
         }
 
         List<CompletableFuture<Void>> switchFutures = new ArrayList<>();
-        for (Map.Entry<Integer, Set<Integer>> entry : serverBucketMap.entrySet()) {
+        for (Map.Entry<Integer, Set<TableBucket>> entry : serverBucketMap.entrySet()) {
             int serverId = entry.getKey();
             DvReadableSwitchRequest switchRequest =
                     new DvReadableSwitchRequest()
                             .setCoordinatorEpoch(coordinatorEpoch)
                             .setTableId(tableId)
                             .setReadableSnapshotId(snapshotId);
-            for (int bucketId : entry.getValue()) {
-                switchRequest.addBucketId(bucketId);
+            for (TableBucket tb : entry.getValue()) {
+                switchRequest.addBucketId(tb.getBucket());
+                if (tb.getPartitionId() != null) {
+                    switchRequest.addPartitionId(tb.getPartitionId());
+                }
             }
 
             CompletableFuture<Void> f = new CompletableFuture<>();
@@ -2527,7 +2531,10 @@ public class CoordinatorEventProcessor implements EventProcessor {
                                     throwable);
                             coordinatorEventManager.put(
                                     new DvSwitchEvent(
-                                            tableId, snapshotId, event.getBucketIds(), retryCount));
+                                            tableId,
+                                            snapshotId,
+                                            event.getTableBuckets(),
+                                            retryCount));
                             return null;
                         });
     }

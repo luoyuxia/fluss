@@ -23,6 +23,8 @@ import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.utils.IOUtils;
 
+import javax.annotation.Nullable;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -37,10 +39,16 @@ import java.util.Map;
  * <p>The upload layout is:
  *
  * <pre>
+ * Non-partitioned:
  * {remoteLakeTableSnapshotDir}/rowPos/{snapshotId}/
- *   ├── index.json              (written last for atomic visibility)
+ *   ├── index.json
  *   ├── {bucketId}/sst_0.sst
- *   ├── {bucketId}/sst_1.sst
+ *   └── ...
+ *
+ * Partitioned:
+ * {remoteLakeTableSnapshotDir}/rowPos/{snapshotId}/{partitionId}/
+ *   ├── index.json
+ *   ├── {bucketId}/sst_0.sst
  *   └── ...
  * </pre>
  *
@@ -115,13 +123,15 @@ public class RowPosSstUploader {
      * for per-bucket parallel upload.
      *
      * @param snapshotId the lake snapshot ID used as the directory name
+     * @param partitionId the partition ID, or null for non-partitioned tables
      * @param bucketId the bucket ID
      * @param data the local SST data for the bucket
      */
-    public void uploadBucketSsts(long snapshotId, int bucketId, BucketSstData data)
+    public void uploadBucketSsts(
+            long snapshotId, @Nullable Long partitionId, int bucketId, BucketSstData data)
             throws IOException {
-        FsPath snapshotDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + snapshotId);
-        FsPath bucketDir = new FsPath(snapshotDir, String.valueOf(bucketId));
+        FsPath baseDir = buildBaseDir(snapshotId, partitionId);
+        FsPath bucketDir = new FsPath(baseDir, String.valueOf(bucketId));
 
         FileSystem fs = bucketDir.getFileSystem();
         fs.mkdirs(bucketDir);
@@ -138,19 +148,30 @@ public class RowPosSstUploader {
      * finished uploading their bucket SST files.
      *
      * @param snapshotId the lake snapshot ID
+     * @param partitionId the partition ID, or null for non-partitioned tables
      * @param index the index containing all bucket SST file entries
      */
-    public void writeIndex(long snapshotId, RowPosSstIndex index) throws IOException {
-        FsPath snapshotDir = new FsPath(remoteLakeTableSnapshotDir, ROW_POS_DIR + "/" + snapshotId);
-        FsPath indexPath = new FsPath(snapshotDir, INDEX_FILE);
+    public void writeIndex(long snapshotId, @Nullable Long partitionId, RowPosSstIndex index)
+            throws IOException {
+        FsPath baseDir = buildBaseDir(snapshotId, partitionId);
+        FsPath indexPath = new FsPath(baseDir, INDEX_FILE);
 
         FileSystem fs = indexPath.getFileSystem();
-        fs.mkdirs(snapshotDir);
+        fs.mkdirs(baseDir);
 
         byte[] indexBytes = index.toJsonBytes();
         try (FSDataOutputStream out = fs.create(indexPath, FileSystem.WriteMode.NO_OVERWRITE)) {
             out.write(indexBytes);
         }
+    }
+
+    /** Builds the base directory path for a snapshot, optionally scoped to a partition. */
+    private FsPath buildBaseDir(long snapshotId, @Nullable Long partitionId) {
+        String path = ROW_POS_DIR + "/" + snapshotId;
+        if (partitionId != null) {
+            path += "/" + partitionId;
+        }
+        return new FsPath(remoteLakeTableSnapshotDir, path);
     }
 
     private void uploadFile(FileSystem fs, File localFile, FsPath remotePath) throws IOException {

@@ -1129,12 +1129,11 @@ public class ReplicaManager implements ServerReconfigurable {
         long tableId = dvPrepare.getTableId();
         long snapshotId = dvPrepare.getReadableSnapshotId();
 
-        for (Map.Entry<Integer, DvPositionReportData.DvBucketOffset> entry :
+        for (Map.Entry<TableBucket, DvPositionReportData.DvBucketOffset> entry :
                 dvPrepare.getBucketOffsets().entrySet()) {
-            int bucketId = entry.getKey();
+            TableBucket tb = entry.getKey();
             DvPositionReportData.DvBucketOffset bucketOffset = entry.getValue();
 
-            TableBucket tb = new TableBucket(tableId, bucketId);
             try {
                 Replica replica = getReplicaOrException(tb);
                 KvTablet kvTablet = replica.getKvTablet();
@@ -1154,7 +1153,12 @@ public class ReplicaManager implements ServerReconfigurable {
                 String localTempDir = createDvPrepareLocalTempDir(tb, snapshotId);
 
                 dvManager.handlePrepare(
-                        bucketId, bucketOffset, downloader, snapshotId, localTempDir);
+                        tb.getBucket(),
+                        tb.getPartitionId(),
+                        bucketOffset,
+                        downloader,
+                        snapshotId,
+                        localTempDir);
 
                 LOG.info("DV Prepare completed for {} snapshot {}", tb, snapshotId);
             } catch (Exception e) {
@@ -1166,11 +1170,9 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     private void handleDvReadableSwitch(DvReadableSwitchData data) {
-        long tableId = data.getTableId();
         long snapshotId = data.getReadableSnapshotId();
 
-        for (int bucketId : data.getBucketIds()) {
-            TableBucket tb = new TableBucket(tableId, bucketId);
+        for (TableBucket tb : data.getTableBuckets()) {
             try {
                 Replica replica = getReplicaOrException(tb);
                 KvTablet kvTablet = replica.getKvTablet();
@@ -1178,6 +1180,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 checkState(kvTablet.isDvEnabled(), "DV not enabled for %s", tb);
                 DvManager dvManager = kvTablet.getDvManager();
 
+                int bucketId = tb.getBucket();
                 long readableOffset = dvManager.getPendingReadableOffset(bucketId);
                 dvManager.handleReadableSwitch(bucketId, snapshotId, readableOffset);
 

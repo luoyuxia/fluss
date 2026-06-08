@@ -79,7 +79,7 @@ class DvManagerPrepareAndSwitchTest {
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String localTempDir = tempDir.resolve("local_sst").toString();
 
-        dvManager.handlePrepare(0, bucketOffset, downloader, 1L, localTempDir);
+        dvManager.handlePrepare(0, null, bucketOffset, downloader, 1L, localTempDir);
 
         // Verify FileDict entries written
         assertThat(dvRocksDB.fileDict().getFilePath(1)).isEqualTo("/data/f1.parquet");
@@ -106,10 +106,10 @@ class DvManagerPrepareAndSwitchTest {
         String localTempDir = tempDir.resolve("local_sst").toString();
 
         // First prepare
-        dvManager.handlePrepare(0, bucketOffset, downloader, 1L, localTempDir);
+        dvManager.handlePrepare(0, null, bucketOffset, downloader, 1L, localTempDir);
 
         // Second prepare with same snapshotId should skip (idempotent)
-        dvManager.handlePrepare(0, bucketOffset, downloader, 1L, localTempDir);
+        dvManager.handlePrepare(0, null, bucketOffset, downloader, 1L, localTempDir);
 
         // FileDict should still have the entry
         assertThat(dvRocksDB.fileDict().getFilePath(1)).isEqualTo("/data/f1.parquet");
@@ -138,7 +138,7 @@ class DvManagerPrepareAndSwitchTest {
         String localTempDir = tempDir.resolve("local_sst").toString();
 
         // Prepare
-        dvManager.handlePrepare(0, bucketOffset, downloader, 1L, localTempDir);
+        dvManager.handlePrepare(0, null, bucketOffset, downloader, 1L, localTempDir);
 
         // Readable Switch
         dvManager.handleReadableSwitch(0, 1L, 15L);
@@ -182,7 +182,7 @@ class DvManagerPrepareAndSwitchTest {
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String localTempDir = tempDir.resolve("local_sst").toString();
 
-        dvManager.handlePrepare(0, bucketOffset, downloader, 1L, localTempDir);
+        dvManager.handlePrepare(0, null, bucketOffset, downloader, 1L, localTempDir);
         dvManager.handleReadableSwitch(0, 1L, 500L);
 
         assertThat(dvManager.getReadableSnapshotId()).isEqualTo(1L);
@@ -216,7 +216,7 @@ class DvManagerPrepareAndSwitchTest {
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String localTempDir = tempDir.resolve("local_sst").toString();
 
-        dvManager.handlePrepare(0, bucketOffset, downloader, 1L, localTempDir);
+        dvManager.handlePrepare(0, null, bucketOffset, downloader, 1L, localTempDir);
         dvManager.handleReadableSwitch(0, 1L, 200L);
 
         // Old file LakeDv entry should be deleted
@@ -251,7 +251,7 @@ class DvManagerPrepareAndSwitchTest {
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         String localTempDir = tempDir.resolve("local_sst").toString();
 
-        dvManager.handlePrepare(0, bucketOffset, downloader, 1L, localTempDir);
+        dvManager.handlePrepare(0, null, bucketOffset, downloader, 1L, localTempDir);
         dvManager.handleReadableSwitch(0, 1L, 1500L);
 
         // LogDv entries below readableOffset cleaned (range-based)
@@ -285,7 +285,7 @@ class DvManagerPrepareAndSwitchTest {
 
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         dvManager.handlePrepare(
-                0, bucketOffset, downloader, 1L, tempDir.resolve("local_sst").toString());
+                0, null, bucketOffset, downloader, 1L, tempDir.resolve("local_sst").toString());
 
         // Step 3: Readable Switch
         dvManager.handleReadableSwitch(0, 1L, 15L);
@@ -317,7 +317,7 @@ class DvManagerPrepareAndSwitchTest {
 
         RowPosSstDownloader downloader = new RowPosSstDownloader(remoteDir);
         dvManager.handlePrepare(
-                0, bucketOffset, downloader, 1L, tempDir.resolve("local_sst").toString());
+                0, null, bucketOffset, downloader, 1L, tempDir.resolve("local_sst").toString());
 
         // Switch with no SST and no PendingDeletes — pure state update
         dvManager.handleReadableSwitch(0, 1L, 500L);

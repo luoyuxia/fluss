@@ -18,6 +18,7 @@
 package org.apache.fluss.server.entity;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.metadata.TableBucket;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -29,12 +30,12 @@ public class DvPrepareData {
 
     private final long tableId;
     private final long readableSnapshotId;
-    private final Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets;
+    private final Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets;
 
     public DvPrepareData(
             long tableId,
             long readableSnapshotId,
-            Map<Integer, DvPositionReportData.DvBucketOffset> bucketOffsets) {
+            Map<TableBucket, DvPositionReportData.DvBucketOffset> bucketOffsets) {
         this.tableId = tableId;
         this.readableSnapshotId = readableSnapshotId;
         this.bucketOffsets = bucketOffsets;
@@ -48,21 +49,23 @@ public class DvPrepareData {
         return readableSnapshotId;
     }
 
-    /** Returns bucket offsets: bucketId -> DvBucketOffset. */
-    public Map<Integer, DvPositionReportData.DvBucketOffset> getBucketOffsets() {
+    /**
+     * Returns bucket offsets keyed by TableBucket (includes partition ID for partitioned tables).
+     */
+    public Map<TableBucket, DvPositionReportData.DvBucketOffset> getBucketOffsets() {
         return bucketOffsets;
     }
 
     /**
-     * Returns a new {@link DvPrepareData} containing only the bucket offsets for the given bucket
-     * IDs.
+     * Returns a new {@link DvPrepareData} containing only the bucket offsets for the given {@link
+     * TableBucket}s.
      */
-    public DvPrepareData filterByBuckets(Set<Integer> bucketIds) {
-        Map<Integer, DvPositionReportData.DvBucketOffset> filtered = new HashMap<>();
-        for (Integer bucketId : bucketIds) {
-            DvPositionReportData.DvBucketOffset offset = bucketOffsets.get(bucketId);
+    public DvPrepareData filterByBuckets(Set<TableBucket> tableBuckets) {
+        Map<TableBucket, DvPositionReportData.DvBucketOffset> filtered = new HashMap<>();
+        for (TableBucket tb : tableBuckets) {
+            DvPositionReportData.DvBucketOffset offset = bucketOffsets.get(tb);
             if (offset != null) {
-                filtered.put(bucketId, offset);
+                filtered.put(tb, offset);
             }
         }
         return new DvPrepareData(tableId, readableSnapshotId, filtered);

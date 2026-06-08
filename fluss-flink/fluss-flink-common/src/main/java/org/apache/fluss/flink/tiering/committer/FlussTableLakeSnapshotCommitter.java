@@ -134,7 +134,7 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             String lakeBucketTieredOffsetsPath,
             Map<TableBucket, Long> logEndOffsets,
             Map<TableBucket, Long> logMaxTieredTimestamps,
-            @Nullable Map<Integer, DvBucketData> dvReport)
+            @Nullable Map<TableBucket, DvBucketData> dvReport)
             throws IOException {
         Long earliestSnapshotIDToKeep = lakeCommitResult.getEarliestSnapshotIDToKeep();
         if (lakeCommitResult.committedIsReadable()) {
@@ -212,7 +212,7 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             Map<TableBucket, Long> logEndOffsets,
             Map<TableBucket, Long> logMaxTieredTimestamps,
             @Nullable Long earliestSnapshotIDToKeep,
-            @Nullable Map<Integer, DvBucketData> dvReport)
+            @Nullable Map<TableBucket, DvBucketData> dvReport)
             throws IOException {
         try {
             CommitLakeTableSnapshotRequest request =
@@ -304,7 +304,7 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
             Map<TableBucket, Long> logEndOffsets,
             Map<TableBucket, Long> logMaxTieredTimestamps,
             @Nullable Long earliestSnapshotIDToKeep,
-            @Nullable Map<Integer, DvBucketData> dvReport) {
+            @Nullable Map<TableBucket, DvBucketData> dvReport) {
         CommitLakeTableSnapshotRequest commitLakeTableSnapshotRequest =
                 new CommitLakeTableSnapshotRequest();
 
@@ -326,12 +326,16 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
         // Serialize DvPositionReport if present
         if (dvReport != null && !dvReport.isEmpty()) {
             PbDvPositionReport pbReport = pbLakeTableSnapshotMetadata.setDvPositionReport();
-            for (Map.Entry<Integer, DvBucketData> entry : dvReport.entrySet()) {
+            for (Map.Entry<TableBucket, DvBucketData> entry : dvReport.entrySet()) {
+                TableBucket tb = entry.getKey();
                 DvBucketData data = entry.getValue();
                 PbDvBucketOffset pbBucket =
                         pbReport.addBucketOffset()
-                                .setBucketId(entry.getKey())
+                                .setBucketId(tb.getBucket())
                                 .setReadableOffset(data.getReadableOffset());
+                if (tb.getPartitionId() != null) {
+                    pbBucket.setPartitionId(tb.getPartitionId());
+                }
                 for (Map.Entry<Integer, String> dictEntry :
                         data.getNewFileDictEntries().entrySet()) {
                     pbBucket.addNewFileDictEntry()

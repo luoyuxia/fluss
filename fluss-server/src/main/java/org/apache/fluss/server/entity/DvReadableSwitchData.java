@@ -18,6 +18,7 @@
 package org.apache.fluss.server.entity;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.rpc.messages.DvReadableSwitchRequest;
 
 import java.util.List;
@@ -29,14 +30,17 @@ public class DvReadableSwitchData {
     private final int coordinatorEpoch;
     private final long tableId;
     private final long readableSnapshotId;
-    private final List<Integer> bucketIds;
+    private final List<TableBucket> tableBuckets;
 
     public DvReadableSwitchData(
-            int coordinatorEpoch, long tableId, long readableSnapshotId, List<Integer> bucketIds) {
+            int coordinatorEpoch,
+            long tableId,
+            long readableSnapshotId,
+            List<TableBucket> tableBuckets) {
         this.coordinatorEpoch = coordinatorEpoch;
         this.tableId = tableId;
         this.readableSnapshotId = readableSnapshotId;
-        this.bucketIds = bucketIds;
+        this.tableBuckets = tableBuckets;
     }
 
     public int getCoordinatorEpoch() {
@@ -51,7 +55,8 @@ public class DvReadableSwitchData {
         return readableSnapshotId;
     }
 
-    public List<Integer> getBucketIds() {
-        return bucketIds;
+    /** Returns the list of TableBuckets (includes partition ID for partitioned tables). */
+    public List<TableBucket> getTableBuckets() {
+        return tableBuckets;
     }
 }

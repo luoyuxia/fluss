@@ -38,7 +38,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
     private static final ThreadLocal<DataOutputSerializer> SERIALIZER_CACHE =
             ThreadLocal.withInitial(() -> new DataOutputSerializer(64));
 
-    private static final int CURRENT_VERSION = 0;
+    private static final int CURRENT_VERSION = 1;
 
     private final org.apache.fluss.lake.serializer.SimpleVersionedSerializer<WriteResult>
             writeResultSerializer;
@@ -101,6 +101,14 @@ public class TableBucketWriteResultSerializer<WriteResult>
         if (rowPosResult != null) {
             out.writeBoolean(true);
             out.writeInt(rowPosResult.getBucketId());
+            // serialize partition info
+            if (rowPosResult.getPartitionId() != null) {
+                out.writeBoolean(true);
+                out.writeLong(rowPosResult.getPartitionId());
+                out.writeUTF(rowPosResult.getPartitionName());
+            } else {
+                out.writeBoolean(false);
+            }
             // serialize newFileDictEntries
             Map<Integer, String> newFileDictEntries = rowPosResult.getNewFileDictEntries();
             out.writeInt(newFileDictEntries.size());
@@ -127,7 +135,7 @@ public class TableBucketWriteResultSerializer<WriteResult>
     @Override
     public TableBucketWriteResult<WriteResult> deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != CURRENT_VERSION) {
+        if (version != CURRENT_VERSION && version != 0) {
             throw new IOException("Unknown version " + version);
         }
         final DataInputDeserializer in = new DataInputDeserializer(serialized);
@@ -171,6 +179,13 @@ public class TableBucketWriteResultSerializer<WriteResult>
         RowPosResult rowPosResult = null;
         if (in.readBoolean()) {
             int rowPosBucketId = in.readInt();
+            // deserialize partition info (version >= 1)
+            Long rowPosPartitionId = null;
+            String rowPosPartitionName = null;
+            if (version >= 1 && in.readBoolean()) {
+                rowPosPartitionId = in.readLong();
+                rowPosPartitionName = in.readUTF();
+            }
             // deserialize newFileDictEntries
             int dictSize = in.readInt();
             Map<Integer, String> newFileDictEntries = new HashMap<>(dictSize);
@@ -187,7 +202,13 @@ public class TableBucketWriteResultSerializer<WriteResult>
                 long sstFileSize = in.readLong();
                 sstMetas.add(new RowPosResult.SstMeta(sstFileName, sstFileSize));
             }
-            rowPosResult = new RowPosResult(rowPosBucketId, newFileDictEntries, sstMetas);
+            rowPosResult =
+                    new RowPosResult(
+                            rowPosBucketId,
+                            rowPosPartitionId,
+                            rowPosPartitionName,
+                            newFileDictEntries,
+                            sstMetas);
         }
 
         return new TableBucketWriteResult<>(

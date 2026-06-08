@@ -18,6 +18,7 @@
 package org.apache.fluss.server.entity;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.metadata.TableBucket;
 
 import java.util.List;
 import java.util.Map;
@@ -26,14 +27,16 @@ import java.util.Map;
 @Internal
 public class DvPositionReportData {
 
-    private final Map<Integer, DvBucketOffset> bucketOffsets;
+    private final Map<TableBucket, DvBucketOffset> bucketOffsets;
 
-    public DvPositionReportData(Map<Integer, DvBucketOffset> bucketOffsets) {
+    public DvPositionReportData(Map<TableBucket, DvBucketOffset> bucketOffsets) {
         this.bucketOffsets = bucketOffsets;
     }
 
-    /** Returns bucket offsets: bucketId -> DvBucketOffset. */
-    public Map<Integer, DvBucketOffset> getBucketOffsets() {
+    /**
+     * Returns bucket offsets keyed by TableBucket (includes partition ID for partitioned tables).
+     */
+    public Map<TableBucket, DvBucketOffset> getBucketOffsets() {
         return bucketOffsets;
     }
 

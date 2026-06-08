@@ -47,6 +47,7 @@ import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.lake.source.RowPosResult;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
+import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -320,9 +321,22 @@ public class TieringCommitOperator<WriteResult, Committable>
                     lakeCommitter.commit(committable, snapshotProperties);
 
             // build DvPositionReport if DV scan results are available
-            Map<Integer, FlussTableLakeSnapshotCommitter.DvBucketData> dvReport = null;
+            Map<TableBucket, FlussTableLakeSnapshotCommitter.DvBucketData> dvReport = null;
             if (rowPosResults != null && !rowPosResults.isEmpty()) {
-                dvReport = buildDvPositionReport(rowPosResults, deletedFiles, lakeCommitResult);
+                dvReport =
+                        buildDvPositionReport(
+                                tableId, rowPosResults, deletedFiles, lakeCommitResult);
+            }
+
+            // For DV-only compaction (e.g., only deletion vectors added, no data
+            // files rewritten), planDelta produces no splits so the RowPos scan is
+            // not triggered and dvReport stays null. However, we still need to
+            // trigger DV orchestration on the coordinator so that tablet servers
+            // update their readableSnapshotId. An empty dvReport is sufficient:
+            // Paimon handles DVs internally for lake reads, and the readable offset
+            // ensures log records are not duplicated.
+            if (dvReport == null && lakeCommitResult.getReadableSnapshot() != null) {
+                dvReport = new HashMap<>();
             }
 
             // commit to fluss
@@ -568,24 +582,37 @@ public class TieringCommitOperator<WriteResult, Committable>
                 FlussPaths.remoteLakeTableSnapshotDir(remoteDataDir, tablePath, tableId);
         RowPosSstUploader uploader = new RowPosSstUploader(remoteLakeTableSnapshotDir);
 
-        // Build index from all results
-        Map<Integer, List<RowPosSstIndex.SstFileEntry>> bucketEntries = new HashMap<>();
+        // Group results by partitionId for partition-aware index writing
+        Map<Long, List<RowPosResult>> resultsByPartition = new HashMap<>();
         for (RowPosResult result : results) {
-            List<RowPosSstIndex.SstFileEntry> entries = new ArrayList<>();
-            for (RowPosResult.SstMeta meta : result.getSstMetas()) {
-                entries.add(
-                        new RowPosSstIndex.SstFileEntry(meta.getFileName(), meta.getFileSize()));
-            }
-            bucketEntries.put(result.getBucketId(), entries);
+            Long partitionId = result.getPartitionId();
+            // Use -1 as sentinel key for non-partitioned results
+            long key = partitionId != null ? partitionId : -1L;
+            resultsByPartition.computeIfAbsent(key, k -> new ArrayList<>()).add(result);
         }
-        RowPosSstIndex index = new RowPosSstIndex(bucketEntries);
-        uploader.writeIndex(compactSnapshotId, index);
 
-        LOG.info(
-                "Wrote index.json for table {} (snapshot={}) with {} buckets.",
-                tablePath,
-                compactSnapshotId,
-                bucketEntries.size());
+        for (Map.Entry<Long, List<RowPosResult>> partitionEntry : resultsByPartition.entrySet()) {
+            Long partitionId = partitionEntry.getKey() == -1L ? null : partitionEntry.getKey();
+            Map<Integer, List<RowPosSstIndex.SstFileEntry>> bucketEntries = new HashMap<>();
+            for (RowPosResult result : partitionEntry.getValue()) {
+                List<RowPosSstIndex.SstFileEntry> entries = new ArrayList<>();
+                for (RowPosResult.SstMeta meta : result.getSstMetas()) {
+                    entries.add(
+                            new RowPosSstIndex.SstFileEntry(
+                                    meta.getFileName(), meta.getFileSize()));
+                }
+                bucketEntries.put(result.getBucketId(), entries);
+            }
+            RowPosSstIndex index = new RowPosSstIndex(bucketEntries);
+            uploader.writeIndex(compactSnapshotId, partitionId, index);
+
+            LOG.info(
+                    "Wrote index.json for table {} (snapshot={}, partition={}) with {} buckets.",
+                    tablePath,
+                    compactSnapshotId,
+                    partitionId,
+                    bucketEntries.size());
+        }
     }
 
     /**
@@ -659,7 +686,9 @@ public class TieringCommitOperator<WriteResult, Committable>
             String partitionName =
                     (partitionValues == null || partitionValues.isEmpty())
                             ? null
-                            : String.join("/", partitionValues);
+                            : String.join(
+                                    ResolvedPartitionSpec.PARTITION_SPEC_SEPARATOR,
+                                    partitionValues);
             int bucketId = split.bucket();
             serializedByPartitionAndBucket
                     .computeIfAbsent(partitionName, k -> new HashMap<>())
@@ -742,22 +771,26 @@ public class TieringCommitOperator<WriteResult, Committable>
      * LakeCommitResult.ReadableSnapshot}, which is only available after {@code
      * lakeCommitter.commit()} returns.
      */
-    private Map<Integer, FlussTableLakeSnapshotCommitter.DvBucketData> buildDvPositionReport(
+    private Map<TableBucket, FlussTableLakeSnapshotCommitter.DvBucketData> buildDvPositionReport(
+            long tableId,
             List<RowPosResult> rowPosResults,
             @Nullable Map<String, Map<Integer, List<String>>> deletedFiles,
             LakeCommitResult lakeCommitResult) {
-        Map<Integer, FlussTableLakeSnapshotCommitter.DvBucketData> report = new HashMap<>();
+        Map<TableBucket, FlussTableLakeSnapshotCommitter.DvBucketData> report = new HashMap<>();
         LakeCommitResult.ReadableSnapshot readable = lakeCommitResult.getReadableSnapshot();
 
         for (RowPosResult result : rowPosResults) {
             int bucketId = result.getBucketId();
+            Long partitionId = result.getPartitionId();
+            TableBucket tb = new TableBucket(tableId, partitionId, bucketId);
             // readableOffset from ReadableSnapshot's readableLogEndOffsets
-            long readableOffset = getReadableOffset(readable, bucketId);
-            // deleted files from the deltaPlan (partitionName=null for non-partitioned)
-            List<String> oldFiles = getDeletedFilesForBucket(deletedFiles, null, bucketId);
+            long readableOffset = getReadableOffset(readable, tb);
+            // deleted files from the deltaPlan
+            List<String> oldFiles =
+                    getDeletedFilesForBucket(deletedFiles, result.getPartitionName(), bucketId);
 
             report.put(
-                    bucketId,
+                    tb,
                     new FlussTableLakeSnapshotCommitter.DvBucketData(
                             readableOffset, result.getNewFileDictEntries(), oldFiles));
         }
@@ -765,16 +798,12 @@ public class TieringCommitOperator<WriteResult, Committable>
     }
 
     private long getReadableOffset(
-            @Nullable LakeCommitResult.ReadableSnapshot readable, int bucketId) {
+            @Nullable LakeCommitResult.ReadableSnapshot readable, TableBucket tb) {
         if (readable == null) {
             return -1;
         }
-        for (Map.Entry<TableBucket, Long> entry : readable.getReadableLogEndOffsets().entrySet()) {
-            if (entry.getKey().getBucket() == bucketId) {
-                return entry.getValue();
-            }
-        }
-        return -1;
+        Long offset = readable.getReadableLogEndOffsets().get(tb);
+        return offset != null ? offset : -1;
     }
 
     private List<String> getDeletedFilesForBucket(

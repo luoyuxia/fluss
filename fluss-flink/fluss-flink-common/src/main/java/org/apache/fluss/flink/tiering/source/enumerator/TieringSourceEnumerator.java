@@ -33,6 +33,7 @@ import org.apache.fluss.flink.tiering.source.split.TieringSplit;
 import org.apache.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import org.apache.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
 import org.apache.fluss.lake.committer.TieringStats;
+import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -335,6 +336,22 @@ public class TieringSourceEnumerator
             totalBatchCount += bucketMap.size();
         }
 
+        // resolve partition name → partition id for partitioned tables
+        boolean hasPartitions =
+                splitsByPartitionAndBucket.keySet().stream().anyMatch(k -> k != null);
+        Map<String, Long> partitionIdByName = new HashMap<>();
+        if (hasPartitions) {
+            try {
+                List<PartitionInfo> partitionInfos = flussAdmin.listPartitionInfos(tablePath).get();
+                for (PartitionInfo info : partitionInfos) {
+                    partitionIdByName.put(info.getPartitionName(), info.getPartitionId());
+                }
+            } catch (Exception e) {
+                throw new FlinkRuntimeException(
+                        "Failed to list partition infos for " + tablePath, e);
+            }
+        }
+
         int fileIdCounter = nextFileId;
         List<TieringRowPosSplit> rowPosSplits = new ArrayList<>();
         for (Map.Entry<String, Map<Integer, List<byte[]>>> partitionEntry :
@@ -343,7 +360,9 @@ public class TieringSourceEnumerator
             for (Map.Entry<Integer, List<byte[]>> bucketEntry :
                     partitionEntry.getValue().entrySet()) {
                 int bucketId = bucketEntry.getKey();
-                TableBucket tableBucket = new TableBucket(tableId, null, bucketId);
+                Long partitionId =
+                        partitionName != null ? partitionIdByName.get(partitionName) : null;
+                TableBucket tableBucket = new TableBucket(tableId, partitionId, bucketId);
                 List<byte[]> bucketSplits = bucketEntry.getValue();
 
                 // batch all files for the same bucket into one split
