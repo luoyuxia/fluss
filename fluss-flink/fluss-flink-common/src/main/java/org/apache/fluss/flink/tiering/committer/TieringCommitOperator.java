@@ -340,6 +340,17 @@ public class TieringCommitOperator<WriteResult, Committable>
                 if (dvReport == null) {
                     dvReport = new HashMap<>();
                 }
+
+                // Collect partitions that already have index.json from RowPos results
+                Set<Long> partitionsWithIndex = new HashSet<>();
+                if (rowPosResults != null) {
+                    for (RowPosResult result : rowPosResults) {
+                        Long pid = result.getPartitionId();
+                        partitionsWithIndex.add(pid != null ? pid : -1L);
+                    }
+                }
+
+                Set<Long> emptyIndexPartitions = new HashSet<>();
                 for (Map.Entry<TableBucket, Long> entry :
                         readable.getReadableLogEndOffsets().entrySet()) {
                     dvReport.putIfAbsent(
@@ -348,6 +359,29 @@ public class TieringCommitOperator<WriteResult, Committable>
                                     entry.getValue(),
                                     Collections.emptyMap(),
                                     Collections.emptyList()));
+
+                    // Track partitions that need an empty index.json
+                    Long partitionId = entry.getKey().getPartitionId();
+                    long key = partitionId != null ? partitionId : -1L;
+                    if (!partitionsWithIndex.contains(key)) {
+                        emptyIndexPartitions.add(key);
+                    }
+                }
+
+                // Upload empty index.json for partitions without RowPos results
+                // so that DvPrepare can find the index file for every partition
+                if (!emptyIndexPartitions.isEmpty()) {
+                    String remoteDataDir = FlussConfigUtils.getDefaultRemoteDataDir(flussConfig);
+                    FsPath remoteLakeTableSnapshotDir =
+                            FlussPaths.remoteLakeTableSnapshotDir(
+                                    remoteDataDir, tablePath, tableId);
+                    RowPosSstUploader uploader = new RowPosSstUploader(remoteLakeTableSnapshotDir);
+                    RowPosSstIndex emptyIndex = new RowPosSstIndex(Collections.emptyMap());
+                    for (Long partKey : emptyIndexPartitions) {
+                        Long partitionId = partKey == -1L ? null : partKey;
+                        uploader.writeIndex(
+                                readable.getReadableSnapshotId(), partitionId, emptyIndex);
+                    }
                 }
             }
 
