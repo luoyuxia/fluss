@@ -328,19 +328,21 @@ public class TieringCommitOperator<WriteResult, Committable>
                                 tableId, rowPosResults, deletedFiles, lakeCommitResult);
             }
 
-            // For DV-only compaction (e.g., only deletion vectors added, no data
-            // files rewritten), planDelta produces no splits so the RowPos scan is
-            // not triggered and dvReport stays null. However, we still need to
-            // trigger DV orchestration on the coordinator so that tablet servers
-            // update their readableSnapshotId. We populate the dvReport with all
-            // buckets and their readable offsets (no file dict entries or old files)
-            // so the coordinator knows which buckets need DV Switch.
-            if (dvReport == null && lakeCommitResult.getReadableSnapshot() != null) {
+            // Ensure ALL buckets from ReadableSnapshot are present in dvReport.
+            // This handles two cases:
+            // 1. DV-only compaction: dvReport is null because no RowPos scan was
+            //    triggered, but we still need DV orchestration for all buckets.
+            // 2. Partial compaction: dvReport has entries for only some partitions
+            //    (those with RowPos results), but ALL buckets must be switched
+            //    because the readable snapshot is table-level.
+            if (lakeCommitResult.getReadableSnapshot() != null) {
                 LakeCommitResult.ReadableSnapshot readable = lakeCommitResult.getReadableSnapshot();
-                dvReport = new HashMap<>();
+                if (dvReport == null) {
+                    dvReport = new HashMap<>();
+                }
                 for (Map.Entry<TableBucket, Long> entry :
                         readable.getReadableLogEndOffsets().entrySet()) {
-                    dvReport.put(
+                    dvReport.putIfAbsent(
                             entry.getKey(),
                             new FlussTableLakeSnapshotCommitter.DvBucketData(
                                     entry.getValue(),
