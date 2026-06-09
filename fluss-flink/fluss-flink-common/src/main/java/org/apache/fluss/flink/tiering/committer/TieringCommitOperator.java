@@ -332,11 +332,21 @@ public class TieringCommitOperator<WriteResult, Committable>
             // files rewritten), planDelta produces no splits so the RowPos scan is
             // not triggered and dvReport stays null. However, we still need to
             // trigger DV orchestration on the coordinator so that tablet servers
-            // update their readableSnapshotId. An empty dvReport is sufficient:
-            // Paimon handles DVs internally for lake reads, and the readable offset
-            // ensures log records are not duplicated.
+            // update their readableSnapshotId. We populate the dvReport with all
+            // buckets and their readable offsets (no file dict entries or old files)
+            // so the coordinator knows which buckets need DV Switch.
             if (dvReport == null && lakeCommitResult.getReadableSnapshot() != null) {
+                LakeCommitResult.ReadableSnapshot readable = lakeCommitResult.getReadableSnapshot();
                 dvReport = new HashMap<>();
+                for (Map.Entry<TableBucket, Long> entry :
+                        readable.getReadableLogEndOffsets().entrySet()) {
+                    dvReport.put(
+                            entry.getKey(),
+                            new FlussTableLakeSnapshotCommitter.DvBucketData(
+                                    entry.getValue(),
+                                    Collections.emptyMap(),
+                                    Collections.emptyList()));
+                }
             }
 
             // commit to fluss
