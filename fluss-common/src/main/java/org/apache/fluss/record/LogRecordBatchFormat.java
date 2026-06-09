@@ -115,9 +115,9 @@ public class LogRecordBatchFormat {
      * <p>The current attributes are given below:
      *
      * <pre>
-     * ------------------------------------------
-     * |  Unused (1-7)   |  AppendOnly Flag (0) |
-     * ------------------------------------------
+     * -------------------------------------------------------
+     * |  Unused (2-7)  |  HasRowId Flag (1) |  AppendOnly Flag (0) |
+     * -------------------------------------------------------
      * </pre>
      *
      * @since 1.0
@@ -190,9 +190,9 @@ public class LogRecordBatchFormat {
      * <p>The current attributes are given below:
      *
      * <pre>
-     * ------------------------------------------
-     * |  Unused (1-7)   |  AppendOnly Flag (0) |
-     * ------------------------------------------
+     * -------------------------------------------------------
+     * |  Unused (2-7)  |  HasRowId Flag (1) |  AppendOnly Flag (0) |
+     * -------------------------------------------------------
      * </pre>
      *
      * @since 1.0
@@ -244,9 +244,9 @@ public class LogRecordBatchFormat {
      * <p>The current attributes are given below:
      *
      * <pre>
-     * ------------------------------------------
-     * |  Unused (1-7)   |  AppendOnly Flag (0) |
-     * ------------------------------------------
+     * -------------------------------------------------------
+     * |  Unused (2-7)  |  HasRowId Flag (1) |  AppendOnly Flag (0) |
+     * -------------------------------------------------------
      * </pre>
      *
      * @since 0.1

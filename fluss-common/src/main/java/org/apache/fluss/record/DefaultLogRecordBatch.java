@@ -87,6 +87,7 @@ public class DefaultLogRecordBatch implements LogRecordBatch {
     private static final Logger LOG = LoggerFactory.getLogger(DefaultLogRecordBatch.class);
 
     public static final byte APPEND_ONLY_FLAG_MASK = 0x01;
+    public static final byte HAS_ROW_ID_FLAG_MASK = 0x02;
 
     private MemorySegment segment;
     private int position;

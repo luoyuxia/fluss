@@ -56,6 +56,7 @@ import java.util.BitSet;
 import java.util.List;
 
 import static org.apache.fluss.record.DefaultLogRecordBatch.APPEND_ONLY_FLAG_MASK;
+import static org.apache.fluss.record.DefaultLogRecordBatch.HAS_ROW_ID_FLAG_MASK;
 import static org.apache.fluss.record.LogRecordBatchFormat.LENGTH_OFFSET;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V0;
 import static org.apache.fluss.record.LogRecordBatchFormat.LOG_MAGIC_VALUE_V1;
@@ -264,14 +265,18 @@ public class FileLogProjection {
         }
         int recordsStartOffset = recordBatchHeaderSize + statisticsLength;
 
+        int recordCount = logHeaderBuffer.getInt(recordsCountOffset(magic));
+        boolean hasRowId = (logHeaderBuffer.get(attributeOffset(magic)) & HAS_ROW_ID_FLAG_MASK) > 0;
+        int rowIdVectorSize = hasRowId ? recordCount * Long.BYTES : 0;
+
         final int changeTypeBytes;
         final long arrowHeaderOffset;
         if (isAppendOnly) {
             changeTypeBytes = 0;
-            arrowHeaderOffset = position + recordsStartOffset;
+            arrowHeaderOffset = position + recordsStartOffset + rowIdVectorSize;
         } else {
-            changeTypeBytes = logHeaderBuffer.getInt(recordsCountOffset(magic));
-            arrowHeaderOffset = position + recordsStartOffset + changeTypeBytes;
+            changeTypeBytes = recordCount;
+            arrowHeaderOffset = position + recordsStartOffset + changeTypeBytes + rowIdVectorSize;
         }
 
         // read arrow header
@@ -301,6 +306,7 @@ public class FileLogProjection {
         int newBatchSizeInBytes =
                 recordBatchHeaderSize
                         + changeTypeBytes
+                        + rowIdVectorSize
                         + currentProjection.arrowMetadataLength
                         + (int) arrowBodyLength;
 
@@ -331,6 +337,10 @@ public class FileLogProjection {
         builder.addBytes(logHeader);
         if (!isAppendOnly) {
             builder.addBytes(channel, position + recordsStartOffset, changeTypeBytes);
+        }
+        if (hasRowId) {
+            builder.addBytes(
+                    channel, position + recordsStartOffset + changeTypeBytes, rowIdVectorSize);
         }
         builder.addBytes(headerMetadata);
         final long bufferOffset = arrowHeaderOffset + ARROW_HEADER_SIZE + arrowMetadataSize;

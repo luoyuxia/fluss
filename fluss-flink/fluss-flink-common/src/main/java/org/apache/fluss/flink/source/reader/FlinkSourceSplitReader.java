@@ -466,24 +466,27 @@ public class FlinkSourceSplitReader implements SplitReader<RecordAndPos, SourceS
             splitIdByTableBucket.put(scanBucket, splitId);
             tableScanBuckets.add(scanBucket);
             List<ScanRecord> bucketScanRecords = scanRecords.records(scanBucket);
+            // Check the stopping offset using original (unfiltered) records.
+            // DV filtering may remove all records (e.g., all are DELETE),
+            // but we still need to mark the split as finished when the log
+            // has been consumed up to the stopping offset.
+            if (!bucketScanRecords.isEmpty()) {
+                final ScanRecord lastRawRecord =
+                        bucketScanRecords.get(bucketScanRecords.size() - 1);
+                maxConsumerRecordTimestampInFetch =
+                        Math.max(maxConsumerRecordTimestampInFetch, lastRawRecord.timestamp());
+                // After processing a record with offset of "stoppingOffset - 1", the split reader
+                // should not continue fetching because the record with stoppingOffset may not
+                // exist. Keep polling will just block forever
+                if (lastRawRecord.logOffset() >= stoppingOffset - 1) {
+                    stoppingOffsets.put(scanBucket, stoppingOffset);
+                    finishedSplits.add(splitId);
+                }
+            }
             // Apply DV filtering for DV batch read buckets
             if (dvBatchReadBuckets.contains(scanBucket)) {
                 bucketScanRecords =
                         filterDvBatchRecords(bucketScanRecords, logDvBitmaps.get(scanBucket));
-            }
-            if (!bucketScanRecords.isEmpty()) {
-                final ScanRecord lastRecord = bucketScanRecords.get(bucketScanRecords.size() - 1);
-                // We keep the maximum message timestamp in the fetch for calculating lags
-                maxConsumerRecordTimestampInFetch =
-                        Math.max(maxConsumerRecordTimestampInFetch, lastRecord.timestamp());
-
-                // After processing a record with offset of "stoppingOffset - 1", the split reader
-                // should not continue fetching because the record with stoppingOffset may not
-                // exist. Keep polling will just block forever
-                if (lastRecord.logOffset() >= stoppingOffset - 1) {
-                    stoppingOffsets.put(scanBucket, stoppingOffset);
-                    finishedSplits.add(splitId);
-                }
             }
             splitRecords.put(splitId, toRecordAndPos(bucketScanRecords.iterator()));
         }

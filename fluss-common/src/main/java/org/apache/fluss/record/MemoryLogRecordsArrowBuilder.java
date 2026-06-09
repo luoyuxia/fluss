@@ -400,10 +400,13 @@ public class MemoryLogRecordsArrowBuilder implements AutoCloseable {
         // write schema id
         outputView.writeShort((short) schemaId);
 
-        // write attributes (appendOnly flag)
+        // write attributes (appendOnly flag, hasRowId flag)
         byte attributes = 0;
         if (appendOnly) {
             attributes |= 0x01; // set appendOnly flag
+        }
+        if (rowIdCount > 0) {
+            attributes |= 0x02; // set hasRowId flag
         }
 
         outputView.writeByte(attributes);
