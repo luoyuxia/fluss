@@ -28,6 +28,7 @@ import javax.annotation.Nullable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -91,7 +92,11 @@ public class RowPosSstDownloader {
         return localPaths;
     }
 
-    /** Reads the index.json for the given snapshot. */
+    /**
+     * Reads the index.json for the given snapshot. Returns an empty index if the file does not
+     * exist, which happens when a bucket had no RowPos results for this snapshot (e.g., partial
+     * compaction only touched other partitions).
+     */
     public RowPosSstIndex readIndex(long snapshotId, @Nullable Long partitionId)
             throws IOException {
         FsPath baseDir = buildBaseDir(snapshotId, partitionId);
@@ -105,6 +110,8 @@ public class RowPosSstDownloader {
             out = new ByteArrayOutputStream();
             IOUtils.copyBytes(in, out, false);
             return RowPosSstIndex.fromJsonBytes(out.toByteArray());
+        } catch (FileNotFoundException e) {
+            return new RowPosSstIndex(Collections.emptyMap());
         } finally {
             IOUtils.closeQuietly(in);
             IOUtils.closeQuietly(out);
