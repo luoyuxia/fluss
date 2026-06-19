@@ -32,6 +32,7 @@ import org.apache.fluss.shaded.netty4.io.netty.channel.unix.Errors;
 import org.apache.fluss.shaded.netty4.io.netty.util.concurrent.DefaultThreadFactory;
 
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /** Utils of netty. */
 public class NettyUtils {
@@ -73,7 +74,10 @@ public class NettyUtils {
     public static CompletableFuture<Void> shutdownGroup(EventLoopGroup group) {
         CompletableFuture<Void> shutdownFuture = new CompletableFuture<>();
         if (group != null) {
-            group.shutdownGracefully()
+            // Use a 0s quiet period (Netty's default is 2s) so shutdown does not
+            // block for ~2s. This matters for short-lived clients (e.g. per-query
+            // Flink batch source readers) where the 2s teardown dominates latency.
+            group.shutdownGracefully(0, 10, TimeUnit.SECONDS)
                     .addListener(
                             finished -> {
                                 if (finished.isSuccess()) {

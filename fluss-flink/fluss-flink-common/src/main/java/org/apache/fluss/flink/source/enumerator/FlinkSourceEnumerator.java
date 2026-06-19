@@ -1111,11 +1111,18 @@ public class FlinkSourceEnumerator
                         : ((tableBucket.getPartitionId().hashCode() * 31) & 0x7FFFFFFF)
                                 % context.currentParallelism();
 
-        // super hack logic, if the bucket is -1, it means the split is
-        // for bucket unaware, like paimon unaware bucket log table,
-        // we use hash split id to get the split owner
+        // Distribute independent, bounded lake snapshot splits across readers by
+        // split id instead of by bucket. For DV-enabled primary key tables a
+        // single bucket is planned into one LakeSnapshotSplit per data file;
+        // assigning them by bucket (below) would pin a whole bucket to one reader
+        // and serialize the read, so a bucket's files could never be read
+        // concurrently. These splits are independent bounded reads (each carries
+        // its own lake deletion vectors, no cross-split merge), so any reader can
+        // own any split. Bucket-unaware lake splits (e.g. paimon unaware bucket
+        // log table, bucket == -1) likewise have no meaningful bucket to assign by.
         // todo: refactor the split assign logic
-        if (split.isLakeSplit() && tableBucket.getBucket() == -1) {
+        if (split instanceof LakeSnapshotSplit
+                || (split.isLakeSplit() && tableBucket.getBucket() == -1)) {
             return (split.splitId().hashCode() & 0x7FFFFFFF) % context.currentParallelism();
         }
 

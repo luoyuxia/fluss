@@ -662,6 +662,44 @@ class FlinkSourceEnumeratorTest extends FlinkTestBase {
         }
     }
 
+    @Test
+    void testLakeSnapshotSplitsOfSameBucketSpreadAcrossReaders() throws Exception {
+        int numSubtasks = 4;
+        long tableId = createTable(DEFAULT_TABLE_PATH, DEFAULT_PK_TABLE_DESCRIPTOR);
+        try (MockSplitEnumeratorContext<SourceSplitBase> context =
+                        new MockSplitEnumeratorContext<>(numSubtasks);
+                FlinkSourceEnumerator enumerator =
+                        new FlinkSourceEnumerator(
+                                DEFAULT_TABLE_PATH,
+                                flussConf,
+                                false,
+                                true,
+                                context,
+                                OffsetsInitializer.full(),
+                                DEFAULT_SCAN_PARTITION_DISCOVERY_INTERVAL_MS,
+                                streaming,
+                                null,
+                                null,
+                                LeaseContext.DEFAULT,
+                                false)) {
+            // a single bucket of a DV-enabled primary key table is planned into one
+            // LakeSnapshotSplit per data file. They must NOT all be pinned to one
+            // reader, otherwise the bucket's files cannot be read concurrently.
+            TableBucket bucket = new TableBucket(tableId, 0);
+            Set<Integer> owners = new HashSet<>();
+            for (int splitIndex = 0; splitIndex < 16; splitIndex++) {
+                LakeSnapshotSplit split =
+                        new LakeSnapshotSplit(
+                                bucket,
+                                null,
+                                new TestingLakeSplit(0, Collections.emptyList()),
+                                splitIndex);
+                owners.add(enumerator.getSplitOwner(split));
+            }
+            assertThat(owners).hasSizeGreaterThan(1);
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
     void testPartitionsExpiredInFlussButExistInLake(
