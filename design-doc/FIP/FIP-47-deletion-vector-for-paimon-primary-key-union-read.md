@@ -152,8 +152,17 @@ message DvReadableSwitchRequest {
 }
 
 message DvReadableSwitchResponse {
+  repeated PbDvReadableSwitchRespForBucket buckets_resp = 1;
+}
+
+message PbDvReadableSwitchRespForBucket {
+  required PbBucket bucket = 1;
+  optional int32 error_code = 2;
+  optional string error_message = 3;
 }
 ```
+
+The response contains one entry for each requested bucket. A missing / zero `error_code` is the bucket's switched ack; a non-zero `error_code` means that bucket did not switch and must be retried. The coordinator matches responses by `(partition_id, bucket_id)`, not by list position. If the whole RPC fails or the response is lost, the coordinator may retry the whole request because the switch operation is idempotent.
 
 ### RowPos Index Files (remote lake storage)
 
@@ -324,7 +333,7 @@ TieringService (Flink job)        CoordinatorServer            TabletServer (per
         │                          [barrier: all switched acks → round complete]
 ```
 
-Two-phase ack: the **ready ack** gates publishing (pre-publish liveness check + SST prefetch, so the post-publish stale window is local-only); the **switched ack** is observability only (ordering is guaranteed by CoordinatorServer).
+Two-phase ack: the **ready ack** gates publishing (pre-publish liveness check + SST prefetch, so the post-publish stale window is local-only); the **switched ack** is returned per bucket for observability and targeted retry (ordering is guaranteed by CoordinatorServer).
 
 #### 4.2 Phase A: Write + Commit
 
@@ -392,7 +401,7 @@ Prepare modifies no DV state beyond FileId2Name and stored paths, so rollback on
 3. **Cleanup replacedFiles (file-lifecycle)** — for each `fileId` in `pendingOldFileIds`: delete `LakeDv[fileId]`.
 4. **Cleanup expired LogDv** (range end < the new `snapshotStartLogOffset`).
 5. **Advance** `readableSnapshotId` and per-bucket `snapshotStartLogOffset = readableOffset`.
-6. Clear `pendingSstPath` / `pendingOldFileIds`; release the lock; send the **switched ack** to CoordinatorServer.
+6. Clear `pendingSstPath` / `pendingOldFileIds`; release the lock; add a successful bucket response to the **switched ack** returned to CoordinatorServer. If one bucket fails after earlier buckets have switched, the response records the failed bucket with `error_code`; the coordinator retries only failed buckets when it receives the response, or retries the whole request if the RPC itself fails. Already-switched buckets skip the repeated switch.
 
 > **Why `snapshotStartLogOffset = readableOffset` (not tieredOffset)**: union read fetches changelog from `snapshotStartLogOffset` to supply untiered increments. Using tieredOffset would skip L0 rows not yet visible in the Paimon readable snapshot, dropping data. readableOffset ensures only base-file-visible data is skipped.
 
@@ -409,11 +418,11 @@ Because cleanup is whole-file, there is no per-bit bookkeeping to maintain and n
 ### 6. Union Read
 
 1. The client obtains the latest DV-readable `snapshotId` (`requestedSnapshotId`) and sends a union read request carrying it.
-2. Fluss lists the data files under that snapshot.
+2. The lake source plans the Paimon scan for `requestedSnapshotId` through Paimon's snapshot / manifest metadata, producing `LakeSplit`s that reference the Paimon data files for the partitions and buckets to read. This is not a filesystem directory listing and does not include Fluss `rowPos/` SST files.
 3. Under KvTablet read lock + DvRWLock read lock, perform the **snapshot consistency check**: `readableSnapshotId == requestedSnapshotId`?
     - `requested < current`: this TabletServer already switched to a newer snapshot → client refreshes to the newer id and retries.
     - `requested > current`: a newer target was published but this bucket has not switched yet → client **keeps the same id** and retries with backoff (must not fall back to an older snapshot).
-4. Read `logEndOffset`; clone the **LakeDv bitmap subset** for the requested files (only query-relevant files); range-read **LogDv** from the snapshot's start offset to `logEndOffset`.
+4. Read `logEndOffset`; clone the bucket's **LakeDv** entries keyed by Paimon file path (an implementation may further filter them to the planned file paths); range-read **LogDv** from the snapshot's start offset to `logEndOffset`.
 5. Release locks; serialize and return `{lakeDv, logDv, logEndOffset}` (outside locks).
 
 **Client-side processing**:
@@ -463,13 +472,12 @@ Recovery hinges on a single boundary: **has the APPEND been committed?** (§4.2)
 
 3. **Advance to the current readable snapshot** (post-checkpoint rounds): read the current DV-readable snapshot `S_readable` directly from ZooKeeper (LakeTableZNode). If it is newer than `restoreSnapshot`, query Paimon for the committed COMPACT snapshots between them in commit order `S_1 … S_n = S_readable`; for each `S_i` **in order**:
 
-    - read `rowPos/{S_i}/[{partitionId}/]rowpos.manifest` and, for this bucket, get both its SST file names **and** its `newFileId2Name`;
+    - read `rowPos/{S_i}/[{partitionId}/]rowpos.manifest` and, for this bucket, get its SST file names, `newFileId2Name`, and `replacedFiles`;
     - write `newFileId2Name` to FileId2Name (idempotent);
     - download the bucket's SSTs and **Ingest into RowPosIndex in commit order** (later snapshots win for the same RowId via higher sequence numbers — handles compaction rewrites).
+    - resolve `replacedFiles` through FileId2Name and delete the corresponding LakeDv entries.
 
    Then set `readableSnapshotId = S_readable` and the corresponding `snapshotStartLogOffset`, replay `-U`/`-D` from `S_n`'s `readableOffset + 1`, and **batch-resolve PendingDeletes** (§4.4 step 2).
-
-4. **Skip replacedFiles LakeDv cleanup** during recovery (no `replacedFiles` payload is delivered). Redundant LakeDv entries pointing at already-replaced files may remain — harmless, since union-read double-marking is idempotent — and are dropped by the next normal round's file-lifecycle cleanup.
 
 #### 8.3 CoordinatorServer
 
@@ -489,15 +497,22 @@ On startup, the coordinator scans each table's `LakeSnapshotMetadata` list; any 
 
 **Latest-readable query must exclude pending snapshots.** The existing `getOrReadLatestReadableTableSnapshot()` uses `readableOffsetsFilePath != null` to find the latest readable snapshot. Since DV pending snapshots now also carry a non-null `readableOffsetsFilePath`, this condition must be tightened to `readableOffsetsFilePath != null && !dvPendingReadable`. Non-DV tables are unaffected (`dvPendingReadable` defaults to `false`).
 
-#### 8.4 System-Level Invariant: Round-Loss Safety
+#### 8.4 Read Correctness After an Unfinished DV Round
 
-Regardless of which component fails or how the coordinator recovers, a single lost round never causes data loss. This is a structural property of the tiering pipeline, not a recovery mechanism of any specific component:
+This section states the read-correctness property under unexpected failures: if a DV round does not finish, union read continues to use the previous DV-readable baseline and therefore does not drop data from the changelog.
 
-- Phase A always scans relative to the **last DV-readable snapshot** (§4.2), not the last committed snapshot. If a round is lost (never becomes DV-readable), the baseline does not advance, so the next round naturally re-scans the same range and absorbs the skipped round's data at their current positions.
-- Any `-U`/`-D` that arrived during the gap sit in PendingDeletes as `pending` and are resolved at the next switch's batch-resolve.
-- The skipped round's `rowPos/{snapshotId}/` files become orphans, reclaimed by GC.
+An unfinished DV round means a COMPACT snapshot was processed far enough to produce `rowPos/{snapshotId}/`, but that snapshot never became the latest DV-readable snapshot. The Paimon snapshot and Fluss changelog are not lost; only this DV-readable advancement did not complete.
 
-The only cost is deferred readability: data from the lost round is not DV-readable until the next round completes (one tiering cycle).
+Example:
+
+1. The latest DV-readable snapshot is `S10`, with `snapshotStartLogOffset = O10`.
+2. Tiering sees COMPACT snapshot `S11`, uploads `rowPos/S11/`, then fails before `S11` is marked DV-readable.
+3. The latest DV-readable snapshot remains `S10`. Union read still reads Paimon snapshot `S10` plus the Fluss changelog from `O10`, so records written after `S10` are still served from the log. Log retention must continue to retain data from `O10`, because the readable baseline has not advanced.
+4. A later COMPACT snapshot `S12` appears. Phase A builds RowPos relative to the last DV-readable snapshot (`S10`), not relative to the unfinished `S11`. Therefore the `S10 → S12` gap is covered in one later round; if the same RowId appears in multiple compaction outputs, later snapshot positions win.
+5. `-U` / `-D` records that arrived while `S11` failed to become readable remain in PendingDeletes (or are rebuilt by changelog replay). During the `S12` readable switch, batch-resolve applies them after `S12` RowPos SSTs are ingested.
+6. `rowPos/S11/` is never referenced by a readable snapshot and can be garbage-collected.
+
+The cost is a longer interval before the cold base advances: union read may read more changelog until `S12` becomes DV-readable, but correctness does not depend on recovering `S11`.
 
 #### 8.5 Ordering & Idempotency
 
