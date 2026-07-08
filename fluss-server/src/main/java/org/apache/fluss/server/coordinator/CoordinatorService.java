@@ -31,6 +31,7 @@ import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidCoordinatorException;
 import org.apache.fluss.exception.InvalidDatabaseException;
+import org.apache.fluss.exception.InvalidPartitionException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.LakeTableAlreadyExistException;
 import org.apache.fluss.exception.NonPrimaryKeyTableException;
@@ -231,7 +232,9 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toDatabaseChan
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toTableBucketOffsets;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toTablePath;
 import static org.apache.fluss.server.utils.TableAssignmentUtils.generateAssignment;
+import static org.apache.fluss.utils.PartitionUtils.isHistoricalPartitionSpec;
 import static org.apache.fluss.utils.PartitionUtils.validateAutoPartitionTime;
+import static org.apache.fluss.utils.PartitionUtils.validateHistoricalPartitionSpec;
 import static org.apache.fluss.utils.PartitionUtils.validatePartitionSpec;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -712,7 +715,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     public CompletableFuture<CreatePartitionResponse> createPartition(
             CreatePartitionRequest request) {
         TablePath tablePath = toTablePath(request.getTablePath());
-        authorizeTable(OperationType.WRITE, tablePath);
 
         CreatePartitionResponse response = new CreatePartitionResponse();
         TableRegistration table = metadataManager.getTableRegistration(tablePath);
@@ -723,16 +725,34 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
         // first, validate the partition spec, and get resolved partition spec.
         PartitionSpec partitionSpec = getPartitionSpec(request.getPartitionSpec());
-        validatePartitionSpec(tablePath, table.partitionKeys, partitionSpec, true);
+        ResolvedPartitionSpec partitionToCreate;
+        if (isHistoricalPartitionCreate(table, partitionSpec)) {
+            // Historical system partitions are lookup metadata, so creating one requires the same
+            // permission as reading the table instead of writing table data.
+            authorizeTable(OperationType.READ, tablePath);
+            if (!request.isIgnoreIfNotExists()) {
+                throw new InvalidPartitionException(
+                        "Creating historical system partition requires ignoreIfExists=true.");
+            }
+            partitionToCreate =
+                    validateHistoricalPartitionSpec(
+                            tablePath,
+                            table.partitionKeys,
+                            table.getTableConfig().getAutoPartitionStrategy(),
+                            partitionSpec);
+        } else {
+            authorizeTable(OperationType.WRITE, tablePath);
+            validatePartitionSpec(tablePath, table.partitionKeys, partitionSpec, true);
 
-        // second, check whether the partition is out-of-date.
-        validateAutoPartitionTime(
-                partitionSpec,
-                table.partitionKeys,
-                table.getTableConfig().getAutoPartitionStrategy());
+            // second, check whether the partition is out-of-date.
+            validateAutoPartitionTime(
+                    partitionSpec,
+                    table.partitionKeys,
+                    table.getTableConfig().getAutoPartitionStrategy());
 
-        ResolvedPartitionSpec partitionToCreate =
-                ResolvedPartitionSpec.fromPartitionSpec(table.partitionKeys, partitionSpec);
+            partitionToCreate =
+                    ResolvedPartitionSpec.fromPartitionSpec(table.partitionKeys, partitionSpec);
+        }
 
         // third, generate the PartitionAssignment.
         int replicaFactor = table.getTableConfig().getReplicationFactor();
@@ -754,6 +774,26 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 partitionToCreate,
                 request.isIgnoreIfNotExists());
         return CompletableFuture.completedFuture(response);
+    }
+
+    private boolean isHistoricalPartitionCreate(
+            TableRegistration table, PartitionSpec partitionSpec) {
+        if (!table.isPartitioned()) {
+            return false;
+        }
+        if (!isPaimonLakeAutoPartitionedTable(table)) {
+            return false;
+        }
+        return isHistoricalPartitionSpec(
+                table.partitionKeys,
+                table.getTableConfig().getAutoPartitionStrategy(),
+                partitionSpec);
+    }
+
+    private boolean isPaimonLakeAutoPartitionedTable(TableRegistration table) {
+        return table.getTableConfig().getAutoPartitionStrategy().isAutoPartitionEnabled()
+                && table.getTableConfig().isDataLakeEnabled()
+                && table.getTableConfig().getDataLakeFormat().orElse(null) == DataLakeFormat.PAIMON;
     }
 
     @Override
