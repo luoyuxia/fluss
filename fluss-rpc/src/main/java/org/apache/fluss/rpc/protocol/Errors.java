@@ -31,6 +31,7 @@ import org.apache.fluss.exception.DiskWriteLockedException;
 import org.apache.fluss.exception.DuplicateSequenceException;
 import org.apache.fluss.exception.FencedLeaderEpochException;
 import org.apache.fluss.exception.FencedTieringEpochException;
+import org.apache.fluss.exception.HistoricalLookupThrottledException;
 import org.apache.fluss.exception.IneligibleReplicaException;
 import org.apache.fluss.exception.InsufficientKvLeaderReplicaCapacityException;
 import org.apache.fluss.exception.InvalidAlterTableException;
@@ -280,7 +281,11 @@ public enum Errors {
     STORAGE_BACKPRESSURE_EXCEPTION(
             72,
             "The tablet server has rejected the write because the KV storage engine has reached its write-pressure threshold.",
-            StorageBackpressureException::new);
+            StorageBackpressureException::new),
+    HISTORICAL_LOOKUP_THROTTLED(
+            73,
+            "Historical lookup is throttled because too many historical lookup requests are in flight.",
+            HistoricalLookupThrottledException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 
