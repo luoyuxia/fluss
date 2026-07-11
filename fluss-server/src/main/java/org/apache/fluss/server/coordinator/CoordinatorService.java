@@ -783,6 +783,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         if (!table.isPartitioned()) {
             return false;
         }
+        // Historical partitions are currently supported only for Paimon lake tables.
         if (!isPaimonLakeAutoPartitionedTable(table)) {
             return false;
         }

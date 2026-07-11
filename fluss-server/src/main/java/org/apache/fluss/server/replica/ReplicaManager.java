@@ -428,7 +428,8 @@ public class ReplicaManager implements ServerReconfigurable {
         this.minInSyncReplicas = conf.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER);
         this.scannerManager = checkNotNull(scannerManager, "scannerManager");
         this.historicalLakeLookupManager =
-                new HistoricalLakeLookupManager(conf, pluginManager, ioExecutor, serverId);
+                new HistoricalLakeLookupManager(
+                        conf, pluginManager, ioExecutor, serverId, scheduler);
 
         registerMetrics();
     }
@@ -1111,9 +1112,7 @@ public class ReplicaManager implements ServerReconfigurable {
 
                     for (StopReplicaData data : stopReplicaDataList) {
                         TableBucket tb = data.getTableBucket();
-                        if (data.isDeleteRemote()) {
-                            historicalLakeLookupManager.invalidateTableLookuper(tb.getTableId());
-                        }
+                        historicalLakeLookupManager.invalidateTableLookuper(tb.getTableId());
                         HostedReplica hostedReplica = getReplica(tb);
                         if (hostedReplica instanceof NoneReplica) {
                             if (data.isDeleteLocal()) {
