@@ -188,6 +188,7 @@ import org.apache.fluss.server.entity.NotifyLakeTableOffsetData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.entity.NotifyRemoteLogOffsetsData;
+import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.kv.snapshot.CompletedSnapshot;
@@ -1117,6 +1118,39 @@ public class ServerRpcMessageUtils {
             produceEntryData.put(tb, kvRecords);
         }
         return produceEntryData;
+    }
+
+    /**
+     * Converts put-KV bucket requests while preserving their historical partition context.
+     *
+     * <p>The returned original partition name is null for normal writes. This method only decodes
+     * request data; historical target and partition eligibility are validated by the historical
+     * write processor.
+     */
+    public static Map<TableBucket, PutKvDataForBucket> toPutKvDataForBuckets(
+            PutKvRequest putKvRequest) {
+        long tableId = putKvRequest.getTableId();
+        Map<TableBucket, PutKvDataForBucket> putKvData = new HashMap<>();
+        for (PbPutKvReqForBucket putKvReqForBucket : putKvRequest.getBucketsReqsList()) {
+            ByteBuffer recordsBuffer = toByteBuffer(putKvReqForBucket.getRecordsSlice());
+            DefaultKvRecordBatch kvRecords = DefaultKvRecordBatch.pointToByteBuffer(recordsBuffer);
+            TableBucket tableBucket =
+                    new TableBucket(
+                            tableId,
+                            putKvReqForBucket.hasPartitionId()
+                                    ? putKvReqForBucket.getPartitionId()
+                                    : null,
+                            putKvReqForBucket.getBucketId());
+            putKvData.put(
+                    tableBucket,
+                    new PutKvDataForBucket(
+                            tableBucket,
+                            kvRecords,
+                            putKvReqForBucket.hasOriginalPartitionName()
+                                    ? putKvReqForBucket.getOriginalPartitionName()
+                                    : null));
+        }
+        return putKvData;
     }
 
     public static Map<TableBucket, List<byte[]>> toLookupData(LookupRequest lookupRequest) {

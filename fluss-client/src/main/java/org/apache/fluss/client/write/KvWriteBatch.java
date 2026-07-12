@@ -36,6 +36,7 @@ import javax.annotation.concurrent.NotThreadSafe;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -53,6 +54,7 @@ public class KvWriteBatch extends WriteBatch {
     private final @Nullable int[] targetColumns;
     private final int schemaId;
     private final MergeMode mergeMode;
+    private final @Nullable String originalPartitionName;
 
     public KvWriteBatch(
             long tableId,
@@ -64,6 +66,7 @@ public class KvWriteBatch extends WriteBatch {
             AbstractPagedOutputView outputView,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
+            @Nullable String originalPartitionName,
             long createdMs) {
         super(tableId, bucketId, physicalTablePath, createdMs);
         this.outputView = outputView;
@@ -72,6 +75,7 @@ public class KvWriteBatch extends WriteBatch {
         this.targetColumns = targetColumns;
         this.schemaId = schemaId;
         this.mergeMode = mergeMode;
+        this.originalPartitionName = originalPartitionName;
     }
 
     @Override
@@ -81,6 +85,10 @@ public class KvWriteBatch extends WriteBatch {
 
     @Override
     public boolean tryAppend(WriteRecord writeRecord, WriteCallback callback) throws Exception {
+        if (!Objects.equals(originalPartitionName, writeRecord.getOriginalPartitionName())) {
+            return false;
+        }
+
         if (schemaId != writeRecord.getSchemaId()) {
             throw new IllegalStateException(
                     String.format(
@@ -130,6 +138,11 @@ public class KvWriteBatch extends WriteBatch {
 
     public MergeMode getMergeMode() {
         return mergeMode;
+    }
+
+    /** Returns the expired original partition name for a historical KV write, or null. */
+    public @Nullable String getOriginalPartitionName() {
+        return originalPartitionName;
     }
 
     @Override

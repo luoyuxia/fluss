@@ -43,6 +43,7 @@ import org.apache.fluss.record.TestingSchemaGetter;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.arrow.ArrowWriter;
+import org.apache.fluss.row.encode.CompactedKeyEncoder;
 import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.rpc.GatewayClientProxy;
 import org.apache.fluss.rpc.RpcClient;
@@ -73,10 +74,15 @@ import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize
 import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_ROW_TYPE;
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
+import static org.apache.fluss.record.TestData.DATA1_SCHEMA_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_ID;
+import static org.apache.fluss.record.TestData.DATA1_TABLE_ID_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO;
+import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
+import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH_PK;
 import static org.apache.fluss.record.TestData.DEFAULT_REMOTE_DATA_DIR;
+import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
 import static org.apache.fluss.testutils.DataTestUtils.indexedRow;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -307,6 +313,76 @@ class RecordAccumulatorTest {
             }
             assertThat(iter.hasNext()).isFalse();
         }
+    }
+
+    @Test
+    void testHistoricalRecordsWithDifferentOriginalPartitionsAreNotBatchedTogether()
+            throws Exception {
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, 100L, 0);
+        BucketLocation historicalBucketLocation =
+                new BucketLocation(historicalPath, historicalBucket, node1.id(), serverNodes);
+        Map<PhysicalTablePath, List<BucketLocation>> bucketsByPath = new HashMap<>();
+        bucketsByPath.put(historicalPath, Collections.singletonList(historicalBucketLocation));
+        Map<TablePath, Long> tableIdsByPath = new HashMap<>();
+        tableIdsByPath.put(DATA1_TABLE_PATH_PK, DATA1_TABLE_ID_PK);
+        Map<PhysicalTablePath, Long> partitionIdsByPath = new HashMap<>();
+        partitionIdsByPath.put(historicalPath, 100L);
+        cluster =
+                new Cluster(
+                        cluster.getAliveTabletServers(),
+                        cluster.getCoordinatorServer(),
+                        bucketsByPath,
+                        tableIdsByPath,
+                        partitionIdsByPath);
+
+        RecordAccumulator accum = createTestRecordAccumulator(1024, 10L * 1024);
+        BinaryRow kvRow = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        byte[] key =
+                new CompactedKeyEncoder(DATA1_ROW_TYPE, DATA1_SCHEMA_PK.getPrimaryKeyIndexes())
+                        .encodeKey(kvRow);
+        WriteRecord record =
+                WriteRecord.forUpsert(
+                        DATA1_TABLE_INFO_PK,
+                        historicalPath,
+                        kvRow,
+                        key,
+                        key,
+                        WriteFormat.COMPACTED_KV,
+                        null);
+
+        accum.append(
+                record.withWriteTarget(historicalPath, "year=2000"),
+                writeCallback,
+                cluster,
+                0,
+                false);
+        accum.append(
+                record.withWriteTarget(historicalPath, "year=2000"),
+                writeCallback,
+                cluster,
+                0,
+                false);
+        accum.append(
+                record.withWriteTarget(historicalPath, "year=2001"),
+                writeCallback,
+                cluster,
+                0,
+                false);
+        accum.append(
+                record.withWriteTarget(historicalPath, "year=2000"),
+                writeCallback,
+                cluster,
+                0,
+                false);
+
+        Deque<WriteBatch> batches = accum.getReadyDeque(historicalPath, 0);
+        assertThat(batches).hasSize(3);
+        assertThat(batches)
+                .extracting(batch -> ((KvWriteBatch) batch).getOriginalPartitionName())
+                .containsExactly("year=2000", "year=2001", "year=2000");
+        assertThat(batches).extracting(WriteBatch::getRecordCount).containsExactly(2, 1, 1);
     }
 
     @Test

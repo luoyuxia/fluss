@@ -19,6 +19,7 @@ package org.apache.fluss.client.write;
 
 import org.apache.fluss.client.metadata.TestingMetadataUpdater;
 import org.apache.fluss.client.metrics.TestingWriterMetricGroup;
+import org.apache.fluss.cluster.BucketLocation;
 import org.apache.fluss.cluster.Cluster;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.config.ConfigOptions;
@@ -26,6 +27,9 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.exception.TimeoutException;
+import org.apache.fluss.memory.MemorySegment;
+import org.apache.fluss.memory.PreAllocatedPagedOutputView;
+import org.apache.fluss.metadata.KvFormat;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -37,10 +41,13 @@ import org.apache.fluss.row.encode.CompactedKeyEncoder;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.entity.PutKvResultForBucket;
 import org.apache.fluss.rpc.messages.ApiMessage;
+import org.apache.fluss.rpc.messages.PbPutKvReqForBucket;
 import org.apache.fluss.rpc.messages.ProduceLogRequest;
 import org.apache.fluss.rpc.messages.ProduceLogResponse;
+import org.apache.fluss.rpc.messages.PutKvRequest;
 import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.protocol.Errors;
+import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.tablet.TestTabletServerGateway;
 import org.apache.fluss.utils.clock.SystemClock;
 
@@ -50,6 +57,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
@@ -885,6 +893,116 @@ final class SenderTest {
     }
 
     @Test
+    void testPackPutKvRequestGroups() throws Exception {
+        ReadyWriteBatch normal0 = createReadyKvBatch(new TableBucket(DATA1_TABLE_ID_PK, 0), null);
+        ReadyWriteBatch normal1 = createReadyKvBatch(new TableBucket(DATA1_TABLE_ID_PK, 1), null);
+        TableBucket historical0 = new TableBucket(DATA1_TABLE_ID_PK, 100L, 0);
+        ReadyWriteBatch historical2000 = createReadyKvBatch(historical0, "year=2000");
+        ReadyWriteBatch historical2001 = createReadyKvBatch(historical0, "year=2001");
+        ReadyWriteBatch historicalBucket1 =
+                createReadyKvBatch(new TableBucket(DATA1_TABLE_ID_PK, 100L, 1), "year=2000");
+        ReadyWriteBatch normal2 = createReadyKvBatch(new TableBucket(DATA1_TABLE_ID_PK, 2), null);
+
+        List<List<ReadyWriteBatch>> groups =
+                Sender.packPutKvRequestGroups(
+                        Arrays.asList(
+                                normal0,
+                                normal1,
+                                historical2000,
+                                historicalBucket1,
+                                historical2001,
+                                normal2));
+
+        assertThat(groups).hasSize(4);
+        assertThat(groups.get(0)).containsExactly(normal0, normal1);
+        assertThat(groups.get(1)).containsExactly(historical2000, historicalBucket1);
+        assertThat(groups.get(2)).containsExactly(historical2001);
+        assertThat(groups.get(3)).containsExactly(normal2);
+    }
+
+    @Test
+    void testSeparateNormalAndHistoricalPutKvRequests() throws Exception {
+        Cluster oldCluster = metadataUpdater.getCluster();
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+        TableBucket normalBucket = new TableBucket(DATA1_TABLE_ID_PK, 0);
+        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, 100L, 0);
+        int leader = metadataUpdater.leaderFor(DATA1_TABLE_PATH_PK, normalBucket);
+        Map<PhysicalTablePath, List<BucketLocation>> bucketLocations =
+                new HashMap<>(oldCluster.getBucketLocationsByPath());
+        bucketLocations.put(
+                historicalPath,
+                Collections.singletonList(
+                        new BucketLocation(
+                                historicalPath, historicalBucket, leader, new int[] {1, 2, 3})));
+        Map<PhysicalTablePath, Long> partitionIds =
+                new HashMap<>(oldCluster.getPartitionIdByPath());
+        partitionIds.put(historicalPath, 100L);
+        metadataUpdater.updateCluster(
+                new Cluster(
+                        new HashMap<>(oldCluster.getAliveTabletServers()),
+                        oldCluster.getCoordinatorServer(),
+                        bucketLocations,
+                        new HashMap<>(oldCluster.getTableIdByPath()),
+                        partitionIds));
+
+        BinaryRow kvRow = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        byte[] key =
+                new CompactedKeyEncoder(DATA1_ROW_TYPE, DATA1_SCHEMA_PK.getPrimaryKeyIndexes())
+                        .encodeKey(kvRow);
+        WriteRecord normalRecord =
+                WriteRecord.forUpsert(
+                        DATA1_TABLE_INFO_PK,
+                        PhysicalTablePath.of(DATA1_TABLE_PATH_PK),
+                        kvRow,
+                        key,
+                        key,
+                        WriteFormat.COMPACTED_KV,
+                        null);
+        CompletableFuture<Exception> normalFuture = new CompletableFuture<>();
+        CompletableFuture<Exception> historicalFuture = new CompletableFuture<>();
+        accumulator.append(
+                normalRecord,
+                (tb, leo, e) -> normalFuture.complete(e),
+                metadataUpdater.getCluster(),
+                0,
+                false);
+        accumulator.append(
+                normalRecord.withWriteTarget(historicalPath, "year=2000"),
+                (tb, leo, e) -> historicalFuture.complete(e),
+                metadataUpdater.getCluster(),
+                0,
+                false);
+
+        sender.runOnce();
+
+        TestTabletServerGateway gateway =
+                (TestTabletServerGateway) metadataUpdater.newTabletServerClientForNode(leader);
+        assertThat(gateway.pendingRequestSize()).isEqualTo(2);
+        assertThat(Arrays.asList(gateway.getRequest(0), gateway.getRequest(1)))
+                .allSatisfy(request -> assertThat(request).isInstanceOf(PutKvRequest.class))
+                .extracting(
+                        request ->
+                                ((PutKvRequest) request)
+                                        .getBucketsReqAt(0)
+                                        .hasOriginalPartitionName())
+                .containsExactlyInAnyOrder(false, true);
+
+        while (gateway.pendingRequestSize() > 0) {
+            PutKvRequest request = (PutKvRequest) gateway.getRequest(0);
+            PbPutKvReqForBucket bucketRequest = request.getBucketsReqAt(0);
+            TableBucket responseBucket =
+                    new TableBucket(
+                            DATA1_TABLE_ID_PK,
+                            bucketRequest.hasPartitionId() ? bucketRequest.getPartitionId() : null,
+                            bucketRequest.getBucketId());
+            gateway.response(0, createPutKvResponse(responseBucket, 1));
+        }
+        assertThat(normalFuture.get()).isNull();
+        assertThat(historicalFuture.get()).isNull();
+    }
+
+    @Test
     void testSendWhenTableIdChanges() throws Exception {
         CompletableFuture<Exception> future1 = new CompletableFuture<>();
         appendToAccumulator(tb1, row(1, "a"), (tb, leo, e) -> future1.complete(e));
@@ -998,6 +1116,29 @@ final class SenderTest {
     private PutKvResponse createPutKvResponse(TableBucket tb, Errors error) {
         return makePutKvResponse(
                 Collections.singletonList(new PutKvResultForBucket(tb, error.toApiError())));
+    }
+
+    private ReadyWriteBatch createReadyKvBatch(
+            TableBucket tableBucket, String originalPartitionName) throws Exception {
+        PreAllocatedPagedOutputView outputView =
+                new PreAllocatedPagedOutputView(
+                        Collections.singletonList(MemorySegment.allocateHeapMemory(PAGE_SIZE)));
+        KvWriteBatch batch =
+                new KvWriteBatch(
+                        tableBucket.getTableId(),
+                        tableBucket.getBucket(),
+                        originalPartitionName == null
+                                ? PhysicalTablePath.of(DATA1_TABLE_PATH_PK)
+                                : PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__"),
+                        DATA1_TABLE_INFO_PK.getSchemaId(),
+                        KvFormat.COMPACTED,
+                        PAGE_SIZE,
+                        outputView,
+                        null,
+                        MergeMode.DEFAULT,
+                        originalPartitionName,
+                        System.currentTimeMillis());
+        return new ReadyWriteBatch(tableBucket, batch);
     }
 
     private Sender setupWithIdempotenceState() {

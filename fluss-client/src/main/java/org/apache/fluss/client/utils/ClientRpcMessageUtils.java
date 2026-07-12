@@ -156,11 +156,42 @@ public class ClientRpcMessageUtils {
             int acks,
             int maxRequestTimeoutMs,
             List<ReadyWriteBatch> readyWriteBatches) {
+        validatePutKvWriteBatches(readyWriteBatches);
         PutKvRequest request =
                 new PutKvRequest()
                         .setTableId(tableId)
                         .setAcks(acks)
                         .setTimeoutMs(maxRequestTimeoutMs);
+        KvWriteBatch firstBatch = (KvWriteBatch) readyWriteBatches.get(0).writeBatch();
+        int[] targetColumns = firstBatch.getTargetColumns();
+        MergeMode mergeMode = firstBatch.getMergeMode();
+        if (targetColumns != null) {
+            request.setTargetColumns(targetColumns);
+        }
+        // Set mergeMode in the request - this is the proper way to pass mergeMode to server
+        request.setAggMode(mergeMode.getProtoValue());
+
+        readyWriteBatches.forEach(
+                readyBatch -> {
+                    TableBucket tableBucket = readyBatch.tableBucket();
+                    PbPutKvReqForBucket pbPutKvReqForBucket =
+                            request.addBucketsReq()
+                                    .setBucketId(tableBucket.getBucket())
+                                    .setRecordsBytesView(readyBatch.writeBatch().build());
+                    if (tableBucket.getPartitionId() != null) {
+                        pbPutKvReqForBucket.setPartitionId(tableBucket.getPartitionId());
+                    }
+                    KvWriteBatch kvWriteBatch = (KvWriteBatch) readyBatch.writeBatch();
+                    if (kvWriteBatch.getOriginalPartitionName() != null) {
+                        pbPutKvReqForBucket.setOriginalPartitionName(
+                                kvWriteBatch.getOriginalPartitionName());
+                    }
+                });
+        return request;
+    }
+
+    /** Validates target columns and merge mode consistency for a list of put-KV batches. */
+    public static void validatePutKvWriteBatches(List<ReadyWriteBatch> readyWriteBatches) {
         // check the target columns in the batch list should be the same. If not same,
         // we throw exception directly currently.
         KvWriteBatch firstBatch = (KvWriteBatch) readyWriteBatches.get(0).writeBatch();
@@ -186,24 +217,6 @@ public class ClientRpcMessageUtils {
                                 mergeMode, currentBatch.getMergeMode()));
             }
         }
-        if (targetColumns != null) {
-            request.setTargetColumns(targetColumns);
-        }
-        // Set mergeMode in the request - this is the proper way to pass mergeMode to server
-        request.setAggMode(mergeMode.getProtoValue());
-
-        readyWriteBatches.forEach(
-                readyBatch -> {
-                    TableBucket tableBucket = readyBatch.tableBucket();
-                    PbPutKvReqForBucket pbPutKvReqForBucket =
-                            request.addBucketsReq()
-                                    .setBucketId(tableBucket.getBucket())
-                                    .setRecordsBytesView(readyBatch.writeBatch().build());
-                    if (tableBucket.getPartitionId() != null) {
-                        pbPutKvReqForBucket.setPartitionId(tableBucket.getPartitionId());
-                    }
-                });
-        return request;
     }
 
     public static LookupRequest makeLookupRequest(

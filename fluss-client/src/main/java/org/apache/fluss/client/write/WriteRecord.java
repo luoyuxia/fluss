@@ -88,7 +88,8 @@ public final class WriteRecord {
                 writeFormat,
                 targetColumns,
                 estimatedSizeInBytes,
-                mergeMode);
+                mergeMode,
+                null);
     }
 
     /** Create a write record for delete operation and partial-delete update. */
@@ -131,7 +132,8 @@ public final class WriteRecord {
                 writeFormat,
                 targetColumns,
                 estimatedSizeInBytes,
-                mergeMode);
+                mergeMode,
+                null);
     }
 
     /** Create a write record for append operation for indexed format. */
@@ -152,7 +154,8 @@ public final class WriteRecord {
                 WriteFormat.INDEXED_LOG,
                 null,
                 estimatedSizeInBytes,
-                MergeMode.DEFAULT);
+                MergeMode.DEFAULT,
+                null);
     }
 
     /** Creates a write record for append operation for Arrow format. */
@@ -174,7 +177,8 @@ public final class WriteRecord {
                 WriteFormat.ARROW_LOG,
                 null,
                 estimatedSizeInBytes,
-                MergeMode.DEFAULT);
+                MergeMode.DEFAULT,
+                null);
     }
 
     /** Creates a write record for append operation for Compacted format. */
@@ -195,7 +199,8 @@ public final class WriteRecord {
                 WriteFormat.COMPACTED_LOG,
                 null,
                 estimatedSizeInBytes,
-                MergeMode.DEFAULT);
+                MergeMode.DEFAULT,
+                null);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -211,6 +216,10 @@ public final class WriteRecord {
     private final @Nullable int[] targetColumns;
     private final int estimatedSizeInBytes;
     private final TableInfo tableInfo;
+
+    // Null for normal writes. Set to the expired original partition name when the physical target
+    // is the historical system partition.
+    private final @Nullable String originalPartitionName;
 
     /**
      * The merge mode for this record. This controls how the server handles data merging.
@@ -231,7 +240,8 @@ public final class WriteRecord {
             WriteFormat writeFormat,
             @Nullable int[] targetColumns,
             int estimatedSizeInBytes,
-            MergeMode mergeMode) {
+            MergeMode mergeMode,
+            @Nullable String originalPartitionName) {
         this.tableInfo = tableInfo;
         this.physicalTablePath = physicalTablePath;
         this.key = key;
@@ -241,6 +251,35 @@ public final class WriteRecord {
         this.targetColumns = targetColumns;
         this.estimatedSizeInBytes = estimatedSizeInBytes;
         this.mergeMode = mergeMode;
+        this.originalPartitionName = originalPartitionName;
+    }
+
+    /**
+     * Returns a copy with the given physical write target and original partition context.
+     *
+     * <p>A non-null original partition name is only valid for KV writes targeting the historical
+     * system partition. Normal writes keep the original partition name unset.
+     */
+    public WriteRecord withWriteTarget(
+            PhysicalTablePath physicalTablePath, @Nullable String originalPartitionName) {
+        checkNotNull(physicalTablePath, "physicalTablePath must not be null");
+        if (originalPartitionName != null) {
+            checkArgument(
+                    writeFormat.isKv(), "original partition name is only valid for KV writes");
+            checkArgument(
+                    !originalPartitionName.isEmpty(), "original partition name must not be empty");
+        }
+        return new WriteRecord(
+                tableInfo,
+                physicalTablePath,
+                key,
+                bucketKey,
+                row,
+                writeFormat,
+                targetColumns,
+                estimatedSizeInBytes,
+                mergeMode,
+                originalPartitionName);
     }
 
     public PhysicalTablePath getPhysicalTablePath() {
@@ -279,6 +318,11 @@ public final class WriteRecord {
      */
     public MergeMode getMergeMode() {
         return mergeMode;
+    }
+
+    /** Returns the expired original partition name for a historical KV write, or null. */
+    public @Nullable String getOriginalPartitionName() {
+        return originalPartitionName;
     }
 
     /**

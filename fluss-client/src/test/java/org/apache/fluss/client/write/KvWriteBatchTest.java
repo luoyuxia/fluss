@@ -154,6 +154,38 @@ class KvWriteBatchTest {
     }
 
     @Test
+    void testOriginalPartitionNameConsistency() throws Exception {
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+        KvWriteBatch batch = createKvWriteBatch(new TableBucket(DATA1_TABLE_ID_PK, 0), "year=2000");
+        WriteRecord matchingRecord =
+                createWriteRecord().withWriteTarget(historicalPath, "year=2000");
+        WriteRecord mismatchedRecord =
+                createWriteRecord().withWriteTarget(historicalPath, "year=2001");
+
+        assertThat(batch.tryAppend(matchingRecord, newWriteCallback())).isTrue();
+        assertThat(batch.tryAppend(mismatchedRecord, newWriteCallback())).isFalse();
+        assertThat(batch.getOriginalPartitionName()).isEqualTo("year=2000");
+        assertThat(batch.getRecordCount()).isEqualTo(1);
+    }
+
+    @Test
+    void testWithHistoricalWriteTarget() {
+        WriteRecord record = createWriteRecord();
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+
+        WriteRecord historicalRecord = record.withWriteTarget(historicalPath, "year=2000");
+
+        assertThat(historicalRecord.getPhysicalTablePath()).isEqualTo(historicalPath);
+        assertThat(historicalRecord.getOriginalPartitionName()).isEqualTo("year=2000");
+        assertThat(record.getOriginalPartitionName()).isNull();
+        assertThatThrownBy(() -> record.withWriteTarget(historicalPath, ""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("original partition name must not be empty");
+    }
+
+    @Test
     void testBatchAborted() throws Exception {
         int writeLimit = 10240;
         KvWriteBatch kvProducerBatch =
@@ -216,20 +248,38 @@ class KvWriteBatchTest {
         return createKvWriteBatch(tb, Integer.MAX_VALUE, memoryPool.nextSegment());
     }
 
+    private KvWriteBatch createKvWriteBatch(TableBucket tb, String originalPartitionName)
+            throws Exception {
+        return createKvWriteBatch(
+                tb, Integer.MAX_VALUE, memoryPool.nextSegment(), originalPartitionName);
+    }
+
     private KvWriteBatch createKvWriteBatch(
             TableBucket tb, int writeLimit, MemorySegment memorySegment) throws Exception {
+        return createKvWriteBatch(tb, writeLimit, memorySegment, null);
+    }
+
+    private KvWriteBatch createKvWriteBatch(
+            TableBucket tb,
+            int writeLimit,
+            MemorySegment memorySegment,
+            String originalPartitionName)
+            throws Exception {
         PreAllocatedPagedOutputView outputView =
                 new PreAllocatedPagedOutputView(Collections.singletonList(memorySegment));
         return new KvWriteBatch(
                 tb.getTableId(),
                 tb.getBucket(),
-                PhysicalTablePath.of(DATA1_TABLE_PATH_PK),
+                originalPartitionName == null
+                        ? PhysicalTablePath.of(DATA1_TABLE_PATH_PK)
+                        : PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__"),
                 DATA1_TABLE_INFO_PK.getSchemaId(),
                 KvFormat.COMPACTED,
                 writeLimit,
                 outputView,
                 null,
                 MergeMode.DEFAULT,
+                originalPartitionName,
                 System.currentTimeMillis());
     }
 
@@ -326,6 +376,7 @@ class KvWriteBatchTest {
                 outputView,
                 null,
                 mergeMode,
+                null,
                 System.currentTimeMillis());
     }
 

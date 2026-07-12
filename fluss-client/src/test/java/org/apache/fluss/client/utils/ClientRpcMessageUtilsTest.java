@@ -126,7 +126,31 @@ class ClientRpcMessageUtilsTest {
         assertThat(request.getAggMode()).isEqualTo(MergeMode.OVERWRITE.getProtoValue());
     }
 
+    @Test
+    void testMakePutKvRequestWithOriginalPartitionNames() throws Exception {
+        KvWriteBatch normalBatch = createKvWriteBatch(0, MergeMode.DEFAULT);
+        KvWriteBatch historicalBatch1 = createKvWriteBatch(1, MergeMode.DEFAULT, "year=2000");
+        KvWriteBatch historicalBatch2 = createKvWriteBatch(2, MergeMode.DEFAULT, "year=2001");
+        List<ReadyWriteBatch> readyBatches =
+                Arrays.asList(
+                        new ReadyWriteBatch(new TableBucket(TABLE_ID, 0), normalBatch),
+                        new ReadyWriteBatch(new TableBucket(TABLE_ID, 100L, 1), historicalBatch1),
+                        new ReadyWriteBatch(new TableBucket(TABLE_ID, 100L, 2), historicalBatch2));
+
+        PutKvRequest request =
+                ClientRpcMessageUtils.makePutKvRequest(TABLE_ID, ACKS, TIMEOUT_MS, readyBatches);
+
+        assertThat(request.getBucketsReqAt(0).hasOriginalPartitionName()).isFalse();
+        assertThat(request.getBucketsReqAt(1).getOriginalPartitionName()).isEqualTo("year=2000");
+        assertThat(request.getBucketsReqAt(2).getOriginalPartitionName()).isEqualTo("year=2001");
+    }
+
     private KvWriteBatch createKvWriteBatch(int bucketId, MergeMode mergeMode) throws Exception {
+        return createKvWriteBatch(bucketId, mergeMode, null);
+    }
+
+    private KvWriteBatch createKvWriteBatch(
+            int bucketId, MergeMode mergeMode, String originalPartitionName) throws Exception {
         MemorySegment segment = MemorySegment.allocateHeapMemory(1024);
         PreAllocatedPagedOutputView outputView =
                 new PreAllocatedPagedOutputView(Collections.singletonList(segment));
@@ -140,6 +164,7 @@ class ClientRpcMessageUtilsTest {
                 outputView,
                 null,
                 mergeMode,
+                originalPartitionName,
                 System.currentTimeMillis());
     }
 }

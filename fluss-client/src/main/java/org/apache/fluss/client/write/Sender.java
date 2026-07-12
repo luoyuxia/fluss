@@ -49,12 +49,14 @@ import javax.annotation.concurrent.GuardedBy;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeProduceLogRequest;
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makePutKvRequest;
+import static org.apache.fluss.client.utils.ClientRpcMessageUtils.validatePutKvWriteBatches;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -368,45 +370,103 @@ public class Sender implements Runnable {
             return;
         }
 
-        // group record batch by table id.
-        final Map<TableBucket, ReadyWriteBatch> recordsByBucket = new HashMap<>();
-        Map<Long, List<ReadyWriteBatch>> writeBatchByTable = new HashMap<>();
+        // Group record batches by table id while keeping their drain order.
+        Map<Long, List<ReadyWriteBatch>> writeBatchByTable = new LinkedHashMap<>();
         batches.forEach(
-                batch -> {
-                    // keep the batch before ack.
-                    recordsByBucket.put(batch.tableBucket(), batch);
-                    writeBatchByTable
-                            .computeIfAbsent(
-                                    batch.tableBucket().getTableId(), k -> new ArrayList<>())
-                            .add(batch);
-                });
+                batch ->
+                        writeBatchByTable
+                                .computeIfAbsent(
+                                        batch.tableBucket().getTableId(), k -> new ArrayList<>())
+                                .add(batch));
 
         TabletServerGateway gateway = metadataUpdater.newTabletServerClientForNode(destination);
-        if (gateway == null) {
-            handleWriteRequestException(
-                    new LeaderNotAvailableException(
-                            "Server " + destination + " is not found in metadata cache."),
-                    recordsByBucket);
-        } else {
-            writeBatchByTable.forEach(
-                    (tableId, writeBatches) -> {
-                        if (isLogBatches(writeBatches)) {
+        LeaderNotAvailableException unavailableException =
+                gateway == null
+                        ? new LeaderNotAvailableException(
+                                "Server " + destination + " is not found in metadata cache.")
+                        : null;
+        writeBatchByTable.forEach(
+                (tableId, writeBatches) -> {
+                    if (isLogBatches(writeBatches)) {
+                        Map<TableBucket, ReadyWriteBatch> recordsByBucket =
+                                recordsByBucket(writeBatches);
+                        if (gateway == null) {
+                            handleWriteRequestException(unavailableException, recordsByBucket);
+                        } else {
                             sendProduceLogRequestAndHandleResponse(
                                     gateway,
                                     makeProduceLogRequest(
                                             tableId, acks, maxRequestTimeoutMs, writeBatches),
                                     tableId,
                                     recordsByBucket);
-                        } else {
-                            sendPutKvRequestAndHandleResponse(
-                                    gateway,
-                                    makePutKvRequest(
-                                            tableId, acks, maxRequestTimeoutMs, writeBatches),
-                                    tableId,
-                                    recordsByBucket);
                         }
-                    });
+                    } else {
+                        List<List<ReadyWriteBatch>> requestGroups =
+                                packPutKvRequestGroups(writeBatches);
+                        if (requestGroups.size() > 1) {
+                            // Keep the existing table-level validation across request boundaries.
+                            // A single group is validated by makePutKvRequest below.
+                            validatePutKvWriteBatches(writeBatches);
+                        }
+                        for (List<ReadyWriteBatch> requestGroup : requestGroups) {
+                            Map<TableBucket, ReadyWriteBatch> recordsByBucket =
+                                    recordsByBucket(requestGroup);
+                            if (gateway == null) {
+                                handleWriteRequestException(unavailableException, recordsByBucket);
+                            } else {
+                                sendPutKvRequestAndHandleResponse(
+                                        gateway,
+                                        makePutKvRequest(
+                                                tableId, acks, maxRequestTimeoutMs, requestGroup),
+                                        tableId,
+                                        recordsByBucket);
+                            }
+                        }
+                    }
+                });
+    }
+
+    /**
+     * Packs KV batches into request groups while preserving their input order.
+     *
+     * <p>A group contains either normal batches or historical batches. Each {@link TableBucket} can
+     * appear at most once because a put-KV response identifies a batch only by table bucket and
+     * does not carry the original partition name. Historical batches for different table buckets
+     * may stay in the same group even when their original partition names differ.
+     */
+    @VisibleForTesting
+    static List<List<ReadyWriteBatch>> packPutKvRequestGroups(List<ReadyWriteBatch> batches) {
+        List<List<ReadyWriteBatch>> groups = new ArrayList<>();
+        List<ReadyWriteBatch> currentGroup = null;
+        Set<TableBucket> tableBuckets = new HashSet<>();
+        boolean currentGroupHistorical = false;
+
+        for (ReadyWriteBatch batch : batches) {
+            checkArgument(!batch.writeBatch().isLogBatch(), "batch must be a KV batch");
+            KvWriteBatch kvWriteBatch = (KvWriteBatch) batch.writeBatch();
+            boolean historical = kvWriteBatch.getOriginalPartitionName() != null;
+            // Start a new RPC when the write kind changes or its response correlation key repeats.
+            if (currentGroup == null
+                    || historical != currentGroupHistorical
+                    || tableBuckets.contains(batch.tableBucket())) {
+                currentGroup = new ArrayList<>();
+                groups.add(currentGroup);
+                tableBuckets = new HashSet<>();
+                currentGroupHistorical = historical;
+            }
+            currentGroup.add(batch);
+            tableBuckets.add(batch.tableBucket());
         }
+        return groups;
+    }
+
+    private static Map<TableBucket, ReadyWriteBatch> recordsByBucket(
+            List<ReadyWriteBatch> batches) {
+        Map<TableBucket, ReadyWriteBatch> recordsByBucket = new HashMap<>();
+        for (ReadyWriteBatch batch : batches) {
+            recordsByBucket.put(batch.tableBucket(), batch);
+        }
+        return recordsByBucket;
     }
 
     /**
