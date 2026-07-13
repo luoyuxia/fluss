@@ -308,9 +308,21 @@ final class KvManagerTest {
     void testDropKv(String partitionName) throws Exception {
         initTableBuckets(partitionName);
         KvTablet kv1 = getOrCreateKv(tablePath1, partitionName, tableBucket1);
+        File historicalKvDir = null;
+        if (partitionName != null) {
+            historicalKvDir =
+                    kvManager
+                            .getHistoricalKvManager()
+                            .getOrCreate(tableBucket1, kv1.getKvTabletDir())
+                            .getDirectory();
+            assertThat(historicalKvDir).exists();
+        }
         kvManager.dropKv(kv1.getTableBucket());
 
         assertThat(kv1.getKvTabletDir()).doesNotExist();
+        if (historicalKvDir != null) {
+            assertThat(historicalKvDir).doesNotExist();
+        }
         assertThat(kvManager.getKv(tableBucket1)).isNotPresent();
 
         kv1 = getOrCreateKv(tablePath1, partitionName, tableBucket1);

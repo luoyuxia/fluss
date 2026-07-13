@@ -38,6 +38,7 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.TabletManagerBase;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
 import org.apache.fluss.server.kv.autoinc.ZkSequenceGeneratorFactory;
+import org.apache.fluss.server.kv.historical.HistoricalKvManager;
 import org.apache.fluss.server.kv.rowmerger.RowMerger;
 import org.apache.fluss.server.log.LogManager;
 import org.apache.fluss.server.log.LogTablet;
@@ -48,6 +49,7 @@ import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocatorUtil;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.FlussPaths;
+import org.apache.fluss.utils.clock.SystemClock;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.rocksdb.RateLimiter;
@@ -137,6 +139,8 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
      */
     private final RateLimiter sharedRocksDBRateLimiter;
 
+    private final HistoricalKvManager historicalKvManager;
+
     /** Current shared rate limiter configuration in bytes per second. */
     private volatile long currentSharedRateLimitBytesPerSec;
 
@@ -160,6 +164,12 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
         this.remoteFileSystem = remoteKvDir.getFileSystem();
         this.serverMetricGroup = tabletServerMetricGroup;
         this.sharedRocksDBRateLimiter = createSharedRateLimiter(conf);
+        this.historicalKvManager =
+                new HistoricalKvManager(
+                        conf,
+                        tabletServerMetricGroup,
+                        sharedRocksDBRateLimiter,
+                        SystemClock.getInstance());
         this.currentSharedRateLimitBytesPerSec =
                 conf.get(ConfigOptions.KV_SHARED_RATE_LIMITER_BYTES_PER_SEC).getBytes();
     }
@@ -205,6 +215,11 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
     public void shutdown() {
         LOG.info("Shutting down KvManager");
         isShutdown = true;
+        try {
+            historicalKvManager.close();
+        } catch (Exception e) {
+            LOG.warn("Exception while closing historical kv states.", e);
+        }
         List<KvTablet> kvs = new ArrayList<>(currentKvs.values());
         for (KvTablet kvTablet : kvs) {
             try {
@@ -311,7 +326,13 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
         return Optional.ofNullable(currentKvs.get(tableBucket));
     }
 
+    /** Returns the manager for disposable historical KV state. */
+    public HistoricalKvManager getHistoricalKvManager() {
+        return historicalKvManager;
+    }
+
     public void dropKv(TableBucket tableBucket) {
+        historicalKvManager.invalidateBucket(tableBucket);
         KvTablet dropKvTablet =
                 inLock(tabletCreationOrDeletionLock, () -> currentKvs.remove(tableBucket));
 
