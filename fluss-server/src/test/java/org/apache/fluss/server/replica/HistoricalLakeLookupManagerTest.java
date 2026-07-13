@@ -27,15 +27,24 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.server.entity.LookupDataForBucket;
+import org.apache.fluss.server.kv.KvManager;
+import org.apache.fluss.server.kv.historical.HistoricalKvHandle;
+import org.apache.fluss.server.kv.historical.HistoricalKvManager;
+import org.apache.fluss.server.kv.historical.HistoricalKvStateAccessor;
+import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.Key;
+import org.apache.fluss.server.metrics.group.TestingMetricGroups;
+import org.apache.fluss.utils.clock.ManualClock;
 
 import com.github.benmanes.caffeine.cache.Scheduler;
 import com.github.benmanes.caffeine.cache.Ticker;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.AbstractExecutorService;
@@ -60,6 +69,17 @@ class HistoricalLakeLookupManagerTest {
     private static final TableBucket HISTORICAL_BUCKET = new TableBucket(PARTITION_TABLE_ID, 1L, 0);
 
     @TempDir private File ioTmpDir;
+    private final HistoricalKvManager historicalKvManager =
+            new HistoricalKvManager(
+                    new Configuration(),
+                    TestingMetricGroups.TABLET_SERVER_METRICS,
+                    KvManager.getDefaultRateLimiter(),
+                    new ManualClock());
+
+    @AfterEach
+    void closeHistoricalKvManager() {
+        historicalKvManager.close();
+    }
 
     @Test
     void testHistoricalLookupThrottledWhenPermitsExhausted() throws Exception {
@@ -139,7 +159,8 @@ class HistoricalLakeLookupManagerTest {
                                         executor,
                                         SERVER_ID,
                                         Ticker.systemTicker(),
-                                        Scheduler.disabledScheduler()))
+                                        Scheduler.disabledScheduler(),
+                                        historicalKvManager))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(
                         ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS.key());
@@ -216,7 +237,7 @@ class HistoricalLakeLookupManagerTest {
                 };
         TestingHistoricalLakeLookupManager manager =
                 new TestingHistoricalLakeLookupManager(
-                        conf(1), executor, tickerNanos::get, cacheScheduler);
+                        conf(1), executor, tickerNanos::get, cacheScheduler, historicalKvManager);
 
         lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
         TestingLakeTableLookuper expiredLookuper = manager.createdLookupers.get(0);
@@ -230,6 +251,38 @@ class HistoricalLakeLookupManagerTest {
         assertThat(manager.createdLookupers).hasSize(2);
     }
 
+    @Test
+    void testLocalHistoricalStateTakesPrecedenceOverLake() throws Exception {
+        ManualExecutor executor = new ManualExecutor();
+        try (TestingHistoricalLakeLookupManager manager =
+                new TestingHistoricalLakeLookupManager(conf(1), executor, historicalKvManager)) {
+            HistoricalKvHandle handle =
+                    historicalKvManager.getOrCreate(HISTORICAL_BUCKET, new File(ioTmpDir, "kv-0"));
+            HistoricalKvStateAccessor stateAccessor = new HistoricalKvStateAccessor(handle, "2024");
+            byte[] presentKey = new byte[] {1};
+            byte[] deletedKey = new byte[] {2};
+            byte[] missingKey = new byte[] {3};
+            byte[] localValue = new byte[] {9};
+            Key encodedPresentKey = stateAccessor.encodeKey(presentKey);
+            Key encodedDeletedKey = stateAccessor.encodeKey(deletedKey);
+            stateAccessor.insert(encodedPresentKey, localValue, 0L);
+            stateAccessor.delete(encodedDeletedKey, 1L);
+
+            CompletableFuture<LookupResultForBucket> future =
+                    manager.lookup(
+                            new LookupDataForBucket(
+                                    HISTORICAL_BUCKET,
+                                    Arrays.asList(presentKey, deletedKey, missingKey),
+                                    "2024"),
+                            PARTITION_TABLE_INFO);
+            executor.runNext();
+
+            assertThat(future.get(1, TimeUnit.SECONDS).lookupValues())
+                    .containsExactly(localValue, null, missingKey);
+            assertThat(manager.createdLookupers).hasSize(1);
+        }
+    }
+
     private HistoricalLakeLookupManager createManager(
             int maxQueuedHistoricalRequests, ManualExecutor executor) {
         return new HistoricalLakeLookupManager(
@@ -238,11 +291,12 @@ class HistoricalLakeLookupManagerTest {
                 executor,
                 SERVER_ID,
                 Ticker.systemTicker(),
-                Scheduler.disabledScheduler());
+                Scheduler.disabledScheduler(),
+                historicalKvManager);
     }
 
     private TestingHistoricalLakeLookupManager createTestingManager(ManualExecutor executor) {
-        return new TestingHistoricalLakeLookupManager(conf(1), executor);
+        return new TestingHistoricalLakeLookupManager(conf(1), executor, historicalKvManager);
     }
 
     private Configuration conf(int maxQueuedHistoricalRequests) {
@@ -285,22 +339,27 @@ class HistoricalLakeLookupManagerTest {
         private final List<TestingLakeTableLookuper> createdLookupers = new ArrayList<>();
         private final List<String> createdIoTmpDirs = new ArrayList<>();
 
-        private TestingHistoricalLakeLookupManager(Configuration conf, ManualExecutor executor) {
+        private TestingHistoricalLakeLookupManager(
+                Configuration conf,
+                ManualExecutor executor,
+                HistoricalKvManager historicalKvManager) {
             super(
                     conf,
                     null,
                     executor,
                     SERVER_ID,
                     Ticker.systemTicker(),
-                    Scheduler.disabledScheduler());
+                    Scheduler.disabledScheduler(),
+                    historicalKvManager);
         }
 
         private TestingHistoricalLakeLookupManager(
                 Configuration conf,
                 ManualExecutor executor,
                 Ticker ticker,
-                Scheduler cacheScheduler) {
-            super(conf, null, executor, SERVER_ID, ticker, cacheScheduler);
+                Scheduler cacheScheduler,
+                HistoricalKvManager historicalKvManager) {
+            super(conf, null, executor, SERVER_ID, ticker, cacheScheduler, historicalKvManager);
         }
 
         @Override

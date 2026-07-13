@@ -59,6 +59,7 @@ import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvRecoverHelper;
 import org.apache.fluss.server.kv.KvTablet;
+import org.apache.fluss.server.kv.KvWriteProcessor;
 import org.apache.fluss.server.kv.RemoteLogFetcher;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
 import org.apache.fluss.server.kv.rocksdb.RocksDBKvBuilder;
@@ -107,6 +108,7 @@ import org.apache.fluss.utils.CloseableRegistry;
 import org.apache.fluss.utils.FlussPaths;
 import org.apache.fluss.utils.IOUtils;
 import org.apache.fluss.utils.clock.Clock;
+import org.apache.fluss.utils.function.SupplierWithException;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
@@ -140,7 +142,9 @@ import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import static org.apache.fluss.utils.PartitionUtils.isHistoricalPartitionName;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
+import static org.apache.fluss.utils.Preconditions.checkState;
 import static org.apache.fluss.utils.concurrent.LockUtils.inReadLock;
 import static org.apache.fluss.utils.concurrent.LockUtils.inWriteLock;
 
@@ -152,7 +156,8 @@ import static org.apache.fluss.utils.concurrent.LockUtils.inWriteLock;
  * or {@link KvTablet} to manipulate the underlying data.
  *
  * <p>For table with pk, it contains a {@link LogTablet} and a {@link KvTablet} if the replica is
- * the leader of the table bucket. For table without pk, it contains only a {@link LogTablet}.
+ * the leader of the table bucket. A historical partition uses disposable historical KV state
+ * instead of a normal {@link KvTablet}. For table without pk, it contains only a {@link LogTablet}.
  */
 @ThreadSafe
 public final class Replica {
@@ -186,6 +191,7 @@ public final class Replica {
     private final SchemaGetter schemaGetter;
     private final TableInfo tableInfo;
     private final TableConfig tableConfig;
+    private final boolean historicalPartition;
     // logFormat and arrowCompressionInfo are used in hot-path, so cache them here.
     private final LogFormat logFormat;
     private final ArrowCompressionInfo arrowCompressionInfo;
@@ -210,8 +216,9 @@ public final class Replica {
     private volatile int coordinatorEpoch = CoordinatorContext.INITIAL_COORDINATOR_EPOCH;
     private volatile boolean isStandbyReplica = false;
 
-    // null if table without pk or haven't become leader
+    // null if table without pk, historical partition, or haven't become leader
     private volatile @Nullable KvTablet kvTablet;
+    private volatile @Nullable KvWriteProcessor historicalKvWriteProcessor;
     private volatile @Nullable CloseableRegistry closeableRegistryForKv;
     private @Nullable PeriodicSnapshotManager kvSnapshotManager;
 
@@ -272,6 +279,9 @@ public final class Replica {
                         tableInfo.getSchema());
         this.tableInfo = tableInfo;
         this.tableConfig = tableInfo.getTableConfig();
+        String partitionName = physicalPath.getPartitionName();
+        this.historicalPartition =
+                partitionName != null && isHistoricalPartitionName(tableInfo, partitionName);
         this.logFormat = tableConfig.getLogFormat();
         this.arrowCompressionInfo = tableConfig.getArrowCompressionInfo();
         this.snapshotContext = snapshotContext;
@@ -311,7 +321,7 @@ public final class Replica {
     }
 
     public long logicalStorageKvSize() {
-        if (isLeader() && isKvTable()) {
+        if (isLeader() && isKvTable() && !isHistoricalPartition()) {
             checkNotNull(kvSnapshotManager, "kvSnapshotManager is null");
             return kvSnapshotManager.getSnapshotSize();
         } else {
@@ -388,8 +398,36 @@ public final class Replica {
         return logManager.getTabletParentDir(logTablet.getDataDir(), physicalPath, tableBucket);
     }
 
+    File getKvTabletDir() {
+        return FlussPaths.kvTabletDir(logTablet.getDataDir(), physicalPath, tableBucket);
+    }
+
     public @Nullable KvTablet getKvTablet() {
         return kvTablet;
+    }
+
+    SchemaGetter schemaGetter() {
+        return schemaGetter;
+    }
+
+    boolean isHistoricalPartition() {
+        return historicalPartition;
+    }
+
+    synchronized KvWriteProcessor getOrCreateHistoricalKvWriteProcessor() {
+        checkState(
+                isHistoricalPartition(), "Replica %s is not a historical partition", tableBucket);
+        if (historicalKvWriteProcessor == null) {
+            historicalKvWriteProcessor =
+                    checkNotNull(kvManager)
+                            .createKvWriteProcessor(
+                                    physicalPath,
+                                    tableBucket,
+                                    logTablet,
+                                    schemaGetter,
+                                    tableConfig);
+        }
+        return historicalKvWriteProcessor;
     }
 
     public TablePath getTablePath() {
@@ -575,8 +613,10 @@ public final class Replica {
             // first destroy the old kv tablet
             // if exist. Otherwise, it'll use still the old kv tablet which will cause data loss
             dropKv();
-            // now, we can create a new kv tablet
-            createKv();
+            if (!isHistoricalPartition()) {
+                // now, we can create a new kv tablet
+                createKv();
+            }
         }
     }
 
@@ -719,16 +759,22 @@ public final class Replica {
         // blocks waiting for them. Runs under leaderIsrUpdateLock(W), so no concurrent register.
         scannerManager.closeScannersForBucket(tableBucket);
 
-        if (closeableRegistry.unregisterCloseable(closeableRegistryForKv)) {
-            IOUtils.closeQuietly(closeableRegistryForKv);
+        CloseableRegistry registryForKv = closeableRegistryForKv;
+        if (registryForKv != null) {
+            if (closeableRegistry.unregisterCloseable(registryForKv)) {
+                IOUtils.closeQuietly(registryForKv);
+            }
+            closeableRegistryForKv = null;
+        }
+        if (historicalKvWriteProcessor != null) {
+            IOUtils.closeQuietly(historicalKvWriteProcessor);
+            historicalKvWriteProcessor = null;
         }
         if (kvTablet != null) {
             bucketMetricGroup.unregisterRocksDBStatistics();
-
-            checkNotNull(kvManager);
-            kvManager.dropKv(tableBucket);
             kvTablet = null;
         }
+        checkNotNull(kvManager).dropKv(tableBucket);
     }
 
     private void mayFlushKv(long newHighWatermark) {
@@ -1102,6 +1148,26 @@ public final class Replica {
                     // we may need to increment high watermark.
                     maybeIncrementLeaderHW(logTablet, clock.milliseconds());
                     return logAppendInfo;
+                });
+    }
+
+    LogAppendInfo putHistoricalRecordsToLeader(
+            int requiredAcks, SupplierWithException<LogAppendInfo, Exception> writeAction)
+            throws Exception {
+        return inReadLock(
+                leaderIsrUpdateLock,
+                () -> {
+                    if (!isLeader()) {
+                        throw new NotLeaderOrFollowerException(
+                                String.format(
+                                        "Leader not local for bucket %s on tabletServer %d",
+                                        tableBucket, localTabletServerId));
+                    }
+
+                    validateInSyncReplicaSize(requiredAcks);
+                    LogAppendInfo appendInfo = writeAction.get();
+                    maybeIncrementLeaderHW(logTablet, clock.milliseconds());
+                    return appendInfo;
                 });
     }
 

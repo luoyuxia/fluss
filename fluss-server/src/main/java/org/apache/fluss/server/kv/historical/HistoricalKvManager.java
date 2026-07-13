@@ -51,7 +51,6 @@ import static org.apache.fluss.utils.Preconditions.checkState;
 public final class HistoricalKvManager implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(HistoricalKvManager.class);
-    private static final String HISTORICAL_KV_DIR_PREFIX = "historical-kv-";
 
     private final Configuration configuration;
     private final TabletServerMetricGroup serverMetricGroup;
@@ -79,7 +78,7 @@ public final class HistoricalKvManager implements AutoCloseable {
         this.clock = checkNotNull(clock, "clock must not be null");
     }
 
-    /** Gets or lazily creates the historical state for a table bucket. */
+    /** Gets or lazily creates historical state in the given KV tablet directory. */
     public HistoricalKvHandle getOrCreate(TableBucket tableBucket, File kvTabletDir)
             throws IOException {
         checkNotNull(tableBucket, "tableBucket must not be null");
@@ -88,37 +87,17 @@ public final class HistoricalKvManager implements AutoCloseable {
                 tableBucket.getPartitionId() != null,
                 "Historical KV state requires a partitioned table bucket");
 
-        File historicalDirectory =
-                getHistoricalKvDir(kvTabletDir, tableBucket)
-                        .toPath()
-                        .toAbsolutePath()
-                        .normalize()
-                        .toFile();
         synchronized (lifecycleLock) {
             checkState(!closed, "HistoricalKvManager is already closed");
             HistoricalKvHandle existing = handles.get(tableBucket);
             if (existing != null) {
-                checkArgument(
-                        existing.getDirectory().equals(historicalDirectory),
-                        "Historical KV state for %s already uses directory %s instead of %s",
-                        tableBucket,
-                        existing.getDirectory(),
-                        historicalDirectory);
                 return existing;
-            }
-
-            for (HistoricalKvHandle handle : handles.values()) {
-                checkArgument(
-                        !handle.getDirectory().equals(historicalDirectory),
-                        "Historical KV directory %s is already used by %s",
-                        historicalDirectory,
-                        handle.getTableBucket());
             }
 
             HistoricalKvHandle created =
                     HistoricalKvHandle.create(
                             tableBucket,
-                            historicalDirectory,
+                            kvTabletDir,
                             configuration,
                             serverMetricGroup,
                             sharedRateLimiter,
@@ -204,12 +183,6 @@ public final class HistoricalKvManager implements AutoCloseable {
             throw new KvStorageException(
                     "Failed to drop historical KV state for " + handle.getTableBucket(), e);
         }
-    }
-
-    @VisibleForTesting
-    static File getHistoricalKvDir(File kvTabletDir, TableBucket tableBucket) {
-        File parent = checkNotNull(kvTabletDir.getAbsoluteFile().getParentFile());
-        return new File(parent, HISTORICAL_KV_DIR_PREFIX + tableBucket.getBucket());
     }
 
     @VisibleForTesting

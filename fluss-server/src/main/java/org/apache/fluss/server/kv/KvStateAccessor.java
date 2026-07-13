@@ -35,6 +35,18 @@ public interface KvStateAccessor {
     /** Looks up an encoded key from the prewrite buffer and underlying KV storage. */
     KvStateLookupResult lookup(Key key) throws IOException;
 
+    /**
+     * Looks up a key while retaining its original representation for optional external fallback.
+     *
+     * <p>The default implementation uses only the encoded key.
+     *
+     * @param primaryKey original primary key
+     * @param encodedKey key encoded for the local state
+     */
+    default KvStateLookupResult lookup(byte[] primaryKey, Key encodedKey) throws Exception {
+        return lookup(encodedKey);
+    }
+
     /** Adds an insert mutation to the prewrite buffer. */
     void insert(Key key, byte[] value, long logOffset);
 

@@ -35,6 +35,7 @@ import org.apache.fluss.metadata.SchemaGetter;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.row.arrow.ArrowWriterPool;
 import org.apache.fluss.server.TabletManagerBase;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
 import org.apache.fluss.server.kv.autoinc.ZkSequenceGeneratorFactory;
@@ -331,6 +332,34 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
         return historicalKvManager;
     }
 
+    /** Creates a state-independent KV write processor for a historical replica. */
+    public KvWriteProcessor createKvWriteProcessor(
+            PhysicalTablePath physicalTablePath,
+            TableBucket tableBucket,
+            LogTablet logTablet,
+            SchemaGetter schemaGetter,
+            TableConfig tableConfig) {
+        KvFormat kvFormat = tableConfig.getKvFormat();
+        RowMerger rowMerger = RowMerger.create(tableConfig, kvFormat, schemaGetter);
+        AutoIncrementManager autoIncrementManager =
+                new AutoIncrementManager(
+                        schemaGetter,
+                        physicalTablePath.getTablePath(),
+                        tableConfig,
+                        new ZkSequenceGeneratorFactory(zkClient));
+        return new KvWriteProcessor(
+                tableBucket,
+                logTablet,
+                new ArrowWriterPool(arrowBufferAllocator),
+                memorySegmentPool,
+                kvFormat,
+                rowMerger,
+                tableConfig.getArrowCompressionInfo(),
+                schemaGetter,
+                tableConfig.getChangelogImage(),
+                autoIncrementManager);
+    }
+
     public void dropKv(TableBucket tableBucket) {
         historicalKvManager.invalidateBucket(tableBucket);
         KvTablet dropKvTablet =
@@ -363,8 +392,6 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                                 dropKvTablet.getKvTabletDir().getAbsolutePath()),
                         e);
             }
-        } else {
-            LOG.warn("Fail to delete kv bucket {}.", tableBucket.getBucket());
         }
     }
 

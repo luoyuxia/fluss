@@ -78,6 +78,7 @@ import org.apache.fluss.server.entity.NotifyLakeTableOffsetData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.entity.NotifyRemoteLogOffsetsData;
+import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.entity.UserContext;
@@ -153,7 +154,6 @@ import java.util.stream.Stream;
 
 import static org.apache.fluss.config.ConfigOptions.KV_FORMAT_VERSION_2;
 import static org.apache.fluss.server.TabletManagerBase.getTableInfo;
-import static org.apache.fluss.utils.PartitionUtils.isHistoricalPartitionName;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.fluss.utils.Preconditions.checkState;
@@ -224,6 +224,7 @@ public class ReplicaManager implements ServerReconfigurable {
     private final ScannerManager scannerManager;
 
     private final HistoricalLakeLookupManager historicalLakeLookupManager;
+    private final HistoricalPkWriteManager historicalPkWriteManager;
 
     public ReplicaManager(
             Configuration conf,
@@ -431,7 +432,17 @@ public class ReplicaManager implements ServerReconfigurable {
         this.scannerManager = checkNotNull(scannerManager, "scannerManager");
         this.historicalLakeLookupManager =
                 new HistoricalLakeLookupManager(
-                        conf, pluginManager, ioExecutor, serverId, scheduler);
+                        conf,
+                        pluginManager,
+                        ioExecutor,
+                        serverId,
+                        scheduler,
+                        kvManager.getHistoricalKvManager());
+        this.historicalPkWriteManager =
+                new HistoricalPkWriteManager(
+                        new HistoricalPkWriteProcessor(
+                                kvManager.getHistoricalKvManager(), historicalLakeLookupManager),
+                        ioExecutor);
 
         registerMetrics();
     }
@@ -886,7 +897,7 @@ public class ReplicaManager implements ServerReconfigurable {
             CompletableFuture<LookupResultForBucket> lookupFuture;
             try {
                 Replica replica = getReplicaOrException(data.tableBucket());
-                if (!isHistoricalPartitionReplica(replica)) {
+                if (!replica.isHistoricalPartition()) {
                     throw new InvalidPartitionException(
                             "Historical lookup request must target a historical partition.");
                 }
@@ -911,6 +922,28 @@ public class ReplicaManager implements ServerReconfigurable {
                             responseCallback.accept(result);
                         }
                     });
+        }
+    }
+
+    CompletableFuture<PutKvResultForBucket> historicalPutKv(
+            PutKvDataForBucket putData,
+            @Nullable int[] targetColumns,
+            MergeMode mergeMode,
+            int requiredAcks) {
+        try {
+            if (isRequiredAcksInvalid(requiredAcks)) {
+                throw new InvalidRequiredAcksException("Invalid required acks: " + requiredAcks);
+            }
+            Replica replica = getReplicaOrException(putData.tableBucket());
+            if (!replica.isHistoricalPartition()) {
+                throw new InvalidPartitionException(
+                        "Historical write request must target a historical partition.");
+            }
+            return historicalPkWriteManager.put(
+                    replica, putData, targetColumns, mergeMode, requiredAcks);
+        } catch (Exception e) {
+            return CompletableFuture.completedFuture(
+                    new PutKvResultForBucket(putData.tableBucket(), ApiError.fromThrowable(e)));
         }
     }
 
@@ -1001,12 +1034,6 @@ public class ReplicaManager implements ServerReconfigurable {
             responseCallback.accept(lookupResultForBucketMap);
         }
         LOG.debug("Lookup from local kv in {}ms", System.currentTimeMillis() - startTime);
-    }
-
-    private boolean isHistoricalPartitionReplica(Replica replica) {
-        String partitionName = replica.getPhysicalTablePath().getPartitionName();
-        return partitionName != null
-                && isHistoricalPartitionName(replica.getTableInfo(), partitionName);
     }
 
     /**

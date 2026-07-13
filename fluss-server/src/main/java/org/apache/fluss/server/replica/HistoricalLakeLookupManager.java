@@ -37,6 +37,11 @@ import org.apache.fluss.plugin.PluginManager;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.server.entity.LookupDataForBucket;
+import org.apache.fluss.server.kv.KvStateLookupResult;
+import org.apache.fluss.server.kv.KvStateLookupResult.Status;
+import org.apache.fluss.server.kv.historical.HistoricalKvHandle;
+import org.apache.fluss.server.kv.historical.HistoricalKvManager;
+import org.apache.fluss.server.kv.historical.HistoricalKvStateAccessor;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.IOUtils;
 import org.apache.fluss.utils.concurrent.Scheduler;
@@ -90,6 +95,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     private final @Nullable PluginManager pluginManager;
     private final ExecutorService ioExecutor;
     private final int serverId;
+    private final HistoricalKvManager historicalKvManager;
     private final Semaphore lookupPermits;
     private final Cache<Long, CachedLakeTableLookuper> lakeTableLookupers;
     private @Nullable String paimonLookupTempDir;
@@ -99,14 +105,16 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             @Nullable PluginManager pluginManager,
             ExecutorService ioExecutor,
             int serverId,
-            Scheduler scheduler) {
+            Scheduler scheduler,
+            HistoricalKvManager historicalKvManager) {
         this(
                 conf,
                 pluginManager,
                 ioExecutor,
                 serverId,
                 Ticker.systemTicker(),
-                createCacheScheduler(scheduler));
+                createCacheScheduler(scheduler),
+                historicalKvManager);
     }
 
     @VisibleForTesting
@@ -116,11 +124,14 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             ExecutorService ioExecutor,
             int serverId,
             Ticker ticker,
-            com.github.benmanes.caffeine.cache.Scheduler cacheScheduler) {
+            com.github.benmanes.caffeine.cache.Scheduler cacheScheduler,
+            HistoricalKvManager historicalKvManager) {
         this.conf = checkNotNull(conf, "conf must not be null.");
         this.pluginManager = pluginManager;
         this.ioExecutor = checkNotNull(ioExecutor, "ioExecutor must not be null.");
         this.serverId = serverId;
+        this.historicalKvManager =
+                checkNotNull(historicalKvManager, "historicalKvManager must not be null.");
         this.lakeTableLookupers =
                 Caffeine.newBuilder()
                         .expireAfterAccess(LOOKUPER_CACHE_EXPIRATION)
@@ -194,36 +205,81 @@ class HistoricalLakeLookupManager implements AutoCloseable {
         lakeTableLookupers.invalidate(tableId);
     }
 
+    @Nullable
+    byte[] lookupValue(
+            TableInfo tableInfo,
+            ResolvedPartitionSpec originalPartitionSpec,
+            int bucketId,
+            byte[] key)
+            throws Exception {
+        LookupContext context =
+                new LookupContext(
+                        tableInfo.getTableId(),
+                        tableInfo.getSchemaId(),
+                        tableInfo.getTablePath(),
+                        new LakeTableLookuper.LookupContext(
+                                originalPartitionSpec,
+                                bucketId,
+                                (short) tableInfo.getSchemaInfo().getSchemaId(),
+                                tableInfo.getRowType()));
+        return getOrCreateLookuper(context).lookuper.lookup(key, context.lookupContext);
+    }
+
     private LookupResultForBucket lookupInternal(
             LookupDataForBucket lookupData, TableInfo tableInfo) {
         TableBucket tableBucket = lookupData.tableBucket();
         try {
             LookupContext context = createLookupContext(lookupData, tableInfo);
-            CachedLakeTableLookuper cachedLookuper =
-                    lakeTableLookupers
-                            .asMap()
-                            .compute(
-                                    context.tableId,
-                                    (ignored, currentLookuper) -> {
-                                        if (currentLookuper != null
-                                                && currentLookuper.schemaId == context.schemaId) {
-                                            return currentLookuper;
-                                        }
-                                        LakeTableLookuper newLookuper =
-                                                createLakeTableLookuper(
-                                                        context.tablePath,
-                                                        getOrPreparePaimonLookupTempDir());
-                                        return new CachedLakeTableLookuper(
-                                                context.schemaId, newLookuper);
-                                    });
             List<byte[]> values = new ArrayList<>(lookupData.keys().size());
             for (byte[] key : lookupData.keys()) {
-                values.add(cachedLookuper.lookuper.lookup(key, context.lookupContext));
+                KvStateLookupResult localResult = lookupLocal(lookupData, key);
+                if (localResult.status() == Status.PRESENT) {
+                    values.add(localResult.value());
+                } else if (localResult.status() == Status.DELETED) {
+                    values.add(null);
+                } else {
+                    values.add(
+                            getOrCreateLookuper(context)
+                                    .lookuper
+                                    .lookup(key, context.lookupContext));
+                }
             }
             return new LookupResultForBucket(tableBucket, values);
         } catch (Exception e) {
             return new LookupResultForBucket(tableBucket, ApiError.fromThrowable(e));
         }
+    }
+
+    private KvStateLookupResult lookupLocal(LookupDataForBucket lookupData, byte[] key)
+            throws Exception {
+        HistoricalKvHandle handle =
+                historicalKvManager.getIfPresent(lookupData.tableBucket()).orElse(null);
+        if (handle == null) {
+            // Historical state is created lazily on the first local write. A lookup must not
+            // create an empty handle because absence means it should fall back to lake storage.
+            return KvStateLookupResult.notFound();
+        }
+        HistoricalKvStateAccessor accessor =
+                new HistoricalKvStateAccessor(
+                        handle, checkNotNull(lookupData.originalPartitionName()));
+        return accessor.lookup(key, accessor.encodeKey(key));
+    }
+
+    private CachedLakeTableLookuper getOrCreateLookuper(LookupContext context) {
+        return lakeTableLookupers
+                .asMap()
+                .compute(
+                        context.tableId,
+                        (ignored, currentLookuper) -> {
+                            if (currentLookuper != null
+                                    && currentLookuper.schemaId == context.schemaId) {
+                                return currentLookuper;
+                            }
+                            LakeTableLookuper newLookuper =
+                                    createLakeTableLookuper(
+                                            context.tablePath, getOrPreparePaimonLookupTempDir());
+                            return new CachedLakeTableLookuper(context.schemaId, newLookuper);
+                        });
     }
 
     private LookupContext createLookupContext(LookupDataForBucket lookupData, TableInfo tableInfo) {

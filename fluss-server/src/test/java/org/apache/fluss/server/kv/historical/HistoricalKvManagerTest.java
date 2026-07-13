@@ -53,8 +53,8 @@ class HistoricalKvManagerTest {
             HistoricalKvHandle handle1 = manager.getOrCreate(bucket1, kvDir1);
 
             assertThat(handle1).isNotSameAs(handle0);
-            assertThat(handle0.getDirectory().getName()).isEqualTo("historical-kv-0");
-            assertThat(handle1.getDirectory().getName()).isEqualTo("historical-kv-1");
+            assertThat(handle0.getDirectory().getName()).isEqualTo("kv-0");
+            assertThat(handle1.getDirectory().getName()).isEqualTo("kv-1");
             assertThat(manager.size()).isEqualTo(2);
 
             manager.invalidateBucket(bucket0);
@@ -85,19 +85,10 @@ class HistoricalKvManagerTest {
     }
 
     @Test
-    void testRejectConflictingDirectoryAndCreateAfterClose() throws Exception {
+    void testCreateAfterClose() throws Exception {
         HistoricalKvManager manager = createManager();
         TableBucket bucket = new TableBucket(1L, 10L, 0);
         manager.getOrCreate(bucket, new File(tempDir, "first/kv-0"));
-
-        assertThatThrownBy(() -> manager.getOrCreate(bucket, new File(tempDir, "second/kv-0")))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(
-                        () ->
-                                manager.getOrCreate(
-                                        new TableBucket(2L, 20L, 0),
-                                        new File(tempDir, "first/kv-0")))
-                .isInstanceOf(IllegalArgumentException.class);
 
         manager.close();
         manager.close();
@@ -111,11 +102,11 @@ class HistoricalKvManagerTest {
         HistoricalKvManager manager = createManager();
         ExecutorService executor = Executors.newFixedThreadPool(4);
         TableBucket bucket = new TableBucket(1L, 10L, 0);
-        File kvDir = new File(tempDir, "partition/kv-0");
+        File kvTabletDir = new File(tempDir, "partition/kv-0");
         try {
             List<Future<HistoricalKvHandle>> futures = new ArrayList<>();
             for (int i = 0; i < 8; i++) {
-                futures.add(executor.submit(() -> manager.getOrCreate(bucket, kvDir)));
+                futures.add(executor.submit(() -> manager.getOrCreate(bucket, kvTabletDir)));
             }
 
             HistoricalKvHandle expected = futures.get(0).get();
