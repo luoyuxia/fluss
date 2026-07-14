@@ -164,6 +164,13 @@ public class DefaultKvRecordBatch implements KvRecordBatch {
         return position;
     }
 
+    /** Copies this batch into an independently owned heap memory segment. */
+    public DefaultKvRecordBatch copyToHeap() {
+        byte[] bytes = new byte[sizeInBytes()];
+        segment.get(position, bytes);
+        return pointToBytes(bytes);
+    }
+
     @Override
     public Iterable<KvRecord> records(ReadContext readContext) {
         return () -> iterator(readContext);

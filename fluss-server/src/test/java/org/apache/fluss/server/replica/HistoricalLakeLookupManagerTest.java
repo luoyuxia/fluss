@@ -19,7 +19,7 @@ package org.apache.fluss.server.replica;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -97,9 +97,9 @@ class HistoricalLakeLookupManagerTest {
                         .get(1, TimeUnit.SECONDS);
 
         assertThat(second.failed()).isTrue();
-        assertThat(second.getError().error()).isEqualTo(Errors.HISTORICAL_LOOKUP_THROTTLED);
+        assertThat(second.getError().error()).isEqualTo(Errors.HISTORICAL_PARTITION_THROTTLED);
         assertThat(second.getError().exception())
-                .isInstanceOf(HistoricalLookupThrottledException.class);
+                .isInstanceOf(HistoricalPartitionThrottledException.class);
         assertThat(executor.numQueuedTasks()).isEqualTo(1);
     }
 
@@ -113,7 +113,8 @@ class HistoricalLakeLookupManagerTest {
         executor.runNext();
         LookupResultForBucket firstResult = first.get(1, TimeUnit.SECONDS);
         assertThat(firstResult.failed()).isTrue();
-        assertThat(firstResult.getError().error()).isNotEqualTo(Errors.HISTORICAL_LOOKUP_THROTTLED);
+        assertThat(firstResult.getError().error())
+                .isNotEqualTo(Errors.HISTORICAL_PARTITION_THROTTLED);
 
         CompletableFuture<LookupResultForBucket> second =
                 manager.lookup(lookupData(HISTORICAL_BUCKET), PARTITION_TABLE_INFO);
@@ -143,7 +144,7 @@ class HistoricalLakeLookupManagerTest {
         assertThat(first).isNotDone();
         assertThat(second).isNotDone();
         assertThat(executor.numQueuedTasks()).isEqualTo(2);
-        assertThat(third.getError().error()).isEqualTo(Errors.HISTORICAL_LOOKUP_THROTTLED);
+        assertThat(third.getError().error()).isEqualTo(Errors.HISTORICAL_PARTITION_THROTTLED);
     }
 
     @Test

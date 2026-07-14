@@ -17,7 +17,7 @@
 
 package org.apache.fluss.rpc.protocol;
 
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.NotEnoughReplicasException;
 import org.apache.fluss.exception.TimeoutException;
 import org.apache.fluss.exception.UnknownTableOrBucketException;
@@ -84,8 +84,9 @@ public class ApiErrorTest {
         String historicalLookupThrottledErrorMsg = "historical lookup throttled";
         arguments.add(
                 Arguments.of(
-                        new HistoricalLookupThrottledException(historicalLookupThrottledErrorMsg),
-                        Errors.HISTORICAL_LOOKUP_THROTTLED,
+                        new HistoricalPartitionThrottledException(
+                                historicalLookupThrottledErrorMsg),
+                        Errors.HISTORICAL_PARTITION_THROTTLED,
                         historicalLookupThrottledErrorMsg));
 
         return arguments;

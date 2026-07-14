@@ -26,7 +26,6 @@ import org.apache.fluss.server.log.LogAppendInfo;
 import javax.annotation.Nullable;
 
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
 
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -34,11 +33,16 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 final class HistoricalPkWriteManager {
 
     private final HistoricalPkWriteProcessor processor;
-    private final ExecutorService ioExecutor;
+    private final HistoricalPartitionTaskExecutor taskExecutor;
+    private final HistoricalKvLifecycleManager lifecycleManager;
 
-    HistoricalPkWriteManager(HistoricalPkWriteProcessor processor, ExecutorService ioExecutor) {
+    HistoricalPkWriteManager(
+            HistoricalPkWriteProcessor processor,
+            HistoricalPartitionTaskExecutor taskExecutor,
+            HistoricalKvLifecycleManager lifecycleManager) {
         this.processor = checkNotNull(processor, "processor must not be null");
-        this.ioExecutor = checkNotNull(ioExecutor, "ioExecutor must not be null");
+        this.taskExecutor = checkNotNull(taskExecutor, "taskExecutor must not be null");
+        this.lifecycleManager = checkNotNull(lifecycleManager, "lifecycleManager must not be null");
     }
 
     CompletableFuture<PutKvResultForBucket> put(
@@ -47,28 +51,29 @@ final class HistoricalPkWriteManager {
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
             int requiredAcks) {
-        try {
-            return CompletableFuture.supplyAsync(
-                    () -> {
-                        try {
-                            LogAppendInfo appendInfo =
-                                    processor.process(
-                                            replica,
-                                            putData,
-                                            targetColumns,
-                                            mergeMode,
-                                            requiredAcks);
-                            return new PutKvResultForBucket(
-                                    putData.tableBucket(), appendInfo.lastOffset() + 1);
-                        } catch (Throwable t) {
-                            return new PutKvResultForBucket(
-                                    putData.tableBucket(), ApiError.fromThrowable(t));
-                        }
-                    },
-                    ioExecutor);
-        } catch (RuntimeException e) {
-            return CompletableFuture.completedFuture(
-                    new PutKvResultForBucket(putData.tableBucket(), ApiError.fromThrowable(e)));
-        }
+        return taskExecutor
+                .submit(
+                        putData.tableBucket(),
+                        () -> {
+                            try {
+                                lifecycleManager.recoverIfNeeded(replica);
+                                LogAppendInfo appendInfo =
+                                        processor.process(
+                                                replica,
+                                                putData,
+                                                targetColumns,
+                                                mergeMode,
+                                                requiredAcks);
+                                return new PutKvResultForBucket(
+                                        putData.tableBucket(), appendInfo.lastOffset() + 1);
+                            } catch (Throwable t) {
+                                return new PutKvResultForBucket(
+                                        putData.tableBucket(), ApiError.fromThrowable(t));
+                            }
+                        })
+                .exceptionally(
+                        error ->
+                                new PutKvResultForBucket(
+                                        putData.tableBucket(), ApiError.fromThrowable(error)));
     }
 }

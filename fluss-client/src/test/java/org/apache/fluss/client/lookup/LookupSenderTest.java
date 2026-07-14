@@ -21,7 +21,7 @@ import org.apache.fluss.client.metadata.TestingMetadataUpdater;
 import org.apache.fluss.cluster.BucketLocation;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.NotLeaderOrFollowerException;
 import org.apache.fluss.exception.TableNotExistException;
@@ -360,7 +360,7 @@ public class LookupSenderTest {
                     if (attempt == 1) {
                         return createFailedResponse(
                                 request,
-                                new HistoricalLookupThrottledException(
+                                new HistoricalPartitionThrottledException(
                                         "historical lookup throttled"));
                     }
                     return createSuccessResponse(request, bytes("historical-value"));
@@ -392,7 +392,7 @@ public class LookupSenderTest {
                             requestOrder.add("historical-throttled");
                             return createFailedResponse(
                                     request,
-                                    new HistoricalLookupThrottledException(
+                                    new HistoricalPartitionThrottledException(
                                             "historical lookup throttled"));
                         }
                         requestOrder.add("historical-success");
@@ -434,7 +434,8 @@ public class LookupSenderTest {
                     alwaysThrottledAttempts.incrementAndGet();
                     return createFailedResponse(
                             request,
-                            new HistoricalLookupThrottledException("historical lookup throttled"));
+                            new HistoricalPartitionThrottledException(
+                                    "historical lookup throttled"));
                 });
 
         LookupQuery alwaysThrottledQuery =
@@ -444,7 +445,7 @@ public class LookupSenderTest {
 
         assertThatThrownBy(() -> alwaysThrottledQuery.future().get(10, TimeUnit.SECONDS))
                 .isInstanceOf(ExecutionException.class)
-                .hasRootCauseInstanceOf(HistoricalLookupThrottledException.class);
+                .hasRootCauseInstanceOf(HistoricalPartitionThrottledException.class);
         assertThat(alwaysThrottledAttempts.get()).isEqualTo(1 + MAX_RETRIES);
         assertThat(alwaysThrottledQuery.retries()).isEqualTo(MAX_RETRIES);
     }

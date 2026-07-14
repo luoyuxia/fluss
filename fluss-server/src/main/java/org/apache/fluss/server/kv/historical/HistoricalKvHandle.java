@@ -43,6 +43,7 @@ import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -161,6 +162,55 @@ public final class HistoricalKvHandle implements AutoCloseable {
                 });
     }
 
+    @GuardedBy("HistoricalKvManager.lifecycleLock")
+    void acquireReadLock() {
+        Lock readLock = stateLock.readLock();
+        readLock.lock();
+        try {
+            checkOpen();
+            touch();
+        } catch (RuntimeException e) {
+            readLock.unlock();
+            throw e;
+        }
+    }
+
+    void releaseReadLock() {
+        stateLock.readLock().unlock();
+    }
+
+    @GuardedBy("HistoricalKvManager.lifecycleLock")
+    boolean tryAcquireWriteLock() {
+        Lock writeLock = stateLock.writeLock();
+        if (!writeLock.tryLock()) {
+            return false;
+        }
+        try {
+            checkOpen();
+            return true;
+        } catch (RuntimeException e) {
+            writeLock.unlock();
+            throw e;
+        }
+    }
+
+    @GuardedBy("HistoricalKvManager.lifecycleLock")
+    void acquireWriteLock() {
+        Lock writeLock = stateLock.writeLock();
+        writeLock.lock();
+        try {
+            checkOpen();
+            touch();
+        } catch (RuntimeException e) {
+            writeLock.unlock();
+            throw e;
+        }
+    }
+
+    void releaseWriteLock() {
+        stateLock.writeLock().unlock();
+    }
+
     /** Executes a state mutation while holding the lock for the complete operation. */
     public <T, E extends Exception> T withWriteLock(SupplierWithException<T, E> action) throws E {
         return inWriteLock(
@@ -259,6 +309,30 @@ public final class HistoricalKvHandle implements AutoCloseable {
                         throw closeFailure;
                     }
                 });
+    }
+
+    @GuardedBy("stateLock")
+    void dropUnderWriteLock() throws Exception {
+        Exception closeFailure = null;
+        try {
+            closeUnderLock();
+        } catch (Exception e) {
+            closeFailure = e;
+        }
+
+        try {
+            FileUtils.deleteDirectory(directory);
+        } catch (Exception deleteFailure) {
+            if (closeFailure != null) {
+                closeFailure.addSuppressed(deleteFailure);
+            } else {
+                closeFailure = deleteFailure;
+            }
+        }
+
+        if (closeFailure != null) {
+            throw closeFailure;
+        }
     }
 
     @GuardedBy("stateLock")

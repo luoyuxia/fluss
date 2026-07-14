@@ -23,6 +23,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.exception.FencedLeaderEpochException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
+import org.apache.fluss.exception.InvalidPartitionException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.InvalidTimestampException;
 import org.apache.fluss.exception.InvalidUpdateVersionException;
@@ -109,6 +110,7 @@ import org.apache.fluss.utils.FlussPaths;
 import org.apache.fluss.utils.IOUtils;
 import org.apache.fluss.utils.clock.Clock;
 import org.apache.fluss.utils.function.SupplierWithException;
+import org.apache.fluss.utils.function.ThrowingRunnable;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.slf4j.Logger;
@@ -454,6 +456,10 @@ public final class Replica {
         return logFormat;
     }
 
+    RemoteLogManager getRemoteLogManager() {
+        return remoteLogManager;
+    }
+
     public void makeLeader(NotifyLeaderAndIsrData data) throws IOException {
         boolean leaderHWIncremented =
                 inWriteLock(
@@ -781,6 +787,15 @@ public final class Replica {
         KvTablet kvTablet = this.kvTablet;
         if (kvTablet != null) {
             kvTablet.flush(newHighWatermark, fatalErrorHandler);
+        } else if (isHistoricalPartition() && kvManager != null) {
+            try {
+                kvManager.getHistoricalKvManager().flushIfReady(tableBucket, newHighWatermark);
+            } catch (Throwable t) {
+                fatalErrorHandler.onFatalError(
+                        new KvStorageException(
+                                "Failed to flush historical KV pre-write buffer for " + tableBucket,
+                                t));
+            }
         }
     }
 
@@ -1092,7 +1107,6 @@ public final class Replica {
                                         "Leader not local for bucket %s on tabletServer %d",
                                         tableBucket, localTabletServerId));
                     }
-
                     validateInSyncReplicaSize(requiredAcks);
 
                     // TODO WRITE a leader epoch.
@@ -1131,6 +1145,10 @@ public final class Replica {
                                         "Leader not local for bucket %s on tabletServer %d",
                                         tableBucket, localTabletServerId));
                     }
+                    if (isHistoricalPartition()) {
+                        throw new InvalidPartitionException(
+                                "Normal write request must not target a historical partition.");
+                    }
 
                     validateInSyncReplicaSize(requiredAcks);
                     KvTablet kv = this.kvTablet;
@@ -1168,6 +1186,24 @@ public final class Replica {
                     LogAppendInfo appendInfo = writeAction.get();
                     maybeIncrementLeaderHW(logTablet, clock.milliseconds());
                     return appendInfo;
+                });
+    }
+
+    void recoverHistoricalKv(ThrowingRunnable<Exception> recoverAction) throws Exception {
+        inReadLock(
+                leaderIsrUpdateLock,
+                () -> {
+                    if (!isLeader()) {
+                        throw new NotLeaderOrFollowerException(
+                                String.format(
+                                        "Leader not local for bucket %s on tabletServer %d",
+                                        tableBucket, localTabletServerId));
+                    }
+                    if (!isHistoricalPartition()) {
+                        throw new InvalidPartitionException(
+                                "Historical recovery must target a historical partition.");
+                    }
+                    recoverAction.run();
                 });
     }
 

@@ -21,7 +21,7 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.FlussRuntimeException;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidPartitionException;
 import org.apache.fluss.exception.LakeStorageNotConfiguredException;
 import org.apache.fluss.lake.lakestorage.LakeStorage;
@@ -39,7 +39,6 @@ import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.server.entity.LookupDataForBucket;
 import org.apache.fluss.server.kv.KvStateLookupResult;
 import org.apache.fluss.server.kv.KvStateLookupResult.Status;
-import org.apache.fluss.server.kv.historical.HistoricalKvHandle;
 import org.apache.fluss.server.kv.historical.HistoricalKvManager;
 import org.apache.fluss.server.kv.historical.HistoricalKvStateAccessor;
 import org.apache.fluss.utils.FileUtils;
@@ -62,10 +61,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Semaphore;
 
 import static org.apache.fluss.server.utils.LakeStorageUtils.extractLakeProperties;
-import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
@@ -96,7 +93,8 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     private final ExecutorService ioExecutor;
     private final int serverId;
     private final HistoricalKvManager historicalKvManager;
-    private final Semaphore lookupPermits;
+    private final HistoricalRequestLimiter requestLimiter;
+    private final @Nullable HistoricalKvLifecycleManager lifecycleManager;
     private final Cache<Long, CachedLakeTableLookuper> lakeTableLookupers;
     private @Nullable String paimonLookupTempDir;
 
@@ -106,7 +104,9 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             ExecutorService ioExecutor,
             int serverId,
             Scheduler scheduler,
-            HistoricalKvManager historicalKvManager) {
+            HistoricalKvManager historicalKvManager,
+            HistoricalRequestLimiter requestLimiter,
+            HistoricalKvLifecycleManager lifecycleManager) {
         this(
                 conf,
                 pluginManager,
@@ -114,7 +114,9 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                 serverId,
                 Ticker.systemTicker(),
                 createCacheScheduler(scheduler),
-                historicalKvManager);
+                historicalKvManager,
+                requestLimiter,
+                lifecycleManager);
     }
 
     @VisibleForTesting
@@ -126,12 +128,36 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             Ticker ticker,
             com.github.benmanes.caffeine.cache.Scheduler cacheScheduler,
             HistoricalKvManager historicalKvManager) {
+        this(
+                conf,
+                pluginManager,
+                ioExecutor,
+                serverId,
+                ticker,
+                cacheScheduler,
+                historicalKvManager,
+                new HistoricalRequestLimiter(conf),
+                null);
+    }
+
+    private HistoricalLakeLookupManager(
+            Configuration conf,
+            @Nullable PluginManager pluginManager,
+            ExecutorService ioExecutor,
+            int serverId,
+            Ticker ticker,
+            com.github.benmanes.caffeine.cache.Scheduler cacheScheduler,
+            HistoricalKvManager historicalKvManager,
+            HistoricalRequestLimiter requestLimiter,
+            @Nullable HistoricalKvLifecycleManager lifecycleManager) {
         this.conf = checkNotNull(conf, "conf must not be null.");
         this.pluginManager = pluginManager;
         this.ioExecutor = checkNotNull(ioExecutor, "ioExecutor must not be null.");
         this.serverId = serverId;
         this.historicalKvManager =
                 checkNotNull(historicalKvManager, "historicalKvManager must not be null.");
+        this.requestLimiter = checkNotNull(requestLimiter, "requestLimiter must not be null.");
+        this.lifecycleManager = lifecycleManager;
         this.lakeTableLookupers =
                 Caffeine.newBuilder()
                         .expireAfterAccess(LOOKUPER_CACHE_EXPIRATION)
@@ -147,13 +173,6 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                                     }
                                 })
                         .build();
-        int maxQueuedHistoricalRequests =
-                conf.get(ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS);
-        checkArgument(
-                maxQueuedHistoricalRequests > 0,
-                "%s must be greater than 0.",
-                ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS.key());
-        this.lookupPermits = new Semaphore(maxQueuedHistoricalRequests);
     }
 
     private static com.github.benmanes.caffeine.cache.Scheduler createCacheScheduler(
@@ -169,14 +188,15 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     }
 
     CompletableFuture<LookupResultForBucket> lookup(
-            LookupDataForBucket lookupData, TableInfo tableInfo) {
+            LookupDataForBucket lookupData, TableInfo tableInfo, @Nullable Replica replica) {
         TableBucket tableBucket = lookupData.tableBucket();
-        if (!lookupPermits.tryAcquire()) {
+        HistoricalRequestLimiter.Permit permit = requestLimiter.tryAcquire().orElse(null);
+        if (permit == null) {
             return CompletableFuture.completedFuture(
                     new LookupResultForBucket(
                             tableBucket,
                             ApiError.fromThrowable(
-                                    new HistoricalLookupThrottledException(
+                                    new HistoricalPartitionThrottledException(
                                             "Historical lookup is throttled for "
                                                     + tableBucket
                                                     + "."))));
@@ -184,15 +204,27 @@ class HistoricalLakeLookupManager implements AutoCloseable {
 
         CompletableFuture<LookupResultForBucket> future;
         try {
+            CompletableFuture<Void> recovery =
+                    lifecycleManager == null || replica == null
+                            ? CompletableFuture.completedFuture(null)
+                            : lifecycleManager.ensureRecovered(replica);
             future =
-                    CompletableFuture.supplyAsync(
-                            () -> lookupInternal(lookupData, tableInfo), ioExecutor);
+                    recovery.thenCompose(
+                            ignored ->
+                                    CompletableFuture.supplyAsync(
+                                            () -> lookupInternal(lookupData, tableInfo),
+                                            ioExecutor));
         } catch (RuntimeException e) {
-            lookupPermits.release();
+            permit.close();
             throw e;
         }
-        future.whenComplete((ignored, error) -> lookupPermits.release());
+        future.whenComplete((ignored, error) -> permit.close());
         return future;
+    }
+
+    CompletableFuture<LookupResultForBucket> lookup(
+            LookupDataForBucket lookupData, TableInfo tableInfo) {
+        return lookup(lookupData, tableInfo, null);
     }
 
     @Override
@@ -252,17 +284,18 @@ class HistoricalLakeLookupManager implements AutoCloseable {
 
     private KvStateLookupResult lookupLocal(LookupDataForBucket lookupData, byte[] key)
             throws Exception {
-        HistoricalKvHandle handle =
-                historicalKvManager.getIfPresent(lookupData.tableBucket()).orElse(null);
-        if (handle == null) {
-            // Historical state is created lazily on the first local write. A lookup must not
-            // create an empty handle because absence means it should fall back to lake storage.
-            return KvStateLookupResult.notFound();
-        }
-        HistoricalKvStateAccessor accessor =
-                new HistoricalKvStateAccessor(
-                        handle, checkNotNull(lookupData.originalPartitionName()));
-        return accessor.lookup(key, accessor.encodeKey(key));
+        return historicalKvManager
+                .withReadyHandleReadLock(
+                        lookupData.tableBucket(),
+                        handle -> {
+                            HistoricalKvStateAccessor accessor =
+                                    new HistoricalKvStateAccessor(
+                                            handle,
+                                            checkNotNull(lookupData.originalPartitionName()));
+                            return accessor.lookup(key, accessor.encodeKey(key));
+                        })
+                // A missing READY handle means local state has not been materialized yet.
+                .orElseGet(KvStateLookupResult::notFound);
     }
 
     private CachedLakeTableLookuper getOrCreateLookuper(LookupContext context) {

@@ -24,6 +24,7 @@ import org.apache.fluss.exception.KvStorageException;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.server.metrics.group.TabletServerMetricGroup;
 import org.apache.fluss.utils.clock.Clock;
+import org.apache.fluss.utils.function.FunctionWithException;
 
 import org.rocksdb.RateLimiter;
 import org.slf4j.Logger;
@@ -62,6 +63,9 @@ public final class HistoricalKvManager implements AutoCloseable {
     private final Map<TableBucket, HistoricalKvHandle> handles = new HashMap<>();
 
     @GuardedBy("lifecycleLock")
+    private final Map<TableBucket, HistoricalKvHandle> readyHandles = new HashMap<>();
+
+    @GuardedBy("lifecycleLock")
     private boolean closed;
 
     /** Creates a historical KV manager with the shared server RocksDB resources. */
@@ -91,9 +95,43 @@ public final class HistoricalKvManager implements AutoCloseable {
             checkState(!closed, "HistoricalKvManager is already closed");
             HistoricalKvHandle existing = handles.get(tableBucket);
             if (existing != null) {
+                checkState(
+                        readyHandles.get(tableBucket) == existing,
+                        "Historical KV state for %s is being recovered",
+                        tableBucket);
                 return existing;
             }
 
+            HistoricalKvHandle created =
+                    HistoricalKvHandle.create(
+                            tableBucket,
+                            kvTabletDir,
+                            configuration,
+                            serverMetricGroup,
+                            sharedRateLimiter,
+                            clock);
+            handles.put(tableBucket, created);
+            readyHandles.put(tableBucket, created);
+            return created;
+        }
+    }
+
+    /** Creates an empty handle that remains hidden until recovery completes. */
+    public HistoricalKvHandle createForRecovery(TableBucket tableBucket, File kvTabletDir)
+            throws IOException {
+        checkNotNull(tableBucket, "tableBucket must not be null");
+        checkNotNull(kvTabletDir, "kvTabletDir must not be null");
+        checkArgument(
+                tableBucket.getPartitionId() != null,
+                "Historical KV state requires a partitioned table bucket");
+
+        synchronized (lifecycleLock) {
+            checkState(!closed, "HistoricalKvManager is already closed");
+            HistoricalKvHandle previous = handles.remove(tableBucket);
+            readyHandles.remove(tableBucket, previous);
+            if (previous != null) {
+                dropHandle(previous);
+            }
             HistoricalKvHandle created =
                     HistoricalKvHandle.create(
                             tableBucket,
@@ -107,10 +145,89 @@ public final class HistoricalKvManager implements AutoCloseable {
         }
     }
 
+    /** Publishes a completely recovered handle as ready for online access. */
+    public void markReady(TableBucket tableBucket, HistoricalKvHandle handle) {
+        synchronized (lifecycleLock) {
+            checkState(!closed, "HistoricalKvManager is already closed");
+            checkState(
+                    handles.get(tableBucket) == handle,
+                    "Historical KV handle for %s was replaced during recovery",
+                    tableBucket);
+            readyHandles.put(tableBucket, handle);
+        }
+    }
+
     /** Returns the historical state for a table bucket if it has been created. */
     public Optional<HistoricalKvHandle> getIfPresent(TableBucket tableBucket) {
         synchronized (lifecycleLock) {
-            return Optional.ofNullable(handles.get(tableBucket));
+            return Optional.ofNullable(readyHandles.get(tableBucket));
+        }
+    }
+
+    /** Executes a read against the current ready handle under lifecycle-safe lock ordering. */
+    public <T, E extends Exception> Optional<T> withReadyHandleReadLock(
+            TableBucket tableBucket, FunctionWithException<HistoricalKvHandle, T, E> action)
+            throws E {
+        HistoricalKvHandle handle;
+        synchronized (lifecycleLock) {
+            handle = readyHandles.get(tableBucket);
+            if (handle == null) {
+                return Optional.empty();
+            }
+            handle.acquireReadLock();
+        }
+        try {
+            return Optional.ofNullable(action.apply(handle));
+        } finally {
+            handle.releaseReadLock();
+        }
+    }
+
+    /** Flushes a ready handle while preventing concurrent lifecycle removal. */
+    public boolean flushIfReady(TableBucket tableBucket, long exclusiveLogOffset)
+            throws IOException {
+        HistoricalKvHandle handle;
+        synchronized (lifecycleLock) {
+            handle = readyHandles.get(tableBucket);
+            if (handle == null) {
+                return false;
+            }
+            handle.acquireWriteLock();
+        }
+        try {
+            handle.flush(exclusiveLogOffset);
+            return true;
+        } finally {
+            handle.releaseWriteLock();
+        }
+    }
+
+    /** Removes the expected ready handle when no lookup currently holds its read lock. */
+    public boolean tryInvalidateBucket(TableBucket tableBucket, HistoricalKvHandle expectedHandle) {
+        synchronized (lifecycleLock) {
+            if (readyHandles.get(tableBucket) != expectedHandle
+                    || !expectedHandle.tryAcquireWriteLock()) {
+                return false;
+            }
+            readyHandles.remove(tableBucket, expectedHandle);
+            handles.remove(tableBucket, expectedHandle);
+        }
+
+        try {
+            expectedHandle.dropUnderWriteLock();
+        } catch (Exception e) {
+            throw new KvStorageException(
+                    "Failed to drop historical KV state for " + tableBucket, e);
+        } finally {
+            expectedHandle.releaseWriteLock();
+        }
+        return true;
+    }
+
+    /** Returns a snapshot of handles that are ready for online access. */
+    public List<HistoricalKvHandle> readyHandles() {
+        synchronized (lifecycleLock) {
+            return new ArrayList<>(readyHandles.values());
         }
     }
 
@@ -118,6 +235,7 @@ public final class HistoricalKvManager implements AutoCloseable {
     public void invalidateBucket(TableBucket tableBucket) {
         synchronized (lifecycleLock) {
             HistoricalKvHandle handle = handles.remove(tableBucket);
+            readyHandles.remove(tableBucket, handle);
             if (handle != null) {
                 dropHandle(handle);
             }
@@ -134,6 +252,7 @@ public final class HistoricalKvManager implements AutoCloseable {
                 Map.Entry<TableBucket, HistoricalKvHandle> entry = iterator.next();
                 if (entry.getKey().getTableId() == tableId) {
                     removed.add(entry.getValue());
+                    readyHandles.remove(entry.getKey(), entry.getValue());
                     iterator.remove();
                 }
             }
@@ -151,6 +270,7 @@ public final class HistoricalKvManager implements AutoCloseable {
             closed = true;
             List<HistoricalKvHandle> removed = new ArrayList<>(handles.values());
             handles.clear();
+            readyHandles.clear();
             dropHandles(removed);
         }
     }

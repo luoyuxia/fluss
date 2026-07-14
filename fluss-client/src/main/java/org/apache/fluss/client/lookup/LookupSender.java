@@ -22,7 +22,7 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.exception.ApiException;
 import org.apache.fluss.exception.FlussRuntimeException;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidMetadataException;
 import org.apache.fluss.exception.LeaderNotAvailableException;
 import org.apache.fluss.exception.PartitionNotExistException;
@@ -506,7 +506,7 @@ class LookupSender implements Runnable {
 
     private long prepareRetry(AbstractLookupQuery<?> lookup, Exception exception) {
         long retryDelayMs = 0;
-        if (exception instanceof HistoricalLookupThrottledException) {
+        if (exception instanceof HistoricalPartitionThrottledException) {
             retryDelayMs = historicalThrottleBackoff.backoff(lookup.retries());
             lookup.setNextRetryTimeMs(System.currentTimeMillis() + retryDelayMs);
         } else {

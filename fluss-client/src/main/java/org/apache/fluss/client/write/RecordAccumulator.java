@@ -253,7 +253,8 @@ public final class RecordAccumulator {
      */
     public ReadyCheckResult ready(Cluster cluster) {
         Set<Integer> readyNodes = new HashSet<>();
-        long nextReadyCheckDelayMs = batchTimeoutMs;
+        // Start with a sentinel so batchTimeoutMs does not cap a longer retry backoff.
+        long nextReadyCheckDelayMs = Long.MAX_VALUE;
         Set<PhysicalTablePath> unknownLeaderTables = new HashSet<>();
         // Go table by table so that we can get queue sizes for buckets in a table and calculate
         // cumulative frequency table (used in bucket assigner).
@@ -272,6 +273,10 @@ public final class RecordAccumulator {
 
         // TODO and the earliest time at which any non-send-able bucket will be ready;
 
+        // Preserve the previous default when no batch contributes a concrete delay.
+        if (nextReadyCheckDelayMs == Long.MAX_VALUE) {
+            nextReadyCheckDelayMs = batchTimeoutMs;
+        }
         return new ReadyCheckResult(readyNodes, nextReadyCheckDelayMs, unknownLeaderTables);
     }
 
@@ -495,6 +500,7 @@ public final class RecordAccumulator {
             final long waitedTimeMs;
             final int dequeSize;
             final boolean full;
+            final long retryBackoffRemainingMs;
 
             // Note: this loop is especially hot with large bucket counts.
             // We are careful to only perform the minimum required inside the synchronized
@@ -508,9 +514,16 @@ public final class RecordAccumulator {
                     continue;
                 }
 
-                waitedTimeMs = batch.waitedTimeMs(clock.milliseconds());
+                long nowMs = clock.milliseconds();
+                retryBackoffRemainingMs = batch.retryBackoffRemainingMs(nowMs);
+                waitedTimeMs = batch.waitedTimeMs(nowMs);
                 dequeSize = deque.size();
                 full = dequeSize > 1 || batch.isClosed();
+            }
+
+            if (retryBackoffRemainingMs > 0) {
+                nextReadyCheckDelayMs = Math.min(nextReadyCheckDelayMs, retryBackoffRemainingMs);
+                continue;
             }
 
             int bucketId = entry.getKey();
@@ -575,6 +588,10 @@ public final class RecordAccumulator {
      */
     boolean flushInProgress() {
         return flushesInProgress.get() > 0;
+    }
+
+    long currentTimeMs() {
+        return clock.milliseconds();
     }
 
     private RecordAppendResult appendNewBatch(
@@ -756,7 +773,9 @@ public final class RecordAccumulator {
                     }
                     batch = null;
                 } else {
-                    // TODO retry back off check.
+                    if (first.retryBackoffRemainingMs(clock.milliseconds()) > 0) {
+                        continue;
+                    }
 
                     if (size + first.estimatedSizeInBytes() > maxSize && !ready.isEmpty()) {
                         // there is a rare case that a single batch size is larger than the

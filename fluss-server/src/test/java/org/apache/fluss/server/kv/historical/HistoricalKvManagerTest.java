@@ -132,6 +132,36 @@ class HistoricalKvManagerTest {
         }
     }
 
+    @Test
+    void testRecoveryHandleIsHiddenUntilReady() throws Exception {
+        try (HistoricalKvManager manager = createManager()) {
+            TableBucket bucket = new TableBucket(1L, 10L, 0);
+            HistoricalKvHandle handle =
+                    manager.createForRecovery(bucket, new File(tempDir, "partition/kv-0"));
+
+            assertThat(manager.getIfPresent(bucket)).isNotPresent();
+            assertThat(manager.readyHandles()).isEmpty();
+
+            manager.markReady(bucket, handle);
+            assertThat(manager.getIfPresent(bucket)).contains(handle);
+            assertThat(manager.readyHandles()).containsExactly(handle);
+        }
+    }
+
+    @Test
+    void testGetOrCreateDoesNotPublishRecoveringHandle() throws Exception {
+        try (HistoricalKvManager manager = createManager()) {
+            TableBucket bucket = new TableBucket(1L, 10L, 0);
+            File directory = new File(tempDir, "partition/kv-0");
+            manager.createForRecovery(bucket, directory);
+
+            assertThatThrownBy(() -> manager.getOrCreate(bucket, directory))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("being recovered");
+            assertThat(manager.getIfPresent(bucket)).isNotPresent();
+        }
+    }
+
     private HistoricalKvManager createManager() {
         return new HistoricalKvManager(
                 new Configuration(),

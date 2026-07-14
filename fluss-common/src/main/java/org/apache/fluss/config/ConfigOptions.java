@@ -1083,7 +1083,7 @@ public class ConfigOptions {
                     .intType()
                     .defaultValue(50)
                     .withDescription(
-                            "The number of historical lookup requests allowed to wait for lake lookup processing before throttling them.");
+                            "The number of queued and running historical partition bucket requests allowed before throttling them. The limit is shared by historical lookup and write requests.");
 
     public static final ConfigOption<MemorySize> NETTY_SERVER_MAX_REQUEST_SIZE =
             key("netty.server.max-request-size")
@@ -2165,6 +2165,14 @@ public class ConfigOptions {
                             "The number of threads used to download remote log segments during "
                                     + "KV recovery. Should be less than or equal to "
                                     + "'kv.recover.remote-log.prefetch-num'.");
+
+    public static final ConfigOption<Duration> KV_HISTORICAL_IDLE_TIMEOUT =
+            key("kv.historical.idle-timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofHours(3))
+                    .withDescription(
+                            "The idle timeout before fully tiered historical KV state becomes "
+                                    + "eligible for cleanup. The value must be greater than zero.");
 
     // ------------------------------------------------------------------------
     //  ConfigOptions for metrics

@@ -55,6 +55,7 @@ public abstract class WriteBatch {
     protected boolean reopened;
     protected int recordCount;
     private long drainedMs;
+    private volatile long nextRetryTimeMs;
 
     public WriteBatch(
             long tableId, int bucketId, PhysicalTablePath physicalTablePath, long createdMs) {
@@ -232,6 +233,14 @@ public abstract class WriteBatch {
 
     void drained(long nowMs) {
         this.drainedMs = Math.max(drainedMs, nowMs);
+    }
+
+    long retryBackoffRemainingMs(long nowMs) {
+        return Math.max(0L, nextRetryTimeMs - nowMs);
+    }
+
+    void setNextRetryTimeMs(long nextRetryTimeMs) {
+        this.nextRetryTimeMs = nextRetryTimeMs;
     }
 
     /**

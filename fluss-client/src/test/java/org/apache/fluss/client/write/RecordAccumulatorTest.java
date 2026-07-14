@@ -722,6 +722,29 @@ class RecordAccumulatorTest {
         assertThat(secondBatches.get(0).tableBucket()).isEqualTo(tb2);
     }
 
+    @Test
+    void testRetryDeadlineBlocksReadyAndDrain() throws Exception {
+        RecordAccumulator accum = createTestRecordAccumulator(0, 1024, 256, 10 * 1024);
+        IndexedRow row = indexedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        accum.append(createRecord(row), writeCallback, cluster, tb1.getBucket(), false);
+        Deque<WriteBatch> batches = accum.getReadyDeque(DATA1_PHYSICAL_TABLE_PATH, tb1.getBucket());
+        WriteBatch batch = batches.peekFirst();
+        batch.setNextRetryTimeMs(clock.milliseconds() + 1000L);
+
+        RecordAccumulator.ReadyCheckResult beforeDeadline = accum.ready(cluster);
+        assertThat(beforeDeadline.readyNodes).isEmpty();
+        assertThat(beforeDeadline.nextReadyCheckDelayMs).isEqualTo(1000L);
+        assertThat(accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE))
+                .isEmpty();
+
+        clock.advanceTime(1000L, TimeUnit.MILLISECONDS);
+        assertThat(accum.ready(cluster).readyNodes).containsExactly(node1.id());
+        assertThat(
+                        accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE)
+                                .get(node1.id()))
+                .hasSize(1);
+    }
+
     /** Return the offset delta. */
     private int expectedNumAppends(IndexedRow row, int batchSize) {
         int size = recordBatchHeaderSize(CURRENT_LOG_MAGIC_VALUE);

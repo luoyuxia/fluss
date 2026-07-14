@@ -462,6 +462,10 @@ public class TabletServer extends ServerBase {
                     scheduler.shutdown();
                 }
 
+                if (replicaManager != null) {
+                    replicaManager.shutdown();
+                }
+
                 if (scannerManager != null) {
                     scannerManager.close();
                 }
@@ -476,10 +480,6 @@ public class TabletServer extends ServerBase {
 
                 if (logManager != null) {
                     logManager.shutdown();
-                }
-
-                if (replicaManager != null) {
-                    replicaManager.shutdown();
                 }
 
                 if (localDiskManager != null) {

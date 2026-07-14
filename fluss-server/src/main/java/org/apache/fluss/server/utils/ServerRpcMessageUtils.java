@@ -50,7 +50,6 @@ import org.apache.fluss.record.DefaultKvRecordBatch;
 import org.apache.fluss.record.DefaultValueRecordBatch;
 import org.apache.fluss.record.FileChannelChunk;
 import org.apache.fluss.record.FileLogRecords;
-import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.LogRecords;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.remote.RemoteLogFetchInfo;
@@ -1100,24 +1099,6 @@ public class ServerRpcMessageUtils {
         FetchLogResponse fetchLogResponse = new FetchLogResponse();
         fetchLogResponse.addAllTablesResps(fetchLogRespForTables);
         return fetchLogResponse;
-    }
-
-    public static Map<TableBucket, KvRecordBatch> getPutKvData(PutKvRequest putKvRequest) {
-        long tableId = putKvRequest.getTableId();
-        Map<TableBucket, KvRecordBatch> produceEntryData = new HashMap<>();
-        for (PbPutKvReqForBucket putKvReqForBucket : putKvRequest.getBucketsReqsList()) {
-            ByteBuffer recordsBuffer = toByteBuffer(putKvReqForBucket.getRecordsSlice());
-            DefaultKvRecordBatch kvRecords = DefaultKvRecordBatch.pointToByteBuffer(recordsBuffer);
-            TableBucket tb =
-                    new TableBucket(
-                            tableId,
-                            putKvReqForBucket.hasPartitionId()
-                                    ? putKvReqForBucket.getPartitionId()
-                                    : null,
-                            putKvReqForBucket.getBucketId());
-            produceEntryData.put(tb, kvRecords);
-        }
-        return produceEntryData;
     }
 
     /**

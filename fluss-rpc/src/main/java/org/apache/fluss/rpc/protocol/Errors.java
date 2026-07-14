@@ -31,7 +31,7 @@ import org.apache.fluss.exception.DiskWriteLockedException;
 import org.apache.fluss.exception.DuplicateSequenceException;
 import org.apache.fluss.exception.FencedLeaderEpochException;
 import org.apache.fluss.exception.FencedTieringEpochException;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.IneligibleReplicaException;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
@@ -272,10 +272,10 @@ public enum Errors {
             70,
             "The tablet server has rejected writes because its data disk usage reached the configured write-limit ratio.",
             DiskWriteLockedException::new),
-    HISTORICAL_LOOKUP_THROTTLED(
+    HISTORICAL_PARTITION_THROTTLED(
             71,
-            "Historical lookup is throttled because too many historical lookup requests are in flight.",
-            HistoricalLookupThrottledException::new);
+            "Historical partition request is throttled because too many historical requests are in flight.",
+            HistoricalPartitionThrottledException::new);
 
     private static final Logger LOG = LoggerFactory.getLogger(Errors.class);
 

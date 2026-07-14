@@ -34,8 +34,9 @@ import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.BinaryValue;
 import org.apache.fluss.record.KvRecordBatch;
+import org.apache.fluss.record.KvRecordTestUtils;
 import org.apache.fluss.row.BinaryString;
-import org.apache.fluss.row.encode.CompactedKeyEncoder;
+import org.apache.fluss.row.encode.KeyEncoder;
 import org.apache.fluss.row.encode.ValueDecoder;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
@@ -52,10 +53,8 @@ import org.apache.fluss.server.metadata.ServerInfo;
 import org.apache.fluss.server.metadata.TableMetadata;
 import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.server.zk.data.TableRegistration;
-import org.apache.fluss.types.DataField;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.types.RowType;
-import org.apache.fluss.utils.types.Tuple2;
 
 import com.github.benmanes.caffeine.cache.Scheduler;
 import com.github.benmanes.caffeine.cache.Ticker;
@@ -63,7 +62,6 @@ import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -73,10 +71,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.fluss.record.TestData.DEFAULT_REMOTE_DATA_DIR;
+import static org.apache.fluss.record.TestData.DEFAULT_SCHEMA_ID;
 import static org.apache.fluss.server.coordinator.CoordinatorContext.INITIAL_COORDINATOR_EPOCH;
 import static org.apache.fluss.server.zk.data.LeaderAndIsr.INITIAL_BUCKET_EPOCH;
 import static org.apache.fluss.server.zk.data.LeaderAndIsr.INITIAL_LEADER_EPOCH;
-import static org.apache.fluss.testutils.DataTestUtils.genKvRecordBatch;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,22 +104,18 @@ class HistoricalPkWriteProcessorTest extends ReplicaTestBase {
                 new HistoricalPkWriteProcessor(
                         kvManager.getHistoricalKvManager(), lakeLookupManager);
 
-        RowType keyType =
-                DataTypes.ROW(
-                        new DataField("id", DataTypes.INT()),
-                        new DataField("region", DataTypes.STRING()),
-                        new DataField("dt", DataTypes.STRING()));
         RowType rowType = tableInfo.getRowType();
-        byte[] primaryKey = new CompactedKeyEncoder(keyType).encodeKey(row(1, "us", "20240107"));
+        byte[] primaryKey =
+                KeyEncoder.ofPrimaryKeyEncoder(
+                                rowType,
+                                tableInfo.getPhysicalPrimaryKeys(),
+                                tableInfo.getTableConfig(),
+                                tableInfo.isDefaultBucketKey())
+                        .encodeKey(row(1, "us", "20240107", "v1"));
 
         try {
             KvRecordBatch insertBatch =
-                    batch(
-                            keyType,
-                            rowType,
-                            Tuple2.of(
-                                    new Object[] {1, "us", "20240107"},
-                                    new Object[] {1, "us", "20240107", "v1"}));
+                    batch(primaryKey, rowType, new Object[] {1, "us", "20240107", "v1"});
             assertThat(
                             processor
                                     .process(
@@ -153,12 +147,7 @@ class HistoricalPkWriteProcessorTest extends ReplicaTestBase {
             assertThat(lakeLookupManager.lookupCount).hasValue(1);
 
             KvRecordBatch updateBatch =
-                    batch(
-                            keyType,
-                            rowType,
-                            Tuple2.of(
-                                    new Object[] {1, "us", "20240107"},
-                                    new Object[] {1, "us", "20240107", "v2"}));
+                    batch(primaryKey, rowType, new Object[] {1, "us", "20240107", "v2"});
             assertThat(
                             processor
                                     .process(
@@ -180,8 +169,7 @@ class HistoricalPkWriteProcessorTest extends ReplicaTestBase {
                     "v2");
             assertThat(lakeLookupManager.lookupCount).hasValue(1);
 
-            KvRecordBatch deleteBatch =
-                    batch(keyType, rowType, Tuple2.of(new Object[] {1, "us", "20240107"}, null));
+            KvRecordBatch deleteBatch = batch(primaryKey, rowType, null);
             processor.process(
                     replica,
                     new PutKvDataForBucket(TABLE_BUCKET, deleteBatch, ORIGINAL_PARTITION),
@@ -191,6 +179,31 @@ class HistoricalPkWriteProcessorTest extends ReplicaTestBase {
             assertThat(stateAccessor.lookup(primaryKey, stateAccessor.encodeKey(primaryKey)))
                     .isEqualTo(KvStateLookupResult.deleted());
             assertThat(lakeLookupManager.lookupCount).hasValue(1);
+
+            kvManager.getHistoricalKvManager().invalidateBucket(TABLE_BUCKET);
+            new HistoricalKvRecoverer(
+                            kvManager.getHistoricalKvManager(),
+                            new TestSnapshotContext(conf.get(ConfigOptions.REMOTE_DATA_DIR)),
+                            localDiskManager)
+                    .recover(replica);
+            HistoricalKvHandle recoveredHandle =
+                    kvManager
+                            .getHistoricalKvManager()
+                            .getIfPresent(TABLE_BUCKET)
+                            .orElseThrow(() -> new AssertionError("recovered handle is missing"));
+            HistoricalKvStateAccessor recoveredAccessor =
+                    new HistoricalKvStateAccessor(recoveredHandle, ORIGINAL_PARTITION);
+            assertThat(
+                            recoveredAccessor.lookup(
+                                    primaryKey, recoveredAccessor.encodeKey(primaryKey)))
+                    .as(
+                            "lakeEnd=%s, logStart=%s, localStart=%s, highWatermark=%s, localEnd=%s",
+                            replica.getLakeLogEndOffset(),
+                            replica.getLogTablet().logStartOffset(),
+                            replica.getLogTablet().localLogStartOffset(),
+                            replica.getLogHighWatermark(),
+                            replica.getLocalLogEndOffset())
+                    .isEqualTo(KvStateLookupResult.deleted());
         } finally {
             lakeLookupManager.close();
             lookupExecutor.shutdownNow();
@@ -276,12 +289,11 @@ class HistoricalPkWriteProcessorTest extends ReplicaTestBase {
         return tableInfo;
     }
 
-    @SafeVarargs
-    private static KvRecordBatch batch(
-            RowType keyType, RowType rowType, Tuple2<Object[], Object[]>... keyAndValues)
+    private static KvRecordBatch batch(byte[] primaryKey, RowType rowType, Object[] value)
             throws Exception {
-        List<Tuple2<Object[], Object[]>> records = Arrays.asList(keyAndValues);
-        return genKvRecordBatch(keyType, rowType, records);
+        return KvRecordTestUtils.KvRecordBatchFactory.of(DEFAULT_SCHEMA_ID)
+                .ofRecords(
+                        KvRecordTestUtils.KvRecordFactory.of(rowType).ofRecord(primaryKey, value));
     }
 
     private static void assertHistoricalValue(

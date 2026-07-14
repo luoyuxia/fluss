@@ -24,6 +24,7 @@ import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.config.cluster.ServerReconfigurable;
 import org.apache.fluss.exception.ConfigException;
 import org.apache.fluss.exception.FencedLeaderEpochException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidColumnProjectionException;
 import org.apache.fluss.exception.InvalidCoordinatorException;
 import org.apache.fluss.exception.InvalidPartitionException;
@@ -45,6 +46,7 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.metrics.MetricNames;
 import org.apache.fluss.metrics.groups.MetricGroup;
 import org.apache.fluss.plugin.PluginManager;
+import org.apache.fluss.record.DefaultKvRecordBatch;
 import org.apache.fluss.record.KeyRecordBatch;
 import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.MemoryLogRecords;
@@ -84,6 +86,7 @@ import org.apache.fluss.server.entity.StopReplicaResultForBucket;
 import org.apache.fluss.server.entity.UserContext;
 import org.apache.fluss.server.kv.KvManager;
 import org.apache.fluss.server.kv.KvSnapshotResource;
+import org.apache.fluss.server.kv.historical.HistoricalKvHandle;
 import org.apache.fluss.server.kv.scan.ScannerManager;
 import org.apache.fluss.server.kv.snapshot.CompletedKvSnapshotCommitter;
 import org.apache.fluss.server.kv.snapshot.DefaultSnapshotContext;
@@ -134,6 +137,7 @@ import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -144,6 +148,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
@@ -162,6 +167,7 @@ import static org.apache.fluss.utils.concurrent.LockUtils.inLock;
 /** A manager for replica. */
 public class ReplicaManager implements ServerReconfigurable {
     private static final Logger LOG = LoggerFactory.getLogger(ReplicaManager.class);
+    private static final long HISTORICAL_TASK_SHUTDOWN_TIMEOUT_SECONDS = 5L;
 
     public static final String HIGH_WATERMARK_CHECKPOINT_FILE_NAME = "high-watermark-checkpoint";
     private final Configuration conf;
@@ -223,8 +229,12 @@ public class ReplicaManager implements ServerReconfigurable {
 
     private final ScannerManager scannerManager;
 
+    private final HistoricalRequestLimiter historicalRequestLimiter;
+    private final HistoricalPartitionTaskExecutor historicalTaskExecutor;
+    private final HistoricalKvLifecycleManager historicalKvLifecycleManager;
     private final HistoricalLakeLookupManager historicalLakeLookupManager;
     private final HistoricalPkWriteManager historicalPkWriteManager;
+    private final long historicalKvIdleTimeoutMs;
 
     public ReplicaManager(
             Configuration conf,
@@ -430,6 +440,16 @@ public class ReplicaManager implements ServerReconfigurable {
         this.ioExecutor = ioExecutor;
         this.minInSyncReplicas = conf.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER);
         this.scannerManager = checkNotNull(scannerManager, "scannerManager");
+        this.historicalRequestLimiter = new HistoricalRequestLimiter(conf);
+        this.historicalTaskExecutor = new HistoricalPartitionTaskExecutor(ioExecutor);
+        this.historicalKvLifecycleManager =
+                new HistoricalKvLifecycleManager(
+                        kvManager.getHistoricalKvManager(),
+                        historicalTaskExecutor,
+                        new HistoricalKvRecoverer(
+                                kvManager.getHistoricalKvManager(),
+                                kvSnapshotContext,
+                                localDiskManager));
         this.historicalLakeLookupManager =
                 new HistoricalLakeLookupManager(
                         conf,
@@ -437,12 +457,21 @@ public class ReplicaManager implements ServerReconfigurable {
                         ioExecutor,
                         serverId,
                         scheduler,
-                        kvManager.getHistoricalKvManager());
+                        kvManager.getHistoricalKvManager(),
+                        historicalRequestLimiter,
+                        historicalKvLifecycleManager);
         this.historicalPkWriteManager =
                 new HistoricalPkWriteManager(
                         new HistoricalPkWriteProcessor(
                                 kvManager.getHistoricalKvManager(), historicalLakeLookupManager),
-                        ioExecutor);
+                        historicalTaskExecutor,
+                        historicalKvLifecycleManager);
+        this.historicalKvIdleTimeoutMs =
+                conf.get(ConfigOptions.KV_HISTORICAL_IDLE_TIMEOUT).toMillis();
+        checkArgument(
+                historicalKvIdleTimeoutMs > 0,
+                "%s must be greater than 0.",
+                ConfigOptions.KV_HISTORICAL_IDLE_TIMEOUT.key());
 
         registerMetrics();
     }
@@ -459,6 +488,11 @@ public class ReplicaManager implements ServerReconfigurable {
 
         // Start periodic disk usage monitoring (initial + periodic sampling)
         localDiskManager.startDiskUsageMonitor(scheduler);
+        scheduler.schedule(
+                "historical-kv-cleanup",
+                this::runHistoricalKvCleanup,
+                historicalKvIdleTimeoutMs,
+                Math.max(1L, historicalKvIdleTimeoutMs / 2));
     }
 
     public RemoteLogManager getRemoteLogManager() {
@@ -808,6 +842,124 @@ public class ReplicaManager implements ServerReconfigurable {
                 timeoutMs, requiredAcks, entriesPerBucket.size(), kvPutResult, responseCallback);
     }
 
+    /** Dispatches a put-KV request according to its original partition context. */
+    public void dispatchPutRecordsToKv(
+            int timeoutMs,
+            int requiredAcks,
+            Map<TableBucket, PutKvDataForBucket> entriesPerBucket,
+            @Nullable int[] targetColumns,
+            MergeMode mergeMode,
+            short apiVersion,
+            Consumer<List<PutKvResultForBucket>> responseCallback) {
+        PutKvRequestKind requestKind = classifyPutKvRequest(entriesPerBucket.values());
+        if (requestKind == PutKvRequestKind.INVALID) {
+            ApiError error =
+                    ApiError.fromThrowable(
+                            new InvalidPartitionException(
+                                    "A PutKv request cannot mix normal and historical partition writes."));
+            List<PutKvResultForBucket> results = new ArrayList<>(entriesPerBucket.size());
+            for (TableBucket tableBucket : entriesPerBucket.keySet()) {
+                results.add(new PutKvResultForBucket(tableBucket, error));
+            }
+            responseCallback.accept(results);
+        } else if (requestKind == PutKvRequestKind.HISTORICAL) {
+            putHistoricalRecordsToKv(
+                    timeoutMs,
+                    requiredAcks,
+                    entriesPerBucket,
+                    targetColumns,
+                    mergeMode,
+                    apiVersion,
+                    responseCallback);
+        } else {
+            Map<TableBucket, KvRecordBatch> recordsByBucket = new HashMap<>();
+            entriesPerBucket.forEach(
+                    (tableBucket, putData) -> recordsByBucket.put(tableBucket, putData.records()));
+            putRecordsToKv(
+                    timeoutMs,
+                    requiredAcks,
+                    recordsByBucket,
+                    targetColumns,
+                    mergeMode,
+                    apiVersion,
+                    responseCallback);
+        }
+    }
+
+    private static PutKvRequestKind classifyPutKvRequest(Collection<PutKvDataForBucket> entries) {
+        PutKvRequestKind requestKind = null;
+        for (PutKvDataForBucket entry : entries) {
+            PutKvRequestKind entryKind =
+                    entry.originalPartitionName() == null
+                            ? PutKvRequestKind.NORMAL
+                            : PutKvRequestKind.HISTORICAL;
+            if (requestKind != null && requestKind != entryKind) {
+                return PutKvRequestKind.INVALID;
+            }
+            requestKind = entryKind;
+        }
+        return requestKind == null ? PutKvRequestKind.NORMAL : requestKind;
+    }
+
+    private enum PutKvRequestKind {
+        NORMAL,
+        HISTORICAL,
+        INVALID
+    }
+
+    private void putHistoricalRecordsToKv(
+            int timeoutMs,
+            int requiredAcks,
+            Map<TableBucket, PutKvDataForBucket> entriesPerBucket,
+            @Nullable int[] targetColumns,
+            MergeMode mergeMode,
+            short apiVersion,
+            Consumer<List<PutKvResultForBucket>> responseCallback) {
+        if (isRequiredAcksInvalid(requiredAcks)) {
+            throw new InvalidRequiredAcksException("Invalid required acks: " + requiredAcks);
+        }
+        localDiskManager.ensureWritable();
+
+        if (entriesPerBucket.isEmpty()) {
+            responseCallback.accept(Collections.emptyList());
+            return;
+        }
+
+        Map<TableBucket, PutKvResultForBucket> results = new ConcurrentHashMap<>();
+        AtomicInteger remaining = new AtomicInteger(entriesPerBucket.size());
+        entriesPerBucket
+                .values()
+                .forEach(
+                        putData -> {
+                            CompletableFuture<PutKvResultForBucket> future =
+                                    historicalPutKv(
+                                            putData,
+                                            targetColumns,
+                                            mergeMode,
+                                            requiredAcks,
+                                            apiVersion);
+                            future.whenComplete(
+                                    (result, error) -> {
+                                        PutKvResultForBucket completedResult = result;
+                                        if (error != null) {
+                                            completedResult =
+                                                    new PutKvResultForBucket(
+                                                            putData.tableBucket(),
+                                                            ApiError.fromThrowable(error));
+                                        }
+                                        results.put(putData.tableBucket(), completedResult);
+                                        if (remaining.decrementAndGet() == 0) {
+                                            maybeAddDelayedWrite(
+                                                    timeoutMs,
+                                                    requiredAcks,
+                                                    entriesPerBucket.size(),
+                                                    results,
+                                                    responseCallback);
+                                        }
+                                    });
+                        });
+    }
+
     /** Context for tracking missing keys that need to be inserted. */
     public static class MissingKeysContext {
         final List<Integer> missingIndexes;
@@ -901,7 +1053,8 @@ public class ReplicaManager implements ServerReconfigurable {
                     throw new InvalidPartitionException(
                             "Historical lookup request must target a historical partition.");
                 }
-                lookupFuture = historicalLakeLookupManager.lookup(data, replica.getTableInfo());
+                lookupFuture =
+                        historicalLakeLookupManager.lookup(data, replica.getTableInfo(), replica);
             } catch (Exception e) {
                 lookupFuture =
                         CompletableFuture.completedFuture(
@@ -929,22 +1082,66 @@ public class ReplicaManager implements ServerReconfigurable {
             PutKvDataForBucket putData,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
-            int requiredAcks) {
+            int requiredAcks,
+            short apiVersion) {
+        final Replica replica;
         try {
             if (isRequiredAcksInvalid(requiredAcks)) {
                 throw new InvalidRequiredAcksException("Invalid required acks: " + requiredAcks);
             }
-            Replica replica = getReplicaOrException(putData.tableBucket());
+            replica = getReplicaOrException(putData.tableBucket());
             if (!replica.isHistoricalPartition()) {
                 throw new InvalidPartitionException(
                         "Historical write request must target a historical partition.");
             }
-            return historicalPkWriteManager.put(
-                    replica, putData, targetColumns, mergeMode, requiredAcks);
+            validateClientVersionForPkTable(apiVersion, replica.getTableInfo());
         } catch (Exception e) {
             return CompletableFuture.completedFuture(
                     new PutKvResultForBucket(putData.tableBucket(), ApiError.fromThrowable(e)));
         }
+
+        HistoricalRequestLimiter.Permit permit = historicalRequestLimiter.tryAcquire().orElse(null);
+        if (permit == null) {
+            return CompletableFuture.completedFuture(
+                    new PutKvResultForBucket(
+                            putData.tableBucket(),
+                            ApiError.fromThrowable(
+                                    new HistoricalPartitionThrottledException(
+                                            "Historical write is throttled for "
+                                                    + putData.tableBucket()
+                                                    + '.'))));
+        }
+
+        final PutKvDataForBucket copiedData;
+        try {
+            KvRecordBatch records = putData.records();
+            checkArgument(
+                    records instanceof DefaultKvRecordBatch,
+                    "Historical RPC write requires DefaultKvRecordBatch, but found %s.",
+                    records.getClass().getName());
+            copiedData =
+                    new PutKvDataForBucket(
+                            putData.tableBucket(),
+                            ((DefaultKvRecordBatch) records).copyToHeap(),
+                            putData.originalPartitionName());
+        } catch (Throwable t) {
+            permit.close();
+            return CompletableFuture.completedFuture(
+                    new PutKvResultForBucket(putData.tableBucket(), ApiError.fromThrowable(t)));
+        }
+
+        final CompletableFuture<PutKvResultForBucket> future;
+        try {
+            future =
+                    historicalPkWriteManager.put(
+                            replica, copiedData, targetColumns, mergeMode, requiredAcks);
+        } catch (Throwable t) {
+            permit.close();
+            return CompletableFuture.completedFuture(
+                    new PutKvResultForBucket(putData.tableBucket(), ApiError.fromThrowable(t)));
+        }
+        future.whenComplete((ignored, error) -> permit.close());
+        return future;
     }
 
     /**
@@ -1283,6 +1480,7 @@ public class ReplicaManager implements ServerReconfigurable {
 
                     Map<TableBucket, LakeBucketOffset> lakeBucketOffsets =
                             notifyLakeTableOffsetData.getLakeBucketOffsets();
+                    List<Replica> cleanupCandidates = new ArrayList<>();
                     for (Map.Entry<TableBucket, LakeBucketOffset> lakeBucketOffsetEntry :
                             lakeBucketOffsets.entrySet()) {
                         TableBucket tb = lakeBucketOffsetEntry.getKey();
@@ -1301,10 +1499,60 @@ public class ReplicaManager implements ServerReconfigurable {
                         lakeBucketOffset
                                 .getMaxTimestamp()
                                 .ifPresent(logTablet::updateLakeMaxTimestamp);
-
-                        responseCallback.accept(new NotifyLakeTableOffsetResponse());
+                        Replica replica = getReplicaOrException(tb);
+                        // Both offsets are exclusive. Once lake end reaches local end, all local
+                        // historical WAL is tiered and its disposable KV state can be cleaned up.
+                        if (replica.isHistoricalPartition()
+                                && replica.getLakeLogEndOffset()
+                                        >= replica.getLocalLogEndOffset()) {
+                            cleanupCandidates.add(replica);
+                        }
                     }
+                    // Submit after applying the complete notification. Each cleanup task rechecks
+                    // the replica, handle, and offsets before deleting any local state.
+                    cleanupCandidates.forEach(replica -> submitHistoricalKvCleanup(replica, false));
+                    responseCallback.accept(new NotifyLakeTableOffsetResponse());
                 });
+    }
+
+    @VisibleForTesting
+    void runHistoricalKvCleanup() {
+        long now = clock.milliseconds();
+        for (HistoricalKvHandle handle : kvManager.getHistoricalKvManager().readyHandles()) {
+            HostedReplica hostedReplica = getReplica(handle.getTableBucket());
+            if (hostedReplica instanceof OnlineReplica) {
+                Replica replica = ((OnlineReplica) hostedReplica).getReplica();
+                if (now - handle.getLastAccessTime() >= historicalKvIdleTimeoutMs) {
+                    submitHistoricalKvCleanup(replica, true);
+                }
+            }
+        }
+    }
+
+    private void submitHistoricalKvCleanup(Replica replica, boolean requireIdle) {
+        HistoricalKvHandle handle =
+                kvManager
+                        .getHistoricalKvManager()
+                        .getIfPresent(replica.getTableBucket())
+                        .orElse(null);
+        if (handle == null) {
+            return;
+        }
+        historicalKvLifecycleManager
+                .cleanupIfFullyTiered(
+                        replica,
+                        handle,
+                        requireIdle,
+                        clock.milliseconds(),
+                        historicalKvIdleTimeoutMs)
+                .exceptionally(
+                        error -> {
+                            LOG.debug(
+                                    "Historical KV cleanup for {} was skipped or cancelled.",
+                                    replica.getTableBucket(),
+                                    error);
+                            return false;
+                        });
     }
 
     /**
@@ -1334,6 +1582,9 @@ public class ReplicaManager implements ServerReconfigurable {
                 remoteLogManager.registerReplica(replica);
 
                 replica.makeLeader(data);
+                if (replica.isHistoricalPartition()) {
+                    historicalKvLifecycleManager.resetBucket(tb);
+                }
                 if (replica.isDataLakeEnabled()) {
                     updateWithLakeTableSnapshot(replica);
                 }
@@ -1389,6 +1640,9 @@ public class ReplicaManager implements ServerReconfigurable {
                 if (replica.makeFollower(data)) {
                     replicasBecomeFollower.add(replica);
                     scannerManager.closeScannersForBucket(tb);
+                }
+                if (replica.isHistoricalPartition()) {
+                    historicalKvLifecycleManager.invalidateBucket(tb);
                 }
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
@@ -2098,6 +2352,9 @@ public class ReplicaManager implements ServerReconfigurable {
         HostedReplica replica = getReplica(tb);
         if (replica instanceof OnlineReplica) {
             Replica replicaToDelete = ((OnlineReplica) replica).getReplica();
+            if (replicaToDelete.isHistoricalPartition()) {
+                historicalKvLifecycleManager.invalidateBucket(tb);
+            }
             if (deleteLocal) {
                 if (allReplicas.remove(tb) != null) {
                     serverMetricGroup.removeTableBucketMetricGroup(
@@ -2371,6 +2628,14 @@ public class ReplicaManager implements ServerReconfigurable {
     public void shutdown() throws InterruptedException {
         // Close the resources for snapshot kv
         kvSnapshotResource.close();
+        historicalTaskExecutor.close();
+        if (!historicalTaskExecutor.awaitTermination(
+                HISTORICAL_TASK_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            LOG.warn(
+                    "Timed out after {} seconds waiting for historical partition tasks. "
+                            + "Continuing shutdown; running tasks may fail as dependent resources are closed.",
+                    HISTORICAL_TASK_SHUTDOWN_TIMEOUT_SECONDS);
+        }
         historicalLakeLookupManager.close();
         replicaFetcherManager.shutdown();
         delayedWriteManager.shutdown();

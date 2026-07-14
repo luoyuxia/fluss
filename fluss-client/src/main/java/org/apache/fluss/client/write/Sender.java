@@ -22,6 +22,7 @@ import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.client.metrics.WriterMetricGroup;
 import org.apache.fluss.client.write.RecordAccumulator.ReadyCheckResult;
 import org.apache.fluss.cluster.Cluster;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidMetadataException;
 import org.apache.fluss.exception.LeaderNotAvailableException;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
@@ -40,6 +41,7 @@ import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.rpc.protocol.Errors;
 import org.apache.fluss.utils.ExceptionUtils;
+import org.apache.fluss.utils.ExponentialBackoff;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,6 +110,7 @@ public class Sender implements Runnable {
     private final IdempotenceManager idempotenceManager;
 
     private final WriterMetricGroup writerMetricGroup;
+    private final ExponentialBackoff historicalThrottleBackoff;
 
     public Sender(
             RecordAccumulator accumulator,
@@ -131,6 +134,7 @@ public class Sender implements Runnable {
 
         this.idempotenceManager = idempotenceManager;
         this.writerMetricGroup = writerMetricGroup;
+        this.historicalThrottleBackoff = new ExponentialBackoff(100L, 2, 5000L, 0.2);
 
         // TODO add retry logic while send failed. See FLUSS-56364375
     }
@@ -622,6 +626,13 @@ public class Sender implements Runnable {
                     readyWriteBatch.tableBucket(),
                     retries - writeBatch.attempts(),
                     error.formatErrMsg());
+
+            if (error.exception() instanceof HistoricalPartitionThrottledException
+                    && writeBatch instanceof KvWriteBatch
+                    && ((KvWriteBatch) writeBatch).getOriginalPartitionName() != null) {
+                long retryDelayMs = historicalThrottleBackoff.backoff(writeBatch.attempts());
+                writeBatch.setNextRetryTimeMs(accumulator.currentTimeMs() + retryDelayMs);
+            }
 
             if (!idempotenceManager.idempotenceEnabled()) {
                 reEnqueueBatch(readyWriteBatch);
