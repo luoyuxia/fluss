@@ -44,6 +44,8 @@ import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
+
 /**
  * Helper class that encapsulates Arrow-dependent batch writing logic for append-only tables.
  *
@@ -100,7 +102,11 @@ class AppendOnlyArrowBatchHelper implements AutoCloseable {
      * system columns (__bucket, __offset, __timestamp) and uses Paimon's {@link ArrowBundleRecords}
      * for efficient batch writing.
      */
-    void writeArrowBatch(ArrowBatchData arrowBatchData, BinaryRow partition) throws Exception {
+    void writeArrowBatch(
+            ArrowBatchData arrowBatchData,
+            @Nullable BinaryRow fixedPartition,
+            boolean historicalPartition)
+            throws Exception {
         int writtenBucket = bucket;
         if (fileStoreTable.store().bucketMode() == BucketMode.BUCKET_UNAWARE) {
             writtenBucket = 0;
@@ -117,7 +123,16 @@ class AppendOnlyArrowBatchHelper implements AutoCloseable {
         ArrowBundleRecords arrowBundleRecords =
                 new ArrowBundleRecords(enrichedRoot, tableRowType, false);
 
-        tableWrite.writeBundle(partition, writtenBucket, arrowBundleRecords);
+        if (historicalPartition) {
+            // writeBundle accepts one fixed partition, but a historical batch may contain rows
+            // from multiple original partitions.
+            for (InternalRow row : arrowBundleRecords) {
+                BinaryRow partition = tableWrite.getPartition(row);
+                tableWrite.getWrite().write(partition, writtenBucket, row);
+            }
+        } else {
+            tableWrite.writeBundle(checkNotNull(fixedPartition), writtenBucket, arrowBundleRecords);
+        }
     }
 
     /**
