@@ -159,9 +159,9 @@ class KvWriteBatchTest {
                 PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
         KvWriteBatch batch = createKvWriteBatch(new TableBucket(DATA1_TABLE_ID_PK, 0), "year=2000");
         WriteRecord matchingRecord =
-                createWriteRecord().withWriteTarget(historicalPath, "year=2000");
+                createWriteRecord().withOriginalPartitionContext(historicalPath, "year=2000");
         WriteRecord mismatchedRecord =
-                createWriteRecord().withWriteTarget(historicalPath, "year=2001");
+                createWriteRecord().withOriginalPartitionContext(historicalPath, "year=2001");
 
         assertThat(batch.tryAppend(matchingRecord, newWriteCallback())).isTrue();
         assertThat(batch.tryAppend(mismatchedRecord, newWriteCallback())).isFalse();
@@ -170,17 +170,18 @@ class KvWriteBatchTest {
     }
 
     @Test
-    void testWithHistoricalWriteTarget() {
+    void testWithOriginalPartitionContext() {
         WriteRecord record = createWriteRecord();
         PhysicalTablePath historicalPath =
                 PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
 
-        WriteRecord historicalRecord = record.withWriteTarget(historicalPath, "year=2000");
+        WriteRecord historicalRecord =
+                record.withOriginalPartitionContext(historicalPath, "year=2000");
 
         assertThat(historicalRecord.getPhysicalTablePath()).isEqualTo(historicalPath);
         assertThat(historicalRecord.getOriginalPartitionName()).isEqualTo("year=2000");
         assertThat(record.getOriginalPartitionName()).isNull();
-        assertThatThrownBy(() -> record.withWriteTarget(historicalPath, ""))
+        assertThatThrownBy(() -> record.withOriginalPartitionContext(historicalPath, ""))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("original partition name must not be empty");
     }

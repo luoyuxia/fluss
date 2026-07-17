@@ -253,7 +253,7 @@ public class PartitionUtils {
     }
 
     /**
-     * Returns whether a missing physical partition is eligible to fall back to historical lookup.
+     * Returns whether a missing physical partition is eligible for historical lookup or write.
      *
      * <p>The table must be an auto-partitioned Paimon lake table, and the partition must contain a
      * valid auto-partition time older than the retention window. This method only determines

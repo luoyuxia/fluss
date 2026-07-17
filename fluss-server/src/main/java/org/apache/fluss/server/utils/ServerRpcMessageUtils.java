@@ -232,6 +232,7 @@ import java.util.stream.Stream;
 
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toByteBuffer;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toPbAclInfo;
+import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
@@ -906,7 +907,10 @@ public class ServerRpcMessageUtils {
                                     ? produceLogReqForBucket.getPartitionId()
                                     : null,
                             produceLogReqForBucket.getBucketId());
-            produceEntryData.put(tb, logRecords);
+            checkArgument(
+                    produceEntryData.put(tb, logRecords) == null,
+                    "ProduceLog request contains duplicate table bucket %s.",
+                    tb);
         }
         return produceEntryData;
     }

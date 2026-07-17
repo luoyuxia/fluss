@@ -320,22 +320,7 @@ class RecordAccumulatorTest {
             throws Exception {
         PhysicalTablePath historicalPath =
                 PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
-        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, 100L, 0);
-        BucketLocation historicalBucketLocation =
-                new BucketLocation(historicalPath, historicalBucket, node1.id(), serverNodes);
-        Map<PhysicalTablePath, List<BucketLocation>> bucketsByPath = new HashMap<>();
-        bucketsByPath.put(historicalPath, Collections.singletonList(historicalBucketLocation));
-        Map<TablePath, Long> tableIdsByPath = new HashMap<>();
-        tableIdsByPath.put(DATA1_TABLE_PATH_PK, DATA1_TABLE_ID_PK);
-        Map<PhysicalTablePath, Long> partitionIdsByPath = new HashMap<>();
-        partitionIdsByPath.put(historicalPath, 100L);
-        cluster =
-                new Cluster(
-                        cluster.getAliveTabletServers(),
-                        cluster.getCoordinatorServer(),
-                        bucketsByPath,
-                        tableIdsByPath,
-                        partitionIdsByPath);
+        cluster = clusterWithPartition(historicalPath, 100L);
 
         RecordAccumulator accum = createTestRecordAccumulator(1024, 10L * 1024);
         BinaryRow kvRow = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
@@ -353,25 +338,25 @@ class RecordAccumulatorTest {
                         null);
 
         accum.append(
-                record.withWriteTarget(historicalPath, "year=2000"),
+                record.withOriginalPartitionContext(historicalPath, "year=2000"),
                 writeCallback,
                 cluster,
                 0,
                 false);
         accum.append(
-                record.withWriteTarget(historicalPath, "year=2000"),
+                record.withOriginalPartitionContext(historicalPath, "year=2000"),
                 writeCallback,
                 cluster,
                 0,
                 false);
         accum.append(
-                record.withWriteTarget(historicalPath, "year=2001"),
+                record.withOriginalPartitionContext(historicalPath, "year=2001"),
                 writeCallback,
                 cluster,
                 0,
                 false);
         accum.append(
-                record.withWriteTarget(historicalPath, "year=2000"),
+                record.withOriginalPartitionContext(historicalPath, "year=2000"),
                 writeCallback,
                 cluster,
                 0,
@@ -383,6 +368,181 @@ class RecordAccumulatorTest {
                 .extracting(batch -> ((KvWriteBatch) batch).getOriginalPartitionName())
                 .containsExactly("year=2000", "year=2001", "year=2000");
         assertThat(batches).extracting(WriteBatch::getRecordCount).containsExactly(2, 1, 1);
+    }
+
+    @Test
+    void testReroutePendingBatchesToOneHistoricalBucket() throws Exception {
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+        long historicalPartitionId = 100L;
+        cluster = clusterWithPartition(historicalPath, historicalPartitionId);
+
+        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT, Duration.ofMillis(0));
+        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE, new MemorySize(10L * 1024));
+        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(256));
+        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(1024));
+        IdempotenceManager idempotenceManager = new IdempotenceManager(true, 5, null, null);
+        idempotenceManager.setWriterId(1L);
+        RecordAccumulator accum =
+                new RecordAccumulator(
+                        conf, idempotenceManager, TestingWriterMetricGroup.newInstance(), clock);
+
+        PhysicalTablePath year2000 = PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "year=2000");
+        PhysicalTablePath year2001 = PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "year=2001");
+        accum.append(createKvRecord(year2000), writeCallback, cluster, 0, false);
+        accum.rerouteToHistorical(
+                year2000,
+                ResolvedWriteTarget.historical(historicalPath, "year=2000", historicalPartitionId));
+        accum.append(
+                createKvRecord(year2000).withOriginalPartitionContext(year2000, "year=2000"),
+                writeCallback,
+                cluster,
+                0,
+                false);
+        accum.append(
+                createKvRecord(year2001).withOriginalPartitionContext(year2001, "year=2001"),
+                writeCallback,
+                cluster,
+                0,
+                false);
+        accum.rerouteToHistorical(
+                year2001,
+                ResolvedWriteTarget.historical(historicalPath, "year=2001", historicalPartitionId));
+
+        List<ReadyWriteBatch> drained =
+                accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE)
+                        .get(node1.id());
+        assertThat(drained).hasSize(2);
+        ReadyWriteBatch first = drained.get(0);
+        ReadyWriteBatch second = drained.get(1);
+        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, historicalPartitionId, 0);
+        assertThat(accum.getPhysicalTablePathsInBatches())
+                .containsExactlyInAnyOrder(year2000, year2001);
+        assertThat(first.tableBucket()).isEqualTo(historicalBucket);
+        assertThat(second.tableBucket()).isEqualTo(historicalBucket);
+        assertThat(first.writeBatch().batchSequence()).isEqualTo(0);
+        assertThat(second.writeBatch().batchSequence()).isEqualTo(1);
+        assertThat(first.writeBatch().getRecordCount() + second.writeBatch().getRecordCount())
+                .isEqualTo(3);
+    }
+
+    @Test
+    void testRerouteWaitsForOriginalInflightBatches() throws Exception {
+        assertHistoricalReroutePreservesOrder(false);
+    }
+
+    @Test
+    void testRerouteRestoresOutOfOrderOriginalResponses() throws Exception {
+        assertHistoricalReroutePreservesOrder(true);
+    }
+
+    private void assertHistoricalReroutePreservesOrder(boolean reverseResponseOrder)
+            throws Exception {
+        PhysicalTablePath originalPath = PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "year=2000");
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+        long originalPartitionId = 10L;
+        long historicalPartitionId = 100L;
+        TableBucket originalBucket = new TableBucket(DATA1_TABLE_ID_PK, originalPartitionId, 0);
+        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, historicalPartitionId, 0);
+
+        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_TIMEOUT, Duration.ofMillis(0));
+        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_MEMORY_SIZE, new MemorySize(10L * 1024));
+        conf.set(ConfigOptions.CLIENT_WRITER_BUFFER_PAGE_SIZE, new MemorySize(256));
+        conf.set(ConfigOptions.CLIENT_WRITER_BATCH_SIZE, new MemorySize(1024));
+        IdempotenceManager idempotenceManager = new IdempotenceManager(true, 5, null, null);
+        idempotenceManager.setWriterId(1L);
+        RecordAccumulator accum =
+                new RecordAccumulator(
+                        conf, idempotenceManager, TestingWriterMetricGroup.newInstance(), clock);
+
+        cluster = clusterWithPartition(originalPath, originalPartitionId);
+        accum.append(createKvRecord(originalPath), writeCallback, cluster, 0, false);
+        ReadyWriteBatch firstOriginalBatch =
+                accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE)
+                        .get(node1.id())
+                        .get(0);
+        accum.append(createKvRecord(originalPath), writeCallback, cluster, 0, false);
+        ReadyWriteBatch secondOriginalBatch =
+                accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE)
+                        .get(node1.id())
+                        .get(0);
+        assertThat(firstOriginalBatch.tableBucket()).isEqualTo(originalBucket);
+        assertThat(firstOriginalBatch.writeBatch().batchSequence()).isZero();
+        assertThat(secondOriginalBatch.tableBucket()).isEqualTo(originalBucket);
+        assertThat(secondOriginalBatch.writeBatch().batchSequence()).isOne();
+        assertThat(idempotenceManager.inflightBatchSize(originalBucket)).isEqualTo(2);
+
+        // Keep a newer batch pending behind both original-target attempts.
+        accum.append(createKvRecord(originalPath), writeCallback, cluster, 0, false);
+        WriteBatch pendingBatch = accum.getReadyDeque(originalPath, 0).peekFirst();
+        assertThat(pendingBatch).isNotNull();
+
+        ReadyWriteBatch firstResponse =
+                reverseResponseOrder ? secondOriginalBatch : firstOriginalBatch;
+        ReadyWriteBatch lastResponse =
+                reverseResponseOrder ? firstOriginalBatch : secondOriginalBatch;
+        accum.reEnqueue(firstResponse);
+        cluster = clusterWithPartition(historicalPath, historicalPartitionId);
+        accum.rerouteToHistorical(
+                originalPath,
+                ResolvedWriteTarget.historical(historicalPath, "year=2000", historicalPartitionId));
+
+        // One O response is still outstanding. The reroute barrier must keep every queued batch
+        // hidden; otherwise pendingBatch could be assigned H/1 before the older response returns.
+        assertThat(accum.ready(cluster).readyNodes).isEmpty();
+        assertThat(accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE))
+                .isEmpty();
+        assertThat(idempotenceManager.inflightBatchSize(originalBucket)).isEqualTo(2);
+
+        accum.reEnqueue(lastResponse);
+        assertThat(idempotenceManager.inflightBatchSize(originalBucket)).isZero();
+
+        List<ReadyWriteBatch> historicalBatches = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            historicalBatches.addAll(
+                    accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE)
+                            .get(node1.id()));
+        }
+
+        assertThat(historicalBatches)
+                .extracting(ReadyWriteBatch::tableBucket)
+                .containsOnly(historicalBucket);
+        assertThat(historicalBatches)
+                .extracting(ReadyWriteBatch::writeBatch)
+                .containsExactly(
+                        firstOriginalBatch.writeBatch(),
+                        secondOriginalBatch.writeBatch(),
+                        pendingBatch);
+        assertThat(historicalBatches)
+                .extracting(batch -> batch.writeBatch().batchSequence())
+                .containsExactly(0, 1, 2);
+        assertThat(historicalBatches)
+                .extracting(batch -> batch.writeBatch().getOriginalPartitionName())
+                .containsOnly("year=2000");
+    }
+
+    @Test
+    void testRerouteLogBatchKeepsOriginalPartitionName() throws Exception {
+        PhysicalTablePath originalPath =
+                PhysicalTablePath.of(DATA1_TABLE_INFO.getTablePath(), "year=2000");
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_INFO.getTablePath(), "__historical__");
+        RecordAccumulator accum = createTestRecordAccumulator(1024, 10L * 1024);
+        IndexedRow row = indexedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+
+        accum.append(
+                WriteRecord.forIndexedAppend(DATA1_TABLE_INFO, originalPath, row, null),
+                writeCallback,
+                cluster,
+                0,
+                false);
+        accum.rerouteToHistorical(
+                originalPath, ResolvedWriteTarget.historical(historicalPath, "year=2000", 100L));
+
+        WriteBatch batch = accum.getReadyDeque(originalPath, 0).peek();
+        assertThat(batch).isInstanceOf(IndexedLogWriteBatch.class);
+        assertThat(batch.getOriginalPartitionName()).isEqualTo("year=2000");
     }
 
     @Test
@@ -569,6 +729,46 @@ class RecordAccumulatorTest {
     }
 
     @Test
+    void testHistoricalQueueRefreshesHistoricalTargetMetadata() throws Exception {
+        PhysicalTablePath originalPath = PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "year=2000");
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+        long historicalPartitionId = 100L;
+        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, historicalPartitionId, 0);
+        BucketLocation bucketWithoutLeader =
+                new BucketLocation(historicalPath, historicalBucket, null, serverNodes);
+        Map<PhysicalTablePath, List<BucketLocation>> bucketsByPath = new HashMap<>();
+        bucketsByPath.put(historicalPath, Collections.singletonList(bucketWithoutLeader));
+        Map<TablePath, Long> tableIdsByPath = new HashMap<>();
+        tableIdsByPath.put(DATA1_TABLE_PATH_PK, DATA1_TABLE_ID_PK);
+        Map<PhysicalTablePath, Long> partitionIdsByPath = new HashMap<>();
+        partitionIdsByPath.put(historicalPath, historicalPartitionId);
+        cluster =
+                new Cluster(
+                        cluster.getAliveTabletServers(),
+                        cluster.getCoordinatorServer(),
+                        bucketsByPath,
+                        tableIdsByPath,
+                        partitionIdsByPath);
+
+        RecordAccumulator accum = createTestRecordAccumulator(0, 1024, 256, 10L * 1024);
+        accum.append(
+                createKvRecord(originalPath)
+                        .withOriginalPartitionContext(originalPath, "year=2000"),
+                writeCallback,
+                cluster,
+                0,
+                false);
+        accum.rerouteToHistorical(
+                originalPath,
+                ResolvedWriteTarget.historical(historicalPath, "year=2000", historicalPartitionId));
+
+        RecordAccumulator.ReadyCheckResult readyCheckResult = accum.ready(cluster);
+        assertThat(readyCheckResult.unknownLeaderTables).containsExactly(historicalPath);
+        assertThat(readyCheckResult.readyNodes).isEmpty();
+    }
+
+    @Test
     void testAwaitFlushComplete() throws Exception {
         IndexedRow row = indexedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
         RecordAccumulator accum = createTestRecordAccumulator(4 * 1024, 64 * 1024);
@@ -629,6 +829,41 @@ class RecordAccumulatorTest {
         return WriteRecord.forIndexedAppend(DATA1_TABLE_INFO, DATA1_PHYSICAL_TABLE_PATH, row, null);
     }
 
+    private WriteRecord createKvRecord(PhysicalTablePath physicalTablePath) {
+        BinaryRow kvRow = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        byte[] key =
+                new CompactedKeyEncoder(
+                                DATA1_ROW_TYPE,
+                                DATA1_TABLE_INFO_PK.getSchema().getPrimaryKeyIndexes())
+                        .encodeKey(kvRow);
+        return WriteRecord.forUpsert(
+                DATA1_TABLE_INFO_PK,
+                physicalTablePath,
+                kvRow,
+                key,
+                key,
+                WriteFormat.COMPACTED_KV,
+                null);
+    }
+
+    private Cluster clusterWithPartition(PhysicalTablePath partitionPath, long partitionId) {
+        TableBucket tableBucket = new TableBucket(DATA1_TABLE_ID_PK, partitionId, 0);
+        BucketLocation bucketLocation =
+                new BucketLocation(partitionPath, tableBucket, node1.id(), serverNodes);
+        Map<PhysicalTablePath, List<BucketLocation>> bucketsByPath = new HashMap<>();
+        bucketsByPath.put(partitionPath, Collections.singletonList(bucketLocation));
+        Map<TablePath, Long> tableIdsByPath = new HashMap<>();
+        tableIdsByPath.put(partitionPath.getTablePath(), DATA1_TABLE_ID_PK);
+        Map<PhysicalTablePath, Long> partitionIdsByPath = new HashMap<>();
+        partitionIdsByPath.put(partitionPath, partitionId);
+        return new Cluster(
+                cluster.getAliveTabletServers(),
+                cluster.getCoordinatorServer(),
+                bucketsByPath,
+                tableIdsByPath,
+                partitionIdsByPath);
+    }
+
     private Cluster updateCluster(List<BucketLocation> bucketLocations) {
         Map<Integer, ServerNode> aliveTabletServersById = new HashMap<>();
         aliveTabletServersById.put(node1.id(), node1);
@@ -636,10 +871,15 @@ class RecordAccumulatorTest {
         aliveTabletServersById.put(node3.id(), node3);
 
         Map<PhysicalTablePath, List<BucketLocation>> bucketsByPath = new HashMap<>();
-        bucketsByPath.put(DATA1_PHYSICAL_TABLE_PATH, bucketLocations);
-
         Map<TablePath, Long> tableIdByPath = new HashMap<>();
-        tableIdByPath.put(DATA1_TABLE_PATH, DATA1_TABLE_ID);
+        for (BucketLocation bucketLocation : bucketLocations) {
+            PhysicalTablePath physicalTablePath = bucketLocation.getPhysicalTablePath();
+            bucketsByPath
+                    .computeIfAbsent(physicalTablePath, ignored -> new ArrayList<>())
+                    .add(bucketLocation);
+            tableIdByPath.put(
+                    physicalTablePath.getTablePath(), bucketLocation.getTableBucket().getTableId());
+        }
         Map<TablePath, TableInfo> tableInfoByPath = new HashMap<>();
         tableInfoByPath.put(DATA1_TABLE_PATH, DATA1_TABLE_INFO);
         return new Cluster(

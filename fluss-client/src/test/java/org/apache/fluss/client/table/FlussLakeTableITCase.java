@@ -33,6 +33,7 @@ import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.metadata.DataLakeFormat;
+import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -57,6 +58,9 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -70,6 +74,7 @@ import java.util.stream.Stream;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.InternalRowAssert.assertThatRow;
 import static org.apache.fluss.testutils.InternalRowListAssert.assertThatRows;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -253,6 +258,70 @@ class FlussLakeTableITCase {
         createTable(tablePath, logTable, false);
         // verify write will use the lake's bucket assigner
         writeRowsAndVerifyBucket(tablePath, logTable);
+    }
+
+    @Test
+    void testWriteExpiredLogPartition() throws Exception {
+        TablePath tablePath = TablePath.of("fluss", "test_historical_log_write");
+        Schema schema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT())
+                        .column("value", DataTypes.STRING())
+                        .column("dt", DataTypes.STRING())
+                        .build();
+        TableDescriptor descriptor =
+                TableDescriptor.builder()
+                        .schema(schema)
+                        .distributedBy(1, "id")
+                        .partitionedBy("dt")
+                        .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)
+                        .property(
+                                ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT,
+                                AutoPartitionTimeUnit.DAY)
+                        .property(ConfigOptions.TABLE_AUTO_PARTITION_NUM_RETENTION, 2)
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                        .property(ConfigOptions.TABLE_DATALAKE_FORMAT, DataLakeFormat.PAIMON)
+                        .build();
+        createTable(tablePath, descriptor, false);
+
+        String expiredPartition =
+                LocalDate.now(ZoneOffset.UTC)
+                        .minusDays(10)
+                        .format(DateTimeFormatter.BASIC_ISO_DATE);
+        InternalRow expectedRow = row(1, "late-value", expiredPartition);
+        Configuration lateWriteConf = new Configuration(clientConf);
+        lateWriteConf.set(ConfigOptions.CLIENT_WRITER_DYNAMIC_CREATE_PARTITION_ENABLED, false);
+        try (Connection lateWriteConnection = ConnectionFactory.createConnection(lateWriteConf);
+                Table table = lateWriteConnection.getTable(tablePath)) {
+            AppendWriter writer = table.newAppend().createWriter();
+            writer.append(expectedRow).get();
+            writer.flush();
+        }
+
+        List<PartitionInfo> partitions = admin.listPartitionInfos(tablePath).get();
+        assertThat(partitions)
+                .extracting(PartitionInfo::getPartitionName)
+                .contains(HISTORICAL_PARTITION_VALUE)
+                .doesNotContain(expiredPartition);
+        long historicalPartitionId =
+                partitions.stream()
+                        .filter(
+                                partition ->
+                                        HISTORICAL_PARTITION_VALUE.equals(
+                                                partition.getPartitionName()))
+                        .findFirst()
+                        .get()
+                        .getPartitionId();
+
+        try (Table table = conn.getTable(tablePath);
+                LogScanner scanner = table.newScan().createLogScanner()) {
+            scanner.subscribeFromBeginning(historicalPartitionId, 0);
+            ScanRecords records = scanner.poll(Duration.ofSeconds(10));
+            assertThat(records.count()).isOne();
+            assertThatRow(records.iterator().next().getRow())
+                    .withSchema(schema.getRowType())
+                    .isEqualTo(expectedRow);
+        }
     }
 
     private void createTable(

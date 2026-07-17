@@ -109,16 +109,15 @@ public class WriterClient {
             this.accumulator =
                     new RecordAccumulator(
                             conf, idempotenceManager, writerMetricGroup, SystemClock.getInstance());
-            this.sender = newSender(acks, retries);
-            this.ioThreadPool = createThreadPool();
-            ioThreadPool.submit(sender);
-
             this.dynamicPartitionCreator =
                     new DynamicPartitionCreator(
                             metadataUpdater,
                             admin,
                             conf.get(ConfigOptions.CLIENT_WRITER_DYNAMIC_CREATE_PARTITION_ENABLED),
                             this::maybeAbortBatches);
+            this.sender = newSender(acks, retries);
+            this.ioThreadPool = createThreadPool();
+            ioThreadPool.submit(sender);
         } catch (Throwable t) {
             LOG.error("Failed to construct writer.", t);
             close(Duration.ofMillis(0));
@@ -176,17 +175,24 @@ public class WriterClient {
 
             TableInfo tableInfo = record.getTableInfo();
             PhysicalTablePath physicalTablePath = record.getPhysicalTablePath();
+            ResolvedWriteTarget resolvedTarget = null;
             // Skip the call entirely on non-partitioned tables; there is no partition to create.
             if (tableInfo.isPartitioned()) {
-                dynamicPartitionCreator.checkAndCreatePartitionAsync(physicalTablePath, tableInfo);
+                resolvedTarget =
+                        dynamicPartitionCreator.resolveWriteTarget(physicalTablePath, tableInfo);
+                if (resolvedTarget.isHistorical()) {
+                    record =
+                            record.withOriginalPartitionContext(
+                                    physicalTablePath, resolvedTarget.originalPartitionName());
+                }
+                physicalTablePath = resolvedTarget.physicalTablePath();
             }
 
             // maybe create bucket assigner.
             Cluster cluster = metadataUpdater.getCluster();
             BucketAssigner bucketAssigner =
                     bucketAssignerMap.computeIfAbsent(
-                            physicalTablePath,
-                            k -> createBucketAssigner(tableInfo, physicalTablePath, conf));
+                            physicalTablePath, k -> createBucketAssigner(tableInfo, k, conf));
 
             // Append the record to the accumulator.
             int bucketId = bucketAssigner.assignBucket(record.getBucketKey(), cluster);
@@ -205,6 +211,10 @@ public class WriterClient {
                         bucketId,
                         prevBucketId);
                 result = accumulator.append(record, callback, cluster, bucketId, false);
+            }
+
+            if (resolvedTarget != null && resolvedTarget.isHistorical()) {
+                accumulator.rerouteToHistorical(record.getPhysicalTablePath(), resolvedTarget);
             }
 
             if (result.batchIsFull || result.newBatchCreated) {
@@ -306,7 +316,8 @@ public class WriterClient {
                 retries,
                 metadataUpdater,
                 idempotenceManager,
-                writerMetricGroup);
+                writerMetricGroup,
+                dynamicPartitionCreator);
     }
 
     public void close(Duration timeout) {

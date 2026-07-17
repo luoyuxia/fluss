@@ -54,7 +54,6 @@ public class KvWriteBatch extends WriteBatch {
     private final @Nullable int[] targetColumns;
     private final int schemaId;
     private final MergeMode mergeMode;
-    private final @Nullable String originalPartitionName;
 
     public KvWriteBatch(
             long tableId,
@@ -75,7 +74,9 @@ public class KvWriteBatch extends WriteBatch {
         this.targetColumns = targetColumns;
         this.schemaId = schemaId;
         this.mergeMode = mergeMode;
-        this.originalPartitionName = originalPartitionName;
+        if (originalPartitionName != null) {
+            rerouteToHistorical(originalPartitionName);
+        }
     }
 
     @Override
@@ -85,7 +86,7 @@ public class KvWriteBatch extends WriteBatch {
 
     @Override
     public boolean tryAppend(WriteRecord writeRecord, WriteCallback callback) throws Exception {
-        if (!Objects.equals(originalPartitionName, writeRecord.getOriginalPartitionName())) {
+        if (!Objects.equals(getOriginalPartitionName(), writeRecord.getOriginalPartitionName())) {
             return false;
         }
 
@@ -138,11 +139,6 @@ public class KvWriteBatch extends WriteBatch {
 
     public MergeMode getMergeMode() {
         return mergeMode;
-    }
-
-    /** Returns the expired original partition name for a historical KV write, or null. */
-    public @Nullable String getOriginalPartitionName() {
-        return originalPartitionName;
     }
 
     @Override

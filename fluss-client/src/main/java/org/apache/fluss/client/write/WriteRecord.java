@@ -255,17 +255,16 @@ public final class WriteRecord {
     }
 
     /**
-     * Returns a copy with the given physical write target and original partition context.
+     * Returns a copy carrying the given original partition context.
      *
-     * <p>A non-null original partition name is only valid for KV writes targeting the historical
-     * system partition. Normal writes keep the original partition name unset.
+     * <p>The physical table path identifies the accumulator queue; the actual RPC target is
+     * resolved separately. A non-null original partition name identifies the expired partition
+     * represented by a historical write. Normal writes keep the original partition name unset.
      */
-    public WriteRecord withWriteTarget(
+    public WriteRecord withOriginalPartitionContext(
             PhysicalTablePath physicalTablePath, @Nullable String originalPartitionName) {
         checkNotNull(physicalTablePath, "physicalTablePath must not be null");
         if (originalPartitionName != null) {
-            checkArgument(
-                    writeFormat.isKv(), "original partition name is only valid for KV writes");
             checkArgument(
                     !originalPartitionName.isEmpty(), "original partition name must not be empty");
         }
@@ -320,7 +319,7 @@ public final class WriteRecord {
         return mergeMode;
     }
 
-    /** Returns the expired original partition name for a historical KV write, or null. */
+    /** Returns the expired original partition name for a historical write, or null. */
     public @Nullable String getOriginalPartitionName() {
         return originalPartitionName;
     }

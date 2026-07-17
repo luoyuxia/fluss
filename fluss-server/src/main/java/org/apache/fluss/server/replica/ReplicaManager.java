@@ -1505,6 +1505,11 @@ public class ReplicaManager implements ServerReconfigurable {
                         if (replica.isHistoricalPartition()
                                 && replica.getLakeLogEndOffset()
                                         >= replica.getLocalLogEndOffset()) {
+                            // Record the snapshot before scheduling local KV cleanup. A later lake
+                            // fallback lookup will lazily reopen its cached lookuper if necessary,
+                            // so it cannot miss historical updates after local state is removed.
+                            historicalLakeLookupManager.requireLakeSnapshot(
+                                    tb.getTableId(), lakeBucketOffset.getSnapshotId());
                             cleanupCandidates.add(replica);
                         }
                     }

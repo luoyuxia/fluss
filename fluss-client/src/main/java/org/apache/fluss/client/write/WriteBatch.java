@@ -48,6 +48,7 @@ public abstract class WriteBatch {
     private final RequestFuture requestFuture;
     private final long tableId;
     private final int bucketId;
+    private @Nullable String originalPartitionName;
 
     protected final List<WriteCallback> callbacks = new ArrayList<>();
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
@@ -167,6 +168,16 @@ public abstract class WriteBatch {
 
     public PhysicalTablePath physicalTablePath() {
         return physicalTablePath;
+    }
+
+    /** Returns the original partition name for a historical write, or null for a normal write. */
+    public @Nullable String getOriginalPartitionName() {
+        return originalPartitionName;
+    }
+
+    void rerouteToHistorical(String originalPartitionName) {
+        this.originalPartitionName =
+                checkNotNull(originalPartitionName, "originalPartitionName must not be null");
     }
 
     public RequestFuture getRequestFuture() {

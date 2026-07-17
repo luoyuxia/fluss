@@ -189,9 +189,7 @@ public final class RecordAccumulator {
         BucketAndWriteBatches bucketAndWriteBatches =
                 writeBatches.computeIfAbsent(
                         physicalTablePath,
-                        k ->
-                                new BucketAndWriteBatches(
-                                        partitionIdOpt.orElse(null), tableInfo.isPartitioned()));
+                        k -> new BucketAndWriteBatches(partitionIdOpt.orElse(null), tableInfo));
 
         // We keep track of the number of appending thread to make sure we do not miss batches in
         // abortIncompleteBatches().
@@ -232,6 +230,40 @@ public final class RecordAccumulator {
             writerBufferPool.returnAll(memorySegments);
             appendsInProgress.decrementAndGet();
         }
+    }
+
+    /**
+     * Reroutes pending batches for an original partition to the historical partition in place.
+     *
+     * <p>The batches remain in the queue keyed by the original physical path to preserve their
+     * order. If the original target still has in-flight batches, this method first installs a
+     * barrier and waits for those batches to return to the queue. Only then are their old sequences
+     * cleared and the historical partition ID published. This prevents a newer queued batch from
+     * being sent to the historical partition before an older original-target batch.
+     */
+    void rerouteToHistorical(
+            PhysicalTablePath physicalTablePath, ResolvedWriteTarget resolvedWriteTarget) {
+        BucketAndWriteBatches bucketAndWriteBatches = writeBatches.get(physicalTablePath);
+        if (bucketAndWriteBatches == null) {
+            return;
+        }
+        checkNotNull(
+                resolvedWriteTarget.originalPartitionName(),
+                "Historical write must carry original partition name");
+        synchronized (bucketAndWriteBatches) {
+            if (Objects.equals(
+                    bucketAndWriteBatches.partitionId, resolvedWriteTarget.partitionId())) {
+                return;
+            }
+            bucketAndWriteBatches.pendingHistoricalTarget = resolvedWriteTarget;
+            tryCompleteHistoricalReroute(physicalTablePath, bucketAndWriteBatches);
+        }
+    }
+
+    @Nullable
+    TableInfo getTableInfo(PhysicalTablePath physicalTablePath) {
+        BucketAndWriteBatches bucketAndWriteBatches = writeBatches.get(physicalTablePath);
+        return bucketAndWriteBatches == null ? null : bucketAndWriteBatches.tableInfo;
     }
 
     /**
@@ -312,13 +344,62 @@ public final class RecordAccumulator {
         batch.reEnqueued();
         Deque<WriteBatch> deque =
                 getOrCreateDeque(readyWriteBatch.tableBucket(), batch.physicalTablePath());
-        synchronized (deque) {
-            if (idempotenceManager.idempotenceEnabled()) {
-                insertInSequenceOrder(deque, batch, readyWriteBatch.tableBucket());
-            } else {
-                deque.addFirst(batch);
+        BucketAndWriteBatches bucketAndWriteBatches =
+                checkNotNull(writeBatches.get(batch.physicalTablePath()));
+
+        if (!hasHistoricalRouting(bucketAndWriteBatches)) {
+            synchronized (deque) {
+                // Recheck after acquiring the deque lock. If reroute starts after this check, it
+                // must wait for this append and will include the batch in the target switch.
+                if (!hasHistoricalRouting(bucketAndWriteBatches)) {
+                    addReEnqueuedBatch(deque, batch, readyWriteBatch.tableBucket());
+                    return;
+                }
             }
         }
+
+        // Historical rerouting changes the target of the whole original-path queue, while
+        // in-flight responses return one batch at a time. Hold the routing-state lock and then
+        // the deque lock so that a returned batch is re-enqueued atomically with respect to that
+        // target switch: it either keeps its original-target sequence before the switch, or has
+        // that sequence cleared and joins the historical target after the switch.
+        synchronized (bucketAndWriteBatches) {
+            synchronized (deque) {
+                if (bucketAndWriteBatches.originalPartitionName != null
+                        && !Objects.equals(
+                                readyWriteBatch.tableBucket().getPartitionId(),
+                                bucketAndWriteBatches.partitionId)) {
+                    // Another in-flight batch may already have rerouted this original-path queue.
+                    // Move this late retry to the same historical target and let the next drain
+                    // assign its sequence from that target's sequence state.
+                    rerouteBatchToHistorical(
+                            batch,
+                            readyWriteBatch.tableBucket(),
+                            bucketAndWriteBatches.originalPartitionName);
+                    deque.addFirst(batch);
+                } else {
+                    addReEnqueuedBatch(deque, batch, readyWriteBatch.tableBucket());
+                }
+            }
+            // A response from the original target may be the last one held behind the reroute
+            // barrier. Recheck immediately so the queue can switch to the historical target
+            // without waiting for another ready() iteration.
+            tryCompleteHistoricalReroute(batch.physicalTablePath(), bucketAndWriteBatches);
+        }
+    }
+
+    private void addReEnqueuedBatch(
+            Deque<WriteBatch> deque, WriteBatch batch, TableBucket tableBucket) {
+        if (idempotenceManager.idempotenceEnabled()) {
+            insertInSequenceOrder(deque, batch, tableBucket);
+        } else {
+            deque.addFirst(batch);
+        }
+    }
+
+    private static boolean hasHistoricalRouting(BucketAndWriteBatches bucketAndWriteBatches) {
+        return bucketAndWriteBatches.pendingHistoricalTarget != null
+                || bucketAndWriteBatches.originalPartitionName != null;
     }
 
     /** Abort all incomplete batches (whether they have been sent or not). */
@@ -412,6 +493,13 @@ public final class RecordAccumulator {
             return null;
         }
 
+        // Do not drain this queue while older attempts are still targeting the original
+        // partition. The queue becomes visible again after they return and the whole queue is
+        // switched to the historical partition in sequence order.
+        if (bucketAndWriteBatches.pendingHistoricalTarget != null) {
+            return null;
+        }
+
         // for the partitioned tables, we need to check whether the partition is ready
         if (bucketAndWriteBatches.isPartitionedTable && bucketAndWriteBatches.partitionId == null) {
             return null;
@@ -474,20 +562,24 @@ public final class RecordAccumulator {
             Set<PhysicalTablePath> unknownLeaderTables,
             Cluster cluster,
             long nextReadyCheckDelayMs) {
-        // first check this table has partitionId.
-        if (bucketAndWriteBatches.isPartitionedTable && bucketAndWriteBatches.partitionId == null) {
-            Optional<Long> optionIdOpt = cluster.getPartitionId(physicalTablePath);
-            if (optionIdOpt.isPresent()) {
-                bucketAndWriteBatches.partitionId = optionIdOpt.get();
-            } else {
-                LOG.debug(
-                        "Partition not exists for {}, bucket will not be set to ready",
-                        physicalTablePath);
-                // TODO: we shouldn't add unready partitions to unknownLeaderTables,
-                //  because it cases PartitionNotExistException later
-                unknownLeaderTables.add(physicalTablePath);
+        synchronized (bucketAndWriteBatches) {
+            if (!tryCompleteHistoricalReroute(physicalTablePath, bucketAndWriteBatches)) {
+                // Keep the original partition ID private while its in-flight batches return. If H
+                // were published here, a newer queued batch could obtain H's next sequence and
+                // overtake an older batch which is still waiting for an O response.
                 return nextReadyCheckDelayMs;
             }
+        }
+
+        // first check this table has partitionId.
+        if (bucketAndWriteBatches.isPartitionedTable && bucketAndWriteBatches.partitionId == null) {
+            LOG.debug(
+                    "Partition not exists for {}, bucket will not be set to ready",
+                    physicalTablePath);
+            // TODO: we shouldn't add unready partitions to unknownLeaderTables,
+            //  because it cases PartitionNotExistException later
+            addUnknownLeaderTable(physicalTablePath, bucketAndWriteBatches, unknownLeaderTables);
+            return nextReadyCheckDelayMs;
         }
 
         Map<Integer, Deque<WriteBatch>> batches = bucketAndWriteBatches.batches;
@@ -529,16 +621,19 @@ public final class RecordAccumulator {
             int bucketId = entry.getKey();
             Optional<Long> tableIdOpt = cluster.getTableId(physicalTablePath.getTablePath());
             if (!tableIdOpt.isPresent()) {
-                unknownLeaderTables.add(physicalTablePath);
+                addUnknownLeaderTable(
+                        physicalTablePath, bucketAndWriteBatches, unknownLeaderTables);
             } else {
                 TableBucket tableBucket =
-                        cluster.getTableBucket(tableIdOpt.get(), physicalTablePath, bucketId);
+                        new TableBucket(
+                                tableIdOpt.get(), bucketAndWriteBatches.partitionId, bucketId);
                 Integer leader = cluster.leaderFor(tableBucket);
                 if (leader == null) {
                     // This is a bucket for which leader is not known, but messages are
                     // available to send. Note that entries are currently not removed from
                     // batches when deque is empty.
-                    unknownLeaderTables.add(physicalTablePath);
+                    addUnknownLeaderTable(
+                            physicalTablePath, bucketAndWriteBatches, unknownLeaderTables);
                 } else {
                     nextReadyCheckDelayMs =
                             batchReady(
@@ -553,6 +648,15 @@ public final class RecordAccumulator {
         }
 
         return nextReadyCheckDelayMs;
+    }
+
+    private static void addUnknownLeaderTable(
+            PhysicalTablePath physicalTablePath,
+            BucketAndWriteBatches bucketAndWriteBatches,
+            Set<PhysicalTablePath> unknownLeaderTables) {
+        PhysicalTablePath historicalTarget =
+                bucketAndWriteBatches.historicalTargetPhysicalTablePath;
+        unknownLeaderTables.add(historicalTarget == null ? physicalTablePath : historicalTarget);
     }
 
     private long batchReady(
@@ -623,6 +727,9 @@ public final class RecordAccumulator {
                         outputView,
                         schemaId);
 
+        if (writeRecord.getOriginalPartitionName() != null) {
+            batch.rerouteToHistorical(writeRecord.getOriginalPartitionName());
+        }
         batch.tryAppend(writeRecord, callback);
         deque.addLast(batch);
         incomplete.add(batch);
@@ -748,6 +855,8 @@ public final class RecordAccumulator {
             if (deque == null) {
                 continue;
             }
+            BucketAndWriteBatches bucketAndWriteBatches =
+                    checkNotNull(writeBatches.get(physicalTablePath));
 
             final WriteBatch batch;
             List<WriteBatch> staleBatches = null;
@@ -856,9 +965,13 @@ public final class RecordAccumulator {
             batch.close();
             int currentBatchSize = batch.estimatedSizeInBytes();
             size += currentBatchSize;
-            batchSizeEstimator.updateEstimation(physicalTablePath, currentBatchSize);
+            batchSizeEstimator.updateEstimation(batch.physicalTablePath(), currentBatchSize);
 
-            ready.add(new ReadyWriteBatch(tableBucket, batch));
+            PhysicalTablePath targetPhysicalTablePath =
+                    bucketAndWriteBatches.historicalTargetPhysicalTablePath == null
+                            ? physicalTablePath
+                            : bucketAndWriteBatches.historicalTargetPhysicalTablePath;
+            ready.add(new ReadyWriteBatch(tableBucket, batch, targetPhysicalTablePath));
             // mark the batch as drained.
             batch.drained(System.currentTimeMillis());
         } while (start != drainIndex);
@@ -911,22 +1024,29 @@ public final class RecordAccumulator {
         nodesDrainIndex.put(id, drainIndex);
     }
 
-    /**
-     * TODO This is a very time-consuming operation, which will be moved to be computed in the
-     * Cluster later on.
-     */
+    /** Returns bucket locations for queues owned by this accumulator on the given node. */
     private List<BucketLocation> getAllBucketsInCurrentNode(Integer currentNode, Cluster cluster) {
         List<BucketLocation> buckets = new ArrayList<>();
-        Set<PhysicalTablePath> physicalTablePaths = cluster.getBucketLocationsByPath().keySet();
-        for (PhysicalTablePath path : physicalTablePaths) {
-            List<BucketLocation> bucketsForTable =
-                    cluster.getAvailableBucketsForPhysicalTablePath(path);
-            for (BucketLocation bucket : bucketsForTable) {
-                // the bucket leader is always not null in available list,
-                // but we still check here to avoid NPE warning.
-                if (bucket.getLeader() != null && Objects.equals(currentNode, bucket.getLeader())) {
-                    buckets.add(bucket);
+        for (Map.Entry<PhysicalTablePath, BucketAndWriteBatches> entry : writeBatches.entrySet()) {
+            PhysicalTablePath physicalTablePath = entry.getKey();
+            BucketAndWriteBatches bucketAndWriteBatches = entry.getValue();
+            Long tableId = cluster.getTableId(physicalTablePath.getTablePath()).orElse(null);
+            if (tableId == null) {
+                continue;
+            }
+            for (Integer bucketId : bucketAndWriteBatches.batches.keySet()) {
+                TableBucket tableBucket =
+                        new TableBucket(tableId, bucketAndWriteBatches.partitionId, bucketId);
+                BucketLocation bucket = cluster.getBucketLocation(tableBucket).orElse(null);
+                if (bucket == null || !Objects.equals(currentNode, bucket.getLeader())) {
+                    continue;
                 }
+                buckets.add(
+                        new BucketLocation(
+                                physicalTablePath,
+                                tableBucket,
+                                bucket.getLeader(),
+                                bucket.getReplicas()));
             }
         }
         return buckets;
@@ -1008,6 +1128,82 @@ public final class RecordAccumulator {
         }
     }
 
+    private void rerouteBatchToHistorical(
+            WriteBatch batch, TableBucket originalTableBucket, String originalPartitionName) {
+        if (batch.hasBatchSequence()) {
+            // A retried batch may still carry the sequence assigned for the original partition.
+            // Stop tracking it under that bucket and let the normal drain path assign the next
+            // sequence for the historical bucket. Reusing the old sequence can make the
+            // historical replica treat this write as a duplicate.
+            checkNotNull(
+                    originalTableBucket.getPartitionId(),
+                    "Sequenced partition batch must have a partition ID");
+            idempotenceManager.removeInFlightBatch(new ReadyWriteBatch(originalTableBucket, batch));
+            batch.resetWriterState(NO_WRITER_ID, NO_BATCH_SEQUENCE);
+        }
+        batch.rerouteToHistorical(originalPartitionName);
+    }
+
+    /**
+     * Completes a pending original-to-historical target switch when it is safe to preserve order.
+     *
+     * <p>For each bucket, the idempotence entry contains every batch assigned a sequence for the
+     * current target, including both batches in deques and attempts still on the network. Multiple
+     * original-path queues may share the same historical target, so this barrier only waits for
+     * tracked batches belonging to the queue being switched. Once all of them are back, {@link
+     * #reEnqueue} has restored their sequence order and the normal drain path can assign new target
+     * sequences in the same order.
+     */
+    private boolean tryCompleteHistoricalReroute(
+            PhysicalTablePath physicalTablePath, BucketAndWriteBatches bucketAndWriteBatches) {
+        ResolvedWriteTarget historicalTarget = bucketAndWriteBatches.pendingHistoricalTarget;
+        if (historicalTarget == null) {
+            return true;
+        }
+
+        Long originalPartitionId = bucketAndWriteBatches.partitionId;
+        if (idempotenceManager.idempotenceEnabled() && originalPartitionId != null) {
+            TableInfo tableInfo =
+                    checkNotNull(
+                            bucketAndWriteBatches.tableInfo,
+                            "Table info is required while rerouting sequenced batches");
+            for (Map.Entry<Integer, Deque<WriteBatch>> entry :
+                    bucketAndWriteBatches.batches.entrySet()) {
+                Deque<WriteBatch> deque = entry.getValue();
+                synchronized (deque) {
+                    TableBucket originalTableBucket =
+                            new TableBucket(
+                                    tableInfo.getTableId(), originalPartitionId, entry.getKey());
+                    if (idempotenceManager.hasInflightBatchOutsideQueue(
+                            originalTableBucket, physicalTablePath, deque)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        String originalPartitionName =
+                checkNotNull(
+                        historicalTarget.originalPartitionName(),
+                        "Historical write must carry original partition name");
+        for (Deque<WriteBatch> deque : bucketAndWriteBatches.batches.values()) {
+            synchronized (deque) {
+                for (WriteBatch batch : deque) {
+                    TableBucket originalTableBucket =
+                            new TableBucket(batch.tableId(), originalPartitionId, batch.bucketId());
+                    rerouteBatchToHistorical(batch, originalTableBucket, originalPartitionName);
+                }
+            }
+        }
+
+        bucketAndWriteBatches.originalPartitionName = originalPartitionName;
+        bucketAndWriteBatches.partitionId = historicalTarget.partitionId();
+        bucketAndWriteBatches.historicalTargetPhysicalTablePath =
+                historicalTarget.physicalTablePath();
+        bucketAndWriteBatches.pendingHistoricalTarget = null;
+        return true;
+    }
+
     /** Metadata about a record just appended to the record accumulator. */
     public static final class RecordAppendResult {
         public final boolean batchIsFull;
@@ -1027,6 +1223,7 @@ public final class RecordAccumulator {
     public static final class ReadyCheckResult {
         public final Set<Integer> readyNodes;
         public final long nextReadyCheckDelayMs;
+        // Actual physical target paths whose bucket leader metadata needs refreshing.
         public final Set<PhysicalTablePath> unknownLeaderTables;
 
         public ReadyCheckResult(
@@ -1065,12 +1262,27 @@ public final class RecordAccumulator {
         chunkedFactory.close();
     }
 
-    /** Per table bucket and write batches. */
+    /** Per physical table path and write batches. */
     private static class BucketAndWriteBatches {
         public final boolean isPartitionedTable;
         public volatile @Nullable Long partitionId;
+        private @Nullable TableInfo tableInfo;
+        // Set after this original-path queue has been rerouted to the historical partition.
+        private volatile @Nullable String originalPartitionName;
+        // Actual historical metadata path. The queue itself remains keyed by the original path.
+        private volatile @Nullable PhysicalTablePath historicalTargetPhysicalTablePath;
+        // The historical target stays pending until all sequenced original-target batches have
+        // returned to their deques. Keeping it separate from partitionId is the reroute barrier:
+        // partitionId remains O and drain hides the queue until it can switch to H without
+        // reordering.
+        private volatile @Nullable ResolvedWriteTarget pendingHistoricalTarget;
         // Write batches for each bucket in queue.
         public final Map<Integer, Deque<WriteBatch>> batches = new CopyOnWriteMap<>();
+
+        private BucketAndWriteBatches(@Nullable Long partitionId, TableInfo tableInfo) {
+            this(partitionId, tableInfo.isPartitioned());
+            this.tableInfo = tableInfo;
+        }
 
         public BucketAndWriteBatches(@Nullable Long partitionId, boolean isPartitionedTable) {
             this.partitionId = partitionId;

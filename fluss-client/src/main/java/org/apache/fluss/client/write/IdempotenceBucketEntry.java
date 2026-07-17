@@ -19,10 +19,12 @@ package org.apache.fluss.client.write;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
+import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 
 import javax.annotation.Nullable;
 
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Optional;
 import java.util.SortedSet;
@@ -108,6 +110,18 @@ public class IdempotenceBucketEntry {
 
     int inflightBatchSize() {
         return inflightBatchesBySequence.size();
+    }
+
+    /** Returns whether a sequenced batch for the given path has not yet returned to its queue. */
+    boolean hasInflightBatchOutsideQueue(
+            PhysicalTablePath physicalTablePath, Collection<WriteBatch> queuedBatches) {
+        for (WriteBatch inflightBatch : inflightBatchesBySequence) {
+            if (inflightBatch.physicalTablePath().equals(physicalTablePath)
+                    && !queuedBatches.contains(inflightBatch)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Nullable

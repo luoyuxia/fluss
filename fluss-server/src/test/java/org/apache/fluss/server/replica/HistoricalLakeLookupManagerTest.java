@@ -21,6 +21,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
+import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -221,6 +222,61 @@ class HistoricalLakeLookupManagerTest {
     }
 
     @Test
+    void testLazilyRefreshesLookuperForRequiredLakeSnapshot() throws Exception {
+        ManualExecutor executor = new ManualExecutor();
+        TestingHistoricalLakeLookupManager manager = createTestingManager(executor);
+
+        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
+        TestingLakeTableLookuper initialLookuper = manager.createdLookupers.get(0);
+
+        manager.requireLakeSnapshot(PARTITION_TABLE_ID, 10L);
+        assertThat(manager.createdLookupers).hasSize(1);
+        assertThat(initialLookuper.closed).isFalse();
+
+        byte[] key = new byte[] {1};
+        ResolvedPartitionSpec partitionSpec =
+                ResolvedPartitionSpec.fromPartitionName(
+                        PARTITION_TABLE_INFO.getPartitionKeys(), "2024");
+        assertThat(manager.lookupValue(PARTITION_TABLE_INFO, partitionSpec, 0, key)).isEqualTo(key);
+        assertThat(initialLookuper.closed).isTrue();
+        assertThat(manager.createdLookupers).hasSize(2);
+
+        TestingLakeTableLookuper refreshedLookuper = manager.createdLookupers.get(1);
+        manager.requireLakeSnapshot(PARTITION_TABLE_ID, 9L);
+        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
+        assertThat(manager.createdLookupers).hasSize(2);
+
+        manager.requireLakeSnapshot(PARTITION_TABLE_ID, 11L);
+        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
+        assertThat(refreshedLookuper.closed).isTrue();
+        assertThat(manager.createdLookupers).hasSize(3);
+    }
+
+    @Test
+    void testFailedSnapshotRefreshKeepsPreviousLookuper() throws Exception {
+        ManualExecutor executor = new ManualExecutor();
+        TestingHistoricalLakeLookupManager manager = createTestingManager(executor);
+
+        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
+        TestingLakeTableLookuper initialLookuper = manager.createdLookupers.get(0);
+
+        manager.requireLakeSnapshot(PARTITION_TABLE_ID, 10L);
+        manager.failNextLookuperLookup = true;
+        CompletableFuture<LookupResultForBucket> failedLookup =
+                manager.lookup(lookupData(HISTORICAL_BUCKET), PARTITION_TABLE_INFO);
+        executor.runNext();
+
+        assertThat(failedLookup.get(1, TimeUnit.SECONDS).failed()).isTrue();
+        assertThat(initialLookuper.closed).isFalse();
+        assertThat(manager.createdLookupers).hasSize(2);
+        assertThat(manager.createdLookupers.get(1).closed).isTrue();
+
+        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
+        assertThat(initialLookuper.closed).isTrue();
+        assertThat(manager.createdLookupers).hasSize(3);
+    }
+
+    @Test
     void testExpiresIdleLookuperWithoutAnotherLookup() throws Exception {
         ManualExecutor executor = new ManualExecutor();
         AtomicLong tickerNanos = new AtomicLong();
@@ -339,6 +395,7 @@ class HistoricalLakeLookupManagerTest {
             extends HistoricalLakeLookupManager {
         private final List<TestingLakeTableLookuper> createdLookupers = new ArrayList<>();
         private final List<String> createdIoTmpDirs = new ArrayList<>();
+        private boolean failNextLookuperLookup;
 
         private TestingHistoricalLakeLookupManager(
                 Configuration conf,
@@ -365,7 +422,9 @@ class HistoricalLakeLookupManagerTest {
 
         @Override
         LakeTableLookuper createLakeTableLookuper(TablePath tablePath, String ioTmpDir) {
-            TestingLakeTableLookuper lookuper = new TestingLakeTableLookuper();
+            TestingLakeTableLookuper lookuper =
+                    new TestingLakeTableLookuper(failNextLookuperLookup);
+            failNextLookuperLookup = false;
             createdLookupers.add(lookuper);
             createdIoTmpDirs.add(ioTmpDir);
             return lookuper;
@@ -373,10 +432,18 @@ class HistoricalLakeLookupManagerTest {
     }
 
     private static final class TestingLakeTableLookuper implements LakeTableLookuper {
+        private final boolean failLookup;
         private boolean closed;
+
+        private TestingLakeTableLookuper(boolean failLookup) {
+            this.failLookup = failLookup;
+        }
 
         @Override
         public byte[] lookup(byte[] key, LookupContext context) {
+            if (failLookup) {
+                throw new RuntimeException("Expected lookup failure.");
+            }
             return key;
         }
 

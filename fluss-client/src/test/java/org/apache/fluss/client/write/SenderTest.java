@@ -38,6 +38,7 @@ import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.encode.CompactedKeyEncoder;
+import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.entity.PutKvResultForBucket;
 import org.apache.fluss.rpc.messages.ApiMessage;
@@ -85,9 +86,11 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.getProduceLogD
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLogResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makePutKvResponse;
 import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
+import static org.apache.fluss.testutils.DataTestUtils.indexedRow;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /** ITCase for {@link Sender}. */
 final class SenderTest {
@@ -104,6 +107,7 @@ final class SenderTest {
     private RecordAccumulator accumulator = null;
     private Sender sender = null;
     private TestingWriterMetricGroup writerMetricGroup;
+    private DynamicPartitionCreator dynamicPartitionCreator;
 
     // TODO add more tests as kafka SenderTest.
 
@@ -111,6 +115,7 @@ final class SenderTest {
     public void setup() {
         metadataUpdater = initializeMetadataUpdater();
         writerMetricGroup = TestingWriterMetricGroup.newInstance();
+        dynamicPartitionCreator = mock(DynamicPartitionCreator.class);
         sender = setupWithIdempotenceState();
     }
 
@@ -921,6 +926,75 @@ final class SenderTest {
     }
 
     @Test
+    void testSeparateHistoricalProduceLogRequestsForSameBucket() throws Exception {
+        Cluster oldCluster = metadataUpdater.getCluster();
+        PhysicalTablePath historicalPath = PhysicalTablePath.of(DATA1_TABLE_PATH, "__historical__");
+        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID, 100L, 0);
+        int leader = metadataUpdater.leaderFor(DATA1_TABLE_PATH, tb1);
+        Map<PhysicalTablePath, List<BucketLocation>> bucketLocations =
+                new HashMap<>(oldCluster.getBucketLocationsByPath());
+        bucketLocations.put(
+                historicalPath,
+                Collections.singletonList(
+                        new BucketLocation(
+                                historicalPath, historicalBucket, leader, new int[] {1, 2, 3})));
+        Map<PhysicalTablePath, Long> partitionIds =
+                new HashMap<>(oldCluster.getPartitionIdByPath());
+        partitionIds.put(historicalPath, 100L);
+        metadataUpdater.updateCluster(
+                new Cluster(
+                        new HashMap<>(oldCluster.getAliveTabletServers()),
+                        oldCluster.getCoordinatorServer(),
+                        bucketLocations,
+                        new HashMap<>(oldCluster.getTableIdByPath()),
+                        partitionIds));
+
+        PhysicalTablePath year2000 = PhysicalTablePath.of(DATA1_TABLE_PATH, "year=2000");
+        PhysicalTablePath year2001 = PhysicalTablePath.of(DATA1_TABLE_PATH, "year=2001");
+        CompletableFuture<Exception> year2000Future = new CompletableFuture<>();
+        CompletableFuture<Exception> year2001Future = new CompletableFuture<>();
+        IndexedRow year2000Row = indexedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        IndexedRow year2001Row = indexedRow(DATA1_ROW_TYPE, new Object[] {2, "b"});
+        accumulator.append(
+                WriteRecord.forIndexedAppend(DATA1_TABLE_INFO, year2000, year2000Row, null),
+                (tb, leo, e) -> year2000Future.complete(e),
+                metadataUpdater.getCluster(),
+                0,
+                false);
+        accumulator.rerouteToHistorical(
+                year2000, ResolvedWriteTarget.historical(historicalPath, "year=2000", 100L));
+        accumulator.append(
+                WriteRecord.forIndexedAppend(DATA1_TABLE_INFO, year2001, year2001Row, null),
+                (tb, leo, e) -> year2001Future.complete(e),
+                metadataUpdater.getCluster(),
+                0,
+                false);
+        accumulator.rerouteToHistorical(
+                year2001, ResolvedWriteTarget.historical(historicalPath, "year=2001", 100L));
+
+        sender.runOnce();
+
+        TestTabletServerGateway gateway =
+                (TestTabletServerGateway) metadataUpdater.newTabletServerClientForNode(leader);
+        assertThat(gateway.pendingRequestSize()).isEqualTo(2);
+        assertThat(Arrays.asList(gateway.getRequest(0), gateway.getRequest(1)))
+                .allSatisfy(
+                        request -> {
+                            assertThat(request).isInstanceOf(ProduceLogRequest.class);
+                            ProduceLogRequest produceLogRequest = (ProduceLogRequest) request;
+                            assertThat(produceLogRequest.getBucketsReqsCount()).isOne();
+                            assertThat(produceLogRequest.getBucketsReqAt(0).getPartitionId())
+                                    .isEqualTo(100L);
+                        });
+
+        while (gateway.pendingRequestSize() > 0) {
+            gateway.response(0, createProduceLogResponse(historicalBucket, 0L, 1L));
+        }
+        assertThat(year2000Future.get()).isNull();
+        assertThat(year2001Future.get()).isNull();
+    }
+
+    @Test
     void testSeparateNormalAndHistoricalPutKvRequests() throws Exception {
         Cluster oldCluster = metadataUpdater.getCluster();
         PhysicalTablePath historicalPath =
@@ -968,7 +1042,7 @@ final class SenderTest {
                 0,
                 false);
         accumulator.append(
-                normalRecord.withWriteTarget(historicalPath, "year=2000"),
+                normalRecord.withOriginalPartitionContext(historicalPath, "year=2000"),
                 (tb, leo, e) -> historicalFuture.complete(e),
                 metadataUpdater.getCluster(),
                 0,
@@ -1000,6 +1074,108 @@ final class SenderTest {
         }
         assertThat(normalFuture.get()).isNull();
         assertThat(historicalFuture.get()).isNull();
+    }
+
+    @Test
+    void testInvalidMetadataInvalidationForNormalAndHistoricalTargets() throws Exception {
+        Cluster oldCluster = metadataUpdater.getCluster();
+        PhysicalTablePath normalPath = PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "year=2099");
+        PhysicalTablePath originalHistoricalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "year=2000");
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "__historical__");
+        TableBucket normalBucket = new TableBucket(DATA1_TABLE_ID_PK, 200L, 0);
+        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, 100L, 0);
+        int leader =
+                metadataUpdater.leaderFor(
+                        DATA1_TABLE_PATH_PK, new TableBucket(DATA1_TABLE_ID_PK, 0));
+
+        Map<PhysicalTablePath, List<BucketLocation>> bucketLocations =
+                new HashMap<>(oldCluster.getBucketLocationsByPath());
+        bucketLocations.put(
+                normalPath,
+                Collections.singletonList(
+                        new BucketLocation(normalPath, normalBucket, leader, new int[] {1, 2, 3})));
+        bucketLocations.put(
+                historicalPath,
+                Collections.singletonList(
+                        new BucketLocation(
+                                historicalPath, historicalBucket, leader, new int[] {1, 2, 3})));
+        Map<PhysicalTablePath, Long> partitionIds =
+                new HashMap<>(oldCluster.getPartitionIdByPath());
+        partitionIds.put(normalPath, 200L);
+        partitionIds.put(historicalPath, 100L);
+        metadataUpdater.updateCluster(
+                new Cluster(
+                        new HashMap<>(oldCluster.getAliveTabletServers()),
+                        oldCluster.getCoordinatorServer(),
+                        bucketLocations,
+                        new HashMap<>(oldCluster.getTableIdByPath()),
+                        partitionIds));
+
+        BinaryRow kvRow = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
+        byte[] key =
+                new CompactedKeyEncoder(DATA1_ROW_TYPE, DATA1_SCHEMA_PK.getPrimaryKeyIndexes())
+                        .encodeKey(kvRow);
+        CompletableFuture<Exception> normalFuture = new CompletableFuture<>();
+        CompletableFuture<Exception> historicalFuture = new CompletableFuture<>();
+        accumulator.append(
+                WriteRecord.forUpsert(
+                        DATA1_TABLE_INFO_PK,
+                        normalPath,
+                        kvRow,
+                        key,
+                        key,
+                        WriteFormat.COMPACTED_KV,
+                        null),
+                (tb, leo, e) -> normalFuture.complete(e),
+                metadataUpdater.getCluster(),
+                0,
+                false);
+        accumulator.append(
+                WriteRecord.forUpsert(
+                                DATA1_TABLE_INFO_PK,
+                                originalHistoricalPath,
+                                kvRow,
+                                key,
+                                key,
+                                WriteFormat.COMPACTED_KV,
+                                null)
+                        .withOriginalPartitionContext(originalHistoricalPath, "year=2000"),
+                (tb, leo, e) -> historicalFuture.complete(e),
+                metadataUpdater.getCluster(),
+                0,
+                false);
+        accumulator.rerouteToHistorical(
+                originalHistoricalPath,
+                ResolvedWriteTarget.historical(historicalPath, "year=2000", 100L));
+
+        sender.runOnce();
+        TestTabletServerGateway gateway =
+                (TestTabletServerGateway) metadataUpdater.newTabletServerClientForNode(leader);
+        assertThat(gateway.pendingRequestSize()).isEqualTo(2);
+        while (gateway.pendingRequestSize() > 0) {
+            PutKvRequest request = (PutKvRequest) gateway.getRequest(0);
+            PbPutKvReqForBucket bucketRequest = request.getBucketsReqAt(0);
+            TableBucket responseBucket =
+                    new TableBucket(
+                            DATA1_TABLE_ID_PK,
+                            bucketRequest.hasPartitionId() ? bucketRequest.getPartitionId() : null,
+                            bucketRequest.getBucketId());
+            gateway.response(0, createPutKvResponse(responseBucket, Errors.NOT_LEADER_OR_FOLLOWER));
+        }
+
+        // Normal writes keep their partition ID because ready() refreshes the same physical path.
+        assertThat(metadataUpdater.getPartitionId(normalPath)).contains(200L);
+        assertThat(metadataUpdater.getCluster().getBucketLocation(normalBucket)).isEmpty();
+        // Invalid metadata only clears H's bucket location; its stable partition ID is retained.
+        assertThat(metadataUpdater.getPartitionId(historicalPath)).contains(100L);
+        assertThat(metadataUpdater.getCluster().getBucketLocation(historicalBucket)).isEmpty();
+
+        Exception cleanupException = new Exception("test cleanup");
+        accumulator.abortAllBatches(cleanupException);
+        assertThat(normalFuture.get()).isSameAs(cleanupException);
+        assertThat(historicalFuture.get()).isSameAs(cleanupException);
     }
 
     @Test
@@ -1167,7 +1343,8 @@ final class SenderTest {
                 reties,
                 metadataUpdater,
                 idempotenceManager,
-                writerMetricGroup);
+                writerMetricGroup,
+                dynamicPartitionCreator);
     }
 
     private IdempotenceManager createIdempotenceManager(boolean idempotenceEnabled) {

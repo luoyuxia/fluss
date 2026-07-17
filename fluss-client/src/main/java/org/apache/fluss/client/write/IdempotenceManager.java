@@ -37,6 +37,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.concurrent.ThreadSafe;
 
+import java.util.Collection;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -260,6 +261,17 @@ public class IdempotenceManager {
     @VisibleForTesting
     synchronized int inflightBatchSize(TableBucket tableBucket) {
         return idempotenceBucketMap.getOrCreate(tableBucket).inflightBatchSize();
+    }
+
+    /** Returns whether this bucket has a sequenced batch that remains outside the given queue. */
+    synchronized boolean hasInflightBatchOutsideQueue(
+            TableBucket tableBucket,
+            PhysicalTablePath physicalTablePath,
+            Collection<WriteBatch> queuedBatches) {
+        return idempotenceBucketMap.contains(tableBucket)
+                && idempotenceBucketMap
+                        .get(tableBucket)
+                        .hasInflightBatchOutsideQueue(physicalTablePath, queuedBatches);
     }
 
     synchronized boolean canRetry(WriteBatch batch, TableBucket tableBucket, Errors error) {

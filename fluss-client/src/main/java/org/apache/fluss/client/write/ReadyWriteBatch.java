@@ -17,6 +17,7 @@
 
 package org.apache.fluss.client.write;
 
+import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 
 /**
@@ -27,10 +28,22 @@ import org.apache.fluss.metadata.TableBucket;
 public class ReadyWriteBatch {
     private final TableBucket tableBucket;
     private final WriteBatch writeBatch;
+    // The physical metadata path of this RPC destination. It is the batch path for a normal write.
+    // For a historical write, the batch remains keyed by its original partition path while this
+    // field points to the historical system partition path.
+    private final PhysicalTablePath targetPhysicalTablePath;
 
     public ReadyWriteBatch(TableBucket tableBucket, WriteBatch writeBatch) {
+        this(tableBucket, writeBatch, writeBatch.physicalTablePath());
+    }
+
+    ReadyWriteBatch(
+            TableBucket tableBucket,
+            WriteBatch writeBatch,
+            PhysicalTablePath targetPhysicalTablePath) {
         this.tableBucket = tableBucket;
         this.writeBatch = writeBatch;
+        this.targetPhysicalTablePath = targetPhysicalTablePath;
     }
 
     public TableBucket tableBucket() {
@@ -39,5 +52,9 @@ public class ReadyWriteBatch {
 
     public WriteBatch writeBatch() {
         return writeBatch;
+    }
+
+    PhysicalTablePath targetPhysicalTablePath() {
+        return targetPhysicalTablePath;
     }
 }

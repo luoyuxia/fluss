@@ -18,6 +18,7 @@
 package org.apache.fluss.client.lookup;
 
 import org.apache.fluss.client.admin.Admin;
+import org.apache.fluss.client.metadata.HistoricalPartitionResolver;
 import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.SchemaGetter;

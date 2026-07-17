@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.client.lookup;
+package org.apache.fluss.client.metadata;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.client.admin.Admin;
-import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.exception.PartitionNotExistException;
+import org.apache.fluss.exception.UnknownTableOrBucketException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.TableInfo;
@@ -38,30 +38,32 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 /**
  * Resolves original partitions to their historical system partition ids.
  *
- * <p>Historical lookup requests still carry the original partition name, but the lookup RPC must be
- * sent to the generated historical system partition. This resolver bridges that gap on the client
- * side.
+ * <p>Historical lookup and primary-key write requests still carry the original partition name, but
+ * their RPCs must be sent to the generated historical system partition. This resolver finds or
+ * creates that physical target on the client side.
  */
 @Internal
-class HistoricalPartitionResolver {
+public class HistoricalPartitionResolver {
 
     private final MetadataUpdater metadataUpdater;
     private final Admin admin;
     private final ConcurrentHashMap<HistoricalPartitionKey, CompletableFuture<Long>>
             inflightResolves;
 
-    HistoricalPartitionResolver(MetadataUpdater metadataUpdater, Admin admin) {
+    /** Creates a resolver backed by the client's metadata cache and admin client. */
+    public HistoricalPartitionResolver(MetadataUpdater metadataUpdater, Admin admin) {
         this.metadataUpdater = checkNotNull(metadataUpdater, "metadataUpdater must not be null.");
         this.admin = checkNotNull(admin, "admin must not be null.");
         this.inflightResolves = new ConcurrentHashMap<>();
     }
 
-    CompletableFuture<Long> resolveHistoricalPartitionId(
+    /** Resolves or creates the historical system partition for an original partition. */
+    public CompletableFuture<Long> resolveHistoricalPartitionId(
             TableInfo tableInfo, String originalPartitionName) {
         HistoricalPartitionKey key =
                 new HistoricalPartitionKey(
                         tableInfo.getTableId(), tableInfo.getTablePath(), originalPartitionName);
-        // Multiple lookups for the same original partition can be issued concurrently. Coalesce
+        // Multiple requests for the same original partition can be issued concurrently. Coalesce
         // them so only one metadata refresh/create path runs for a given partition.
         CompletableFuture<Long> result = new CompletableFuture<>();
         CompletableFuture<Long> previous = inflightResolves.putIfAbsent(key, result);
@@ -88,8 +90,8 @@ class HistoricalPartitionResolver {
         ResolvedPartitionSpec historicalPartitionSpec;
         PhysicalTablePath historicalPartitionPath;
         try {
-            // The server-side historical lookup path is keyed by the historical system partition,
-            // not by the original partition that existed before retention cleanup.
+            // Historical RPCs are routed by the historical system partition, not by the original
+            // partition that existed before retention cleanup.
             historicalPartitionSpec = toHistoricalPartitionSpec(tableInfo, originalPartitionName);
             historicalPartitionPath =
                     PhysicalTablePath.of(
@@ -114,7 +116,7 @@ class HistoricalPartitionResolver {
         }
 
         // If the historical system partition still does not exist, create it idempotently and
-        // refresh metadata again so the caller can route the lookup request by partition id.
+        // refresh metadata again so the caller can route the request by partition id.
         admin.createPartition(
                         tableInfo.getTablePath(), historicalPartitionSpec.toPartitionSpec(), true)
                 .whenComplete(
@@ -127,7 +129,10 @@ class HistoricalPartitionResolver {
                                 tryRefreshHistoricalPartition(historicalPartitionPath);
                                 Long partitionId = getCachedPartitionId(historicalPartitionPath);
                                 if (partitionId == null) {
-                                    throw new PartitionNotExistException(
+                                    // The create request succeeded, so the missing ID may only mean
+                                    // that metadata has not observed the new partition yet. Keep
+                                    // this retriable instead of aborting pending write batches.
+                                    throw new UnknownTableOrBucketException(
                                             "Historical partition "
                                                     + historicalPartitionPath
                                                     + " does not exist after creation.");
