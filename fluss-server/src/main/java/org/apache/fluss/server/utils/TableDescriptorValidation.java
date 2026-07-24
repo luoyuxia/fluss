@@ -234,9 +234,6 @@ public class TableDescriptorValidation {
         if (!LakeTableUtil.hasCustomLakePath(tableConf)) {
             return;
         }
-        if (!tableConf.get(ConfigOptions.TABLE_DATALAKE_ENABLED)) {
-            return;
-        }
 
         DataLakeFormat dataLakeFormat =
                 tableConf
@@ -249,9 +246,7 @@ public class TableDescriptorValidation {
     }
 
     public static void validateAlterTableProperties(
-            TableInfo currentTable,
-            Set<String> tableKeysToChange,
-            boolean lakeTablePathChangeForbidden) {
+            TableInfo currentTable, Set<String> tableKeysToChange) {
         TableConfig currentConfig = currentTable.getTableConfig();
 
         List<String> unsupportedKeys =
@@ -274,15 +269,6 @@ public class TableDescriptorValidation {
                     String.format(
                             "'%s' can only be altered on primary key tables.",
                             ConfigOptions.TABLE_KV_STANDBY_REPLICA_ENABLED.key()));
-        }
-
-        if (lakeTablePathChangeForbidden) {
-            throw new InvalidAlterTableException(
-                    String.format(
-                            "The name mapping options '%s' and '%s' cannot be altered when '%s' is true or the table has tiering progress.",
-                            ConfigOptions.TABLE_DATALAKE_DATABASE_NAME.key(),
-                            ConfigOptions.TABLE_DATALAKE_TABLE_NAME.key(),
-                            ConfigOptions.TABLE_DATALAKE_ENABLED.key()));
         }
 
         if (!currentConfig.getDataLakeFormat().isPresent()) {
