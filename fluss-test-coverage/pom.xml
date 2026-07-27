@@ -491,7 +491,7 @@
                                             org.apache.fluss.lake.lakestorage.LakeTableLookuper.LookupContext
                                         </exclude>
                                         <exclude>
-                                            org.apache.fluss.lake.lakestorage.PluginLakeStorageWrapper.ClassLoaderFixingLakeTableLookuper
+                                            org.apache.fluss.lake.lakestorage.PluginLakeStorageWrapper*
                                         </exclude>
                                         <!-- exclude for readiness-probe CLI tool and dist dummy class -->
                                         <exclude>org.apache.fluss.server.tools.ClusterHealthReadinessCheck</exclude>
