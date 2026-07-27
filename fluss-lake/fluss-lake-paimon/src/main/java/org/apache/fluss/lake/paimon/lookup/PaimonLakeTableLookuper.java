@@ -17,7 +17,6 @@
 
 package org.apache.fluss.lake.paimon.lookup;
 
-import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.exception.KvStorageException;
@@ -118,11 +117,6 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     private @Nullable RowEncoder cachedValueRowEncoder;
     private @Nullable InternalRow.FieldGetter[] cachedValueFieldGetters;
     private boolean closed;
-
-    public PaimonLakeTableLookuper(
-            Configuration paimonConfig, TablePath tablePath, TableConfig tableConfig) {
-        this(paimonConfig, tablePath, ConfigOptions.IO_TMP_DIR.defaultValue(), tableConfig);
-    }
 
     public PaimonLakeTableLookuper(
             Configuration paimonConfig,
@@ -259,11 +253,14 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
 
     private org.apache.paimon.data.BinaryRow convertPartition(
             ResolvedPartitionSpec partitionSpec, RowType valueRowType) {
+        // The generated partition projection reuses its mutable output, while lookup caches retain
+        // the returned row as a hash key. Copy it before it escapes to keep those keys stable.
         return toPaimonPartition(
-                partitionSpec,
-                valueRowType,
-                fileStoreTable().schema().logicalRowType(),
-                partitionKeyExtractor()::partition);
+                        partitionSpec,
+                        valueRowType,
+                        fileStoreTable().schema().logicalRowType(),
+                        partitionKeyExtractor()::partition)
+                .copy();
     }
 
     private org.apache.paimon.data.BinaryRow toPaimonLookupKey(byte[] key) {

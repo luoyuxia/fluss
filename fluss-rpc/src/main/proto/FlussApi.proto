@@ -961,6 +961,8 @@ message PbLookupRespForBucket {
   optional int32 error_code = 3;
   optional string error_message = 4;
   repeated PbValue values = 5;
+  // The original partition name for historical lookup. It is unset for normal lookup.
+  optional string original_partition_name = 6;
 }
 
 message PbValue {

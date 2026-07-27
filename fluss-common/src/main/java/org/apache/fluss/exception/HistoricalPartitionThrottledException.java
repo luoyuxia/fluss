@@ -19,17 +19,14 @@ package org.apache.fluss.exception;
 
 import org.apache.fluss.annotation.PublicEvolving;
 
-/**
- * Indicates that historical lookup is throttled by server-side admission control.
- *
- * @since 1.0
- */
+/** Indicates that a historical partition request is throttled by server-side admission control. */
 @PublicEvolving
-public class HistoricalLookupThrottledException extends RetriableException {
+public class HistoricalPartitionThrottledException extends RetriableException {
 
     private static final long serialVersionUID = 1L;
 
-    public HistoricalLookupThrottledException(String message) {
+    /** Creates a historical partition throttling exception with the given message. */
+    public HistoricalPartitionThrottledException(String message) {
         super(message);
     }
 }

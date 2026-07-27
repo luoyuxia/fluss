@@ -117,7 +117,10 @@ class PaimonLakeTableLookuperTest {
 
         try (LakeTableLookuper lookuper =
                 new PaimonLakeTableLookuper(
-                        paimonConfig, tablePath, tableConfig(KvFormat.COMPACTED))) {
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.COMPACTED))) {
             LakeTableLookuper.LookupContext context =
                     lookupContext(schema, "20240101", 0, SCHEMA_ID);
 
@@ -137,6 +140,57 @@ class PaimonLakeTableLookuperTest {
     }
 
     @Test
+    void testLookupPartitionsWithSameHashCode() throws Exception {
+        // These distinct partition values produce the same BinaryRow hash code, reproducing the
+        // mutable-key collision that previously made one partition reuse another partition's files.
+        String firstPartition = "b8";
+        String secondPartition = "17k3";
+        BinaryRow firstPartitionRow =
+                BinaryRow.singleColumn(BinaryString.fromString(firstPartition));
+        BinaryRow secondPartitionRow =
+                BinaryRow.singleColumn(BinaryString.fromString(secondPartition));
+        assertThat(firstPartitionRow).isNotEqualTo(secondPartitionRow);
+        assertThat(firstPartitionRow.hashCode()).isEqualTo(secondPartitionRow.hashCode());
+
+        TablePath tablePath = TablePath.of(DB, "partition_hash_collision");
+        Schema schema = pkSchema();
+        FileStoreTable table = createPaimonTable(tablePath, partitionedPkDescriptor(schema));
+        writeAndCommitData(
+                table,
+                Collections.singletonMap(
+                        0, Collections.singletonList(paimonRow(1, firstPartition, "Alice"))));
+        writeAndCommitData(
+                table,
+                Collections.singletonMap(
+                        0, Collections.singletonList(paimonRow(2, secondPartition, "Bob"))));
+
+        try (LakeTableLookuper lookuper =
+                new PaimonLakeTableLookuper(
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.COMPACTED))) {
+            BinaryValue firstValue =
+                    decodeValue(
+                            lookuper.lookup(
+                                    paimonKey(schema, 1, firstPartition),
+                                    lookupContext(schema, firstPartition, 0, SCHEMA_ID)),
+                            SCHEMA_ID,
+                            schema);
+            BinaryValue secondValue =
+                    decodeValue(
+                            lookuper.lookup(
+                                    paimonKey(schema, 2, secondPartition),
+                                    lookupContext(schema, secondPartition, 0, SCHEMA_ID)),
+                            SCHEMA_ID,
+                            schema);
+
+            assertRow(firstValue.row, 1, firstPartition, "Alice");
+            assertRow(secondValue.row, 2, secondPartition, "Bob");
+        }
+    }
+
+    @Test
     void testLookupWithIndexedKvFormat() throws Exception {
         TablePath tablePath = TablePath.of(DB, "indexed_kv_format");
         Schema schema = pkSchema();
@@ -152,7 +206,10 @@ class PaimonLakeTableLookuperTest {
 
         try (LakeTableLookuper lookuper =
                 new PaimonLakeTableLookuper(
-                        paimonConfig, tablePath, tableConfig(KvFormat.INDEXED))) {
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.INDEXED))) {
             LakeTableLookuper.LookupContext context =
                     lookupContext(schema, "20240101", 0, SCHEMA_ID);
 
@@ -195,6 +252,7 @@ class PaimonLakeTableLookuperTest {
                 new PaimonLakeTableLookuper(
                         paimonConfig,
                         tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
                         tableConfig(KvFormat.COMPACTED, KV_FORMAT_VERSION_2))) {
             LakeTableLookuper.LookupContext context =
                     lookupContext(schema, "20240101", 0, SCHEMA_ID);
@@ -231,7 +289,10 @@ class PaimonLakeTableLookuperTest {
 
         try (LakeTableLookuper lookuper =
                 new PaimonLakeTableLookuper(
-                        paimonConfig, tablePath, tableConfig(KvFormat.COMPACTED))) {
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.COMPACTED))) {
             LakeTableLookuper.LookupContext context =
                     lookupContext(schema, "20240101", 0, SCHEMA_ID);
             assertThat(lookuper.lookup(paimonKey(schema, 5, "20240101"), context)).isNotNull();
@@ -294,7 +355,10 @@ class PaimonLakeTableLookuperTest {
 
         try (LakeTableLookuper lookuper =
                 new PaimonLakeTableLookuper(
-                        paimonConfig, tablePath, tableConfig(KvFormat.COMPACTED))) {
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.COMPACTED))) {
             LakeTableLookuper.LookupContext context =
                     new LakeTableLookuper.LookupContext(
                             ResolvedPartitionSpec.fromPartitionName(
@@ -326,7 +390,10 @@ class PaimonLakeTableLookuperTest {
 
         try (LakeTableLookuper lookuper =
                 new PaimonLakeTableLookuper(
-                        paimonConfig, tablePath, tableConfig(KvFormat.COMPACTED))) {
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.COMPACTED))) {
             LakeTableLookuper.LookupContext context =
                     new LakeTableLookuper.LookupContext(
                             new ResolvedPartitionSpec(
@@ -379,7 +446,10 @@ class PaimonLakeTableLookuperTest {
 
         try (LakeTableLookuper lookuper =
                 new PaimonLakeTableLookuper(
-                        paimonConfig, tablePath, tableConfig(KvFormat.COMPACTED))) {
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.COMPACTED))) {
             BinaryValue oldSchemaValue =
                     decodeValue(
                             lookuper.lookup(

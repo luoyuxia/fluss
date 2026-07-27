@@ -367,7 +367,8 @@ public class ReplicaTestBase {
                 scannerManager,
                 manualClock,
                 ioExecutor,
-                localDiskManager);
+                localDiskManager,
+                null);
     }
 
     @AfterEach

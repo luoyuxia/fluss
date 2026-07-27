@@ -20,7 +20,7 @@ package org.apache.fluss.server.replica;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.TableConfig;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
 import org.apache.fluss.metadata.KvFormat;
 import org.apache.fluss.metadata.Schema;
@@ -89,9 +89,9 @@ class HistoricalLakeLookupManagerTest {
                         .get(1, TimeUnit.SECONDS);
 
         assertThat(second.failed()).isTrue();
-        assertThat(second.getError().error()).isEqualTo(Errors.HISTORICAL_LOOKUP_THROTTLED);
+        assertThat(second.getError().error()).isEqualTo(Errors.HISTORICAL_PARTITION_THROTTLED);
         assertThat(second.getError().exception())
-                .isInstanceOf(HistoricalLookupThrottledException.class);
+                .isInstanceOf(HistoricalPartitionThrottledException.class);
         assertThat(executor.numQueuedTasks()).isEqualTo(1);
     }
 
@@ -108,7 +108,8 @@ class HistoricalLakeLookupManagerTest {
         executor.runNext();
         LookupResultForBucket firstResult = first.get(1, TimeUnit.SECONDS);
         assertThat(firstResult.failed()).isTrue();
-        assertThat(firstResult.getError().error()).isNotEqualTo(Errors.HISTORICAL_LOOKUP_THROTTLED);
+        assertThat(firstResult.getError().error())
+                .isNotEqualTo(Errors.HISTORICAL_PARTITION_THROTTLED);
 
         CompletableFuture<LookupResultForBucket> second =
                 manager.lookup(
@@ -144,7 +145,7 @@ class HistoricalLakeLookupManagerTest {
         assertThat(first).isNotDone();
         assertThat(second).isNotDone();
         assertThat(executor.numQueuedTasks()).isEqualTo(2);
-        assertThat(third.getError().error()).isEqualTo(Errors.HISTORICAL_LOOKUP_THROTTLED);
+        assertThat(third.getError().error()).isEqualTo(Errors.HISTORICAL_PARTITION_THROTTLED);
     }
 
     @Test
@@ -327,7 +328,7 @@ class HistoricalLakeLookupManagerTest {
         conf.set(
                 ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS,
                 maxQueuedHistoricalRequests);
-        conf.set(ConfigOptions.IO_TMP_DIR, ioTmpDir.getAbsolutePath());
+        conf.set(ConfigOptions.SERVER_IO_TMP_DIR, ioTmpDir.getAbsolutePath());
         return conf;
     }
 
@@ -363,7 +364,9 @@ class HistoricalLakeLookupManagerTest {
         CompletableFuture<LookupResultForBucket> future =
                 manager.lookup(lookupData(tableBucket), tableInfo, schemaInfo);
         executor.runNext();
-        assertThat(future.get(1, TimeUnit.SECONDS).failed()).isFalse();
+        LookupResultForBucket result = future.get(1, TimeUnit.SECONDS);
+        assertThat(result.failed()).isFalse();
+        assertThat(result.originalPartitionName()).isEqualTo("2024");
     }
 
     private static final class TestingHistoricalLakeLookupManager

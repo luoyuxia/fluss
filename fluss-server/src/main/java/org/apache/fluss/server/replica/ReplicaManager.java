@@ -31,6 +31,7 @@ import org.apache.fluss.exception.InvalidRequiredAcksException;
 import org.apache.fluss.exception.KvStorageException;
 import org.apache.fluss.exception.LogOffsetOutOfRangeException;
 import org.apache.fluss.exception.LogStorageException;
+import org.apache.fluss.exception.NonPrimaryKeyTableException;
 import org.apache.fluss.exception.NotLeaderOrFollowerException;
 import org.apache.fluss.exception.StorageBackpressureException;
 import org.apache.fluss.exception.StorageException;
@@ -156,7 +157,7 @@ import java.util.stream.Stream;
 
 import static org.apache.fluss.config.ConfigOptions.KV_FORMAT_VERSION_2;
 import static org.apache.fluss.server.TabletManagerBase.getTableInfo;
-import static org.apache.fluss.utils.PartitionUtils.isHistoricalPartitionName;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.fluss.utils.Preconditions.checkState;
@@ -254,46 +255,6 @@ public class ReplicaManager implements ServerReconfigurable {
             ScannerManager scannerManager,
             Clock clock,
             ExecutorService ioExecutor,
-            LocalDiskManager localDiskManager)
-            throws IOException {
-        this(
-                conf,
-                scheduler,
-                logManager,
-                kvManager,
-                zkClient,
-                serverId,
-                metadataCache,
-                rpcClient,
-                coordinatorGateway,
-                completedKvSnapshotCommitter,
-                fatalErrorHandler,
-                serverMetricGroup,
-                userMetrics,
-                scannerManager,
-                clock,
-                ioExecutor,
-                localDiskManager,
-                null);
-    }
-
-    public ReplicaManager(
-            Configuration conf,
-            Scheduler scheduler,
-            LogManager logManager,
-            KvManager kvManager,
-            ZooKeeperClient zkClient,
-            int serverId,
-            TabletServerMetadataCache metadataCache,
-            RpcClient rpcClient,
-            CoordinatorGateway coordinatorGateway,
-            CompletedKvSnapshotCommitter completedKvSnapshotCommitter,
-            FatalErrorHandler fatalErrorHandler,
-            TabletServerMetricGroup serverMetricGroup,
-            UserMetrics userMetrics,
-            ScannerManager scannerManager,
-            Clock clock,
-            ExecutorService ioExecutor,
             LocalDiskManager localDiskManager,
             @Nullable PluginManager pluginManager)
             throws IOException {
@@ -324,49 +285,6 @@ public class ReplicaManager implements ServerReconfigurable {
                 ioExecutor,
                 localDiskManager,
                 pluginManager);
-    }
-
-    @VisibleForTesting
-    ReplicaManager(
-            Configuration conf,
-            Scheduler scheduler,
-            LogManager logManager,
-            KvManager kvManager,
-            ZooKeeperClient zkClient,
-            int serverId,
-            TabletServerMetadataCache metadataCache,
-            RpcClient rpcClient,
-            CoordinatorGateway coordinatorGateway,
-            CompletedKvSnapshotCommitter completedKvSnapshotCommitter,
-            FatalErrorHandler fatalErrorHandler,
-            TabletServerMetricGroup serverMetricGroup,
-            UserMetrics userMetrics,
-            RemoteLogManager remoteLogManager,
-            ScannerManager scannerManager,
-            Clock clock,
-            ExecutorService ioExecutor,
-            LocalDiskManager localDiskManager)
-            throws IOException {
-        this(
-                conf,
-                scheduler,
-                logManager,
-                kvManager,
-                zkClient,
-                serverId,
-                metadataCache,
-                rpcClient,
-                coordinatorGateway,
-                completedKvSnapshotCommitter,
-                fatalErrorHandler,
-                serverMetricGroup,
-                userMetrics,
-                remoteLogManager,
-                scannerManager,
-                clock,
-                ioExecutor,
-                localDiskManager,
-                null);
     }
 
     @VisibleForTesting
@@ -442,8 +360,7 @@ public class ReplicaManager implements ServerReconfigurable {
         this.minInSyncReplicas = conf.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER);
         this.scannerManager = checkNotNull(scannerManager, "scannerManager");
         this.historicalLakeLookupManager =
-                new HistoricalLakeLookupManager(
-                        conf, pluginManager, ioExecutor, serverId, scheduler);
+                new HistoricalLakeLookupManager(conf, pluginManager, serverId, scheduler);
 
         registerMetrics();
     }
@@ -665,8 +582,16 @@ public class ReplicaManager implements ServerReconfigurable {
                 () -> {
                     // check or apply coordinator epoch.
                     validateAndApplyCoordinatorEpoch(coordinatorEpoch, "updateMetadataCache");
-                    metadataCache.updateClusterMetadata(clusterMetadata);
+                    Set<Long> deletedTableIds =
+                            metadataCache.updateClusterMetadata(clusterMetadata);
                     updateReplicaTableConfig(clusterMetadata);
+                    if (!deletedTableIds.isEmpty()) {
+                        ioExecutor.execute(
+                                () ->
+                                        deletedTableIds.forEach(
+                                                historicalLakeLookupManager
+                                                        ::invalidateTableLookuper));
+                    }
                 });
     }
 
@@ -886,18 +811,25 @@ public class ReplicaManager implements ServerReconfigurable {
     /** Lookup historical lake data for requests that carry original partition names. */
     public void historicalLookups(
             List<LookupDataForBucket> lookupData,
-            Consumer<Map<TableBucket, LookupResultForBucket>> responseCallback) {
+            Consumer<List<LookupResultForBucket>> responseCallback) {
         if (lookupData.isEmpty()) {
-            responseCallback.accept(Collections.emptyMap());
+            responseCallback.accept(Collections.emptyList());
             return;
         }
 
-        Map<TableBucket, LookupResultForBucket> result = new ConcurrentHashMap<>();
+        List<LookupResultForBucket> result =
+                Collections.synchronizedList(new ArrayList<>(lookupData.size()));
         AtomicInteger remainingLookups = new AtomicInteger(lookupData.size());
         for (LookupDataForBucket data : lookupData) {
             CompletableFuture<LookupResultForBucket> lookupFuture;
             try {
                 Replica replica = getReplicaOrException(data.tableBucket());
+                if (!replica.isKvTable()) {
+                    throw new NonPrimaryKeyTableException(
+                            "Historical lookup is only supported for primary key tables, but "
+                                    + replica.getTablePath()
+                                    + " is not a primary key table.");
+                }
                 if (!isHistoricalPartitionReplica(replica)) {
                     throw new InvalidPartitionException(
                             "Historical lookup request must target a historical partition.");
@@ -910,17 +842,22 @@ public class ReplicaManager implements ServerReconfigurable {
                 lookupFuture =
                         CompletableFuture.completedFuture(
                                 new LookupResultForBucket(
-                                        data.tableBucket(), ApiError.fromThrowable(e)));
+                                        data.tableBucket(),
+                                        null,
+                                        data.originalPartitionName(),
+                                        ApiError.fromThrowable(e)));
             }
             lookupFuture.whenComplete(
                     (bucketResult, error) -> {
                         if (error == null) {
-                            result.put(bucketResult.getTableBucket(), bucketResult);
+                            result.add(bucketResult);
                         } else {
-                            result.put(
-                                    data.tableBucket(),
+                            result.add(
                                     new LookupResultForBucket(
-                                            data.tableBucket(), ApiError.fromThrowable(error)));
+                                            data.tableBucket(),
+                                            null,
+                                            data.originalPartitionName(),
+                                            ApiError.fromThrowable(error)));
                         }
                         if (remainingLookups.decrementAndGet() == 0) {
                             responseCallback.accept(result);
@@ -1020,8 +957,8 @@ public class ReplicaManager implements ServerReconfigurable {
 
     private boolean isHistoricalPartitionReplica(Replica replica) {
         String partitionName = replica.getPhysicalTablePath().getPartitionName();
-        return partitionName != null
-                && isHistoricalPartitionName(replica.getTableInfo(), partitionName);
+        return replica.getTableInfo().getPartitionKeys().size() == 1
+                && HISTORICAL_PARTITION_VALUE.equals(partitionName);
     }
 
     /**
@@ -1128,6 +1065,7 @@ public class ReplicaManager implements ServerReconfigurable {
             List<StopReplicaData> stopReplicaDataList,
             Consumer<List<StopReplicaResultForBucket>> responseCallback) {
         List<StopReplicaResultForBucket> result = new ArrayList<>();
+        Set<Long> deletedHistoricalPartitionTableIds = new HashSet<>();
         inLock(
                 replicaStateChangeLock,
                 () -> {
@@ -1142,9 +1080,6 @@ public class ReplicaManager implements ServerReconfigurable {
 
                     for (StopReplicaData data : stopReplicaDataList) {
                         TableBucket tb = data.getTableBucket();
-                        long tableId = tb.getTableId();
-                        ioExecutor.execute(
-                                () -> historicalLakeLookupManager.invalidateTableLookuper(tableId));
                         HostedReplica hostedReplica = getReplica(tb);
                         if (hostedReplica instanceof NoneReplica) {
                             if (data.isDeleteLocal()) {
@@ -1192,6 +1127,9 @@ public class ReplicaManager implements ServerReconfigurable {
                                                 errorMessage));
                             } else {
                                 try {
+                                    boolean deletingHistoricalPartition =
+                                            data.isDeleteRemote()
+                                                    && isHistoricalPartitionReplica(replica);
                                     result.add(
                                             stopReplica(
                                                     tb,
@@ -1199,6 +1137,9 @@ public class ReplicaManager implements ServerReconfigurable {
                                                     data.isDeleteRemote(),
                                                     deletedTableIds,
                                                     deletedPartitionIds));
+                                    if (deletingHistoricalPartition) {
+                                        deletedHistoricalPartitionTableIds.add(tb.getTableId());
+                                    }
                                 } catch (Exception e) {
                                     LOG.error(
                                             "Error processing stopReplica operation on hostedReplica {}",
@@ -1219,6 +1160,8 @@ public class ReplicaManager implements ServerReconfigurable {
                             (id, dir) -> dropEmptyTableOrPartitionDir(dir, id, "table"));
                 });
 
+        deletedHistoricalPartitionTableIds.forEach(
+                historicalLakeLookupManager::invalidateTableLookuper);
         responseCallback.accept(result);
     }
 

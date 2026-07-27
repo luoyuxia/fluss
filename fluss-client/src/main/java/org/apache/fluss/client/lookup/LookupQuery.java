@@ -18,6 +18,7 @@
 package org.apache.fluss.client.lookup;
 
 import org.apache.fluss.annotation.Internal;
+import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 
@@ -35,15 +36,6 @@ public class LookupQuery extends AbstractLookupQuery<byte[]> {
     private final CompletableFuture<byte[]> future;
     private final boolean insertIfNotExists;
 
-    LookupQuery(TablePath tablePath, TableBucket tableBucket, byte[] key) {
-        this(tablePath, tableBucket, key, false);
-    }
-
-    LookupQuery(
-            TablePath tablePath, TableBucket tableBucket, byte[] key, boolean insertIfNotExists) {
-        this(tablePath, tableBucket, key, insertIfNotExists, null);
-    }
-
     LookupQuery(
             TablePath tablePath,
             TableBucket tableBucket,
@@ -53,6 +45,11 @@ public class LookupQuery extends AbstractLookupQuery<byte[]> {
         super(tablePath, tableBucket, key, originalPartitionName);
         this.future = new CompletableFuture<>();
         this.insertIfNotExists = insertIfNotExists;
+    }
+
+    @VisibleForTesting
+    LookupQuery(TablePath tablePath, TableBucket tableBucket, byte[] key) {
+        this(tablePath, tableBucket, key, false, null);
     }
 
     @Override

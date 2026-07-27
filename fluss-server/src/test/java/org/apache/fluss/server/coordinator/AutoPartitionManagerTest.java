@@ -990,7 +990,7 @@ class AutoPartitionManagerTest {
     }
 
     @Test
-    void testAutoPartitionDoesNotDropHistoricalPartition() throws Exception {
+    void testHistoricalPartitionLifecycle() throws Exception {
         ZonedDateTime startTime =
                 LocalDateTime.parse("2024-09-10T00:00:00").atZone(ZoneId.systemDefault());
         ManualClock clock = new ManualClock(startTime.toInstant().toEpochMilli());
@@ -1007,35 +1007,31 @@ class AutoPartitionManagerTest {
                         periodicExecutor);
         autoPartitionManager.start();
 
-        // Single partition key table: the partition name is the auto partition value.
-        TableInfo singlePartitionTable = createPartitionedTable(2, 0, AutoPartitionTimeUnit.HOUR);
-        TablePath singlePartitionTablePath = singlePartitionTable.getTablePath();
-        autoPartitionManager.addAutoPartitionTable(singlePartitionTable, true);
+        TableInfo table = createPartitionedTable(2, 0, AutoPartitionTimeUnit.HOUR);
+        TableInfo enabledTable = createUpdatedHistoricalPartitionEnabledTableInfo(table, true);
+        TablePath tablePath = table.getTablePath();
+        autoPartitionManager.addAutoPartitionTable(enabledTable, true);
+        autoPartitionManager.createHistoricalPartition(enabledTable);
 
-        createPartition(singlePartitionTable, "2024090900", autoPartitionManager);
-        createPartition(singlePartitionTable, HISTORICAL_PARTITION_VALUE, autoPartitionManager);
+        Map<String, PartitionRegistration> partitions =
+                zookeeperClient.getPartitionRegistrations(tablePath);
+        assertThat(partitions.keySet()).contains(HISTORICAL_PARTITION_VALUE);
 
-        // Multiple partition keys table: the auto partition value is one segment of the name.
-        TableInfo multiPartitionTable =
-                createPartitionedTable(2, 0, AutoPartitionTimeUnit.HOUR, true, 2);
-        TablePath multiPartitionTablePath = multiPartitionTable.getTablePath();
-        autoPartitionManager.addAutoPartitionTable(multiPartitionTable, true);
-
-        createPartition(multiPartitionTable, "2024090900$1", autoPartitionManager);
-        createPartition(
-                multiPartitionTable, HISTORICAL_PARTITION_VALUE + "$1", autoPartitionManager);
+        createPartition(enabledTable, "2024090900", autoPartitionManager);
 
         periodicExecutor.triggerNonPeriodicScheduledTasks();
 
-        Map<String, PartitionRegistration> singleTablePartitions =
-                zookeeperClient.getPartitionRegistrations(singlePartitionTablePath);
-        assertThat(singleTablePartitions.keySet()).contains(HISTORICAL_PARTITION_VALUE);
-        assertThat(singleTablePartitions.keySet()).doesNotContain("2024090900");
+        partitions = zookeeperClient.getPartitionRegistrations(tablePath);
+        assertThat(partitions.keySet()).contains(HISTORICAL_PARTITION_VALUE);
+        assertThat(partitions.keySet()).doesNotContain("2024090900");
 
-        Map<String, PartitionRegistration> multiTablePartitions =
-                zookeeperClient.getPartitionRegistrations(multiPartitionTablePath);
-        assertThat(multiTablePartitions.keySet()).contains(HISTORICAL_PARTITION_VALUE + "$1");
-        assertThat(multiTablePartitions.keySet()).doesNotContain("2024090900$1");
+        // Disabling the table option removes the system partition immediately without waiting for
+        // an auto-partition task.
+        TableInfo disabledTable = createUpdatedHistoricalPartitionEnabledTableInfo(table, false);
+        autoPartitionManager.dropHistoricalPartition(disabledTable);
+
+        partitions = zookeeperClient.getPartitionRegistrations(tablePath);
+        assertThat(partitions.keySet()).doesNotContain(HISTORICAL_PARTITION_VALUE);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1412,6 +1408,15 @@ class AutoPartitionManagerTest {
             TableInfo original, boolean autoPartitionEnabled) {
         Configuration newProperties = new Configuration(original.getProperties());
         newProperties.set(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, autoPartitionEnabled);
+        return createUpdatedTableInfo(original, newProperties);
+    }
+
+    private TableInfo createUpdatedHistoricalPartitionEnabledTableInfo(
+            TableInfo original, boolean historicalPartitionEnabled) {
+        Configuration newProperties = new Configuration(original.getProperties());
+        newProperties.set(
+                ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED,
+                historicalPartitionEnabled);
         return createUpdatedTableInfo(original, newProperties);
     }
 

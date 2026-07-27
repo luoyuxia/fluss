@@ -19,6 +19,7 @@ package org.apache.fluss.lake.paimon.lookup;
 
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
+import org.apache.fluss.client.lookup.LookupResult;
 import org.apache.fluss.client.lookup.Lookuper;
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.config.AutoPartitionTimeUnit;
@@ -42,18 +43,22 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.InternalRowAssert.assertThatRow;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** End-to-end IT case for looking up expired Fluss partitions from Paimon. */
 class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
 
     private static final String EXPIRED_PARTITION_NAME = "20240101";
+    private static final String SECOND_EXPIRED_PARTITION_NAME = "20240102";
     private static final int INITIAL_PARTITION_RETENTION = 100000;
     private static final int EXPIRED_PARTITION_RETENTION = 1;
 
@@ -81,6 +86,21 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
         Schema oldSchema = partitionedPkSchema(defaultBucketKey);
         long tableId = createTable(tablePath, partitionedPkDescriptor(oldSchema));
 
+        // Enable historical lookup through ALTER TABLE to cover dynamic creation of the
+        // coordinator-owned historical system partition.
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.set(
+                                        ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED
+                                                .key(),
+                                        "true")),
+                        false)
+                .get();
+        waitUntilPartitionCreated(tablePath, HISTORICAL_PARTITION_VALUE);
+        long historicalPartitionId = getPartitionId(tablePath, HISTORICAL_PARTITION_VALUE);
+        FLUSS_CLUSTER_EXTENSION.waitUntilTablePartitionReady(tableId, historicalPartitionId);
+
         // Keep the initial retention wide enough so this old partition can be created and written
         // through the normal Fluss path before it is treated as historical.
         PartitionSpec expiredPartitionSpec = partitionSpec(EXPIRED_PARTITION_NAME);
@@ -88,15 +108,25 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
         long partitionId = getPartitionId(tablePath, EXPIRED_PARTITION_NAME);
         FLUSS_CLUSTER_EXTENSION.waitUntilTablePartitionReady(tableId, partitionId);
 
+        PartitionSpec secondExpiredPartitionSpec = partitionSpec(SECOND_EXPIRED_PARTITION_NAME);
+        admin.createPartition(tablePath, secondExpiredPartitionSpec, false).get();
+        long secondPartitionId = getPartitionId(tablePath, SECOND_EXPIRED_PARTITION_NAME);
+        FLUSS_CLUSTER_EXTENSION.waitUntilTablePartitionReady(tableId, secondPartitionId);
+
         InternalRow expectedOldRow = dataRow(defaultBucketKey, 1, "sub-1", "Alice");
-        writeRows(tablePath, Collections.singletonList(expectedOldRow), false);
+        InternalRow expectedSecondPartitionRow =
+                dataRow(defaultBucketKey, 3, "sub-3", "Carol", SECOND_EXPIRED_PARTITION_NAME);
+        writeRows(tablePath, Arrays.asList(expectedOldRow, expectedSecondPartitionRow), false);
 
         TableBucket tableBucket = new TableBucket(tableId, partitionId, 0);
-        FLUSS_CLUSTER_EXTENSION.triggerAndWaitSnapshots(Collections.singleton(tableBucket));
+        TableBucket secondTableBucket = new TableBucket(tableId, secondPartitionId, 0);
+        FLUSS_CLUSTER_EXTENSION.triggerAndWaitSnapshots(
+                Arrays.asList(tableBucket, secondTableBucket));
 
         JobClient jobClient = buildTieringJob(execEnv);
         try {
             assertReplicaStatus(tableBucket, 1);
+            assertReplicaStatus(secondTableBucket, 1);
         } finally {
             jobClient.cancel().get();
         }
@@ -125,9 +155,9 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
             jobClient.cancel().get();
         }
 
-        // Create the lookuper with the initial retention, cache the still-existing normal
-        // partition route, then keep using it after the retention changes and the partition is
-        // deleted. It should use the latest retention to reroute to historical lookup.
+        // Cache the normal partition route before retention cleanup. The table-level historical
+        // partition option is captured when the lookuper is created and enables fallback after the
+        // original partitions are deleted.
         try (Connection lookupConn = ConnectionFactory.createConnection(clientConf);
                 Table table = lookupConn.getTable(tablePath)) {
             Lookuper lookuper = table.newLookup().createLookuper();
@@ -149,15 +179,35 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
                     .get();
 
             admin.dropPartition(tablePath, expiredPartitionSpec, true).get();
+            admin.dropPartition(tablePath, secondExpiredPartitionSpec, true).get();
             waitUntilPartitionDropped(tablePath, EXPIRED_PARTITION_NAME);
+            waitUntilPartitionDropped(tablePath, SECOND_EXPIRED_PARTITION_NAME);
 
-            lookupRow =
-                    lookuper.lookup(lookupKey(defaultBucketKey, 1, "sub-1"))
-                            .get()
-                            .getSingletonRow();
+            // Submit both lookups before waiting so different original partitions that map to the
+            // same historical TableBucket can be batched into one RPC and matched from its
+            // original_partition_name responses.
+            CompletableFuture<LookupResult> firstPartitionLookup =
+                    lookuper.lookup(lookupKey(defaultBucketKey, 1, "sub-1"));
+            CompletableFuture<LookupResult> secondPartitionLookup =
+                    lookuper.lookup(
+                            lookupKey(defaultBucketKey, 3, "sub-3", SECOND_EXPIRED_PARTITION_NAME));
+
+            lookupRow = firstPartitionLookup.get().getSingletonRow();
             assertThatRow(lookupRow)
                     .withSchema(evolvedSchema.getRowType())
                     .isEqualTo(evolvedDataRow(defaultBucketKey, 1, "sub-1", "Alice", null));
+
+            lookupRow = secondPartitionLookup.get().getSingletonRow();
+            assertThatRow(lookupRow)
+                    .withSchema(evolvedSchema.getRowType())
+                    .isEqualTo(
+                            evolvedDataRow(
+                                    defaultBucketKey,
+                                    3,
+                                    "sub-3",
+                                    "Carol",
+                                    null,
+                                    SECOND_EXPIRED_PARTITION_NAME));
 
             lookupRow =
                     lookuper.lookup(lookupKey(defaultBucketKey, 2, "sub-2"))
@@ -234,22 +284,40 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
 
     private static InternalRow dataRow(
             boolean defaultBucketKey, int id, String subId, String name) {
+        return dataRow(defaultBucketKey, id, subId, name, EXPIRED_PARTITION_NAME);
+    }
+
+    private static InternalRow dataRow(
+            boolean defaultBucketKey, int id, String subId, String name, String partitionName) {
         return defaultBucketKey
-                ? row(id, EXPIRED_PARTITION_NAME, name)
-                : row(id, subId, EXPIRED_PARTITION_NAME, name);
+                ? row(id, partitionName, name)
+                : row(id, subId, partitionName, name);
     }
 
     private static InternalRow evolvedDataRow(
             boolean defaultBucketKey, int id, String subId, String name, String extra) {
+        return evolvedDataRow(defaultBucketKey, id, subId, name, extra, EXPIRED_PARTITION_NAME);
+    }
+
+    private static InternalRow evolvedDataRow(
+            boolean defaultBucketKey,
+            int id,
+            String subId,
+            String name,
+            String extra,
+            String partitionName) {
         return defaultBucketKey
-                ? row(id, EXPIRED_PARTITION_NAME, name, extra)
-                : row(id, subId, EXPIRED_PARTITION_NAME, name, extra);
+                ? row(id, partitionName, name, extra)
+                : row(id, subId, partitionName, name, extra);
     }
 
     private static InternalRow lookupKey(boolean defaultBucketKey, int id, String subId) {
-        return defaultBucketKey
-                ? row(id, EXPIRED_PARTITION_NAME)
-                : row(id, subId, EXPIRED_PARTITION_NAME);
+        return lookupKey(defaultBucketKey, id, subId, EXPIRED_PARTITION_NAME);
+    }
+
+    private static InternalRow lookupKey(
+            boolean defaultBucketKey, int id, String subId, String partitionName) {
+        return defaultBucketKey ? row(id, partitionName) : row(id, subId, partitionName);
     }
 
     private static PartitionSpec partitionSpec(String partitionName) {
@@ -272,5 +340,13 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
                 () ->
                         assertThat(admin.listPartitionInfos(tablePath).get())
                                 .noneMatch(p -> partitionName.equals(p.getPartitionName())));
+    }
+
+    private static void waitUntilPartitionCreated(TablePath tablePath, String partitionName) {
+        retry(
+                Duration.ofMinutes(1),
+                () ->
+                        assertThat(admin.listPartitionInfos(tablePath).get())
+                                .anyMatch(p -> partitionName.equals(p.getPartitionName())));
     }
 }

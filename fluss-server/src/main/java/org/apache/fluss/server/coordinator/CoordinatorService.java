@@ -232,9 +232,8 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toDatabaseChan
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toTableBucketOffsets;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toTablePath;
 import static org.apache.fluss.server.utils.TableAssignmentUtils.generateAssignment;
-import static org.apache.fluss.utils.PartitionUtils.isHistoricalPartitionSpec;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.PartitionUtils.validateAutoPartitionTime;
-import static org.apache.fluss.utils.PartitionUtils.validateHistoricalPartitionSpec;
 import static org.apache.fluss.utils.PartitionUtils.validatePartitionSpec;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -734,6 +733,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     public CompletableFuture<CreatePartitionResponse> createPartition(
             CreatePartitionRequest request) {
         TablePath tablePath = toTablePath(request.getTablePath());
+        authorizeTable(OperationType.WRITE, tablePath);
 
         CreatePartitionResponse response = new CreatePartitionResponse();
         TableInfo tableInfo = metadataManager.getTable(tablePath);
@@ -744,38 +744,17 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
         // first, validate the partition spec, and get resolved partition spec.
         PartitionSpec partitionSpec = getPartitionSpec(request.getPartitionSpec());
-        ResolvedPartitionSpec partitionToCreate;
-        if (isHistoricalPartitionCreate(tableInfo, partitionSpec)) {
-            // Historical system partitions are lookup metadata, so creating one requires the same
-            // permission as reading the table instead of writing table data.
-            authorizeTable(OperationType.READ, tablePath);
-            // CreatePartitionRequest uses a historical RPC field name of ignoreIfNotExists, but
-            // create-partition semantics and the public Admin API use ignoreIfExists.
-            if (!request.isIgnoreIfNotExists()) {
-                throw new InvalidPartitionException(
-                        "Creating historical system partition requires ignoreIfExists=true.");
-            }
-            partitionToCreate =
-                    validateHistoricalPartitionSpec(
-                            tablePath,
-                            tableInfo.getPartitionKeys(),
-                            tableInfo.getTableConfig().getAutoPartitionStrategy(),
-                            partitionSpec);
-        } else {
-            authorizeTable(OperationType.WRITE, tablePath);
-            validatePartitionSpec(tablePath, tableInfo.getPartitionKeys(), partitionSpec, true);
+        validatePartitionSpec(tablePath, tableInfo.getPartitionKeys(), partitionSpec, true);
 
-            // second, check whether the partition is out-of-date.
-            validateAutoPartitionTime(
-                    partitionSpec,
-                    tableInfo.getPartitionKeys(),
-                    tableInfo.getTableConfig().getAutoPartitionStrategy());
+        // second, check whether the partition is out-of-date.
+        validateAutoPartitionTime(
+                partitionSpec,
+                tableInfo.getPartitionKeys(),
+                tableInfo.getTableConfig().getAutoPartitionStrategy());
 
-            partitionToCreate =
-                    ResolvedPartitionSpec.fromPartitionSpec(
-                            tableInfo.getPartitionKeys(), partitionSpec);
-        }
-
+        ResolvedPartitionSpec partitionToCreate =
+                ResolvedPartitionSpec.fromPartitionSpec(
+                        tableInfo.getPartitionKeys(), partitionSpec);
         if (request.isIgnoreIfNotExists()
                 && metadataManager
                         .getOptionalPartitionRegistration(
@@ -809,27 +788,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         return CompletableFuture.completedFuture(response);
     }
 
-    private boolean isHistoricalPartitionCreate(TableInfo tableInfo, PartitionSpec partitionSpec) {
-        if (!tableInfo.isPartitioned()) {
-            return false;
-        }
-        // Historical partitions are currently supported only for Paimon lake tables.
-        if (!isPaimonLakeAutoPartitionedTable(tableInfo)) {
-            return false;
-        }
-        return isHistoricalPartitionSpec(
-                tableInfo.getPartitionKeys(),
-                tableInfo.getTableConfig().getAutoPartitionStrategy(),
-                partitionSpec);
-    }
-
-    private boolean isPaimonLakeAutoPartitionedTable(TableInfo tableInfo) {
-        return tableInfo.getTableConfig().getAutoPartitionStrategy().isAutoPartitionEnabled()
-                && tableInfo.getTableConfig().isDataLakeEnabled()
-                && tableInfo.getTableConfig().getDataLakeFormat().orElse(null)
-                        == DataLakeFormat.PAIMON;
-    }
-
     @Override
     public CompletableFuture<DropPartitionResponse> dropPartition(DropPartitionRequest request) {
         TablePath tablePath = toTablePath(request.getTablePath());
@@ -847,6 +805,12 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         validatePartitionSpec(tablePath, table.partitionKeys, partitionSpec, false);
         ResolvedPartitionSpec partitionToDrop =
                 ResolvedPartitionSpec.fromPartitionSpec(table.partitionKeys, partitionSpec);
+        if (table.getTableConfig().isHistoricalPartitionEnabled()
+                && HISTORICAL_PARTITION_VALUE.equals(partitionToDrop.getPartitionName())) {
+            throw new InvalidPartitionException(
+                    "Historical system partition is managed by the coordinator and cannot be "
+                            + "dropped manually.");
+        }
 
         metadataManager.dropPartition(tablePath, partitionToDrop, request.isIgnoreIfNotExists());
         return CompletableFuture.completedFuture(response);

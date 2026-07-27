@@ -1146,11 +1146,15 @@ public class ServerRpcMessageUtils {
      * by each bucket request. The name is later used to resolve the original partition in lake
      * storage, while the {@link TableBucket} points to the historical system partition.
      */
-    public static Map<TableBucket, LookupDataForBucket> toHistoricalLookupData(
-            LookupRequest lookupRequest) {
+    public static List<LookupDataForBucket> toHistoricalLookupData(LookupRequest lookupRequest) {
         long tableId = lookupRequest.getTableId();
-        Map<TableBucket, LookupDataForBucket> lookupEntryData = new HashMap<>();
+        List<LookupDataForBucket> lookupEntryData =
+                new ArrayList<>(lookupRequest.getBucketsReqsCount());
         for (PbLookupReqForBucket lookupReqForBucket : lookupRequest.getBucketsReqsList()) {
+            if (!lookupReqForBucket.hasOriginalPartitionName()) {
+                throw new IllegalArgumentException(
+                        "Normal and historical lookups cannot be mixed in the same request.");
+            }
             TableBucket tb =
                     new TableBucket(
                             tableId,
@@ -1162,23 +1166,9 @@ public class ServerRpcMessageUtils {
             for (int i = 0; i < lookupReqForBucket.getKeysCount(); i++) {
                 keys.add(lookupReqForBucket.getKeyAt(i));
             }
-            LookupDataForBucket lookupData =
+            lookupEntryData.add(
                     new LookupDataForBucket(
-                            tb,
-                            keys,
-                            lookupReqForBucket.hasOriginalPartitionName()
-                                    ? lookupReqForBucket.getOriginalPartitionName()
-                                    : null);
-            LookupDataForBucket previous = lookupEntryData.putIfAbsent(tb, lookupData);
-            if (previous != null) {
-                throw new IllegalArgumentException(
-                        String.format(
-                                "Duplicate historical lookup requests for table bucket %s with "
-                                        + "original partitions %s and %s.",
-                                tb,
-                                previous.originalPartitionName(),
-                                lookupData.originalPartitionName()));
-            }
+                            tb, keys, lookupReqForBucket.getOriginalPartitionName()));
         }
         return lookupEntryData;
     }
@@ -1304,14 +1294,25 @@ public class ServerRpcMessageUtils {
 
     public static LookupResponse makeLookupResponse(
             Map<TableBucket, LookupResultForBucket> lookupResult) {
+        return makeLookupResponse(lookupResult.values());
+    }
+
+    /**
+     * Creates a lookup response from results that may contain the same table bucket for different
+     * original partitions.
+     */
+    public static LookupResponse makeLookupResponse(
+            Collection<LookupResultForBucket> lookupResults) {
         LookupResponse lookupResponse = new LookupResponse();
-        for (Map.Entry<TableBucket, LookupResultForBucket> entry : lookupResult.entrySet()) {
-            TableBucket tb = entry.getKey();
-            LookupResultForBucket bucketResult = entry.getValue();
+        for (LookupResultForBucket bucketResult : lookupResults) {
+            TableBucket tb = bucketResult.getTableBucket();
             PbLookupRespForBucket lookupRespForBucket = lookupResponse.addBucketsResp();
             lookupRespForBucket.setBucketId(tb.getBucket());
             if (tb.getPartitionId() != null) {
                 lookupRespForBucket.setPartitionId(tb.getPartitionId());
+            }
+            if (bucketResult.originalPartitionName() != null) {
+                lookupRespForBucket.setOriginalPartitionName(bucketResult.originalPartitionName());
             }
             if (bucketResult.failed()) {
                 lookupRespForBucket.setError(

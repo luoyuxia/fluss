@@ -21,7 +21,7 @@ import org.apache.fluss.client.metadata.TestingMetadataUpdater;
 import org.apache.fluss.cluster.BucketLocation;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.NotLeaderOrFollowerException;
 import org.apache.fluss.exception.TableNotExistException;
@@ -124,7 +124,7 @@ public class LookupSenderTest {
     }
 
     @Test
-    void testHistoricalLookupsSplitSameBucketAndBatchDifferentBuckets() throws Exception {
+    void testHistoricalLookupsBatchDifferentPartitionsForSameBucket() throws Exception {
         List<LookupRequest> receivedRequests = Collections.synchronizedList(new ArrayList<>());
         gateway.setLookupHandler(
                 request -> {
@@ -132,8 +132,8 @@ public class LookupSenderTest {
                     return createPartitionNameEchoResponse(request);
                 });
 
-        // These two queries target the same historical bucket but carry different original
-        // partition names, so they must be sent in different RPCs.
+        // These queries verify that response dispatch uses both the historical bucket and original
+        // partition name, allowing different original partitions to share one RPC.
         LookupQuery sameBucketQuery1 =
                 new LookupQuery(
                         DATA1_TABLE_PATH_PK, TABLE_BUCKET, bytes("key1"), false, "dt=20200101");
@@ -141,8 +141,6 @@ public class LookupSenderTest {
                 new LookupQuery(
                         DATA1_TABLE_PATH_PK, TABLE_BUCKET, bytes("key2"), false, "dt=20200102");
 
-        // This query has a different target bucket, so it can still share an RPC with another
-        // historical lookup.
         LookupQuery differentBucketQuery =
                 new LookupQuery(
                         DATA1_TABLE_PATH_PK,
@@ -163,20 +161,14 @@ public class LookupSenderTest {
         assertThat(differentBucketQuery.future().get(5, TimeUnit.SECONDS))
                 .isEqualTo(responseValue("dt=20200103", "key3"));
 
-        assertThat(receivedRequests).hasSize(2);
-        LookupRequest firstRequest = receivedRequests.get(0);
-        assertThat(firstRequest.getBucketsReqsCount()).isEqualTo(1);
-        assertThat(firstRequest.getBucketsReqAt(0).getBucketId()).isEqualTo(0);
-        assertThat(firstRequest.getBucketsReqAt(0).getOriginalPartitionName())
-                .isEqualTo("dt=20200101");
-
-        LookupRequest secondRequest = receivedRequests.get(1);
-        assertThat(secondRequest.getBucketsReqsList())
+        assertThat(receivedRequests).hasSize(1);
+        LookupRequest request = receivedRequests.get(0);
+        assertThat(request.getBucketsReqsList())
                 .extracting(PbLookupReqForBucket::getBucketId)
-                .containsExactly(0, 1);
-        assertThat(secondRequest.getBucketsReqsList())
+                .containsExactly(0, 0, 1);
+        assertThat(request.getBucketsReqsList())
                 .extracting(PbLookupReqForBucket::getOriginalPartitionName)
-                .containsExactly("dt=20200102", "dt=20200103");
+                .containsExactly("dt=20200101", "dt=20200102", "dt=20200103");
     }
 
     @Test
@@ -360,7 +352,7 @@ public class LookupSenderTest {
                     if (attempt == 1) {
                         return createFailedResponse(
                                 request,
-                                new HistoricalLookupThrottledException(
+                                new HistoricalPartitionThrottledException(
                                         "historical lookup throttled"));
                     }
                     return createSuccessResponse(request, bytes("historical-value"));
@@ -392,7 +384,7 @@ public class LookupSenderTest {
                             requestOrder.add("historical-throttled");
                             return createFailedResponse(
                                     request,
-                                    new HistoricalLookupThrottledException(
+                                    new HistoricalPartitionThrottledException(
                                             "historical lookup throttled"));
                         }
                         requestOrder.add("historical-success");
@@ -434,7 +426,8 @@ public class LookupSenderTest {
                     alwaysThrottledAttempts.incrementAndGet();
                     return createFailedResponse(
                             request,
-                            new HistoricalLookupThrottledException("historical lookup throttled"));
+                            new HistoricalPartitionThrottledException(
+                                    "historical lookup throttled"));
                 });
 
         LookupQuery alwaysThrottledQuery =
@@ -444,7 +437,7 @@ public class LookupSenderTest {
 
         assertThatThrownBy(() -> alwaysThrottledQuery.future().get(10, TimeUnit.SECONDS))
                 .isInstanceOf(ExecutionException.class)
-                .hasRootCauseInstanceOf(HistoricalLookupThrottledException.class);
+                .hasRootCauseInstanceOf(HistoricalPartitionThrottledException.class);
         assertThat(alwaysThrottledAttempts.get()).isEqualTo(1 + MAX_RETRIES);
         assertThat(alwaysThrottledQuery.retries()).isEqualTo(MAX_RETRIES);
     }
@@ -617,6 +610,9 @@ public class LookupSenderTest {
             if (bucketRequest.hasPartitionId()) {
                 bucketResponse.setPartitionId(bucketRequest.getPartitionId());
             }
+            if (bucketRequest.hasOriginalPartitionName()) {
+                bucketResponse.setOriginalPartitionName(bucketRequest.getOriginalPartitionName());
+            }
             String partitionName =
                     bucketRequest.hasOriginalPartitionName()
                             ? bucketRequest.getOriginalPartitionName()
@@ -691,6 +687,10 @@ public class LookupSenderTest {
         if (TABLE_BUCKET.getPartitionId() != null) {
             bucketResp.setPartitionId(TABLE_BUCKET.getPartitionId());
         }
+        if (request.getBucketsReqAt(0).hasOriginalPartitionName()) {
+            bucketResp.setOriginalPartitionName(
+                    request.getBucketsReqAt(0).getOriginalPartitionName());
+        }
         // Add value for each key in the request
         int keyCount = request.getBucketsReqAt(0).getKeysCount();
         for (int i = 0; i < keyCount; i++) {
@@ -706,6 +706,10 @@ public class LookupSenderTest {
         bucketResp.setBucketId(TABLE_BUCKET.getBucket());
         if (TABLE_BUCKET.getPartitionId() != null) {
             bucketResp.setPartitionId(TABLE_BUCKET.getPartitionId());
+        }
+        if (request.getBucketsReqAt(0).hasOriginalPartitionName()) {
+            bucketResp.setOriginalPartitionName(
+                    request.getBucketsReqAt(0).getOriginalPartitionName());
         }
         ApiError error = ApiError.fromThrowable(exception);
         bucketResp.setErrorCode(error.error().code());

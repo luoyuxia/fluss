@@ -176,13 +176,6 @@ public class ConfigOptions {
                     .withDescription(
                             "The default size of the write buffer for writing the local files to remote file systems.");
 
-    public static final ConfigOption<String> IO_TMP_DIR =
-            key("io.tmpdir")
-                    .stringType()
-                    .defaultValue(System.getProperty("java.io.tmpdir") + "/fluss")
-                    .withDescription(
-                            "Local directory used by Fluss components to store temporary files.");
-
     public static final ConfigOption<List<String>> PLUGIN_ALWAYS_PARENT_FIRST_LOADER_PATTERNS =
             key("plugin.classloader.parent-first-patterns.default")
                     .stringType()
@@ -419,6 +412,22 @@ public class ConfigOptions {
                                     + "and transfer remote log files. Increase this value if you experience slow IO operations. "
                                     + "The default value is 10.")
                     .withDeprecatedKeys("coordinator.io-pool.size");
+
+    public static final ConfigOption<String> SERVER_IO_TMP_DIR =
+            key("server.io.tmpdir")
+                    .stringType()
+                    .defaultValue(System.getProperty("java.io.tmpdir") + "/fluss")
+                    .withDescription(
+                            "Local directory used by Fluss components to store temporary files.");
+
+    public static final ConfigOption<Integer> SERVER_HISTORICAL_PARTITION_THREAD_POOL_MAX_SIZE =
+            key("server.historical-partition.thread-pool.max-size")
+                    .intType()
+                    .defaultValue(10)
+                    .withDescription(
+                            "The maximum number of threads used for historical partition operations, such as lake lookups and writes. "
+                                    + "The thread pool is created lazily when the first operation is submitted, "
+                                    + "and idle threads are released after the keep-alive timeout.");
 
     public static final ConfigOption<Double> SERVER_DATA_DISK_WRITE_LIMIT_RATIO =
             key("server.data-disk.write-limit-ratio")
@@ -1827,6 +1836,20 @@ public class ConfigOptions {
                             "Whether enable lakehouse storage for the table. Disabled by default. "
                                     + "When this option is set to ture and the datalake tiering service is up,"
                                     + " the table will be tiered and compacted into datalake format stored on lakehouse storage.");
+
+    public static final ConfigOption<Boolean> TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED =
+            key("table.datalake.historical-partition.enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Whether to enable historical partition lookup for the table. "
+                                    + "When enabled, the coordinator creates and retains a system partition "
+                                    + "for routing lookups of expired partitions to lake storage. "
+                                    + "Currently, this option only supports auto-partitioned Paimon primary "
+                                    + "key tables with a single partition key. Disabled by default. "
+                                    + "After changing this option, restart existing lookup jobs that need "
+                                    + "to look up historical partition data so that their clients load the "
+                                    + "updated table configuration.");
 
     public static final ConfigOption<DataLakeFormat> TABLE_DATALAKE_FORMAT =
             key("table.datalake.format")

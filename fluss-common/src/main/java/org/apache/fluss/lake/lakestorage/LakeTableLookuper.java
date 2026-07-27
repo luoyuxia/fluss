@@ -36,6 +36,9 @@ public interface LakeTableLookuper extends AutoCloseable {
     /**
      * Looks up one key from the lake table.
      *
+     * <p>This method may be called concurrently. Implementations must ensure that it is
+     * thread-safe.
+     *
      * @param key lake-format encoded primary key bytes
      * @param context lookup context
      * @return Fluss value bytes, or null if the key does not exist

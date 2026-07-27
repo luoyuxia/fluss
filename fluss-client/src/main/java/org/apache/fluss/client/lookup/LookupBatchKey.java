@@ -28,6 +28,7 @@ import java.util.Objects;
 @Internal
 class LookupBatchKey {
 
+    /** The table bucket to which the lookup batch is routed. */
     private final TableBucket tableBucket;
 
     /** Null for normal lookup batches; non-null for historical batches. */

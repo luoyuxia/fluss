@@ -111,7 +111,6 @@ import org.apache.fluss.server.zk.ZooKeeperClient;
 
 import javax.annotation.Nullable;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -325,22 +324,11 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         } else {
             boolean historicalLookupRequest = hasHistoricalLookup(request);
             if (historicalLookupRequest) {
-                // Route the entire request through historical lookup. Per-bucket validation
-                // reports malformed requests that mix normal and historical lookups.
-                Map<TableBucket, LookupDataForBucket> lookupDataByBucket =
-                        toHistoricalLookupData(request);
-                Map<TableBucket, LookupDataForBucket> interesting =
-                        authorizeRequestData(
-                                READ,
-                                lookupDataByBucket,
-                                errorResponseMap,
-                                LookupResultForBucket::new);
-                if (interesting.isEmpty()) {
-                    return CompletableFuture.completedFuture(makeLookupResponse(errorResponseMap));
-                }
+                List<LookupDataForBucket> historicalLookupData = toHistoricalLookupData(request);
+                authorizeTable(READ, request.getTableId());
                 replicaManager.historicalLookups(
-                        new ArrayList<>(interesting.values()),
-                        value -> response.complete(makeLookupResponse(value, errorResponseMap)));
+                        historicalLookupData,
+                        value -> response.complete(makeLookupResponse(value)));
             } else {
                 Map<TableBucket, List<byte[]>> normalLookupData = toLookupData(request);
                 Map<TableBucket, List<byte[]>> interesting =
@@ -384,8 +372,8 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         for (PbLookupReqForBucket lookupReqForBucket : request.getBucketsReqsList()) {
             if (lookupReqForBucket.hasOriginalPartitionName()) {
                 // An original partition name is only set for historical lookups, so route the
-                // whole request to the historical path and let per-bucket validation report
-                // malformed buckets.
+                // whole request to the historical path. Conversion rejects requests that mix
+                // normal and historical lookup batches.
                 return true;
             }
         }

@@ -130,6 +130,7 @@ public class TableDescriptorValidation {
         checkSystemColumns(schema.getRowType());
         validateStatisticsConfig(tableDescriptor);
         checkTableLakeFormatMatchesCluster(tableConf, clusterDataLakeFormat);
+        checkHistoricalPartition(tableDescriptor, tableConf);
     }
 
     /** Validates the schema after altering table columns. */
@@ -166,6 +167,26 @@ public class TableDescriptorValidation {
                             ConfigOptions.DATALAKE_FORMAT.key(),
                             clusterDataLakeFormat,
                             ConfigOptions.TABLE_DATALAKE_ENABLED.key()));
+        }
+    }
+
+    private static void checkHistoricalPartition(
+            TableDescriptor tableDescriptor, Configuration tableConf) {
+        if (!tableConf.get(ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED)) {
+            return;
+        }
+
+        if (!tableDescriptor.hasPrimaryKey()
+                || tableDescriptor.getPartitionKeys().size() != 1
+                || !tableConf.get(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED)
+                || !tableConf.get(ConfigOptions.TABLE_DATALAKE_ENABLED)
+                || tableConf.getOptional(ConfigOptions.TABLE_DATALAKE_FORMAT).orElse(null)
+                        != DataLakeFormat.PAIMON) {
+            throw new InvalidConfigException(
+                    String.format(
+                            "'%s' can only be enabled for auto-partitioned Paimon primary key "
+                                    + "tables with a single partition key.",
+                            ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED.key()));
         }
     }
 

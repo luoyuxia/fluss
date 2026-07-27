@@ -22,7 +22,7 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.exception.FlussRuntimeException;
-import org.apache.fluss.exception.HistoricalLookupThrottledException;
+import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidPartitionException;
 import org.apache.fluss.exception.LakeStorageNotConfiguredException;
 import org.apache.fluss.lake.lakestorage.LakeStorage;
@@ -39,8 +39,10 @@ import org.apache.fluss.plugin.PluginManager;
 import org.apache.fluss.rpc.entity.LookupResultForBucket;
 import org.apache.fluss.rpc.protocol.ApiError;
 import org.apache.fluss.server.entity.LookupDataForBucket;
+import org.apache.fluss.utils.ExecutorUtils;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.IOUtils;
+import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 import org.apache.fluss.utils.concurrent.Scheduler;
 
 import com.github.benmanes.caffeine.cache.Cache;
@@ -57,9 +59,14 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.fluss.server.utils.LakeStorageUtils.extractLakeProperties;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
@@ -68,8 +75,9 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 /**
  * Handles server-side point lookup for historical partitions stored in lake storage.
  *
- * <p>Accepted requests run on the TabletServer I/O executor. A semaphore bounds the total number of
- * accepted historical lookup tasks so slow lake storage cannot create an unbounded request backlog.
+ * <p>Accepted requests run on a dedicated, bounded executor that is created lazily and releases
+ * idle threads. A semaphore bounds the total number of accepted historical lookup tasks so slow
+ * lake storage cannot create an unbounded request backlog.
  *
  * <p>Creating a lake table lookuper may initialize catalog, table, and query state and allocate
  * local lookup files, so lookupers are cached and reused. The cache is keyed by table ID rather
@@ -87,7 +95,11 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     private static final String LOOKUPER_CACHE_EXPIRATION_TASK_NAME =
             "historical-lookuper-cache-expiration";
     private static final Duration LOOKUPER_CACHE_EXPIRATION = Duration.ofHours(3);
+    private static final Duration HISTORICAL_PARTITION_THREAD_KEEP_ALIVE = Duration.ofSeconds(60);
+    private static final Duration HISTORICAL_PARTITION_EXECUTOR_SHUTDOWN_TIMEOUT =
+            Duration.ofSeconds(10);
     private static final int MAX_CACHED_LOOKUPERS = 10;
+    private static final String HISTORICAL_PARTITION_THREAD_NAME_PREFIX = "historical-partition-io";
 
     // TODO: MAX_CACHED_LOOKUPERS and the 2GB per-table limit configured by
     // PaimonLakeTableLookuper through Paimon's "lookup.cache-max-disk-size" option are hard-coded.
@@ -97,22 +109,27 @@ class HistoricalLakeLookupManager implements AutoCloseable {
 
     private final Configuration conf;
     private final @Nullable PluginManager pluginManager;
-    private final ExecutorService ioExecutor;
     private final int serverId;
     private final Semaphore lookupPermits;
+    // Upper bound on running and queued historical lookups; also used as the executor queue size.
+    private final int maxQueuedHistoricalRequests;
+    // Accepted lookup futures tracked so close() can cancel tasks left after executor shutdown.
+    private final Set<CompletableFuture<LookupResultForBucket>> pendingLookups;
     private final Cache<Long, CachedLakeTableLookuper> lakeTableLookupers;
+    // Dedicated historical partition executor, created lazily on the first lookup.
+    private @Nullable ExecutorService historicalPartitionExecutor;
+    private boolean closed;
     private @Nullable String paimonLookupTempDir;
 
     HistoricalLakeLookupManager(
             Configuration conf,
             @Nullable PluginManager pluginManager,
-            ExecutorService ioExecutor,
             int serverId,
             Scheduler scheduler) {
         this(
                 conf,
                 pluginManager,
-                ioExecutor,
+                null,
                 serverId,
                 Ticker.systemTicker(),
                 createCacheScheduler(scheduler));
@@ -122,13 +139,13 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     HistoricalLakeLookupManager(
             Configuration conf,
             @Nullable PluginManager pluginManager,
-            ExecutorService ioExecutor,
+            @Nullable ExecutorService historicalPartitionExecutor,
             int serverId,
             Ticker ticker,
             com.github.benmanes.caffeine.cache.Scheduler cacheScheduler) {
         this.conf = checkNotNull(conf, "conf must not be null.");
         this.pluginManager = pluginManager;
-        this.ioExecutor = checkNotNull(ioExecutor, "ioExecutor must not be null.");
+        this.historicalPartitionExecutor = historicalPartitionExecutor;
         this.serverId = serverId;
         this.lakeTableLookupers =
                 Caffeine.newBuilder()
@@ -146,13 +163,14 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                                     }
                                 })
                         .build();
-        int maxQueuedHistoricalRequests =
+        this.maxQueuedHistoricalRequests =
                 conf.get(ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS);
         checkArgument(
                 maxQueuedHistoricalRequests > 0,
                 "%s must be greater than 0.",
                 ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS.key());
         this.lookupPermits = new Semaphore(maxQueuedHistoricalRequests);
+        this.pendingLookups = ConcurrentHashMap.newKeySet();
     }
 
     private static com.github.benmanes.caffeine.cache.Scheduler createCacheScheduler(
@@ -174,8 +192,10 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             return CompletableFuture.completedFuture(
                     new LookupResultForBucket(
                             tableBucket,
+                            null,
+                            lookupData.originalPartitionName(),
                             ApiError.fromThrowable(
-                                    new HistoricalLookupThrottledException(
+                                    new HistoricalPartitionThrottledException(
                                             "Historical lookup is throttled for "
                                                     + tableBucket
                                                     + "."))));
@@ -183,21 +203,66 @@ class HistoricalLakeLookupManager implements AutoCloseable {
 
         CompletableFuture<LookupResultForBucket> future;
         try {
-            future =
-                    CompletableFuture.supplyAsync(
-                            () -> lookupInternal(lookupData, tableInfo, schemaInfo), ioExecutor);
+            future = submitLookup(lookupData, tableInfo, schemaInfo);
         } catch (RuntimeException e) {
             lookupPermits.release();
             throw e;
         }
-        future.whenComplete((ignored, error) -> lookupPermits.release());
+        future.whenComplete(
+                (ignored, error) -> {
+                    pendingLookups.remove(future);
+                    lookupPermits.release();
+                });
         return future;
     }
 
     @Override
     public void close() {
+        ExecutorService executor;
+        synchronized (this) {
+            closed = true;
+            executor = historicalPartitionExecutor;
+        }
+        if (executor != null) {
+            ExecutorUtils.gracefulShutdown(
+                    HISTORICAL_PARTITION_EXECUTOR_SHUTDOWN_TIMEOUT.toMillis(),
+                    TimeUnit.MILLISECONDS,
+                    executor);
+        }
+        pendingLookups.forEach(future -> future.cancel(true));
         lakeTableLookupers.invalidateAll();
         lakeTableLookupers.cleanUp();
+    }
+
+    private synchronized CompletableFuture<LookupResultForBucket> submitLookup(
+            LookupDataForBucket lookupData, TableInfo tableInfo, SchemaInfo schemaInfo) {
+        CompletableFuture<LookupResultForBucket> future =
+                CompletableFuture.supplyAsync(
+                        () -> lookupInternal(lookupData, tableInfo, schemaInfo),
+                        getOrCreateHistoricalPartitionExecutor());
+        pendingLookups.add(future);
+        return future;
+    }
+
+    private synchronized ExecutorService getOrCreateHistoricalPartitionExecutor() {
+        if (closed) {
+            throw new IllegalStateException("Historical lake lookup manager has been closed.");
+        }
+        if (historicalPartitionExecutor == null) {
+            int maxThreadPoolSize =
+                    conf.get(ConfigOptions.SERVER_HISTORICAL_PARTITION_THREAD_POOL_MAX_SIZE);
+            ThreadPoolExecutor executor =
+                    new ThreadPoolExecutor(
+                            maxThreadPoolSize,
+                            maxThreadPoolSize,
+                            HISTORICAL_PARTITION_THREAD_KEEP_ALIVE.toMillis(),
+                            TimeUnit.MILLISECONDS,
+                            new ArrayBlockingQueue<>(maxQueuedHistoricalRequests),
+                            new ExecutorThreadFactory(HISTORICAL_PARTITION_THREAD_NAME_PREFIX));
+            executor.allowCoreThreadTimeOut(true);
+            historicalPartitionExecutor = executor;
+        }
+        return historicalPartitionExecutor;
     }
 
     void invalidateTableLookuper(long tableId) {
@@ -241,9 +306,14 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             for (byte[] key : lookupData.keys()) {
                 values.add(cachedLookuper.lookuper.lookup(key, context.lookupContext));
             }
-            return new LookupResultForBucket(tableBucket, values);
+            return new LookupResultForBucket(
+                    tableBucket, values, lookupData.originalPartitionName(), ApiError.NONE);
         } catch (Exception e) {
-            return new LookupResultForBucket(tableBucket, ApiError.fromThrowable(e));
+            return new LookupResultForBucket(
+                    tableBucket,
+                    null,
+                    lookupData.originalPartitionName(),
+                    ApiError.fromThrowable(e));
         } finally {
             if (cachedLookuper != null) {
                 cachedLookuper.release();
@@ -284,7 +354,6 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                 tableInfo.getTableId(), schemaInfo.getSchemaId(), tablePath, lookupContext);
     }
 
-    @VisibleForTesting
     LakeTableLookuper createLakeTableLookuper(
             TablePath tablePath, String ioTmpDir, TableConfig tableConfig) {
         DataLakeFormat dataLakeFormat = conf.get(ConfigOptions.DATALAKE_FORMAT);
@@ -323,7 +392,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     private static String preparePaimonLookupTempDir(Configuration conf, int serverId) {
         File paimonLookupTempDir =
                 new File(
-                        new File(conf.get(ConfigOptions.IO_TMP_DIR), PAIMON_LOOKUP_DIR_NAME),
+                        new File(conf.get(ConfigOptions.SERVER_IO_TMP_DIR), PAIMON_LOOKUP_DIR_NAME),
                         String.valueOf(serverId));
         try {
             // A crashed server cannot close the Paimon IOManager, so lookup cache files may be
