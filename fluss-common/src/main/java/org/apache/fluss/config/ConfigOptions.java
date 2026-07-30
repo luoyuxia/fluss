@@ -426,8 +426,7 @@ public class ConfigOptions {
                     .defaultValue(10)
                     .withDescription(
                             "The maximum number of threads used for historical partition operations, such as lake lookups and writes. "
-                                    + "The thread pool is created lazily when the first operation is submitted, "
-                                    + "and idle threads are released after the keep-alive timeout.");
+                                    + "Threads are started lazily and released after the keep-alive timeout when idle.");
 
     public static final ConfigOption<Double> SERVER_DATA_DISK_WRITE_LIMIT_RATIO =
             key("server.data-disk.write-limit-ratio")

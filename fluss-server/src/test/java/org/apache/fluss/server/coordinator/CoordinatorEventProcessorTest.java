@@ -1598,7 +1598,13 @@ class CoordinatorEventProcessorTest {
         builder.setCustomProperty("custom.key", "custom.value");
         TablePropertyChanges tablePropertyChanges = builder.build();
         metadataManager.alterTableProperties(
-                t1, Collections.emptyList(), tablePropertyChanges, false, null);
+                t1,
+                Collections.emptyList(),
+                tablePropertyChanges,
+                false,
+                null,
+                (currentTable, updatedTable) -> {},
+                (currentTable, updatedTable) -> {});
 
         // get updated table info and verify metadata update request is sent
         TableInfo updatedTableInfo = metadataManager.getTable(t1);
@@ -1659,7 +1665,13 @@ class CoordinatorEventProcessorTest {
         disableBuilder.setTableProperty(
                 ConfigOptions.TABLE_KV_STANDBY_REPLICA_ENABLED.key(), "false");
         metadataManager.alterTableProperties(
-                t1, Collections.emptyList(), disableBuilder.build(), false, null);
+                t1,
+                Collections.emptyList(),
+                disableBuilder.build(),
+                false,
+                null,
+                (currentTable, updatedTable) -> {},
+                (currentTable, updatedTable) -> {});
 
         // verify standby replicas are removed after re-election
         retryVerifyContext(
@@ -1727,7 +1739,13 @@ class CoordinatorEventProcessorTest {
         enableBuilder.setTableProperty(
                 ConfigOptions.TABLE_KV_STANDBY_REPLICA_ENABLED.key(), "true");
         metadataManager.alterTableProperties(
-                t1, Collections.emptyList(), enableBuilder.build(), false, null);
+                t1,
+                Collections.emptyList(),
+                enableBuilder.build(),
+                false,
+                null,
+                (currentTable, updatedTable) -> {},
+                (currentTable, updatedTable) -> {});
 
         // Verify re-election happened: standby assigned and leaderEpoch incremented
         retryVerifyContext(
@@ -1788,7 +1806,9 @@ class CoordinatorEventProcessorTest {
                                         Collections.emptyList(),
                                         enableBuilder.build(),
                                         false,
-                                        null))
+                                        null,
+                                        (currentTable, updatedTable) -> {},
+                                        (currentTable, updatedTable) -> {}))
                 .isInstanceOf(InvalidAlterTableException.class)
                 .hasMessageContaining("can only be altered on primary key tables");
 
@@ -1803,7 +1823,9 @@ class CoordinatorEventProcessorTest {
                                         Collections.emptyList(),
                                         disableBuilder.build(),
                                         false,
-                                        null))
+                                        null,
+                                        (currentTable, updatedTable) -> {},
+                                        (currentTable, updatedTable) -> {}))
                 .isInstanceOf(InvalidAlterTableException.class)
                 .hasMessageContaining("can only be altered on primary key tables");
     }

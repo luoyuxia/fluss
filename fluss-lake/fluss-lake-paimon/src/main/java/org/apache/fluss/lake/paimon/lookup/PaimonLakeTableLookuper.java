@@ -176,47 +176,65 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             return;
         }
 
-        catalog =
-                CatalogFactory.createCatalog(
-                        CatalogContext.create(Options.fromMap(paimonConfig.toMap())));
-        fileStoreTable =
-                withLookupCacheOptions((FileStoreTable) catalog.getTable(toPaimon(tablePath)));
-        if (fileStoreTable.primaryKeys().isEmpty()) {
-            throw new UnsupportedOperationException(
-                    "Point lookup is only supported for primary-key Paimon tables.");
+        Catalog newCatalog = null;
+        IOManager newIOManager = null;
+        LocalTableQuery newLocalTableQuery = null;
+        boolean initialized = false;
+        try {
+            newCatalog =
+                    CatalogFactory.createCatalog(
+                            CatalogContext.create(Options.fromMap(paimonConfig.toMap())));
+            FileStoreTable newFileStoreTable =
+                    withLookupCacheOptions(
+                            (FileStoreTable) newCatalog.getTable(toPaimon(tablePath)));
+            if (newFileStoreTable.primaryKeys().isEmpty()) {
+                throw new UnsupportedOperationException(
+                        "Point lookup is only supported for primary-key Paimon tables.");
+            }
+
+            newIOManager = createIOManager(ioTmpDir);
+            newLocalTableQuery = newFileStoreTable.newLocalTableQuery();
+            newLocalTableQuery.withValueProjection(businessFieldProjection(newFileStoreTable));
+            newLocalTableQuery.withIOManager(newIOManager);
+            RowPartitionKeyExtractor newPartitionKeyExtractor =
+                    new RowPartitionKeyExtractor(newFileStoreTable.schema());
+            List<String> trimmedPrimaryKeys = newFileStoreTable.schema().trimmedPrimaryKeys();
+            int newPrimaryKeyFieldCount = trimmedPrimaryKeys.size();
+            CompactedKeyDecoder newCompactedKeyDecoder = null;
+            PaimonKeyEncoder newPaimonKeyEncoder = null;
+
+            // Legacy/v1 tables and v2 tables with a default bucket key already encode Fluss
+            // lookup keys with Paimon's key encoder. Only v2 tables with a non-default bucket
+            // key use the compacted key encoding and need conversion before querying Paimon.
+            if (tableConfig.getKvFormatVersion().orElse(1) == KV_FORMAT_VERSION_2
+                    && !newFileStoreTable.schema().bucketKeys().equals(trimmedPrimaryKeys)) {
+                // Kv-format-v2 tables with a non-default bucket key store Fluss keys using the
+                // compacted encoding to support prefix lookup. Paimon's LocalTableQuery expects
+                // its own BinaryRow encoding, so convert the key at the lake lookup boundary.
+                newCompactedKeyDecoder =
+                        CompactedKeyDecoder.createKeyDecoder(valueRowType, trimmedPrimaryKeys);
+                RowType keyRowType = valueRowType.project(trimmedPrimaryKeys);
+                newPaimonKeyEncoder = new PaimonKeyEncoder(keyRowType, trimmedPrimaryKeys);
+            }
+
+            // Publish the newly created state only after every initialization step succeeds.
+            catalog = newCatalog;
+            fileStoreTable = newFileStoreTable;
+            ioManager = newIOManager;
+            partitionKeyExtractor = newPartitionKeyExtractor;
+            primaryKeyFieldCount = newPrimaryKeyFieldCount;
+            compactedKeyDecoder = newCompactedKeyDecoder;
+            paimonKeyEncoder = newPaimonKeyEncoder;
+            // localTableQuery is the initialization marker, so publish it last.
+            localTableQuery = newLocalTableQuery;
+            initialized = true;
+        } finally {
+            if (!initialized) {
+                IOUtils.closeQuietly(newLocalTableQuery, "Paimon local table query");
+                IOUtils.closeQuietly(newIOManager, "Paimon lookup IO manager");
+                IOUtils.closeQuietly(newCatalog, "Paimon catalog");
+            }
         }
-        ioManager = createIOManager(ioTmpDir);
-        localTableQuery = createLocalTableQuery();
-        partitionKeyExtractor = new RowPartitionKeyExtractor(fileStoreTable.schema());
-        List<String> trimmedPrimaryKeys = fileStoreTable.schema().trimmedPrimaryKeys();
-        primaryKeyFieldCount = trimmedPrimaryKeys.size();
-        initializeLookupKeyConverter(valueRowType, trimmedPrimaryKeys);
-    }
-
-    private void initializeLookupKeyConverter(
-            RowType valueRowType, List<String> trimmedPrimaryKeys) {
-        // Legacy/v1 tables and v2 tables with a default bucket key already encode Fluss lookup
-        // keys with Paimon's key encoder. Only v2 tables with a non-default bucket key use the
-        // compacted key encoding and need conversion before querying Paimon.
-        if (tableConfig.getKvFormatVersion().orElse(1) != KV_FORMAT_VERSION_2
-                || fileStoreTable().schema().bucketKeys().equals(trimmedPrimaryKeys)) {
-            return;
-        }
-
-        // Kv-format-v2 tables with a non-default bucket key store Fluss keys using the compacted
-        // encoding to support prefix lookup. Paimon's LocalTableQuery expects its own BinaryRow
-        // encoding, so convert the key at the lake lookup boundary.
-        compactedKeyDecoder =
-                CompactedKeyDecoder.createKeyDecoder(valueRowType, trimmedPrimaryKeys);
-        RowType keyRowType = valueRowType.project(trimmedPrimaryKeys);
-        paimonKeyEncoder = new PaimonKeyEncoder(keyRowType, trimmedPrimaryKeys);
-    }
-
-    private LocalTableQuery createLocalTableQuery() {
-        return fileStoreTable()
-                .newLocalTableQuery()
-                .withValueProjection(businessFieldProjection(fileStoreTable()))
-                .withIOManager(checkNotNull(ioManager, "ioManager must be initialized."));
     }
 
     private FileStoreTable withLookupCacheOptions(FileStoreTable table) {
@@ -358,6 +376,9 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         catalog = null;
         fileStoreTable = null;
         partitionKeyExtractor = null;
+        primaryKeyFieldCount = 0;
+        compactedKeyDecoder = null;
+        paimonKeyEncoder = null;
         initializedBuckets.clear();
         ensureInitialized(valueRowType);
         initializeFilesIfNeeded(partition, bucketId);

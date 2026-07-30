@@ -38,6 +38,8 @@ import com.github.benmanes.caffeine.cache.Scheduler;
 import com.github.benmanes.caffeine.cache.Ticker;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
 import java.time.Duration;
@@ -165,6 +167,26 @@ class HistoricalLakeLookupManagerTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining(
                         ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS.key());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1})
+    void testRejectNonPositiveHistoricalPartitionThreadPoolMaxSize(int maxThreadPoolSize) {
+        Configuration conf = conf(1);
+        conf.set(ConfigOptions.SERVER_HISTORICAL_PARTITION_THREAD_POOL_MAX_SIZE, maxThreadPoolSize);
+
+        assertThatThrownBy(
+                        () ->
+                                new HistoricalLakeLookupManager(
+                                        conf,
+                                        null,
+                                        null,
+                                        SERVER_ID,
+                                        Ticker.systemTicker(),
+                                        Scheduler.disabledScheduler()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(
+                        ConfigOptions.SERVER_HISTORICAL_PARTITION_THREAD_POOL_MAX_SIZE.key());
     }
 
     @Test

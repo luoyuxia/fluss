@@ -264,10 +264,68 @@ class PaimonLakeTableLookuperTest {
             BinaryValue decodedValue =
                     decodeValue(lookuper.lookup(compactedKey, context), SCHEMA_ID, schema);
 
-            assertThat(decodedValue.row.getInt(0)).isEqualTo(1);
-            assertThat(decodedValue.row.getString(1).toString()).isEqualTo("sub-1");
-            assertThat(decodedValue.row.getString(2).toString()).isEqualTo("20240101");
-            assertThat(decodedValue.row.getString(3).toString()).isEqualTo("Alice");
+            assertRow(decodedValue.row, 1, "sub-1", "20240101", "Alice");
+        }
+    }
+
+    @Test
+    void testRetriesInitializationAfterLookupKeyConverterFailure() throws Exception {
+        TablePath tablePath = TablePath.of(DB, "retry_initialization");
+        Schema schema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT())
+                        .column("sub_id", DataTypes.STRING())
+                        .column("dt", DataTypes.STRING())
+                        .column("name", DataTypes.STRING())
+                        .primaryKey("id", "sub_id", "dt")
+                        .build();
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(schema)
+                        .partitionedBy("dt")
+                        .distributedBy(1, "id")
+                        .build();
+        FileStoreTable table = createPaimonTable(tablePath, tableDescriptor);
+        writeAndCommitData(
+                table,
+                Collections.singletonMap(
+                        0, Collections.singletonList(paimonRow(1, "sub-1", "20240101", "Alice"))));
+
+        byte[] compactedKey =
+                CompactedKeyEncoder.createKeyEncoder(
+                                schema.getRowType(), Arrays.asList("id", "sub_id"))
+                        .encodeKey(row(1, "sub-1", "20240101", ""));
+        Schema invalidSchema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.INT())
+                        .column("dt", DataTypes.STRING())
+                        .column("name", DataTypes.STRING())
+                        .primaryKey("id", "dt")
+                        .build();
+
+        try (LakeTableLookuper lookuper =
+                new PaimonLakeTableLookuper(
+                        paimonConfig,
+                        tablePath,
+                        tempWarehouseDir.getAbsolutePath(),
+                        tableConfig(KvFormat.COMPACTED, KV_FORMAT_VERSION_2))) {
+            // Inject a late initialization failure: the Paimon table requires sub_id in its
+            // lookup key, but the first lookup's value row type deliberately omits that field.
+            assertThatThrownBy(
+                            () ->
+                                    lookuper.lookup(
+                                            compactedKey,
+                                            lookupContext(invalidSchema, "20240101", 0, SCHEMA_ID)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("sub_id");
+
+            // The failed attempt must not leave localTableQuery as a false initialization marker.
+            // A second lookup on the same object should rebuild all resources and succeed.
+            byte[] value =
+                    lookuper.lookup(compactedKey, lookupContext(schema, "20240101", 0, SCHEMA_ID));
+            assertThat(value).isNotNull();
+            BinaryValue decodedValue = decodeValue(value, SCHEMA_ID, schema);
+            assertRow(decodedValue.row, 1, "sub-1", "20240101", "Alice");
         }
     }
 
@@ -605,5 +663,12 @@ class PaimonLakeTableLookuperTest {
         assertThat(row.getInt(0)).isEqualTo(id);
         assertThat(row.getString(1).toString()).isEqualTo(dt);
         assertThat(row.getString(2).toString()).isEqualTo(name);
+    }
+
+    private static void assertRow(InternalRow row, int id, String subId, String dt, String name) {
+        assertThat(row.getInt(0)).isEqualTo(id);
+        assertThat(row.getString(1).toString()).isEqualTo(subId);
+        assertThat(row.getString(2).toString()).isEqualTo(dt);
+        assertThat(row.getString(3).toString()).isEqualTo(name);
     }
 }

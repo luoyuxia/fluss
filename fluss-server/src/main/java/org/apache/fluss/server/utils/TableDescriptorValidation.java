@@ -46,6 +46,7 @@ import org.apache.fluss.utils.StringUtils;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -126,11 +127,11 @@ public class TableDescriptorValidation {
         checkMergeEngine(tableConf, hasPrimaryKey, schema);
         checkDeleteBehavior(tableConf, hasPrimaryKey);
         checkTieredLog(tableConf);
+        checkHistoricalPartition(tableDescriptor, tableConf);
         checkPartition(tableConf, tableDescriptor.getPartitionKeys(), schema.getRowType());
         checkSystemColumns(schema.getRowType());
         validateStatisticsConfig(tableDescriptor);
         checkTableLakeFormatMatchesCluster(tableConf, clusterDataLakeFormat);
-        checkHistoricalPartition(tableDescriptor, tableConf);
     }
 
     /** Validates the schema after altering table columns. */
@@ -176,17 +177,53 @@ public class TableDescriptorValidation {
             return;
         }
 
-        if (!tableDescriptor.hasPrimaryKey()
-                || tableDescriptor.getPartitionKeys().size() != 1
-                || !tableConf.get(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED)
-                || !tableConf.get(ConfigOptions.TABLE_DATALAKE_ENABLED)
-                || tableConf.getOptional(ConfigOptions.TABLE_DATALAKE_FORMAT).orElse(null)
-                        != DataLakeFormat.PAIMON) {
+        List<String> unmetRequirements = new ArrayList<>();
+        if (!tableConf.get(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED)) {
+            unmetRequirements.add(
+                    String.format(
+                            "'%s' must be set to true",
+                            ConfigOptions.TABLE_AUTO_PARTITION_ENABLED.key()));
+        }
+        if (!tableConf.get(ConfigOptions.TABLE_DATALAKE_ENABLED)) {
+            unmetRequirements.add(
+                    String.format(
+                            "'%s' must be set to true",
+                            ConfigOptions.TABLE_DATALAKE_ENABLED.key()));
+        }
+
+        Optional<DataLakeFormat> dataLakeFormat =
+                tableConf.getOptional(ConfigOptions.TABLE_DATALAKE_FORMAT);
+        if (!dataLakeFormat.isPresent()) {
+            unmetRequirements.add(
+                    String.format(
+                            "'%s' must be set to '%s' (currently not set)",
+                            ConfigOptions.TABLE_DATALAKE_FORMAT.key(), DataLakeFormat.PAIMON));
+        } else if (dataLakeFormat.get() != DataLakeFormat.PAIMON) {
+            unmetRequirements.add(
+                    String.format(
+                            "'%s' must be set to '%s' (currently '%s')",
+                            ConfigOptions.TABLE_DATALAKE_FORMAT.key(),
+                            DataLakeFormat.PAIMON,
+                            dataLakeFormat.get()));
+        }
+        if (!tableDescriptor.hasPrimaryKey()) {
+            unmetRequirements.add("the table must define a primary key");
+        }
+
+        int partitionKeyCount = tableDescriptor.getPartitionKeys().size();
+        if (partitionKeyCount != 1) {
+            unmetRequirements.add(
+                    String.format(
+                            "the table must define exactly one partition key (found %s)",
+                            partitionKeyCount));
+        }
+
+        if (!unmetRequirements.isEmpty()) {
             throw new InvalidConfigException(
                     String.format(
-                            "'%s' can only be enabled for auto-partitioned Paimon primary key "
-                                    + "tables with a single partition key.",
-                            ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED.key()));
+                            "'%s' has unmet requirements: %s.",
+                            ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED.key(),
+                            String.join("; ", unmetRequirements)));
         }
     }
 

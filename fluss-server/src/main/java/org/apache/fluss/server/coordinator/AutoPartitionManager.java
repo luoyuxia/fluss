@@ -633,6 +633,7 @@ public class AutoPartitionManager implements AutoCloseable {
             dropIterator = entry.getValue().iterator();
         }
 
+        boolean deletionFailed = false;
         while (dropIterator.hasNext()) {
             String partitionName = dropIterator.next();
             try {
@@ -645,6 +646,14 @@ public class AutoPartitionManager implements AutoCloseable {
                         "Auto partitioning skip to delete partition {} for table [{}] as the partition is not exist.",
                         partitionName,
                         tablePath);
+            } catch (Exception e) {
+                LOG.warn(
+                        "Auto partitioning failed to delete partition {} for table [{}].",
+                        partitionName,
+                        tablePath,
+                        e);
+                deletionFailed = true;
+                continue;
             }
 
             dropIterator.remove();
@@ -653,7 +662,9 @@ public class AutoPartitionManager implements AutoCloseable {
                     partitionName,
                     tablePath);
         }
-        iterator.remove();
+        if (!deletionFailed) {
+            iterator.remove();
+        }
     }
 
     @VisibleForTesting

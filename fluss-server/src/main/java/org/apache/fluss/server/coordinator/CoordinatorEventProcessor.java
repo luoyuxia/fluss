@@ -850,9 +850,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
         tableManager.onCreateNewTable(tablePath, tableInfo.getTableId(), tableAssignment);
         if (createTableEvent.isAutoPartitionTable()) {
             autoPartitionManager.addAutoPartitionTable(tableInfo, true);
-            if (tableInfo.getTableConfig().isHistoricalPartitionEnabled()) {
-                autoPartitionManager.createHistoricalPartition(tableInfo);
-            }
         }
         if (tableInfo.getTableConfig().isDataLakeEnabled()) {
             lakeTableTieringManager.addNewLakeTable(tableInfo);
@@ -1000,20 +997,6 @@ public class CoordinatorEventProcessor implements EventProcessor {
                     newAutoPartitionStrategy);
             autoPartitionManager.handleAutoPartitionStrategyChange(
                     newTableInfo, oldAutoPartitionStrategy, newAutoPartitionStrategy);
-        }
-
-        // Handle the historical system partition after updating the auto-partition scheduler so
-        // that a newly enabled auto-partition table is registered before partition creation.
-        boolean oldHistoricalPartitionEnabled =
-                oldTableInfo.getTableConfig().isHistoricalPartitionEnabled();
-        boolean newHistoricalPartitionEnabled =
-                newTableInfo.getTableConfig().isHistoricalPartitionEnabled();
-        if (oldHistoricalPartitionEnabled != newHistoricalPartitionEnabled) {
-            if (newHistoricalPartitionEnabled) {
-                autoPartitionManager.createHistoricalPartition(newTableInfo);
-            } else {
-                autoPartitionManager.dropHistoricalPartition(newTableInfo);
-            }
         }
 
         // If standby replica config changed, trigger re-election for all online buckets

@@ -97,6 +97,12 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
                                         "true")),
                         false)
                 .get();
+        // The ALTER RPC must not complete until the required system partition is persisted.
+        assertThat(
+                        FLUSS_CLUSTER_EXTENSION
+                                .getZooKeeperClient()
+                                .getPartition(tablePath, HISTORICAL_PARTITION_VALUE))
+                .isPresent();
         waitUntilPartitionCreated(tablePath, HISTORICAL_PARTITION_VALUE);
         long historicalPartitionId = getPartitionId(tablePath, HISTORICAL_PARTITION_VALUE);
         FLUSS_CLUSTER_EXTENSION.waitUntilTablePartitionReady(tableId, historicalPartitionId);
@@ -178,8 +184,8 @@ class HistoricalPartitionLookupITCase extends FlinkPaimonTieringTestBase {
                             false)
                     .get();
 
-            admin.dropPartition(tablePath, expiredPartitionSpec, true).get();
-            admin.dropPartition(tablePath, secondExpiredPartitionSpec, true).get();
+            // Lowering retention triggers immediate auto-partition cleanup. Wait until both expired
+            // partitions are removed before verifying historical lookup fallback.
             waitUntilPartitionDropped(tablePath, EXPIRED_PARTITION_NAME);
             waitUntilPartitionDropped(tablePath, SECOND_EXPIRED_PARTITION_NAME);
 
