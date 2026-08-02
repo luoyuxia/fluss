@@ -584,8 +584,9 @@ public class MetadataManager {
             throws Exception {
         TablePath currentLakeTablePath = tableInfo.getLakeTablePath();
         TablePath newLakeTablePath =
-                LakeTableUtil.getLakeTablePath(
-                        tableInfo.getTablePath(), newDescriptor.getProperties());
+                LakeTableUtil.resolveLakeTablePath(
+                        tableInfo.getTablePath(),
+                        Configuration.fromMap(newDescriptor.getProperties()));
         if (currentLakeTablePath.equals(newLakeTablePath)) {
             return;
         }
@@ -627,7 +628,8 @@ public class MetadataManager {
             if (!isDataLakeEnabled(tableDescriptor)) {
                 // before create table in fluss, we may create in lake
                 TablePath lakeTablePath =
-                        LakeTableUtil.getLakeTablePath(tablePath, newDescriptor.getProperties());
+                        LakeTableUtil.resolveLakeTablePath(
+                                tablePath, Configuration.fromMap(newDescriptor.getProperties()));
                 try {
                     lakeCatalog.createTable(lakeTablePath, newDescriptor, lakeCatalogContext);
                 } catch (TableAlreadyExistException e) {
@@ -646,7 +648,8 @@ public class MetadataManager {
                         .getProperties()
                         .containsKey(ConfigOptions.TABLE_DATALAKE_ENABLED.key())) {
             TablePath lakeTablePath =
-                    LakeTableUtil.getLakeTablePath(tablePath, newDescriptor.getProperties());
+                    LakeTableUtil.resolveLakeTablePath(
+                            tablePath, Configuration.fromMap(newDescriptor.getProperties()));
             try {
                 lakeCatalog.alterTable(lakeTablePath, tableChanges, lakeCatalogContext);
             } catch (TableNotExistException e) {
