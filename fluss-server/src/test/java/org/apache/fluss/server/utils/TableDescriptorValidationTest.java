@@ -19,6 +19,7 @@ package org.apache.fluss.server.utils;
 
 import org.apache.fluss.config.ConfigOption;
 import org.apache.fluss.config.ConfigOptions;
+import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidDatabaseException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.metadata.DataLakeFormat;
@@ -77,6 +78,19 @@ class TableDescriptorValidationTest {
                                 TableDescriptorValidation.validateTableDescriptor(
                                         tableDescriptor, 100, DataLakeFormat.PAIMON))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testRejectCustomLakePathForIceberg() {
+        TableDescriptor tableDescriptor =
+                tableDescriptorWithLakeName(ConfigOptions.TABLE_DATALAKE_TABLE_NAME, "lake_table");
+
+        assertThatThrownBy(
+                        () ->
+                                TableDescriptorValidation.validateTableDescriptor(
+                                        tableDescriptor, 100, DataLakeFormat.ICEBERG))
+                .isInstanceOf(InvalidConfigException.class)
+                .hasMessageContaining("Custom lake table path is only supported for Paimon");
     }
 
     private static TableDescriptor tableDescriptorWithLakeName(
