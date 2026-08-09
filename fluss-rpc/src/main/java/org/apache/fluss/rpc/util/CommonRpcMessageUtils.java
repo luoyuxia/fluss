@@ -31,7 +31,6 @@ import org.apache.fluss.rpc.messages.PbAclFilter;
 import org.apache.fluss.rpc.messages.PbAclInfo;
 import org.apache.fluss.rpc.messages.PbFetchLogRespForBucket;
 import org.apache.fluss.rpc.messages.PbKeyValue;
-import org.apache.fluss.rpc.messages.PbLookupReqForBucket;
 import org.apache.fluss.rpc.messages.PbPartitionSpec;
 import org.apache.fluss.rpc.messages.PbRemoteLogFetchInfo;
 import org.apache.fluss.rpc.messages.PbRemoteLogSegment;
@@ -61,14 +60,15 @@ import java.util.stream.Collectors;
  */
 public class CommonRpcMessageUtils {
 
-    /** Returns whether the lookup request contains historical partition lookup data. */
+    /**
+     * Returns whether the lookup request is for historical partition lookup.
+     *
+     * <p>Normal and historical lookup buckets cannot be mixed in the same request, so the first
+     * bucket determines the request type.
+     */
     public static boolean hasHistoricalLookup(LookupRequest lookupRequest) {
-        for (PbLookupReqForBucket bucketRequest : lookupRequest.getBucketsReqsList()) {
-            if (bucketRequest.hasOriginalPartitionName()) {
-                return true;
-            }
-        }
-        return false;
+        return lookupRequest.getBucketsReqsCount() > 0
+                && lookupRequest.getBucketsReqAt(0).hasOriginalPartitionName();
     }
 
     public static List<PbAclInfo> toPbAclInfos(Collection<AclBinding> aclBindings) {
