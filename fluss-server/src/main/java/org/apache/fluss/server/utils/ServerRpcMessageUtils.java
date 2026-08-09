@@ -232,6 +232,7 @@ import java.util.stream.Stream;
 
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toByteBuffer;
 import static org.apache.fluss.rpc.util.CommonRpcMessageUtils.toPbAclInfo;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
@@ -1780,6 +1781,10 @@ public class ServerRpcMessageUtils {
         ListPartitionInfosResponse listPartitionsResponse = new ListPartitionInfosResponse();
         for (Map.Entry<String, PartitionRegistration> partitionRegistration :
                 partitionRegistrations.entrySet()) {
+            // TODO: Return the actual lake partitions instead of the internal historical partition.
+            if (HISTORICAL_PARTITION_VALUE.equals(partitionRegistration.getKey())) {
+                continue;
+            }
             ResolvedPartitionSpec spec =
                     ResolvedPartitionSpec.fromPartitionName(
                             partitionKeys, partitionRegistration.getKey());
