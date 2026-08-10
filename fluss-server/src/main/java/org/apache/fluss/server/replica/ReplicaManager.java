@@ -1286,17 +1286,21 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     // NOTE: This method can be removed when fetchFromLake is deprecated
-    private void updateWithLakeTableSnapshot(Replica replica) throws Exception {
+    private void updateWithLakeTableSnapshot(Replica replica) {
         TableBucket tb = replica.getTableBucket();
-        Optional<LakeTableSnapshot> optLakeTableSnapshot =
-                zkClient.getLakeTableSnapshot(replica.getTableBucket().getTableId(), null);
-        if (optLakeTableSnapshot.isPresent()) {
-            LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
-            long snapshotId = optLakeTableSnapshot.get().getSnapshotId();
-            replica.getLogTablet().updateLakeTableSnapshotId(snapshotId);
-            lakeTableSnapshot
-                    .getLogEndOffset(tb)
-                    .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
+        try {
+            Optional<LakeTableSnapshot> optLakeTableSnapshot =
+                    zkClient.getLakeTableSnapshot(replica.getTableBucket().getTableId(), null);
+            if (optLakeTableSnapshot.isPresent()) {
+                LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
+                long snapshotId = optLakeTableSnapshot.get().getSnapshotId();
+                replica.getLogTablet().updateLakeTableSnapshotId(snapshotId);
+                lakeTableSnapshot
+                        .getLogEndOffset(tb)
+                        .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to update replica {} with lake table snapshot.", tb, e);
         }
     }
 
