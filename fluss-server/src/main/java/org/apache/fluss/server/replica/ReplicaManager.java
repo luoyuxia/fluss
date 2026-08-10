@@ -1300,6 +1300,9 @@ public class ReplicaManager implements ServerReconfigurable {
                         .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
             }
         } catch (Exception e) {
+            // Lake commit cleanup can race with this best-effort refresh and remove the
+            // referenced offsets file. A failure only leaves the snapshot/offset state stale
+            // until the next synchronization, so it must not fail the leader transition.
             LOG.warn("Failed to update replica {} with lake table snapshot.", tb, e);
         }
     }
