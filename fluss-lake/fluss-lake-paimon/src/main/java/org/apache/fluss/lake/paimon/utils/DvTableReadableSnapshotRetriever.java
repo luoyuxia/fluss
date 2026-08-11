@@ -113,14 +113,14 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
      *       compacted snapshot
      *   <li>For buckets without L0 files: use offsets from the latest tiered snapshot (all data is
      *       in base files, safe to advance)
-     *   <li>For buckets with L0 files:
+     *   <li>Traverse backwards through compacted snapshots once for both groups:
      *       <ol>
-     *         <li>Traverse backwards through compacted snapshots starting from the latest one
      *         <li>For each compacted snapshot, check which buckets had their L0 files flushed
      *         <li>For each flushed bucket, find the latest snapshot that exactly holds those L0
      *             files using {@link PaimonDvTableUtils#findLatestSnapshotExactlyHoldingL0Files}
      *         <li>Find the previous APPEND snapshot before that snapshot
-     *         <li>Use that APPEND snapshot's offset for the bucket
+     *         <li>Use that APPEND snapshot's offset for buckets with L0, and retain it as the base
+     *             anchor for buckets without L0
      *       </ol>
      *   <li>Return readable offsets for all buckets, allowing incremental advancement
      * </ol>
@@ -259,30 +259,30 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
         // again; until then, a future recomputation (triggered once the bucket receives new L0)
         // will trace back to that same anchor, so the anchor snapshot must stay retained.
         //
-        // Buckets with L0 in the current compacted snapshot have their anchor found by the
-        // traversal below (which also derives their readable offset). Buckets without L0 take their
-        // readable offset from the latest tiered snapshot and are NOT traversed there, so their
-        // anchors are computed separately afterwards. We must not assume "no L0 in any bucket"
-        // means earlier snapshots are deletable: a bucket can be clean in the current compacted
-        // snapshot yet still be anchored to an older snapshot (it was flushed earlier and has not
-        // been flushed since).
+        // The traversal below handles both groups in one pass. Buckets with L0 also derive their
+        // readable offset from the anchor. Buckets without L0 already use the latest tiered offset,
+        // but still need their anchor retained until their next flush.
 
-        // for all buckets with l0, we need to find the latest compacted snapshot which flushed
-        // the buckets, the per-bucket offset should be updated to the corresponding compacted
-        // snapshot offsets
+        // Buckets with L0 need both their base anchor and its offset. Buckets without L0 only need
+        // their base anchor retained.
         Set<PaimonPartitionBucket> allBucketsToAdvance = new HashSet<>(bucketsWithL0);
+        Set<PaimonPartitionBucket> bucketsWithoutL0ToAnchor = new HashSet<>();
+        for (PaimonPartitionBucket bucket : bucketsWithoutL0) {
+            if (flussTableBucketMapper.toTableBucket(bucket) != null) {
+                bucketsWithoutL0ToAnchor.add(bucket);
+            }
+        }
 
         // Cache LakeSnapshot by snapshot ID to avoid repeated getLakeSnapshot RPCs when many
         // buckets share the same snapshot.
         Map<Long, LakeSnapshot> lakeSnapshotBySnapshotId = new HashMap<>();
 
         long earliestSnapshotId = checkNotNull(snapshotManager.earliestSnapshotId());
-        // From latestCompacted forward traverse compacted snapshots
+        // Traverse compacted snapshots backwards from the latest one.
         for (long currentSnapshotId = latestCompactedSnapshot.id();
                 currentSnapshotId >= earliestSnapshotId;
                 currentSnapshotId--) {
-            // no any buckets to advance, break directly
-            if (allBucketsToAdvance.isEmpty()) {
+            if (allBucketsToAdvance.isEmpty() && bucketsWithoutL0ToAnchor.isEmpty()) {
                 break;
             }
             Snapshot currentSnapshot = snapshotManager.tryGetSnapshot(currentSnapshotId);
@@ -292,8 +292,16 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
             }
             // Get buckets flushed by current compacted snapshot
             Set<PaimonPartitionBucket> flushedBuckets = getBucketsWithFlushedL0(currentSnapshot);
-            // For each flushed bucket, if offset not set yet, set it
+            Snapshot previousAppendSnapshot = null;
+            boolean baseAnchorLookedUp = false;
             for (PaimonPartitionBucket partitionBucket : flushedBuckets) {
+                boolean shouldAdvance = allBucketsToAdvance.contains(partitionBucket);
+                // The first flush encountered going backwards is the bucket's most recent flush.
+                boolean shouldAnchorOnly = bucketsWithoutL0ToAnchor.remove(partitionBucket);
+                if (!shouldAdvance && !shouldAnchorOnly) {
+                    continue;
+                }
+
                 TableBucket tb = flussTableBucketMapper.toTableBucket(partitionBucket);
                 if (tb == null) {
                     // can't map such paimon bucket to fluss,just ignore
@@ -301,21 +309,14 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
                     allBucketsToAdvance.remove(partitionBucket);
                     continue;
                 }
-                if (!readableOffsets.containsKey(tb)) {
-                    // The previous APPEND of the latest snapshot that still exactly holds the L0
-                    // files flushed by currentSnapshot is this bucket's base anchor; its tiered
-                    // offset is the bucket's readable offset.
-                    Snapshot previousAppendSnapshot = findBaseAnchorAppendSnapshot(currentSnapshot);
 
-                    // Can't determine the base anchor, likely due to snapshot expiration: either
-                    // the snapshot holding the flushed L0 files, or all earlier APPEND snapshots,
-                    // have been expired. We can't determine this bucket's readable offset, so stop
-                    // advancing and return null.
-                    //
-                    // TODO: Optimization - Store compacted snapshot offsets in Fluss so we don't
-                    // need to find the previous APPEND snapshot to get its offset, making this
-                    // resilient to snapshot expiration.
-                    if (previousAppendSnapshot == null) {
+                if (!baseAnchorLookedUp) {
+                    previousAppendSnapshot = findBaseAnchorAppendSnapshot(currentSnapshot);
+                    baseAnchorLookedUp = true;
+                }
+
+                if (previousAppendSnapshot == null) {
+                    if (shouldAdvance) {
                         LOG.warn(
                                 "Cannot determine base anchor (previous APPEND) for bucket {} flushed by "
                                         + "compacted snapshot {}. Snapshot history may have expired; "
@@ -324,31 +325,35 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
                                 currentSnapshot.id());
                         return null;
                     }
+                    // Retaining older Fluss offset metadata cannot recover expired Paimon history.
+                    continue;
+                }
 
-                    // Track the minimum previousAppendSnapshot ID
-                    // This snapshot will be accessed via getLakeSnapshot, so we need to keep it
-                    if (earliestSnapshotIdToKeep <= 0
-                            || previousAppendSnapshot.id() < earliestSnapshotIdToKeep) {
-                        earliestSnapshotIdToKeep = previousAppendSnapshot.id();
-                    }
+                if (earliestSnapshotIdToKeep <= 0
+                        || previousAppendSnapshot.id() < earliestSnapshotIdToKeep) {
+                    earliestSnapshotIdToKeep = previousAppendSnapshot.id();
+                }
 
-                    long snapshotId = previousAppendSnapshot.id();
-                    LakeSnapshot lakeSnapshot =
-                            getOrFetchLakeSnapshot(snapshotId, lakeSnapshotBySnapshotId);
-                    if (lakeSnapshot == null) {
-                        return null;
-                    }
-                    Long offset = lakeSnapshot.getTableBucketsOffset().get(tb);
-                    if (offset != null) {
-                        readableOffsets.put(tb, offset);
-                        allBucketsToAdvance.remove(partitionBucket);
-                    } else {
-                        LOG.error(
-                                "Could not find offset for bucket {} in snapshot {}, skip advancing readable snapshot.",
-                                tb,
-                                snapshotId);
-                        return null;
-                    }
+                if (!shouldAdvance) {
+                    continue;
+                }
+
+                long snapshotId = previousAppendSnapshot.id();
+                LakeSnapshot lakeSnapshot =
+                        getOrFetchLakeSnapshot(snapshotId, lakeSnapshotBySnapshotId);
+                if (lakeSnapshot == null) {
+                    return null;
+                }
+                Long offset = lakeSnapshot.getTableBucketsOffset().get(tb);
+                if (offset != null) {
+                    readableOffsets.put(tb, offset);
+                    allBucketsToAdvance.remove(partitionBucket);
+                } else {
+                    LOG.error(
+                            "Could not find offset for bucket {} in snapshot {}, skip advancing readable snapshot.",
+                            tb,
+                            snapshotId);
+                    return null;
                 }
             }
         }
@@ -375,22 +380,13 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
             return null;
         }
 
-        // Tighten earliestSnapshotIdToKeep using the base anchors of buckets without L0 as well.
-        // Their readable offsets come from the latest tiered snapshot, but their base was
-        // established by an earlier flush; once such a bucket receives new L0, a later
-        // recomputation traces back to that flush's anchor, so the anchor snapshot must be kept.
-        //
-        // This is best-effort: if a bucket's flush history has expired and its anchor cannot be
-        // determined, we conservatively keep all previous snapshots (KEEP_ALL_PREVIOUS) rather than
-        // risk deleting one that is still needed. We never fail the whole readable-offset advance
-        // here, since these buckets' offsets are already resolved from the latest tiered snapshot.
-        earliestSnapshotIdToKeep =
-                tightenEarliestSnapshotIdToKeepForBucketsWithoutL0(
-                        bucketsWithoutL0,
-                        flussTableBucketMapper,
-                        latestCompactedSnapshot.id(),
-                        earliestSnapshotId,
-                        earliestSnapshotIdToKeep);
+        // The base anchor of every resolved bucket is at or before the latest compacted
+        // snapshot's previous APPEND. If no bucket provided a bound, use that APPEND as the
+        // fallback. It is fetched from Fluss below before the result is returned.
+        if (earliestSnapshotIdToKeep <= 0
+                || compactedSnapshotPreviousAppendSnapshot.id() < earliestSnapshotIdToKeep) {
+            earliestSnapshotIdToKeep = compactedSnapshotPreviousAppendSnapshot.id();
+        }
 
         // we use the previous append snapshot tiered offset of the compacted snapshot as the
         // compacted snapshot tiered offsets
@@ -412,86 +408,6 @@ public class DvTableReadableSnapshotRetriever implements AutoCloseable {
                 tieredOffsets,
                 readableOffsets,
                 earliestSnapshotIdToKeep);
-    }
-
-    /**
-     * Lowers {@code earliestSnapshotIdToKeep} to also cover the base anchors of buckets that have
-     * no L0 files in the latest compacted snapshot.
-     *
-     * <p>A bucket without L0 has all of its data in base files, and its readable offset is taken
-     * from the latest tiered snapshot. However, that base was established by the bucket's most
-     * recent flush, and a later recomputation (once the bucket receives new L0) will trace back to
-     * that flush's anchor snapshot (the previous APPEND of the latest snapshot that exactly holds
-     * the flushed L0). That anchor snapshot must therefore stay retained until the bucket is
-     * flushed again.
-     *
-     * <p>This is best-effort: if a bucket's flush history has expired and its anchor cannot be
-     * determined, this conservatively returns {@link LakeCommitResult#KEEP_ALL_PREVIOUS} so that no
-     * snapshot is deleted, rather than risk deleting one that is still needed.
-     *
-     * @param bucketsWithoutL0 buckets with no L0 in the latest compacted snapshot
-     * @param flussTableBucketMapper mapper from Paimon partition-bucket to Fluss table bucket
-     * @param latestCompactedSnapshotId the latest compacted snapshot id (traversal start)
-     * @param earliestSnapshotId the earliest snapshot id still present in Paimon (traversal end)
-     * @param earliestSnapshotIdToKeep the current value computed from buckets with L0
-     * @return the tightened earliest snapshot id to keep
-     */
-    private long tightenEarliestSnapshotIdToKeepForBucketsWithoutL0(
-            Set<PaimonPartitionBucket> bucketsWithoutL0,
-            FlussTableBucketMapper flussTableBucketMapper,
-            long latestCompactedSnapshotId,
-            long earliestSnapshotId,
-            long earliestSnapshotIdToKeep)
-            throws IOException {
-        if (bucketsWithoutL0.isEmpty()) {
-            return earliestSnapshotIdToKeep;
-        }
-
-        // Only track buckets that map to a Fluss bucket; unmappable ones (e.g. a partition not in
-        // Fluss) never need recomputation and must not pin retention.
-        Set<PaimonPartitionBucket> bucketsToAnchor = new HashSet<>();
-        for (PaimonPartitionBucket bucket : bucketsWithoutL0) {
-            if (flussTableBucketMapper.toTableBucket(bucket) != null) {
-                bucketsToAnchor.add(bucket);
-            }
-        }
-        if (bucketsToAnchor.isEmpty()) {
-            return earliestSnapshotIdToKeep;
-        }
-        boolean allAnchorsResolved = true;
-
-        for (long currentSnapshotId = latestCompactedSnapshotId;
-                currentSnapshotId >= earliestSnapshotId && !bucketsToAnchor.isEmpty();
-                currentSnapshotId--) {
-            Snapshot currentSnapshot = snapshotManager.tryGetSnapshot(currentSnapshotId);
-            if (currentSnapshot == null
-                    || currentSnapshot.commitKind() != Snapshot.CommitKind.COMPACT) {
-                continue;
-            }
-            // The first flush encountered going backwards is the bucket's most recent flush.
-            for (PaimonPartitionBucket partitionBucket : getBucketsWithFlushedL0(currentSnapshot)) {
-                if (!bucketsToAnchor.remove(partitionBucket)) {
-                    continue;
-                }
-                Snapshot previousAppendSnapshot = findBaseAnchorAppendSnapshot(currentSnapshot);
-                if (previousAppendSnapshot == null) {
-                    // can't determine this bucket's base anchor; don't tighten retention
-                    allAnchorsResolved = false;
-                    continue;
-                }
-                if (earliestSnapshotIdToKeep <= 0
-                        || previousAppendSnapshot.id() < earliestSnapshotIdToKeep) {
-                    earliestSnapshotIdToKeep = previousAppendSnapshot.id();
-                }
-            }
-        }
-
-        if (!bucketsToAnchor.isEmpty()) {
-            // some bucket's most recent flush was not found within the retained snapshots
-            allAnchorsResolved = false;
-        }
-
-        return allAnchorsResolved ? earliestSnapshotIdToKeep : LakeCommitResult.KEEP_ALL_PREVIOUS;
     }
 
     /**
