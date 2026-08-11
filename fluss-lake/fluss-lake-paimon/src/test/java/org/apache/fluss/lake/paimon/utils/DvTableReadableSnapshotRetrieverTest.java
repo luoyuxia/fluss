@@ -435,10 +435,64 @@ class DvTableReadableSnapshotRetrieverTest {
     }
 
     @Test
-    void testRetentionAdvancesWhenColdBucketAnchorsExpire() throws Exception {
+    void testReadableOffsetsAfterRecoveringAppendSnapshot() throws Exception {
         int bucket0 = 0;
         int bucket1 = 1;
-        TablePath tablePath = TablePath.of(DEFAULT_DB, "test_dv_expired_anchor_retention");
+        TablePath tablePath = TablePath.of(DEFAULT_DB, "test_dv_recovered_append_offsets");
+        tableId = createDvTable(tablePath, 2);
+        FileStoreTable fileStoreTable = getPaimonTable(tablePath);
+        CompactHelper compactHelper = new CompactHelper(fileStoreTable, compactionTempDir);
+        TableBucket tb0 = new TableBucket(tableId, bucket0);
+        TableBucket tb1 = new TableBucket(tableId, bucket1);
+
+        long snapshot1 =
+                writeAndCommitData(
+                        fileStoreTable,
+                        Collections.singletonMap(bucket0, generateRows(bucket0, 0, 3)));
+        Map<TableBucket, Long> compactedOffsets = Collections.singletonMap(tb0, 3L);
+        commitSnapshot(tableId, tablePath, snapshot1, compactedOffsets, null);
+        compactHelper.compactBucket(bucket0).commit();
+        long snapshot2 = latestSnapshot(fileStoreTable);
+
+        Map<Integer, List<GenericRow>> appendedRows = new HashMap<>();
+        appendedRows.put(bucket0, generateRows(bucket0, 3, 6));
+        appendedRows.put(bucket1, generateRows(bucket1, 0, 3));
+        long snapshot3 = writeAndCommitData(fileStoreTable, appendedRows);
+        Map<TableBucket, Long> tieredOffsets = new HashMap<>();
+        tieredOffsets.put(tb0, 6L);
+        tieredOffsets.put(tb1, 3L);
+        // Recovery registers the APPEND without registering the preceding readable COMPACT.
+        commitSnapshot(tableId, tablePath, snapshot3, tieredOffsets, null);
+
+        appendedRows.put(bucket0, generateRows(bucket0, 6, 9));
+        appendedRows.put(bucket1, generateRows(bucket1, 3, 6));
+        long snapshot4 = writeAndCommitData(fileStoreTable, appendedRows);
+        DvTableReadableSnapshotRetriever.ReadableSnapshotResult result =
+                retrieveReadableSnapshotAndOffsets(tablePath, fileStoreTable, snapshot4);
+        assertThat(result).isNotNull();
+        assertThat(result.getReadableSnapshotId()).isEqualTo(snapshot2);
+        assertThat(result.getReadableOffsets()).isEqualTo(compactedOffsets);
+        assertThat(result.getTieredOffsets()).isEqualTo(compactedOffsets);
+
+        tieredOffsets.put(tb0, 9L);
+        tieredOffsets.put(tb1, 6L);
+        commitSnapshot(tableId, tablePath, snapshot4, tieredOffsets, result);
+
+        // Bucket0 must resume at 3, and bucket1 (absent from the COMPACT) must not inherit the
+        // recovered APPEND's offset. Check the stored offsets as well as the retriever result.
+        assertThat(flussAdmin.getReadableLakeSnapshot(tablePath).get().getTableBucketsOffset())
+                .isEqualTo(compactedOffsets);
+        assertThat(flussAdmin.getLakeSnapshot(tablePath, snapshot2).get().getTableBucketsOffset())
+                .isEqualTo(compactedOffsets);
+        assertThat(flussAdmin.getLatestLakeSnapshot(tablePath).get().getTableBucketsOffset())
+                .isEqualTo(tieredOffsets);
+    }
+
+    @Test
+    void testRetentionAdvancesWhenColdBucketFlushHistoryExpires() throws Exception {
+        int bucket0 = 0;
+        int bucket1 = 1;
+        TablePath tablePath = TablePath.of(DEFAULT_DB, "test_dv_expired_flush_history_retention");
         tableId = createDvTable(tablePath, 2);
         FileStoreTable fileStoreTable = getPaimonTable(tablePath);
         CompactHelper compactHelper = new CompactHelper(fileStoreTable, compactionTempDir);
@@ -449,7 +503,7 @@ class DvTableReadableSnapshotRetrieverTest {
         tieredOffsets.put(tb0, 3L);
         tieredOffsets.put(tb1, 3L);
 
-        // Bucket0 is flushed first, so its anchor will expire before bucket1's anchor.
+        // Bucket0 is flushed first, so its previous APPEND will expire before bucket1's.
         Map<Integer, List<GenericRow>> initialRows = new HashMap<>();
         initialRows.put(bucket0, generateRows(bucket0, 0, 3));
         initialRows.put(bucket1, generateRows(bucket1, 0, 3));
@@ -473,8 +527,8 @@ class DvTableReadableSnapshotRetrieverTest {
                 .expire();
         assertThat(fileStoreTable.snapshotManager().earliestSnapshotId()).isEqualTo(snapshot2);
 
-        // Bucket0's flush is expired, while bucket1 still resolves to snapshot3. The unresolved
-        // bucket must not discard bucket1's retention bound.
+        // Bucket0's pre-flush snapshot has expired, while bucket1 still resolves to snapshot3.
+        // The unresolved bucket must not discard bucket1's retention bound.
         long snapshot5 = writeAndCommitData(fileStoreTable, Collections.emptyMap());
         DvTableReadableSnapshotRetriever.ReadableSnapshotResult result =
                 retrieveReadableSnapshotAndOffsets(tablePath, fileStoreTable, snapshot5);
@@ -790,10 +844,10 @@ class DvTableReadableSnapshotRetrieverTest {
         assertThat(readableSnapshotAndOffsets.getReadableOffsets())
                 .isEqualTo(expectedReadableOffsets);
 
-        // All buckets have no L0 in the compacted snapshot, but each bucket's base is anchored to
+        // All buckets have no L0 in the compacted snapshot, but each bucket still needs to retain
         // the previous APPEND of its most recent flush: partition0/bucket0 -> snapshot6 (flushed at
         // s7, never flushed since), partition1/bucket0 -> snapshot9, partition0/bucket1 ->
-        // snapshot12. The earliest snapshot we must keep is the minimum of these anchors
+        // snapshot12. The earliest snapshot we must keep is the minimum of these APPEND snapshots
         // (snapshot6), since a future recomputation for partition0/bucket0 would trace back to it.
         assertThat(readableSnapshotAndOffsets.getEarliestSnapshotIdToKeep()).isEqualTo(snapshot6);
     }
@@ -956,7 +1010,7 @@ class DvTableReadableSnapshotRetrieverTest {
                     LakeCommitResult.withReadableSnapshot(
                             tieredSnapshot,
                             readableSnapshotAndOffsets.getReadableSnapshotId(),
-                            lakeSnapshotTieredEndOffset,
+                            readableSnapshotAndOffsets.getTieredOffsets(),
                             readableSnapshotAndOffsets.getReadableOffsets(),
                             readableSnapshotAndOffsets.getEarliestSnapshotIdToKeep());
         } else {
