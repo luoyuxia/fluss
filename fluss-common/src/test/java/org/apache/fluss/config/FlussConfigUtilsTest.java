@@ -241,13 +241,6 @@ class FlussConfigUtilsTest {
                 .hasMessageContaining(
                         ConfigOptions.SERVER_HISTORICAL_PARTITION_LOOKUPER_CACHE_EXPIRE_AFTER_ACCESS
                                 .key());
-
-        assertThat(
-                        FlussConfigUtils.isAlterableTableOption(
-                                ConfigOptions
-                                        .TABLE_DATALAKE_HISTORICAL_PARTITION_LOOKUP_CACHE_MAX_DISK_RATIO
-                                        .key()))
-                .isTrue();
     }
 
     @Test

@@ -92,8 +92,7 @@ public class MetricNames {
             "delayedFetchFromFollowerExpiresPerSecond";
     public static final String DELAYED_FETCH_FROM_CLIENT_EXPIRES_RATE =
             "delayedFetchFromClientExpiresPerSecond";
-    public static final String HISTORICAL_PARTITION_INFLIGHT_REQUESTS =
-            "historicalPartitionInflightRequests";
+    public static final String HISTORICAL_INFLIGHT_REQUESTS = "inflightRequests";
 
     public static final String SERVER_LOGICAL_STORAGE_LOG_SIZE = "logSize";
     public static final String SERVER_LOGICAL_STORAGE_KV_SIZE = "kvSize";
@@ -105,10 +104,10 @@ public class MetricNames {
     public static final String DISK_WRITE_LOCKED = "diskWriteLocked";
 
     // for historical lookup cache
-    public static final String HISTORICAL_LOOKUP_CACHED_TABLE_COUNT =
-            "historicalLookupCachedTableCount";
-    public static final String HISTORICAL_LOOKUP_CACHED_TABLE_CAPACITY_EVICTIONS =
-            "historicalLookupCachedTableCapacityEvictions";
+    public static final String HISTORICAL_LOOKUP_CACHE_DISK_SIZE = "lookupCacheDiskSize";
+    public static final String HISTORICAL_LOOKUP_CACHE_TABLE_COUNT = "lookupCacheTableCount";
+    public static final String HISTORICAL_LOOKUP_CACHE_CAPACITY_EVICTIONS =
+            "lookupCacheCapacityEvictions";
 
     // --------------------------------------------------------------------------------------------
     // metrics for user
@@ -138,10 +137,6 @@ public class MetricNames {
 
     public static final String TOTAL_LOOKUP_REQUESTS_RATE = "totalLookupRequestsPerSecond";
     public static final String FAILED_LOOKUP_REQUESTS_RATE = "failedLookupRequestsPerSecond";
-    public static final String TOTAL_HISTORICAL_LOOKUP_REQUESTS_RATE =
-            "totalHistoricalLookupRequestsPerSecond";
-    public static final String FAILED_HISTORICAL_LOOKUP_REQUESTS_RATE =
-            "failedHistoricalLookupRequestsPerSecond";
     public static final String LAKE_LOOKUPS_RATE = "lakeLookupsPerSecond";
     public static final String LAKE_LOOKUP_TIME_MS = "lakeLookupTimeMs";
     public static final String TOTAL_PUT_KV_REQUESTS_RATE = "totalPutKvRequestsPerSecond";

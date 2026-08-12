@@ -80,7 +80,7 @@ class PaimonLakeTableLookuperTest {
     private static final short EVOLVED_SCHEMA_ID = 2;
     private static final long LOOKUP_CACHE_MAX_DISK_BYTES = MemorySize.parse("8gb").getBytes();
     private static final LakeTableLookuper.LookupMetricRecorder NO_OP_LOOKUP_METRIC_RECORDER =
-            (lookupTimeNanos, lookupFileMaterialization) -> {};
+            (lookupTimeNanos, lookupFileDownloaded) -> {};
 
     @TempDir private File tempWarehouseDir;
 
@@ -126,15 +126,15 @@ class PaimonLakeTableLookuperTest {
                         tempWarehouseDir.getAbsolutePath(),
                         tableConfig(KvFormat.COMPACTED),
                         LOOKUP_CACHE_MAX_DISK_BYTES)) {
-            List<Boolean> lookupFileMaterializations = new ArrayList<>();
+            List<Boolean> lookupFileDownloads = new ArrayList<>();
             LakeTableLookuper.LookupContext context =
                     lookupContext(
                             schema,
                             "20240101",
                             0,
                             SCHEMA_ID,
-                            (lookupTimeNanos, lookupFileMaterialization) ->
-                                    lookupFileMaterializations.add(lookupFileMaterialization));
+                            (lookupTimeNanos, lookupFileDownloaded) ->
+                                    lookupFileDownloads.add(lookupFileDownloaded));
 
             byte[] value = lookuper.lookup(paimonKey(schema, 1, "20240101"), context);
             BinaryValue decodedValue = decodeValue(value, SCHEMA_ID, schema);
@@ -150,7 +150,7 @@ class PaimonLakeTableLookuperTest {
             assertThat(lookuper.lookup(compactedKey(schema, 1, "20240101"), context)).isNull();
 
             // The first lookup creates the local lookup file, while subsequent lookups reuse it.
-            assertThat(lookupFileMaterializations).containsExactly(true, false, false);
+            assertThat(lookupFileDownloads).containsExactly(true, false, false);
         }
     }
 

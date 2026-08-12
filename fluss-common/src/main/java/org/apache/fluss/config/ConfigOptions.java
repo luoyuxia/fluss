@@ -434,8 +434,8 @@ public class ConfigOptions {
                             .doubleType()
                             .defaultValue(0.10)
                             .withDescription(
-                                    "The maximum fraction of the total capacity of the volume containing the first available data directory that historical partition lookup caches may reserve on a TabletServer. "
-                                            + "Historical lookup cache files are stored under that data directory; additional data volumes are not used. "
+                                    "The maximum fraction of the total capacity of the volume containing the first available data directory allocated to historical partition lookup caches on a TabletServer. "
+                                            + "Up to ten table lookupers are cached, and each receives one tenth of this capacity. Historical lookup cache files are stored under that data directory; additional data volumes are not used. "
                                             + "The valid range is (0.0, 1.0].");
 
     public static final ConfigOption<Duration>
@@ -1875,15 +1875,6 @@ public class ConfigOptions {
                                     + "After changing this option, restart existing lookup jobs that need "
                                     + "to look up historical partition data so that their clients load the "
                                     + "updated table configuration.");
-
-    public static final ConfigOption<Double>
-            TABLE_DATALAKE_HISTORICAL_PARTITION_LOOKUP_CACHE_MAX_DISK_RATIO =
-                    key("table.datalake.historical-partition.lookup-cache.max-disk-ratio")
-                            .doubleType()
-                            .defaultValue(0.01)
-                            .withDescription(
-                                    "The maximum fraction of the total capacity of the volume containing the first available TabletServer data directory reserved for this table's historical partition lookup cache. "
-                                            + "When the table is created or altered, the value must be within (0.0, 1.0] and no greater than the current TabletServer historical lookup cache ratio.");
 
     public static final ConfigOption<DataLakeFormat> TABLE_DATALAKE_FORMAT =
             key("table.datalake.format")

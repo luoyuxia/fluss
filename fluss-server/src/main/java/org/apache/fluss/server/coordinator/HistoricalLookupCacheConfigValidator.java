@@ -24,16 +24,8 @@ import org.apache.fluss.exception.ConfigException;
 
 import java.time.Duration;
 
-import static org.apache.fluss.utils.Preconditions.checkNotNull;
-
-/** Validates dynamic historical lookup cache settings and updates the metadata manager. */
-final class HistoricalLookupCacheConfigUpdater implements ServerReconfigurable {
-
-    private final MetadataManager metadataManager;
-
-    HistoricalLookupCacheConfigUpdater(MetadataManager metadataManager) {
-        this.metadataManager = checkNotNull(metadataManager, "metadataManager must not be null.");
-    }
+/** Validates dynamic historical lookup cache settings. */
+final class HistoricalLookupCacheConfigValidator implements ServerReconfigurable {
 
     @Override
     public void validate(Configuration newConfig) throws ConfigException {
@@ -63,9 +55,5 @@ final class HistoricalLookupCacheConfigUpdater implements ServerReconfigurable {
     }
 
     @Override
-    public void reconfigure(Configuration newConfig) {
-        metadataManager.updateHistoricalLookupCacheMaxRatio(
-                newConfig.get(
-                        ConfigOptions.SERVER_HISTORICAL_PARTITION_LOOKUP_CACHE_MAX_DISK_RATIO));
-    }
+    public void reconfigure(Configuration newConfig) {}
 }

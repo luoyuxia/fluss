@@ -41,9 +41,9 @@ public interface LakeTableLookuper extends AutoCloseable {
          * Records a completed lake table point lookup.
          *
          * @param lookupTimeNanos time spent on the lake table point lookup, in nanoseconds
-         * @param lookupFileMaterialization whether the lookup triggered lookup file materialization
+         * @param lookupFileDownloaded whether the lookup downloaded a lookup file
          */
-        void recordLookup(long lookupTimeNanos, boolean lookupFileMaterialization);
+        void recordLookup(long lookupTimeNanos, boolean lookupFileDownloaded);
     }
 
     /**

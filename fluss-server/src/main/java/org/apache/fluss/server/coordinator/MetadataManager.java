@@ -87,7 +87,6 @@ public class MetadataManager {
     private final ZooKeeperClient zookeeperClient;
     private final int maxPartitionNum;
     private final int maxBucketNum;
-    private volatile double historicalLookupCacheMaxRatio;
     private final LakeCatalogDynamicLoader lakeCatalogDynamicLoader;
 
     public static final Set<String> SENSITIVE_TABLE_OPTIONS = new HashSet<>();
@@ -111,23 +110,15 @@ public class MetadataManager {
         this.zookeeperClient = zookeeperClient;
         this.maxPartitionNum = conf.get(ConfigOptions.MAX_PARTITION_NUM);
         this.maxBucketNum = conf.get(ConfigOptions.MAX_BUCKET_NUM);
-        this.historicalLookupCacheMaxRatio =
-                conf.get(ConfigOptions.SERVER_HISTORICAL_PARTITION_LOOKUP_CACHE_MAX_DISK_RATIO);
         this.lakeCatalogDynamicLoader = lakeCatalogDynamicLoader;
     }
 
     /** Validates the table descriptor. */
-    public void validateTableDescriptor(TablePath tablePath, TableDescriptor tableDescriptor) {
+    public void validateTableDescriptor(TableDescriptor tableDescriptor) {
         TableDescriptorValidation.validateTableDescriptor(
                 tableDescriptor,
                 maxBucketNum,
-                lakeCatalogDynamicLoader.getLakeCatalogContainer().getDataLakeFormat(),
-                tablePath,
-                historicalLookupCacheMaxRatio);
-    }
-
-    void updateHistoricalLookupCacheMaxRatio(double newMaxRatio) {
-        historicalLookupCacheMaxRatio = newMaxRatio;
+                lakeCatalogDynamicLoader.getLakeCatalogContainer().getDataLakeFormat());
     }
 
     public void createDatabase(
@@ -560,7 +551,7 @@ public class MetadataManager {
                 }
 
                 // reuse the same validate logic with the createTable() method
-                validateTableDescriptor(tablePath, newDescriptor);
+                validateTableDescriptor(newDescriptor);
 
                 beforeUpdate.accept(tableInfo, newDescriptor);
 

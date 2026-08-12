@@ -300,16 +300,16 @@ public final class NettyServerHandler extends ChannelInboundHandlerAdapter {
 
     private Optional<RequestsMetrics.Metrics> getMetrics(FlussRequest request) {
         boolean isFromFollower = false;
-        boolean isHistoricalLookup = false;
+        boolean isHistorical = false;
         ApiMessage requestMessage = request.getMessage();
         if (request.getApiKey() == ApiKeys.FETCH_LOG.id) {
             // for fetch, we need to identify it's from client or follower
             FetchLogRequest fetchLogRequest = (FetchLogRequest) requestMessage;
             isFromFollower = fetchLogRequest.getFollowerServerId() >= 0;
         } else if (request.getApiKey() == ApiKeys.LOOKUP.id) {
-            isHistoricalLookup = hasHistoricalLookup((LookupRequest) requestMessage);
+            isHistorical = hasHistoricalLookup((LookupRequest) requestMessage);
         }
-        return requestsMetrics.getMetrics(request.getApiKey(), isFromFollower, isHistoricalLookup);
+        return requestsMetrics.getMetrics(request.getApiKey(), isFromFollower, isHistorical);
     }
 
     @VisibleForTesting

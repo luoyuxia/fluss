@@ -41,8 +41,6 @@ import java.util.Optional;
  */
 public class RequestsMetrics {
 
-    private static final String HISTORICAL_LOOKUP_METRICS_KEY = "historicalLookup";
-
     // a map from request name to the metrics registered for the request name
     private final Map<String, Metrics> metricsByRequest = new HashMap<>();
 
@@ -53,16 +51,14 @@ public class RequestsMetrics {
         for (ApiKeys apiKey : apiKeys) {
             // we create a metrics group for each type of request, with the request type
             // as variable
+            addMetrics(serverMetricsGroup, toRequestName(apiKey, false, false));
             if (apiKey == ApiKeys.FETCH_LOG) {
-                // if it's fetch, we need two metrics group, one for client, one for follower
-                addMetrics(serverMetricsGroup, toRequestName(apiKey, true));
-                addMetrics(serverMetricsGroup, toRequestName(apiKey, false));
-            } else {
-                addMetrics(serverMetricsGroup, toRequestName(apiKey, false));
+                // For fetch, register separate metric groups for clients and followers.
+                addMetrics(serverMetricsGroup, toRequestName(apiKey, true, false));
             }
-        }
-        if (apiKeys.contains(ApiKeys.LOOKUP)) {
-            addMetrics(serverMetricsGroup, HISTORICAL_LOOKUP_METRICS_KEY);
+            if (apiKey == ApiKeys.LOOKUP) {
+                addMetrics(serverMetricsGroup, toRequestName(apiKey, false, true));
+            }
         }
         this.requestMetricGroup = serverMetricsGroup.addGroup("request");
     }
@@ -101,14 +97,15 @@ public class RequestsMetrics {
                 requestName, new Metrics(parentMetricGroup.addGroup("request", requestName)));
     }
 
-    private static String toRequestName(ApiKeys apiKeys, boolean isFromFollower) {
+    private static String toRequestName(
+            ApiKeys apiKeys, boolean isFromFollower, boolean isHistorical) {
         switch (apiKeys) {
             case PRODUCE_LOG:
                 return "produceLog";
             case PUT_KV:
                 return "putKv";
             case LOOKUP:
-                return "lookup";
+                return isHistorical ? "historicalLookup" : "lookup";
             case PREFIX_LOOKUP:
                 return "prefixLookup";
             case FETCH_LOG:
@@ -121,11 +118,8 @@ public class RequestsMetrics {
     }
 
     public Optional<Metrics> getMetrics(
-            short apiKey, boolean isFromFollower, boolean isHistoricalLookup) {
-        if (apiKey == ApiKeys.LOOKUP.id && isHistoricalLookup) {
-            return Optional.ofNullable(metricsByRequest.get(HISTORICAL_LOOKUP_METRICS_KEY));
-        }
-        String requestName = toRequestName(ApiKeys.forId(apiKey), isFromFollower);
+            short apiKey, boolean isFromFollower, boolean isHistorical) {
+        String requestName = toRequestName(ApiKeys.forId(apiKey), isFromFollower, isHistorical);
         return Optional.ofNullable(metricsByRequest.get(requestName));
     }
 

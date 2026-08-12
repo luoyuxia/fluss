@@ -28,6 +28,7 @@ import org.apache.fluss.metrics.MetricNames;
 import org.apache.fluss.metrics.NoOpCounter;
 import org.apache.fluss.metrics.ThreadSafeSimpleCounter;
 import org.apache.fluss.metrics.groups.AbstractMetricGroup;
+import org.apache.fluss.metrics.groups.MetricGroup;
 import org.apache.fluss.metrics.registry.MetricRegistry;
 import org.apache.fluss.server.kv.rocksdb.RocksDBStatistics;
 
@@ -105,6 +106,16 @@ public class TableMetricGroup extends AbstractMetricGroup {
     protected String getGroupName(CharacterFilter filter) {
         // partition and table share same logic group name
         return "table";
+    }
+
+    /** Closes this table metric group and its directly created tablet metric groups. */
+    @Override
+    public void close() {
+        if (kvMetrics != null) {
+            kvMetrics.close();
+        }
+        logMetrics.close();
+        super.close();
     }
 
     public void incLogMessageIn(long n) {
@@ -197,7 +208,7 @@ public class TableMetricGroup extends AbstractMetricGroup {
         if (kvMetrics == null) {
             return NoOpCounter.INSTANCE;
         } else {
-            return kvMetrics.historicalLookupMetrics.totalLookupRequests();
+            return kvMetrics.totalHistoricalLookupRequests;
         }
     }
 
@@ -206,7 +217,7 @@ public class TableMetricGroup extends AbstractMetricGroup {
         if (kvMetrics == null) {
             return NoOpCounter.INSTANCE;
         } else {
-            return kvMetrics.historicalLookupMetrics.failedLookupRequests();
+            return kvMetrics.failedHistoricalLookupRequests;
         }
     }
 
@@ -214,13 +225,11 @@ public class TableMetricGroup extends AbstractMetricGroup {
      * Records a historical lake table point lookup.
      *
      * @param lookupTimeNanos time spent on the lake table point lookup, in nanoseconds
-     * @param lookupFileMaterialization whether the lookup triggered lookup file materialization
+     * @param lookupFileDownloaded whether the lookup downloaded a lookup file
      */
-    public void recordHistoricalLakeLookup(
-            long lookupTimeNanos, boolean lookupFileMaterialization) {
+    public void recordHistoricalLakeLookup(long lookupTimeNanos, boolean lookupFileDownloaded) {
         if (kvMetrics != null) {
-            kvMetrics.historicalLookupMetrics.recordLakeLookup(
-                    lookupTimeNanos, lookupFileMaterialization);
+            kvMetrics.recordHistoricalLakeLookup(lookupTimeNanos, lookupFileDownloaded);
         }
     }
 
@@ -563,9 +572,14 @@ public class TableMetricGroup extends AbstractMetricGroup {
 
     private static class KvMetricGroup extends TabletMetricGroup {
 
+        private static final String LOOKUP_FILE_DOWNLOADED = "lookup_file_downloaded";
+
         private final Counter totalLookupRequests;
         private final Counter failedLookupRequests;
-        private final HistoricalLookupMetricGroup historicalLookupMetrics;
+        private final Counter totalHistoricalLookupRequests;
+        private final Counter failedHistoricalLookupRequests;
+        private final LookupFileDownloadedMetricGroup downloadedHistoricalLookupMetrics;
+        private final LookupFileDownloadedMetricGroup nonDownloadedHistoricalLookupMetrics;
         private final Counter totalPutKvRequests;
         private final Counter failedPutKvRequests;
         private final Counter totalLimitScanRequests;
@@ -581,7 +595,22 @@ public class TableMetricGroup extends AbstractMetricGroup {
             meter(MetricNames.TOTAL_LOOKUP_REQUESTS_RATE, new MeterView(totalLookupRequests));
             failedLookupRequests = new ThreadSafeSimpleCounter();
             meter(MetricNames.FAILED_LOOKUP_REQUESTS_RATE, new MeterView(failedLookupRequests));
-            historicalLookupMetrics = new HistoricalLookupMetricGroup(registry, this);
+            // for historical lookup request
+            MetricGroup historicalLookupMetrics = addGroup("historical");
+            totalHistoricalLookupRequests = new ThreadSafeSimpleCounter();
+            historicalLookupMetrics.meter(
+                    MetricNames.TOTAL_LOOKUP_REQUESTS_RATE,
+                    new MeterView(totalHistoricalLookupRequests));
+            failedHistoricalLookupRequests = new ThreadSafeSimpleCounter();
+            historicalLookupMetrics.meter(
+                    MetricNames.FAILED_LOOKUP_REQUESTS_RATE,
+                    new MeterView(failedHistoricalLookupRequests));
+            // Separate groups expose the same metric names with different downloaded-file labels
+            // without adding the label key to the logical metric scope.
+            downloadedHistoricalLookupMetrics =
+                    new LookupFileDownloadedMetricGroup(registry, this, true);
+            nonDownloadedHistoricalLookupMetrics =
+                    new LookupFileDownloadedMetricGroup(registry, this, false);
             // for put kv request
             totalPutKvRequests = new ThreadSafeSimpleCounter();
             meter(MetricNames.TOTAL_PUT_KV_REQUESTS_RATE, new MeterView(totalPutKvRequests));
@@ -609,76 +638,39 @@ public class TableMetricGroup extends AbstractMetricGroup {
         }
 
         @Override
+        public void close() {
+            downloadedHistoricalLookupMetrics.close();
+            nonDownloadedHistoricalLookupMetrics.close();
+            super.close();
+        }
+
+        private void recordHistoricalLakeLookup(
+                long lookupTimeNanos, boolean lookupFileDownloaded) {
+            LookupFileDownloadedMetricGroup metricGroup =
+                    lookupFileDownloaded
+                            ? downloadedHistoricalLookupMetrics
+                            : nonDownloadedHistoricalLookupMetrics;
+            metricGroup.recordLookup(lookupTimeNanos);
+        }
+
+        @Override
         protected String getGroupName(CharacterFilter filter) {
             return super.getGroupName(filter);
         }
     }
 
-    /**
-     * Collects historical lookup metrics in the KV table scope and separates lake lookup metrics by
-     * whether the lookup materialized local files.
-     */
-    private static class HistoricalLookupMetricGroup extends AbstractMetricGroup {
+    private static final class LookupFileDownloadedMetricGroup extends AbstractMetricGroup {
 
-        private final Counter totalLookupRequests;
-        private final Counter failedLookupRequests;
-        private final LookupFileMaterializationMetricGroup materializedLookupMetrics;
-        private final LookupFileMaterializationMetricGroup nonMaterializedLookupMetrics;
+        private static final int WINDOW_SIZE = 64;
 
-        private HistoricalLookupMetricGroup(MetricRegistry registry, KvMetricGroup parent) {
-            super(registry, parent.getScopeComponents(), parent);
-
-            totalLookupRequests = new ThreadSafeSimpleCounter();
-            meter(
-                    MetricNames.TOTAL_HISTORICAL_LOOKUP_REQUESTS_RATE,
-                    new MeterView(totalLookupRequests));
-            failedLookupRequests = new ThreadSafeSimpleCounter();
-            meter(
-                    MetricNames.FAILED_HISTORICAL_LOOKUP_REQUESTS_RATE,
-                    new MeterView(failedLookupRequests));
-            materializedLookupMetrics =
-                    new LookupFileMaterializationMetricGroup(registry, this, true);
-            nonMaterializedLookupMetrics =
-                    new LookupFileMaterializationMetricGroup(registry, this, false);
-        }
-
-        final Counter totalLookupRequests() {
-            return totalLookupRequests;
-        }
-
-        final Counter failedLookupRequests() {
-            return failedLookupRequests;
-        }
-
-        @Override
-        protected String getGroupName(CharacterFilter filter) {
-            return "";
-        }
-
-        private void recordLakeLookup(long lookupTimeNanos, boolean lookupFileMaterialization) {
-            LookupFileMaterializationMetricGroup metricGroup =
-                    lookupFileMaterialization
-                            ? materializedLookupMetrics
-                            : nonMaterializedLookupMetrics;
-            metricGroup.recordLookup(lookupTimeNanos);
-        }
-    }
-
-    private static class LookupFileMaterializationMetricGroup extends AbstractMetricGroup {
-
-        private static final int WINDOW_SIZE = 1024;
-
-        private final boolean lookupFileMaterialization;
+        private final boolean lookupFileDownloaded;
         private final Counter lakeLookups;
         private final Histogram lakeLookupTimeMs;
 
-        private LookupFileMaterializationMetricGroup(
-                MetricRegistry registry,
-                HistoricalLookupMetricGroup parent,
-                boolean lookupFileMaterialization) {
-            super(registry, parent.getScopeComponents(), parent);
-            this.lookupFileMaterialization = lookupFileMaterialization;
-
+        private LookupFileDownloadedMetricGroup(
+                MetricRegistry registry, KvMetricGroup parent, boolean lookupFileDownloaded) {
+            super(registry, makeScope(parent, "historical"), parent);
+            this.lookupFileDownloaded = lookupFileDownloaded;
             lakeLookups = new ThreadSafeSimpleCounter();
             meter(MetricNames.LAKE_LOOKUPS_RATE, new MeterView(lakeLookups));
             lakeLookupTimeMs =
@@ -694,12 +686,13 @@ public class TableMetricGroup extends AbstractMetricGroup {
 
         @Override
         protected void putVariables(Map<String, String> variables) {
-            variables.put("lookup_file_materialization", String.valueOf(lookupFileMaterialization));
+            variables.put(
+                    KvMetricGroup.LOOKUP_FILE_DOWNLOADED, String.valueOf(lookupFileDownloaded));
         }
 
         @Override
         protected String getGroupName(CharacterFilter filter) {
-            return "";
+            return "historical";
         }
     }
 

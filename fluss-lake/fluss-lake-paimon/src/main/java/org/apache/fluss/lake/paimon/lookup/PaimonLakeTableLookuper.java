@@ -104,7 +104,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     private @Nullable LocalTableQuery localTableQuery;
     private @Nullable RowPartitionKeyExtractor partitionKeyExtractor;
     private int primaryKeyFieldCount;
-    private long lookupFileMaterializationCount;
+    private long lookupFileDownloadCount;
 
     // Both encoders are initialized only for a kv-format-v2 table whose bucket key differs from
     // its physical primary key. They remain null when the incoming Fluss key already uses Paimon's
@@ -147,7 +147,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         org.apache.paimon.data.BinaryRow keyRow = toPaimonLookupKey(key);
         initializeFilesIfNeeded(partition, context.bucketId());
 
-        long materializationCountBeforeLookup = lookupFileMaterializationCount;
+        long downloadCountBeforeLookup = lookupFileDownloadCount;
         long lookupStartNanos = System.nanoTime();
         org.apache.paimon.data.InternalRow paimonRow;
         try {
@@ -158,9 +158,9 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             context.lookupMetricRecorder()
                     .recordLookup(
                             System.nanoTime() - lookupStartNanos,
-                            // An increase means this lookup materialized at least one local lookup
-                            // file through the tracking IO manager.
-                            lookupFileMaterializationCount > materializationCountBeforeLookup);
+                            // An increase means this lookup downloaded at least one lookup file
+                            // through the tracking IO manager.
+                            lookupFileDownloadCount > downloadCountBeforeLookup);
         }
         if (paimonRow == null) {
             return null;
@@ -463,7 +463,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
 
         @Override
         public FileIOChannel.ID createChannel(String prefix) {
-            lookupFileMaterializationCount++;
+            lookupFileDownloadCount++;
             return delegate.createChannel(prefix);
         }
 
