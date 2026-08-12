@@ -21,7 +21,6 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.config.TableConfig;
-import org.apache.fluss.exception.DiskWriteLockedException;
 import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
 import org.apache.fluss.metadata.DataLakeFormat;
@@ -57,8 +56,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -75,6 +74,8 @@ class HistoricalLakeLookupManagerTest {
     private static final LakeTableLookuper.LookupMetricRecorder NO_OP_LOOKUP_METRIC_RECORDER =
             (lookupTimeNanos, lookupFileDownloaded) -> {};
     private static final Runnable NO_OP_DISK_WRITE_GUARD = () -> {};
+    private static final org.apache.fluss.utils.concurrent.Scheduler NO_OP_SCHEDULER =
+            new NoOpScheduler();
 
     @TempDir private File ioTmpDir;
 
@@ -214,7 +215,7 @@ class HistoricalLakeLookupManagerTest {
     }
 
     @Test
-    void testCleansLookupCacheDirectoryOnStartupAndCreatesItLazily() throws Exception {
+    void testCleansAndCreatesLookupCacheDirectoryOnStartup() throws Exception {
         File serverLookupDir = FlussPaths.historicalLookupRootDir(ioTmpDir);
         assertThat(serverLookupDir.mkdirs()).isTrue();
         File staleLookupFile = new File(serverLookupDir, "stale-lookup-file");
@@ -225,16 +226,15 @@ class HistoricalLakeLookupManagerTest {
                 new TestingHistoricalLakeLookupManager(conf(1), executor);
 
         assertThat(staleLookupFile).exists();
-        manager.startup();
+        manager.startup(NO_OP_SCHEDULER);
         assertThat(staleLookupFile).doesNotExist();
-        assertThat(serverLookupDir).doesNotExist();
-        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
         assertThat(serverLookupDir).isDirectory();
+        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
         assertThat(manager.createdIoTmpDirs.get(0)).startsWith(serverLookupDir.getAbsolutePath());
 
         File liveLookupFile = new File(serverLookupDir, "live-lookup-file");
         assertThat(liveLookupFile.createNewFile()).isTrue();
-        manager.startup();
+        manager.startup(NO_OP_SCHEDULER);
         assertThat(liveLookupFile).exists();
     }
 
@@ -364,7 +364,7 @@ class HistoricalLakeLookupManagerTest {
                         executor,
                         tickerNanos::get,
                         cacheScheduler);
-        manager.startup();
+        manager.startup(NO_OP_SCHEDULER);
 
         lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
         TestingLakeTableLookuper expiredLookuper = manager.createdLookupers.get(0);
@@ -392,7 +392,7 @@ class HistoricalLakeLookupManagerTest {
                         Scheduler.disabledScheduler(),
                         100,
                         0);
-        manager.startup();
+        manager.startup(NO_OP_SCHEDULER);
 
         for (int i = 0; i < 11; i++) {
             lookupAndRun(
@@ -409,48 +409,6 @@ class HistoricalLakeLookupManagerTest {
     }
 
     @Test
-    void testRejectsLookupsAndClearsCacheWhenDiskWriteLocked() throws Exception {
-        ManualExecutor executor = new ManualExecutor();
-        AtomicBoolean diskWriteLocked = new AtomicBoolean();
-        Runnable diskWriteGuard =
-                () -> {
-                    if (diskWriteLocked.get()) {
-                        throw new DiskWriteLockedException("Data disk is write-locked.");
-                    }
-                };
-        TestingHistoricalLakeLookupManager manager =
-                new TestingHistoricalLakeLookupManager(
-                        conf(1),
-                        executor,
-                        Ticker.systemTicker(),
-                        Scheduler.disabledScheduler(),
-                        100,
-                        6,
-                        diskWriteGuard);
-        manager.startup();
-
-        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
-        TestingLakeTableLookuper cachedLookuper = manager.createdLookupers.get(0);
-        assertThat(cachedLookuper.cacheFile).exists().hasSize(6);
-
-        // A write lock rejects the read before it reaches the executor and releases the existing
-        // disk cache. Once the disk recovers, a later lookup can create a fresh lookuper.
-        diskWriteLocked.set(true);
-        LookupResultForBucket rejected =
-                lookup(manager, PARTITION_TABLE_INFO).get(1, TimeUnit.SECONDS);
-        assertThat(rejected.getError().error()).isEqualTo(Errors.DISK_WRITE_LOCKED);
-        assertThat(executor.numQueuedTasks()).isZero();
-        assertThat(manager.numInflightRequests()).isZero();
-        assertThat(manager.cachedTableCount()).isZero();
-        assertThat(cachedLookuper.cacheFile).doesNotExist();
-        assertThat(cachedLookuper.closed).isTrue();
-
-        diskWriteLocked.set(false);
-        lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
-        assertThat(manager.createdLookupers).hasSize(2);
-    }
-
-    @Test
     void testReconfiguresLakePropertiesAndInvalidatesLookuper() throws Exception {
         Configuration initialConf = conf(1);
         initialConf.set(ConfigOptions.DATALAKE_FORMAT, DataLakeFormat.PAIMON);
@@ -458,7 +416,7 @@ class HistoricalLakeLookupManagerTest {
         ManualExecutor executor = new ManualExecutor();
         TestingHistoricalLakeLookupManager manager =
                 new TestingHistoricalLakeLookupManager(initialConf, executor);
-        manager.startup();
+        manager.startup(NO_OP_SCHEDULER);
 
         lookupAndRun(manager, executor, PARTITION_TABLE_INFO);
         TestingLakeTableLookuper initialLookuper = manager.createdLookupers.get(0);
@@ -487,14 +445,14 @@ class HistoricalLakeLookupManagerTest {
                         Ticker.systemTicker(),
                         Scheduler.disabledScheduler(),
                         NO_OP_DISK_WRITE_GUARD);
-        manager.startup();
+        manager.startup(NO_OP_SCHEDULER);
         return manager;
     }
 
     private TestingHistoricalLakeLookupManager createTestingManager(ManualExecutor executor) {
         TestingHistoricalLakeLookupManager manager =
                 new TestingHistoricalLakeLookupManager(conf(1), executor);
-        manager.startup();
+        manager.startup(NO_OP_SCHEDULER);
         return manager;
     }
 
@@ -626,24 +584,6 @@ class HistoricalLakeLookupManagerTest {
                 Scheduler cacheScheduler,
                 long dataDirVolumeBytes,
                 long lookupCacheFileBytes) {
-            this(
-                    conf,
-                    executor,
-                    ticker,
-                    cacheScheduler,
-                    dataDirVolumeBytes,
-                    lookupCacheFileBytes,
-                    () -> {});
-        }
-
-        private TestingHistoricalLakeLookupManager(
-                Configuration conf,
-                ManualExecutor executor,
-                Ticker ticker,
-                Scheduler cacheScheduler,
-                long dataDirVolumeBytes,
-                long lookupCacheFileBytes,
-                Runnable diskWriteGuard) {
             super(
                     conf,
                     null,
@@ -652,7 +592,7 @@ class HistoricalLakeLookupManagerTest {
                     dataDirVolumeBytes,
                     ticker,
                     cacheScheduler,
-                    diskWriteGuard);
+                    NO_OP_DISK_WRITE_GUARD);
             this.lookupCacheFileBytes = lookupCacheFileBytes;
         }
 
@@ -709,6 +649,26 @@ class HistoricalLakeLookupManagerTest {
         public void close() throws Exception {
             closed = true;
             java.nio.file.Files.deleteIfExists(cacheFile.toPath());
+        }
+    }
+
+    private static final class NoOpScheduler
+            implements org.apache.fluss.utils.concurrent.Scheduler {
+
+        @Override
+        public void startup() {
+            // no-op
+        }
+
+        @Override
+        public void shutdown() {
+            // no-op
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(
+                String name, Runnable task, long delayMs, long periodMs) {
+            return null;
         }
     }
 

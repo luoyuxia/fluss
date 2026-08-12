@@ -20,6 +20,7 @@ package org.apache.fluss.lake.paimon.lookup;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.config.TableConfig;
+import org.apache.fluss.exception.DiskWriteLockedException;
 import org.apache.fluss.exception.KvStorageException;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
 import org.apache.fluss.lake.paimon.utils.PaimonPartitionBucket;
@@ -33,6 +34,7 @@ import org.apache.fluss.row.encode.RowEncoder;
 import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.row.encode.paimon.PaimonKeyEncoder;
 import org.apache.fluss.types.RowType;
+import org.apache.fluss.utils.ExceptionUtils;
 import org.apache.fluss.utils.IOUtils;
 
 import org.apache.paimon.CoreOptions;
@@ -57,6 +59,7 @@ import org.apache.paimon.types.DataField;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -95,6 +98,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     private final String ioTmpDir;
     private final TableConfig tableConfig;
     private final long lookupCacheMaxDiskBytes;
+    private final Runnable diskWriteGuard;
 
     private final Set<PaimonPartitionBucket> initializedBuckets;
 
@@ -123,7 +127,8 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             TablePath tablePath,
             String ioTmpDir,
             TableConfig tableConfig,
-            long lookupCacheMaxDiskBytes) {
+            long lookupCacheMaxDiskBytes,
+            Runnable diskWriteGuard) {
         this.paimonConfig = checkNotNull(paimonConfig, "paimonConfig must not be null.");
         this.tablePath = checkNotNull(tablePath, "tablePath must not be null.");
         this.ioTmpDir = checkNotNull(ioTmpDir, "ioTmpDir must not be null.");
@@ -131,6 +136,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         checkArgument(
                 lookupCacheMaxDiskBytes > 0, "lookupCacheMaxDiskBytes must be greater than 0.");
         this.lookupCacheMaxDiskBytes = lookupCacheMaxDiskBytes;
+        this.diskWriteGuard = checkNotNull(diskWriteGuard, "diskWriteGuard must not be null.");
         this.initializedBuckets = new HashSet<>();
     }
 
@@ -154,6 +160,13 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             paimonRow =
                     lookupWithFileRefresh(
                             partition, context.bucketId(), keyRow, context.valueRowType());
+        } catch (Exception e) {
+            DiskWriteLockedException diskWriteLockedException =
+                    ExceptionUtils.findThrowable(e, DiskWriteLockedException.class).orElse(null);
+            if (diskWriteLockedException != null) {
+                throw diskWriteLockedException;
+            }
+            throw e;
         } finally {
             context.lookupMetricRecorder()
                     .recordLookup(
@@ -463,6 +476,13 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
 
         @Override
         public FileIOChannel.ID createChannel(String prefix) {
+            try {
+                diskWriteGuard.run();
+            } catch (DiskWriteLockedException e) {
+                // IOManager does not allow createChannel to declare IOException. Preserve the
+                // I/O boundary here and unwrap the retriable Fluss exception in lookup().
+                throw new UncheckedIOException(new IOException(e));
+            }
             lookupFileDownloadCount++;
             return delegate.createChannel(prefix);
         }

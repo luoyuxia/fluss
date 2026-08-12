@@ -21,7 +21,6 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.TableConfig;
-import org.apache.fluss.exception.DiskWriteLockedException;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidPartitionException;
@@ -58,7 +57,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
 
 import java.io.File;
 import java.io.IOException;
@@ -102,9 +100,9 @@ import static org.apache.fluss.utils.Preconditions.checkState;
  * <p>Up to ten table lookupers are cached. Each lookuper receives one tenth of the server-level
  * disk budget, and Caffeine evicts lookupers when the table limit is exceeded.
  *
- * <p>Historical lookup cache I/O participates in TabletServer disk write protection. A lookup is
- * rejected when the data disk is write-locked, and cached lookupers are invalidated so their local
- * files are released. Lookups can create fresh cache files again after the disk recovers.
+ * <p>Historical lookup cache I/O participates in TabletServer disk write protection. Existing cache
+ * hits remain available when the data disk is write-locked, while lookups that need to download new
+ * cache files are rejected until the disk recovers.
  *
  * <p>A lookuper is closed when replaced, explicitly invalidated by a replica lifecycle event,
  * evicted when the table limit is exceeded, the manager shuts down, or after the configured idle
@@ -141,13 +139,13 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     private final ExecutorService historicalPartitionExecutor;
     private final File historicalLookupCacheRootDir;
     private final long dataDirVolumeBytes;
+    // TODO: Introduce a minimum lookup cache disk ratio (default 0.01). When disk usage is high,
+    // evict cached entries down to the minimum ratio instead of clearing the entire cache; allow
+    // the cache to grow back to the maximum ratio after disk usage recovers.
     private final Runnable diskWriteGuard;
 
     private volatile long lookupCacheMaxDiskBytesPerTable;
     private volatile long lookupCacheDiskSize;
-
-    @GuardedBy("this")
-    private boolean historicalLookupCacheRootDirCreated;
 
     private volatile boolean started;
 
@@ -221,22 +219,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                         .ticker(checkNotNull(ticker, "ticker must not be null."))
                         .scheduler(checkNotNull(cacheScheduler, "cacheScheduler must not be null."))
                         .executor(Runnable::run)
-                        .removalListener(
-                                (Long ignored,
-                                        CachedLakeTableLookuper cachedLookuper,
-                                        RemovalCause cause) -> {
-                                    if (cachedLookuper != null) {
-                                        if (cause == RemovalCause.SIZE) {
-                                            capacityEvictions.inc();
-                                            LOG.info(
-                                                    "Evicted historical lookup cache for table {} (table ID {}) because the cache retains at most {} tables.",
-                                                    cachedLookuper.tablePath,
-                                                    cachedLookuper.tableId,
-                                                    MAX_CACHED_TABLES);
-                                        }
-                                        onLookuperRemoved(cachedLookuper);
-                                    }
-                                })
+                        .removalListener(this::onLookuperRemoved)
                         .build();
         this.lookupPermits = new Semaphore(maxQueuedHistoricalRequests);
         this.pendingLookups = ConcurrentHashMap.newKeySet();
@@ -257,10 +240,11 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     /**
      * Attempts to clean lookup cache files left by a previous TabletServer process.
      *
-     * <p>The cache root under this server's first data directory is removed. It is recreated lazily
-     * when the first table lookuper is created.
+     * <p>The cache root under this server's first data directory is removed and recreated before
+     * lookups are accepted.
      */
-    synchronized void startup() {
+    synchronized void startup(Scheduler scheduler) {
+        checkNotNull(scheduler, "scheduler must not be null.");
         if (started) {
             return;
         }
@@ -272,17 +256,20 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                     historicalLookupCacheRootDir,
                     e);
         }
-        started = true;
-    }
-
-    /** Starts periodic sampling of the historical lookup cache footprint. */
-    void startLookupCacheDiskSizeMonitor(Scheduler scheduler) {
-        checkNotNull(scheduler, "scheduler must not be null.");
+        try {
+            Files.createDirectories(historicalLookupCacheRootDir.toPath());
+        } catch (IOException e) {
+            throw new FlussRuntimeException(
+                    "Failed to create historical lookup cache directory: "
+                            + historicalLookupCacheRootDir,
+                    e);
+        }
         scheduler.schedule(
                 LOOKUP_CACHE_DISK_SIZE_TASK_NAME,
                 this::updateLookupCacheDiskSize,
                 0L,
                 LOOKUP_CACHE_DISK_SIZE_CHECK_INTERVAL.toMillis());
+        started = true;
     }
 
     /** Looks up a batch of keys from one historical lake partition. */
@@ -293,16 +280,6 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             LakeTableLookuper.LookupMetricRecorder lookupMetricRecorder) {
         checkState(started, "Historical lake lookup manager has not been started.");
         TableBucket tableBucket = lookupData.tableBucket();
-        try {
-            ensureDiskWritable();
-        } catch (DiskWriteLockedException e) {
-            return CompletableFuture.completedFuture(
-                    new LookupResultForBucket(
-                            tableBucket,
-                            null,
-                            lookupData.originalPartitionName(),
-                            ApiError.fromThrowable(e)));
-        }
         if (!lookupPermits.tryAcquire()) {
             return CompletableFuture.completedFuture(
                     new LookupResultForBucket(
@@ -479,7 +456,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                                                         != cacheSizeBytes) {
                                             File tableLookupDir =
                                                     FlussPaths.historicalLookupTableDir(
-                                                            getOrCreateHistoricalLookupCacheRootDir(),
+                                                            historicalLookupCacheRootDir,
                                                             context.tablePath,
                                                             context.tableId);
                                             LakeTableLookuper lookuper =
@@ -524,20 +501,19 @@ class HistoricalLakeLookupManager implements AutoCloseable {
         }
     }
 
-    private void ensureDiskWritable() {
-        try {
-            diskWriteGuard.run();
-        } catch (DiskWriteLockedException e) {
-            // Release local cache files after the disk is write-locked. Idle lookupers close
-            // immediately, while active lookupers close after their final lookup releases them.
-            // Run pending cache maintenance now so removal callbacks are processed promptly.
-            lakeTableLookupers.invalidateAll();
-            lakeTableLookupers.cleanUp();
-            throw e;
+    private void onLookuperRemoved(
+            Long ignored, @Nullable CachedLakeTableLookuper cachedLookuper, RemovalCause cause) {
+        if (cachedLookuper == null) {
+            return;
         }
-    }
-
-    private void onLookuperRemoved(CachedLakeTableLookuper cachedLookuper) {
+        if (cause == RemovalCause.SIZE) {
+            capacityEvictions.inc();
+            LOG.info(
+                    "Evicted historical lookup cache for table {} (table ID {}) because the cache retains at most {} tables.",
+                    cachedLookuper.tablePath,
+                    cachedLookuper.tableId,
+                    MAX_CACHED_TABLES);
+        }
         cachedLookuper.invalidate();
     }
 
@@ -607,7 +583,9 @@ class HistoricalLakeLookupManager implements AutoCloseable {
         LakeStorage lakeStorage =
                 lakeStoragePlugin.createLakeStorage(Configuration.fromMap(lakeProperties));
         return lakeStorage.createLakeTableLookuper(
-                tablePath, new LakeStorage.LookuperContext(ioTmpDir, tableConfig, cacheSizeBytes));
+                tablePath,
+                new LakeStorage.LookuperContext(
+                        ioTmpDir, tableConfig, cacheSizeBytes, diskWriteGuard));
     }
 
     private static boolean hasLakeConfigChanged(Configuration currentConf, Configuration newConf) {
@@ -615,22 +593,6 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                         != newConf.get(ConfigOptions.DATALAKE_FORMAT)
                 || !Objects.equals(
                         extractLakeProperties(currentConf), extractLakeProperties(newConf));
-    }
-
-    private synchronized File getOrCreateHistoricalLookupCacheRootDir() {
-        if (historicalLookupCacheRootDirCreated) {
-            return historicalLookupCacheRootDir;
-        }
-        try {
-            Files.createDirectories(historicalLookupCacheRootDir.toPath());
-            historicalLookupCacheRootDirCreated = true;
-        } catch (IOException e) {
-            throw new FlussRuntimeException(
-                    "Failed to create historical lookup cache directory: "
-                            + historicalLookupCacheRootDir,
-                    e);
-        }
-        return historicalLookupCacheRootDir;
     }
 
     private long cacheBytesPerTable(double ratio) {

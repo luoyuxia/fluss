@@ -61,6 +61,7 @@ public class PaimonLakeStorage implements LakeStorage {
                 tablePath,
                 context.ioTmpDir(),
                 context.tableConfig(),
-                context.lookupCacheMaxDiskBytes());
+                context.lookupCacheMaxDiskBytes(),
+                context.diskWriteGuard());
     }
 }

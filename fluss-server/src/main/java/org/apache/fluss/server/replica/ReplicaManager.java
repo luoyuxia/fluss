@@ -376,8 +376,7 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     public void startup() {
-        historicalLakeLookupManager.startup();
-        historicalLakeLookupManager.startLookupCacheDiskSizeMonitor(scheduler);
+        historicalLakeLookupManager.startup(scheduler);
 
         // start up ISR expiration thread.
         // A follower can log behind leader for up tp configOptions#LOG_REPLICA_MAX_LAG_TIME x 1.5
