@@ -17,10 +17,13 @@
 
 package org.apache.fluss.lake.paimon;
 
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidAlterTableException;
+import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.lake.lakestorage.TestingLakeCatalogContext;
+import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
@@ -78,6 +81,150 @@ class PaimonLakeCatalogTest {
     void cleanup() {
         flussPaimonCatalog.close();
         setUp();
+    }
+
+    @Test
+    void testGetHashFixedTableDescriptor() {
+        String database = "get_hash_fixed_table_db";
+        TablePath tablePath = TablePath.of(database, "get_hash_fixed_table");
+        Schema schema =
+                Schema.newBuilder()
+                        .column("id", DataTypes.BIGINT().copy(false))
+                        .withComment("identifier")
+                        .column("name", DataTypes.STRING())
+                        .withComment("display name")
+                        .column("pt", DataTypes.STRING().copy(false))
+                        .build();
+        TableDescriptor sourceDescriptor =
+                TableDescriptor.builder()
+                        .schema(schema)
+                        .partitionedBy("pt")
+                        .distributedBy(4, "id")
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                        .property(ConfigOptions.TABLE_REPLICATION_FACTOR, 2)
+                        .customProperty("owner", "fluss")
+                        .comment("existing table")
+                        .build();
+        flussPaimonCatalog.createTable(
+                tablePath, sourceDescriptor, new TestingLakeCatalogContext(sourceDescriptor));
+
+        TableDescriptor mappedDescriptor = flussPaimonCatalog.getTableDescriptor(tablePath);
+
+        assertThat(mappedDescriptor.getSchema()).isEqualTo(schema);
+        assertThat(mappedDescriptor.getPartitionKeys()).containsExactly("pt");
+        assertThat(mappedDescriptor.getBucketKeys()).containsExactly("id");
+        assertThat(mappedDescriptor.getTableDistribution().get().getBucketCount()).contains(4);
+        assertThat(mappedDescriptor.getProperties())
+                .containsEntry(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true")
+                .containsEntry(
+                        ConfigOptions.TABLE_DATALAKE_FORMAT.key(), DataLakeFormat.PAIMON.toString())
+                .containsEntry(ConfigOptions.TABLE_REPLICATION_FACTOR.key(), "2");
+        assertThat(mappedDescriptor.getCustomProperties()).containsEntry("owner", "fluss");
+        assertThat(mappedDescriptor.getComment()).contains("existing table");
+    }
+
+    @Test
+    void testGetBucketUnawareTableDescriptor() {
+        String database = "get_bucket_unaware_table_db";
+        TablePath tablePath = TablePath.of(database, "get_bucket_unaware_table");
+        TableDescriptor sourceDescriptor =
+                TableDescriptor.builder()
+                        .schema(FLUSS_SCHEMA)
+                        .distributedBy(3)
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                        .build();
+        flussPaimonCatalog.createTable(
+                tablePath, sourceDescriptor, new TestingLakeCatalogContext(sourceDescriptor));
+
+        TableDescriptor mappedDescriptor = flussPaimonCatalog.getTableDescriptor(tablePath);
+
+        assertThat(mappedDescriptor.getSchema()).isEqualTo(FLUSS_SCHEMA);
+        assertThat(mappedDescriptor.getBucketKeys()).isEmpty();
+        assertThat(mappedDescriptor.getTableDistribution())
+                .get()
+                .satisfies(distribution -> assertThat(distribution.getBucketCount()).isEmpty());
+    }
+
+    @Test
+    void testGetTableDescriptorRejectsPrimaryKeyTable() {
+        String database = "get_primary_key_table_db";
+        TablePath tablePath = TablePath.of(database, "get_primary_key_table");
+        TableDescriptor primaryKeyDescriptor =
+                TableDescriptor.builder()
+                        .schema(
+                                Schema.newBuilder()
+                                        .column("id", DataTypes.BIGINT())
+                                        .column("name", DataTypes.STRING())
+                                        .primaryKey("id")
+                                        .build())
+                        .distributedBy(3)
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                        .build();
+        flussPaimonCatalog.createTable(
+                tablePath,
+                primaryKeyDescriptor,
+                new TestingLakeCatalogContext(primaryKeyDescriptor));
+
+        assertThatThrownBy(() -> flussPaimonCatalog.getTableDescriptor(tablePath))
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("primary-key table")
+                .hasMessageContaining(tablePath.toString());
+    }
+
+    @Test
+    void testGetTableDescriptorSupportsCleanSchema() throws Exception {
+        String database = "get_clean_schema_db";
+        String table = "get_clean_schema_table";
+        flussPaimonCatalog.getPaimonCatalog().createDatabase(database, true);
+        flussPaimonCatalog
+                .getPaimonCatalog()
+                .createTable(
+                        Identifier.create(database, table),
+                        org.apache.paimon.schema.Schema.newBuilder()
+                                .column("id", org.apache.paimon.types.DataTypes.BIGINT())
+                                .option(CoreOptions.BUCKET.key(), "-1")
+                                .build(),
+                        false);
+
+        assertThat(
+                        flussPaimonCatalog
+                                .getTableDescriptor(TablePath.of(database, table))
+                                .getSchema()
+                                .getColumnNames())
+                .containsExactly("id");
+    }
+
+    @Test
+    void testGetTableDescriptorAcceptsLegacySystemTimestampPrecision() throws Exception {
+        String database = "get_legacy_system_timestamp_db";
+        String table = "get_legacy_system_timestamp_table";
+        flussPaimonCatalog.getPaimonCatalog().createDatabase(database, true);
+        flussPaimonCatalog
+                .getPaimonCatalog()
+                .createTable(
+                        Identifier.create(database, table),
+                        org.apache.paimon.schema.Schema.newBuilder()
+                                .column("id", org.apache.paimon.types.DataTypes.BIGINT())
+                                .column(
+                                        TableDescriptor.BUCKET_COLUMN_NAME,
+                                        org.apache.paimon.types.DataTypes.INT())
+                                .column(
+                                        TableDescriptor.OFFSET_COLUMN_NAME,
+                                        org.apache.paimon.types.DataTypes.BIGINT())
+                                .column(
+                                        TableDescriptor.TIMESTAMP_COLUMN_NAME,
+                                        org.apache.paimon.types.DataTypes
+                                                .TIMESTAMP_WITH_LOCAL_TIME_ZONE())
+                                .option(CoreOptions.BUCKET.key(), "-1")
+                                .build(),
+                        false);
+
+        assertThat(
+                        flussPaimonCatalog
+                                .getTableDescriptor(TablePath.of(database, table))
+                                .getSchema()
+                                .getColumnNames())
+                .containsExactly("id");
     }
 
     @Test

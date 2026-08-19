@@ -62,6 +62,7 @@ import org.apache.fluss.rpc.messages.AlterTableRequest;
 import org.apache.fluss.rpc.messages.CancelRebalanceRequest;
 import org.apache.fluss.rpc.messages.CreateAclsRequest;
 import org.apache.fluss.rpc.messages.CreateDatabaseRequest;
+import org.apache.fluss.rpc.messages.CreateTableOnLakeRequest;
 import org.apache.fluss.rpc.messages.CreateTableRequest;
 import org.apache.fluss.rpc.messages.DatabaseExistsRequest;
 import org.apache.fluss.rpc.messages.DatabaseExistsResponse;
@@ -305,6 +306,31 @@ public class FlussAdmin implements Admin {
                 .setDatabaseName(tablePath.getDatabaseName())
                 .setTableName(tablePath.getTableName());
         return gateway.createTable(request).thenApply(r -> null);
+    }
+
+    @Override
+    public CompletableFuture<TableInfo> createTableOnLake(
+            TablePath tablePath, Map<String, String> properties) {
+        tablePath.validate();
+        checkNotNull(properties, "properties must not be null");
+        CreateTableOnLakeRequest request = new CreateTableOnLakeRequest();
+        request.setTablePath()
+                .setDatabaseName(tablePath.getDatabaseName())
+                .setTableName(tablePath.getTableName());
+        properties.forEach((key, value) -> request.addProperty().setKey(key).setValue(value));
+        return gateway.createTableOnLake(request)
+                .thenApply(
+                        response ->
+                                TableInfo.of(
+                                        tablePath,
+                                        response.getTableId(),
+                                        response.getSchemaId(),
+                                        TableDescriptor.fromJsonBytes(response.getTableJson()),
+                                        response.hasRemoteDataDir()
+                                                ? response.getRemoteDataDir()
+                                                : null,
+                                        response.getCreatedTime(),
+                                        response.getModifiedTime()));
     }
 
     @Override

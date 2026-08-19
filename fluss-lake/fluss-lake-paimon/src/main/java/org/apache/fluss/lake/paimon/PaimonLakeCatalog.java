@@ -18,16 +18,21 @@
 package org.apache.fluss.lake.paimon;
 
 import org.apache.fluss.annotation.VisibleForTesting;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidAlterTableException;
+import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.lake.lakestorage.LakeCatalog;
+import org.apache.fluss.metadata.DataLakeFormat;
+import org.apache.fluss.metadata.Schema.Builder;
 import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.IOUtils;
 
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
@@ -36,8 +41,11 @@ import org.apache.paimon.fs.Path;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
+import org.apache.paimon.table.BucketMode;
+import org.apache.paimon.table.BucketSpec;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
 import org.slf4j.Logger;
@@ -48,9 +56,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import static org.apache.fluss.config.FlussConfigUtils.isTableStorageConfig;
+import static org.apache.fluss.lake.paimon.utils.PaimonConversions.FLUSS_CONF_PREFIX;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimonSchema;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimonSchemaChanges;
+import static org.apache.fluss.lake.paimon.utils.PaimonDataTypeToFlussDataType.INSTANCE;
 import static org.apache.fluss.lake.paimon.utils.PaimonTableValidation.checkTableIsEmpty;
 import static org.apache.fluss.lake.paimon.utils.PaimonTableValidation.isPaimonSchemaCompatible;
 import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
@@ -86,6 +97,86 @@ public class PaimonLakeCatalog implements LakeCatalog {
     @VisibleForTesting
     protected Catalog getPaimonCatalog() {
         return paimonCatalog;
+    }
+
+    @Override
+    public TableDescriptor getTableDescriptor(TablePath tablePath) throws TableNotExistException {
+        FileStoreTable fileStoreTable;
+        try {
+            Table table = paimonCatalog.getTable(toPaimon(tablePath));
+            if (!(table instanceof FileStoreTable)) {
+                throw new InvalidTableException(
+                        String.format("Paimon table %s is not a file store table.", tablePath));
+            }
+            fileStoreTable = (FileStoreTable) table;
+        } catch (Catalog.TableNotExistException e) {
+            throw new TableNotExistException("Table " + tablePath + " does not exist in Paimon.");
+        }
+
+        if (!fileStoreTable.primaryKeys().isEmpty()) {
+            throw new InvalidTableException(
+                    String.format(
+                            "Creating a Fluss table on Paimon primary-key table %s is not supported yet.",
+                            tablePath));
+        }
+
+        // Tables created before FIP-27 carry the legacy system columns. Clean tables do not, so
+        // only filter the reserved names when the legacy layout is detected.
+        boolean legacyTable =
+                fileStoreTable.schema().fields().stream()
+                        .anyMatch(field -> TIMESTAMP_COLUMN_NAME.equals(field.name()));
+        Builder schemaBuilder = org.apache.fluss.metadata.Schema.newBuilder();
+        for (DataField field : fileStoreTable.schema().fields()) {
+            if (!legacyTable || !SYSTEM_COLUMNS.containsKey(field.name())) {
+                schemaBuilder
+                        .column(field.name(), field.type().accept(INSTANCE))
+                        .withComment(field.description());
+            }
+        }
+
+        BucketSpec bucketSpec = fileStoreTable.bucketSpec();
+        TableDescriptor.Builder descriptorBuilder =
+                TableDescriptor.builder()
+                        .schema(schemaBuilder.build())
+                        .partitionedBy(fileStoreTable.partitionKeys())
+                        .comment(fileStoreTable.comment().orElse(null));
+        fileStoreTable
+                .options()
+                .forEach(
+                        (key, value) -> {
+                            if (key.startsWith(FLUSS_CONF_PREFIX)) {
+                                String flussKey = key.substring(FLUSS_CONF_PREFIX.length());
+                                if (isTableStorageConfig(flussKey)) {
+                                    descriptorBuilder.property(flussKey, value);
+                                } else {
+                                    descriptorBuilder.customProperty(flussKey, value);
+                                }
+                            }
+                        });
+        descriptorBuilder
+                .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                .property(ConfigOptions.TABLE_DATALAKE_FORMAT, DataLakeFormat.PAIMON);
+
+        BucketMode bucketMode = fileStoreTable.bucketMode();
+        if (bucketMode == BucketMode.HASH_FIXED) {
+            CoreOptions coreOptions = new CoreOptions(fileStoreTable.options());
+            if (coreOptions.bucketFunctionType() != CoreOptions.BucketFunctionType.DEFAULT) {
+                throw new InvalidTableException(
+                        String.format(
+                                "Paimon table %s uses unsupported bucket function %s.",
+                                tablePath, coreOptions.bucketFunctionType()));
+            }
+            descriptorBuilder.distributedBy(bucketSpec.getNumBuckets(), bucketSpec.getBucketKeys());
+        } else if (bucketMode == BucketMode.BUCKET_UNAWARE) {
+            descriptorBuilder.distributedBy(null, new ArrayList<>());
+        } else {
+            throw new InvalidTableException(
+                    String.format(
+                            "Paimon bucket mode %s of table %s is not supported.",
+                            bucketMode, tablePath));
+        }
+
+        return descriptorBuilder.build();
     }
 
     @Override

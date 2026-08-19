@@ -241,6 +241,19 @@ public interface Admin extends AutoCloseable {
             throws InvalidTableException, InvalidDatabaseException;
 
     /**
+     * Creates a Fluss table on an existing lake table asynchronously.
+     *
+     * <p>The returned future completes with the actual table metadata after the Fluss table is
+     * created. The caller is responsible for synchronizing the initial lake snapshot when needed.
+     *
+     * @param tablePath path of the existing lake table
+     * @param properties properties that override or supplement values derived from the lake table
+     * @return a future containing the created table metadata
+     */
+    CompletableFuture<TableInfo> createTableOnLake(
+            TablePath tablePath, Map<String, String> properties);
+
+    /**
      * Get the table with the given table path asynchronously.
      *
      * <p>The following exceptions can be anticipated when calling {@code get()} on returned future.

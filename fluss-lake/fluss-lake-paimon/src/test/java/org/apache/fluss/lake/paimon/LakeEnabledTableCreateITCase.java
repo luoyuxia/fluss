@@ -27,10 +27,12 @@ import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.LakeTableAlreadyExistException;
+import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
+import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
@@ -96,6 +98,7 @@ class LakeEnabledTableCreateITCase {
     private static final String DATABASE = "fluss";
 
     private static Catalog paimonCatalog;
+    private static String paimonWarehouse;
     private static final int BUCKET_NUM = 3;
 
     private Connection conn;
@@ -120,20 +123,95 @@ class LakeEnabledTableCreateITCase {
         }
     }
 
+    @Test
+    void testCreateTableOnHashFixedLakeTable() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "existing_hash_fixed_log_table");
+        createExistingPaimonLogTable(tablePath, 4, "id");
+        Map<String, String> originalOptions =
+                new HashMap<>(
+                        paimonCatalog
+                                .getTable(Identifier.create(DATABASE, tablePath.getTableName()))
+                                .options());
+
+        TableInfo tableInfo =
+                admin.createTableOnLake(
+                                tablePath,
+                                Collections.singletonMap(
+                                        ConfigOptions.TABLE_REPLICATION_FACTOR.key(), "2"))
+                        .get();
+
+        assertThat(tableInfo.getTablePath()).isEqualTo(tablePath);
+        assertThat(tableInfo.getSchema().getColumnNames()).containsExactly("id", "name");
+        assertThat(tableInfo.getSchema().getColumns())
+                .extracting(column -> column.getComment().orElse(null))
+                .containsExactly("identifier", null);
+        assertThat(tableInfo.getNumBuckets()).isEqualTo(4);
+        assertThat(tableInfo.getBucketKeys()).containsExactly("id");
+        assertThat(tableInfo.getTableConfig().getReplicationFactor()).isEqualTo(2);
+        assertThat(tableInfo.getTableConfig().isDataLakeEnabled()).isTrue();
+        assertThat(tableInfo.getCustomProperties().toMap()).containsEntry("owner", "lake");
+        assertThat(admin.getTableInfo(tablePath).get()).isEqualTo(tableInfo);
+        assertThat(
+                        paimonCatalog
+                                .getTable(Identifier.create(DATABASE, tablePath.getTableName()))
+                                .options())
+                .containsExactlyInAnyOrderEntriesOf(originalOptions);
+
+        assertThatThrownBy(() -> admin.createTableOnLake(tablePath, Collections.emptyMap()).get())
+                .rootCause()
+                .hasMessageContaining("already exists");
+    }
+
+    @Test
+    void testCreateTableOnBucketUnawareLakeTable() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "existing_bucket_unaware_log_table");
+        createExistingPaimonLogTable(tablePath, -1, null);
+        Map<String, String> properties = new HashMap<>();
+        properties.put("bucket.num", "2");
+        properties.put("team", "storage");
+        properties.put(ConfigOptions.TABLE_DATALAKE_FORMAT.key(), "iceberg");
+
+        TableInfo tableInfo = admin.createTableOnLake(tablePath, properties).get();
+
+        assertThat(tableInfo.getNumBuckets()).isEqualTo(2);
+        assertThat(tableInfo.getBucketKeys()).isEmpty();
+        assertThat(tableInfo.getTableConfig().getDataLakeFormat()).contains(DataLakeFormat.PAIMON);
+        assertThat(tableInfo.getCustomProperties().toMap())
+                .containsEntry("owner", "lake")
+                .containsEntry("team", "storage");
+    }
+
+    @Test
+    void testCreateTableOnHashFixedLakeTableRejectsBucketMismatch() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "existing_bucket_mismatch_log_table");
+        createExistingPaimonLogTable(tablePath, 4, "id");
+
+        assertThatThrownBy(
+                        () ->
+                                admin.createTableOnLake(
+                                                tablePath,
+                                                Collections.singletonMap("bucket.num", "3"))
+                                        .get())
+                .rootCause()
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("bucket.num must be 4")
+                .hasMessageContaining("but was 3");
+        assertThat(admin.tableExists(tablePath).get()).isFalse();
+    }
+
     private static Configuration initConfig() {
         Configuration conf = new Configuration();
         conf.setString("datalake.format", "paimon");
         conf.setString("datalake.paimon.metastore", "filesystem");
-        String warehousePath;
         try {
-            warehousePath =
+            paimonWarehouse =
                     Files.createTempDirectory("fluss-testing-datalake-enabled")
                             .resolve("warehouse")
                             .toString();
         } catch (Exception e) {
             throw new FlussRuntimeException("Failed to create warehouse path");
         }
-        conf.setString("datalake.paimon.warehouse", warehousePath);
+        conf.setString("datalake.paimon.warehouse", paimonWarehouse);
         conf.setString("datalake.paimon.cache-enabled", "false");
         paimonCatalog =
                 CatalogFactory.createCatalog(
@@ -1261,6 +1339,49 @@ class LakeEnabledTableCreateITCase {
         assertThat(paimonRowType).isEqualTo(expectedRowType);
 
         assertThat(paimonTable.comment()).isEqualTo(flussTable.getComment());
+    }
+
+    private void createExistingPaimonLogTable(
+            TablePath tablePath, int bucketCount, @Nullable String bucketKey) throws Exception {
+        paimonCatalog.createDatabase(tablePath.getDatabaseName(), true);
+        org.apache.paimon.schema.Schema.Builder schemaBuilder =
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.INT(), "identifier")
+                        .column("name", org.apache.paimon.types.DataTypes.STRING())
+                        .column(BUCKET_COLUMN_NAME, org.apache.paimon.types.DataTypes.INT())
+                        .column(OFFSET_COLUMN_NAME, org.apache.paimon.types.DataTypes.BIGINT())
+                        .column(
+                                TIMESTAMP_COLUMN_NAME,
+                                org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS())
+                        .option(CoreOptions.BUCKET.key(), String.valueOf(bucketCount))
+                        .option("fluss.owner", "lake");
+        if (bucketKey != null) {
+            schemaBuilder.option(CoreOptions.BUCKET_KEY.key(), bucketKey);
+        }
+        paimonCatalog.createTable(
+                Identifier.create(tablePath.getDatabaseName(), tablePath.getTableName()),
+                schemaBuilder.build(),
+                false);
+    }
+
+    private void createExistingPaimonPrimaryKeyTable(TablePath tablePath) throws Exception {
+        paimonCatalog.createDatabase(tablePath.getDatabaseName(), true);
+        org.apache.paimon.schema.Schema schema =
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.INT().notNull())
+                        .column("name", org.apache.paimon.types.DataTypes.STRING())
+                        .column(BUCKET_COLUMN_NAME, org.apache.paimon.types.DataTypes.INT())
+                        .column(OFFSET_COLUMN_NAME, org.apache.paimon.types.DataTypes.BIGINT())
+                        .column(
+                                TIMESTAMP_COLUMN_NAME,
+                                org.apache.paimon.types.DataTypes.TIMESTAMP_LTZ_MILLIS())
+                        .primaryKey("id")
+                        .option(CoreOptions.BUCKET.key(), "4")
+                        .build();
+        paimonCatalog.createTable(
+                Identifier.create(tablePath.getDatabaseName(), tablePath.getTableName()),
+                schema,
+                false);
     }
 
     private void verifyLogTabletDataLakeEnabled(long tableId, boolean isDataLakeEnabled) {

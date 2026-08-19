@@ -38,6 +38,18 @@ import java.util.List;
 public interface LakeCatalog extends AutoCloseable {
 
     /**
+     * Read an existing lake table and map its metadata to a Fluss {@link TableDescriptor}.
+     *
+     * @param tablePath path of the lake table
+     * @return the Fluss table descriptor mapped from the lake table
+     * @throws TableNotExistException if the table does not exist in the lake
+     */
+    default TableDescriptor getTableDescriptor(TablePath tablePath) throws TableNotExistException {
+        throw new UnsupportedOperationException(
+                "Reading an existing lake table is not supported by this lake catalog.");
+    }
+
+    /**
      * Create a new table in lake.
      *
      * @param tablePath path of the table to be created

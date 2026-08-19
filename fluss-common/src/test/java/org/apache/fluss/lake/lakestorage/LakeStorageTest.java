@@ -22,10 +22,12 @@ import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.lake.source.LakeSource;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
+import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.plugin.PluginManager;
+import org.apache.fluss.types.DataTypes;
 
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +43,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for the {@link LakeStorage} base class. */
 class LakeStorageTest {
     private static final String TEST_LAKE_PLUGIN_FORMAT = "test-plugin";
+    private static final TableDescriptor TEST_TABLE_DESCRIPTOR =
+            TableDescriptor.builder()
+                    .schema(Schema.newBuilder().column("id", DataTypes.BIGINT()).build())
+                    .build();
 
     @Test
     void testInvalidPlugin() throws Exception {
@@ -91,6 +97,8 @@ class LakeStorageTest {
                         ((PluginLakeStorageWrapper.ClassLoaderFixingLakeCatalog) lakeCatalog)
                                 .getWrappedDelegate())
                 .isInstanceOf(TestPaimonLakeCatalog.class);
+        assertThat(lakeCatalog.getTableDescriptor(TablePath.of("test_db", "test_table")))
+                .isEqualTo(TEST_TABLE_DESCRIPTOR);
     }
 
     private static class TestingPluginManager implements PluginManager {
@@ -144,6 +152,11 @@ class LakeStorageTest {
     }
 
     private static class TestPaimonLakeCatalog implements LakeCatalog {
+
+        @Override
+        public TableDescriptor getTableDescriptor(TablePath tablePath) {
+            return TEST_TABLE_DESCRIPTOR;
+        }
 
         @Override
         public void createTable(
