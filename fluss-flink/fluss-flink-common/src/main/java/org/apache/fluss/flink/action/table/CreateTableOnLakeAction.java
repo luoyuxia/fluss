@@ -38,6 +38,8 @@ import org.apache.paimon.flink.FlinkFileIOLoader;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -48,6 +50,8 @@ import java.util.Optional;
 /** Action to create a Fluss table on an existing Paimon log table. */
 @Internal
 public class CreateTableOnLakeAction implements Action {
+
+    private static final Logger LOG = LoggerFactory.getLogger(CreateTableOnLakeAction.class);
 
     private final Configuration flussConfiguration;
     private final Configuration paimonConfiguration;
@@ -68,8 +72,11 @@ public class CreateTableOnLakeAction implements Action {
 
     @Override
     public void run() throws Exception {
+        LOG.info("Starting create table on lake action for table {}.", tablePath);
+        LOG.info("Creating Paimon catalog for table {}.", tablePath);
         Catalog paimonCatalog = createPaimonCatalog();
         try {
+            LOG.info("Loading Paimon table {}.", tablePath);
             FileStoreTable paimonTable = getPaimonTable(paimonCatalog);
             if (!paimonTable.primaryKeys().isEmpty()) {
                 throw new UnsupportedOperationException(
@@ -77,15 +84,34 @@ public class CreateTableOnLakeAction implements Action {
                                 "Creating a Fluss table on Paimon primary-key table %s is not supported yet.",
                                 tablePath));
             }
+            LOG.info("Paimon log table {} validated.", tablePath);
 
             Optional<Snapshot> snapshot = paimonTable.latestSnapshot();
+            if (snapshot.isPresent()) {
+                LOG.info(
+                        "Found latest Paimon snapshot {} for table {}.",
+                        snapshot.get().id(),
+                        tablePath);
+            } else {
+                LOG.info("Paimon table {} has no snapshot.", tablePath);
+            }
+
             TableInfo tableInfo;
+            LOG.info("Creating Fluss table {} on lake.", tablePath);
             try (Connection connection = ConnectionFactory.createConnection(flussConfiguration);
                     Admin admin = connection.getAdmin()) {
                 tableInfo = admin.createTableOnLake(tablePath, tableProperties).get();
             }
+            LOG.info(
+                    "Created Fluss table {} on lake with table ID {}.",
+                    tablePath,
+                    tableInfo.getTableId());
 
             if (snapshot.isPresent()) {
+                LOG.info(
+                        "Registering Paimon snapshot {} for Fluss table {}.",
+                        snapshot.get().id(),
+                        tablePath);
                 try {
                     commitLakeSnapshot(tableInfo, snapshot.get().id());
                 } catch (Exception e) {
@@ -95,10 +121,19 @@ public class CreateTableOnLakeAction implements Action {
                                     tablePath, tableInfo.getTableId(), snapshot.get().id()),
                             e);
                 }
+                LOG.info(
+                        "Registered Paimon snapshot {} for Fluss table {}.",
+                        snapshot.get().id(),
+                        tablePath);
+            } else {
+                LOG.info(
+                        "Skipping initial lake snapshot registration for Fluss table {} because the Paimon table has no snapshot.",
+                        tablePath);
             }
-            System.out.printf(
-                    "Create table on lake succeeded for %s, table_id=%d%n",
-                    tablePath, tableInfo.getTableId());
+            LOG.info(
+                    "Create table on lake action succeeded for table {}, table ID {}.",
+                    tablePath,
+                    tableInfo.getTableId());
         } finally {
             paimonCatalog.close();
         }
