@@ -21,11 +21,13 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
 import org.apache.fluss.client.admin.Admin;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.flink.action.Action;
 import org.apache.fluss.flink.tiering.committer.FlussTableLakeSnapshotCommitter;
 import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 
@@ -96,44 +98,80 @@ public class CreateTableOnLakeAction implements Action {
                 LOG.info("Paimon table {} has no snapshot.", tablePath);
             }
 
-            TableInfo tableInfo;
+            Map<String, String> createTableProperties = new HashMap<>(tableProperties);
+            createTableProperties.put(
+                    ConfigOptions.TABLE_DATALAKE_ENABLED.key(), Boolean.FALSE.toString());
+
             LOG.info("Creating Fluss table {} on lake.", tablePath);
             try (Connection connection = ConnectionFactory.createConnection(flussConfiguration);
                     Admin admin = connection.getAdmin()) {
-                tableInfo = admin.createTableOnLake(tablePath, tableProperties).get();
-            }
-            LOG.info(
-                    "Created Fluss table {} on lake with table ID {}.",
-                    tablePath,
-                    tableInfo.getTableId());
-
-            if (snapshot.isPresent()) {
-                LOG.info(
-                        "Registering Paimon snapshot {} for Fluss table {}.",
-                        snapshot.get().id(),
-                        tablePath);
-                try {
-                    commitLakeSnapshot(tableInfo, snapshot.get().id());
-                } catch (Exception e) {
-                    throw new IOException(
+                TableInfo tableInfo =
+                        admin.createTableOnLake(tablePath, createTableProperties).get();
+                if (tableInfo.getTableConfig().isDataLakeEnabled()) {
+                    throw new IllegalStateException(
                             String.format(
-                                    "Fluss table %s was created with table ID %d, but failed to register Paimon snapshot %d.",
-                                    tablePath, tableInfo.getTableId(), snapshot.get().id()),
-                            e);
+                                    "Fluss table %s was created with lake acceleration enabled before its initial lake snapshot was registered.",
+                                    tablePath));
                 }
                 LOG.info(
-                        "Registered Paimon snapshot {} for Fluss table {}.",
-                        snapshot.get().id(),
-                        tablePath);
-            } else {
+                        "Created Fluss table {} on lake with table ID {} and lake acceleration disabled.",
+                        tablePath,
+                        tableInfo.getTableId());
+
+                if (snapshot.isPresent()) {
+                    LOG.info(
+                            "Registering Paimon snapshot {} for Fluss table {}.",
+                            snapshot.get().id(),
+                            tablePath);
+                    try {
+                        commitLakeSnapshot(tableInfo, snapshot.get().id());
+                    } catch (Exception e) {
+                        throw new IOException(
+                                String.format(
+                                        "Fluss table %s was created with table ID %d, but failed to register Paimon snapshot %d.",
+                                        tablePath, tableInfo.getTableId(), snapshot.get().id()),
+                                e);
+                    }
+                    LOG.info(
+                            "Registered Paimon snapshot {} for Fluss table {}.",
+                            snapshot.get().id(),
+                            tablePath);
+                } else {
+                    LOG.info(
+                            "Skipping initial lake snapshot registration for Fluss table {} because the Paimon table has no snapshot.",
+                            tablePath);
+                }
+
+                TableInfo currentTableInfo = admin.getTableInfo(tablePath).get();
+                String dataLakeEnabled =
+                        currentTableInfo
+                                .getProperties()
+                                .toMap()
+                                .get(ConfigOptions.TABLE_DATALAKE_ENABLED.key());
+                if (!Boolean.FALSE.toString().equals(dataLakeEnabled)) {
+                    throw new IllegalStateException(
+                            String.format(
+                                    "Fluss table %s must remain explicitly lake-disabled until its initial lake snapshot has been registered, but %s is %s.",
+                                    tablePath,
+                                    ConfigOptions.TABLE_DATALAKE_ENABLED.key(),
+                                    dataLakeEnabled));
+                }
+
+                LOG.info("Enabling lake acceleration for Fluss table {}.", tablePath);
+                admin.alterTable(
+                                tablePath,
+                                Collections.singletonList(
+                                        TableChange.set(
+                                                ConfigOptions.TABLE_DATALAKE_ENABLED.key(),
+                                                Boolean.TRUE.toString())),
+                                false)
+                        .get();
+
                 LOG.info(
-                        "Skipping initial lake snapshot registration for Fluss table {} because the Paimon table has no snapshot.",
-                        tablePath);
+                        "Create table on lake action succeeded for table {}, table ID {}.",
+                        tablePath,
+                        tableInfo.getTableId());
             }
-            LOG.info(
-                    "Create table on lake action succeeded for table {}, table ID {}.",
-                    tablePath,
-                    tableInfo.getTableId());
         } finally {
             paimonCatalog.close();
         }

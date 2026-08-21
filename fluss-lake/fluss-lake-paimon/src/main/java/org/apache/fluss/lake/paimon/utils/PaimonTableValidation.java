@@ -106,13 +106,14 @@ public class PaimonTableValidation {
 
     private static boolean equalPaimonOptions(
             Map<String, String> existingOptions, Map<String, String> newOptions) {
-        if (!Objects.equals(
-                existingOptions.get(PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY),
-                Boolean.FALSE.toString())) {
-            return false;
-        }
-
         for (String option : PAIMON_UNSETTABLE_OPTIONS) {
+            // Fluss writes partition.legacy-name=false for tables it creates, but existing Paimon
+            // tables may use Paimon's legacy default. This Fluss-specific default must not prevent
+            // an existing Paimon table from being registered in Fluss, and registration must not
+            // rewrite the table's partition encoding mode.
+            if (PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY.equals(option)) {
+                continue;
+            }
             if (!Objects.equals(existingOptions.get(option), newOptions.get(option))) {
                 return false;
             }

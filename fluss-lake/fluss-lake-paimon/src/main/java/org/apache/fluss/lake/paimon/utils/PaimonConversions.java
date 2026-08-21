@@ -18,6 +18,7 @@
 package org.apache.fluss.lake.paimon.utils;
 
 import org.apache.fluss.annotation.VisibleForTesting;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.exception.InvalidConfigException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.lake.paimon.source.FlussRowAsPaimonRow;
@@ -63,6 +64,9 @@ public class PaimonConversions {
     // again
     /** Option controlling whether Paimon uses legacy partition value encoding. */
     public static final String PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY = "partition.legacy-name";
+
+    /** Option indicating whether the Paimon table is accelerated by Fluss LakeStream. */
+    public static final String LAKESTREAM_ENABLED_OPTION_KEY = "lakestream.enabled";
 
     // for fluss config
     public static final String FLUSS_CONF_PREFIX = "fluss.";
@@ -178,11 +182,21 @@ public class PaimonConversions {
         for (TableChange tableChange : tableChanges) {
             if (tableChange instanceof TableChange.SetOption) {
                 TableChange.SetOption setOption = (TableChange.SetOption) tableChange;
+                if (ConfigOptions.TABLE_DATALAKE_ENABLED.key().equals(setOption.getKey())) {
+                    schemaChanges.add(
+                            SchemaChange.setOption(
+                                    LAKESTREAM_ENABLED_OPTION_KEY, setOption.getValue()));
+                }
                 String key = convertFlussPropertyKeyToPaimon(setOption.getKey());
                 validateAlterPaimonOptions(key);
                 schemaChanges.add(SchemaChange.setOption(key, setOption.getValue()));
             } else if (tableChange instanceof TableChange.ResetOption) {
                 TableChange.ResetOption resetOption = (TableChange.ResetOption) tableChange;
+                if (ConfigOptions.TABLE_DATALAKE_ENABLED.key().equals(resetOption.getKey())) {
+                    schemaChanges.add(
+                            SchemaChange.setOption(
+                                    LAKESTREAM_ENABLED_OPTION_KEY, Boolean.FALSE.toString()));
+                }
                 String key = convertFlussPropertyKeyToPaimon(resetOption.getKey());
                 validateAlterPaimonOptions(key);
                 schemaChanges.add(SchemaChange.removeOption(key));
@@ -230,6 +244,12 @@ public class PaimonConversions {
 
         // set default properties
         setPaimonDefaultProperties(options);
+
+        String dataLakeEnabled =
+                tableDescriptor.getProperties().get(ConfigOptions.TABLE_DATALAKE_ENABLED.key());
+        if (dataLakeEnabled != null) {
+            options.set(LAKESTREAM_ENABLED_OPTION_KEY, dataLakeEnabled);
+        }
 
         // When bucket key is undefined, it should use dynamic bucket (bucket = -1) mode.
         List<String> bucketKeys = tableDescriptor.getBucketKeys();

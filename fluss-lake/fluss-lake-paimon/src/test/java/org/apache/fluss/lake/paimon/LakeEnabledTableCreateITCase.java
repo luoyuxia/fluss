@@ -76,6 +76,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import static org.apache.fluss.lake.paimon.utils.PaimonConversions.LAKESTREAM_ENABLED_OPTION_KEY;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.PAIMON_UNSETTABLE_OPTIONS;
 import static org.apache.fluss.metadata.TableDescriptor.BUCKET_COLUMN_NAME;
 import static org.apache.fluss.metadata.TableDescriptor.OFFSET_COLUMN_NAME;
@@ -160,6 +161,42 @@ class LakeEnabledTableCreateITCase {
         assertThatThrownBy(() -> admin.createTableOnLake(tablePath, Collections.emptyMap()).get())
                 .rootCause()
                 .hasMessageContaining("already exists");
+    }
+
+    @Test
+    void testCreateTableOnLakeWithDataLakeDisabled() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "existing_disabled_log_table");
+        createExistingPaimonLogTable(tablePath, 4, "id");
+        writeData(paimonCatalog.getTable(Identifier.create(DATABASE, tablePath.getTableName())));
+
+        TableInfo tableInfo =
+                admin.createTableOnLake(
+                                tablePath,
+                                Collections.singletonMap(
+                                        ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "false"))
+                        .get();
+
+        assertThat(tableInfo.getTableConfig().isDataLakeEnabled()).isFalse();
+        assertThat(tableInfo.getProperties().toMap())
+                .containsEntry(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "false");
+        assertThat(admin.getTableInfo(tablePath).get().getTableConfig().isDataLakeEnabled())
+                .isFalse();
+
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.set(
+                                        ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true")),
+                        false)
+                .get();
+
+        assertThat(admin.getTableInfo(tablePath).get().getTableConfig().isDataLakeEnabled())
+                .isTrue();
+        assertThat(
+                        paimonCatalog
+                                .getTable(Identifier.create(DATABASE, tablePath.getTableName()))
+                                .options())
+                .containsEntry(LAKESTREAM_ENABLED_OPTION_KEY, "true");
     }
 
     @Test
@@ -881,7 +918,8 @@ class LakeEnabledTableCreateITCase {
         changes = Collections.singletonList(disableLake);
         admin.alterTable(logTablePath, changes, false).get();
         // paimon table should still exist although lake is disabled
-        paimonCatalog.getTable(paimonTablePath);
+        assertThat(paimonCatalog.getTable(paimonTablePath).options())
+                .containsEntry(LAKESTREAM_ENABLED_OPTION_KEY, "false");
 
         // verify LogTablet datalake status is disabled
         verifyLogTabletDataLakeEnabled(tableId, false);
@@ -890,6 +928,8 @@ class LakeEnabledTableCreateITCase {
         enableLake = TableChange.set(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true");
         changes = Collections.singletonList(enableLake);
         admin.alterTable(logTablePath, changes, false).get();
+        assertThat(paimonCatalog.getTable(paimonTablePath).options())
+                .containsEntry(LAKESTREAM_ENABLED_OPTION_KEY, "true");
 
         // verify LogTablet datalake status is enabled again
         verifyLogTabletDataLakeEnabled(tableId, true);
@@ -1333,6 +1373,12 @@ class LakeEnabledTableCreateITCase {
                             }
                         });
         assertThat(paimonTable.options()).containsAllEntriesOf(expectedProperties);
+        String dataLakeEnabled =
+                flussTable.getProperties().get(ConfigOptions.TABLE_DATALAKE_ENABLED.key());
+        if (dataLakeEnabled != null) {
+            assertThat(paimonTable.options())
+                    .containsEntry(LAKESTREAM_ENABLED_OPTION_KEY, dataLakeEnabled);
+        }
 
         // now, check schema
         RowType paimonRowType = paimonTable.rowType();

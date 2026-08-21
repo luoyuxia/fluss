@@ -21,11 +21,13 @@ import org.apache.fluss.client.Connection;
 import org.apache.fluss.client.ConnectionFactory;
 import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.flink.action.Action;
 import org.apache.fluss.flink.action.ActionLoader;
+import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
 
@@ -55,6 +57,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
+import static org.apache.fluss.lake.paimon.utils.PaimonConversions.LAKESTREAM_ENABLED_OPTION_KEY;
+import static org.apache.fluss.lake.paimon.utils.PaimonConversions.PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY;
 import static org.apache.fluss.server.utils.LakeStorageUtils.extractLakeProperties;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -96,7 +100,7 @@ class CreateTableOnLakeActionITCase {
     @Test
     void testCreateTableOnLakeActionCommitsInitialSnapshot() throws Exception {
         TablePath tablePath = TablePath.of(DATABASE, "action_existing_log_table");
-        createExistingPaimonLogTable(tablePath, 4, "id");
+        createExistingPaimonLogTable(tablePath, 4, "id", true);
         FileStoreTable paimonTable =
                 (FileStoreTable)
                         paimonCatalog.getTable(
@@ -109,16 +113,34 @@ class CreateTableOnLakeActionITCase {
         LakeSnapshot lakeSnapshot = admin.getLatestLakeSnapshot(tablePath).get();
         assertThat(lakeSnapshot.getSnapshotId()).isEqualTo(snapshotId);
         assertThat(lakeSnapshot.getTableBucketsOffset()).isEmpty();
+        TableInfo tableInfo = admin.getTableInfo(tablePath).get();
+        assertThat(tableInfo.getTableConfig().isDataLakeEnabled()).isTrue();
+        assertThat(tableInfo.getProperties().toMap())
+                .containsEntry(ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "true");
+        assertThat(
+                        paimonCatalog
+                                .getTable(Identifier.create(DATABASE, tablePath.getTableName()))
+                                .options())
+                .containsEntry(LAKESTREAM_ENABLED_OPTION_KEY, "true")
+                .containsEntry(PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY, "true");
     }
 
     @Test
     void testCreateTableOnLakeActionSkipsSnapshotForEmptyTable() throws Exception {
         TablePath tablePath = TablePath.of(DATABASE, "action_empty_log_table");
-        createExistingPaimonLogTable(tablePath, -1, null);
+        createExistingPaimonLogTable(tablePath, -1, null, false);
 
         runAction(tablePath, "bucket.num=2", "team=storage");
 
         assertThat(admin.getTableInfo(tablePath).get().getNumBuckets()).isEqualTo(2);
+        assertThat(admin.getTableInfo(tablePath).get().getTableConfig().isDataLakeEnabled())
+                .isTrue();
+        assertThat(
+                        paimonCatalog
+                                .getTable(Identifier.create(DATABASE, tablePath.getTableName()))
+                                .options())
+                .containsEntry(LAKESTREAM_ENABLED_OPTION_KEY, "true")
+                .doesNotContainKey(PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY);
         assertThatThrownBy(() -> admin.getLatestLakeSnapshot(tablePath).get())
                 .cause()
                 .isInstanceOf(LakeTableSnapshotNotExistException.class);
@@ -182,7 +204,8 @@ class CreateTableOnLakeActionITCase {
     }
 
     private static void createExistingPaimonLogTable(
-            TablePath tablePath, int bucketCount, String bucketKey) throws Exception {
+            TablePath tablePath, int bucketCount, String bucketKey, boolean legacyPartitionName)
+            throws Exception {
         paimonCatalog.createDatabase(tablePath.getDatabaseName(), true);
         Schema.Builder schemaBuilder =
                 Schema.newBuilder()
@@ -197,6 +220,10 @@ class CreateTableOnLakeActionITCase {
                         .option("fluss.owner", "lake");
         if (bucketKey != null) {
             schemaBuilder.option(CoreOptions.BUCKET_KEY.key(), bucketKey);
+        }
+        if (legacyPartitionName) {
+            schemaBuilder.option(
+                    PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY, Boolean.TRUE.toString());
         }
         paimonCatalog.createTable(
                 Identifier.create(tablePath.getDatabaseName(), tablePath.getTableName()),

@@ -414,7 +414,7 @@ class PaimonLakeCatalogTest {
                                         "1",
                                         "id",
                                         Boolean.TRUE.toString())))
-                .isFalse();
+                .isTrue();
         assertThat(
                         isPaimonSchemaCompatible(
                                 schema,
@@ -423,7 +423,7 @@ class PaimonLakeCatalogTest {
                                         Collections.singletonList("pt"),
                                         "1",
                                         "id")))
-                .isFalse();
+                .isTrue();
 
         assertThat(CoreOptions.IMMUTABLE_OPTIONS).contains(CoreOptions.BUCKET_FUNCTION_TYPE.key());
         org.apache.paimon.schema.Schema schemaWithDifferentImmutableOption =

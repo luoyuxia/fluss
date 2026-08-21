@@ -143,6 +143,12 @@ public class TestAdminAdapter implements Admin {
     }
 
     @Override
+    public CompletableFuture<TableInfo> createTableOnLake(
+            TablePath tablePath, Map<String, String> properties) {
+        return null;
+    }
+
+    @Override
     public CompletableFuture<TableInfo> getTableInfo(TablePath tablePath) {
         throw new UnsupportedOperationException("Not implemented in TestAdminAdapter");
     }

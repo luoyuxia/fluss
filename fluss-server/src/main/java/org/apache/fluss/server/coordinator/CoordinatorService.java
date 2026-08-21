@@ -581,6 +581,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private TableDescriptor applyCreateTableOnLakeProperties(
             TableDescriptor tableDescriptor, CreateTableOnLakeRequest request) {
         Integer requestedBucketCount = null;
+        boolean dataLakeEnabledConfigured = false;
         TableDescriptor.Builder builder = TableDescriptor.builder(tableDescriptor);
         for (PbKeyValue property : request.getPropertiesList()) {
             if (BUCKET_NUM_KEY.equals(property.getKey())) {
@@ -597,12 +598,17 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 }
             } else if (isTableStorageConfig(property.getKey())) {
                 builder.property(property.getKey(), property.getValue());
+                if (ConfigOptions.TABLE_DATALAKE_ENABLED.key().equals(property.getKey())) {
+                    dataLakeEnabledConfigured = true;
+                }
             } else {
                 builder.customProperty(property.getKey(), property.getValue());
             }
         }
-        builder.property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
-                .property(ConfigOptions.TABLE_DATALAKE_FORMAT, DataLakeFormat.PAIMON);
+        if (!dataLakeEnabledConfigured) {
+            builder.property(ConfigOptions.TABLE_DATALAKE_ENABLED, true);
+        }
+        builder.property(ConfigOptions.TABLE_DATALAKE_FORMAT, DataLakeFormat.PAIMON);
         tableDescriptor = builder.build();
 
         Optional<Integer> lakeBucketCount =
