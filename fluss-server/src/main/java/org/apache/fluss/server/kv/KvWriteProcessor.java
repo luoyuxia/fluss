@@ -42,6 +42,7 @@ import org.apache.fluss.row.encode.ValueDecoder;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementUpdater;
+import org.apache.fluss.server.kv.historical.HistoricalValueLookup;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.TruncateReason;
 import org.apache.fluss.server.kv.rowmerger.DefaultRowMerger;
@@ -53,6 +54,7 @@ import org.apache.fluss.server.kv.wal.WalBuilder;
 import org.apache.fluss.server.log.LogAppendInfo;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.types.RowType;
+import org.apache.fluss.utils.ByteArrayWrapper;
 import org.apache.fluss.utils.BytesUtils;
 
 import org.slf4j.Logger;
@@ -60,6 +62,11 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Processes a KV record batch into local state mutations and the corresponding WAL records.
@@ -70,9 +77,11 @@ import javax.annotation.concurrent.NotThreadSafe;
  * truncated when the append fails or is detected as a duplicate.
  *
  * <p>The supplied {@link KvStateAccessor} defines how keys and state are accessed. Normal writes
- * use the original primary key and local state, while historical writes use partition-scoped keys
- * and may fall back to lake storage on a local miss. The merge and WAL generation path is shared by
- * both write kinds.
+ * use the original primary key and local state, while historical writes use partition-scoped keys.
+ * On a historical local miss, the processor can consult a lake result already memoized for the
+ * current request. Resolving that result from lake storage remains the caller's responsibility and
+ * must happen outside the tablet lock. The merge and WAL generation path is shared by both write
+ * kinds.
  *
  * <p>One instance belongs to one {@link KvTablet} and is invoked while that tablet's write lock is
  * held.
@@ -133,33 +142,13 @@ public final class KvWriteProcessor {
             KvRecordBatch kvRecords,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
-            KvStateAccessor stateAccessor)
+            KvStateAccessor stateAccessor,
+            @Nullable String originalPartitionName,
+            @Nullable HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
-        SchemaInfo schemaInfo = schemaGetter.getLatestSchemaInfo();
-        Schema latestSchema = schemaInfo.getSchema();
-        short latestSchemaId = (short) schemaInfo.getSchemaId();
-        validateSchemaId(kvRecords.schemaId(), latestSchemaId);
-
-        AutoIncrementUpdater currentAutoIncrementUpdater =
-                autoIncrementManager.getUpdaterForSchema(kvFormat, latestSchemaId);
-
-        // Validate targetColumns doesn't contain auto-increment column
-        currentAutoIncrementUpdater.validateTargetColumns(targetColumns);
-
-        // Determine the row merger based on mergeMode:
-        // - DEFAULT: Use the configured merge engine (rowMerger)
-        // - OVERWRITE: Bypass merge engine, use pre-created overwriteRowMerger
-        //   to directly replace values (for undo recovery scenarios)
-        // We only support ADD COLUMN, so targetColumns is fine to be used directly.
-        RowMerger currentMerger =
-                (mergeMode == MergeMode.OVERWRITE)
-                        ? overwriteRowMerger.configureTargetColumns(
-                                targetColumns, latestSchemaId, latestSchema)
-                        : rowMerger.configureTargetColumns(
-                                targetColumns, latestSchemaId, latestSchema);
-
-        RowType latestRowType = latestSchema.getRowType();
-        WalBuilder walBuilder = createWalBuilder(latestSchemaId, latestRowType);
+        WriteContext writeContext = createWriteContext(kvRecords, targetColumns, mergeMode);
+        RowType latestRowType = writeContext.latestSchema.getRowType();
+        WalBuilder walBuilder = createWalBuilder(writeContext.latestSchemaId, latestRowType);
         walBuilder.setWriterState(kvRecords.writerId(), kvRecords.batchSequence());
         // we only support ADD COLUMN LAST, so the BinaryRow after RowMerger is
         // only has fewer ending columns than latest schema, so we pad nulls to
@@ -172,12 +161,14 @@ public final class KvWriteProcessor {
             processKvRecords(
                     kvRecords,
                     kvRecords.schemaId(),
-                    currentMerger,
-                    currentAutoIncrementUpdater,
+                    writeContext.rowMerger,
+                    writeContext.autoIncrementUpdater,
                     walBuilder,
                     latestSchemaRow,
                     logEndOffsetOfPrevBatch,
-                    stateAccessor);
+                    stateAccessor,
+                    originalPartitionName,
+                    memoizedLakeLookup);
 
             // There will be a situation that these batches of kvRecordBatch have not
             // generated any CDC logs, for example, when client attempts to delete
@@ -212,6 +203,79 @@ public final class KvWriteProcessor {
         }
     }
 
+    /**
+     * Finds the original primary keys whose previous values must be loaded from lake storage before
+     * applying a historical write batch.
+     *
+     * <p>A key is returned only when its previous value is required and its partition-scoped key is
+     * absent from local state. Records that can establish their result without a previous value are
+     * skipped, and each key is returned at most once.
+     */
+    List<byte[]> findKeysRequiringLakeLookup(
+            KvRecordBatch kvRecords,
+            @Nullable int[] targetColumns,
+            MergeMode mergeMode,
+            KvStateAccessor stateAccessor,
+            String originalPartitionName)
+            throws Exception {
+        WriteContext writeContext = createWriteContext(kvRecords, targetColumns, mergeMode);
+
+        List<byte[]> keysRequiringLakeLookup = new ArrayList<>();
+        // Track keys whose lake-lookup requirement has already been evaluated.
+        Set<ByteArrayWrapper> keysEvaluatedForLakeLookup = new HashSet<>();
+        KvRecordBatch.ReadContext readContext =
+                KvRecordReadContext.createReadContext(kvFormat, schemaGetter);
+        for (KvRecord kvRecord : kvRecords.records(readContext)) {
+            byte[] primaryKey = BytesUtils.toArray(kvRecord.getKey());
+            ByteArrayWrapper wrappedKey = new ByteArrayWrapper(primaryKey);
+            if (kvRecord.getRow() == null) {
+                if (shouldIgnoreDeletion(writeContext.rowMerger)) {
+                    continue;
+                }
+            } else if (canSkipOldValueLookup(
+                    writeContext.rowMerger, writeContext.autoIncrementUpdater)) {
+                // A full-row WAL upsert establishes the state without reading its previous value.
+                keysEvaluatedForLakeLookup.add(wrappedKey);
+                continue;
+            }
+
+            // Probe local state only for the first record that needs a previous value. A true local
+            // miss schedules one lake lookup shared by all records for this key in the batch.
+            if (keysEvaluatedForLakeLookup.add(wrappedKey)
+                    && stateAccessor
+                                    .lookup(
+                                            stateAccessor.encodeKey(
+                                                    primaryKey, originalPartitionName))
+                                    .status()
+                            == KvStateLookupResult.Status.NOT_FOUND) {
+                keysRequiringLakeLookup.add(primaryKey);
+            }
+        }
+        return keysRequiringLakeLookup;
+    }
+
+    private WriteContext createWriteContext(
+            KvRecordBatch kvRecords, @Nullable int[] targetColumns, MergeMode mergeMode) {
+        SchemaInfo schemaInfo = schemaGetter.getLatestSchemaInfo();
+        Schema latestSchema = schemaInfo.getSchema();
+        short latestSchemaId = (short) schemaInfo.getSchemaId();
+        validateSchemaId(kvRecords.schemaId(), latestSchemaId);
+
+        AutoIncrementUpdater autoIncrementUpdater =
+                autoIncrementManager.getUpdaterForSchema(kvFormat, latestSchemaId);
+        autoIncrementUpdater.validateTargetColumns(targetColumns);
+
+        // OVERWRITE bypasses the configured merge engine for undo recovery.
+        RowMerger configuredRowMerger =
+                (mergeMode == MergeMode.OVERWRITE)
+                        ? overwriteRowMerger.configureTargetColumns(
+                                targetColumns, latestSchemaId, latestSchema)
+                        : rowMerger.configureTargetColumns(
+                                targetColumns, latestSchemaId, latestSchema);
+        return new WriteContext(
+                latestSchema, latestSchemaId, autoIncrementUpdater, configuredRowMerger);
+    }
+
     private void validateSchemaId(short schemaIdOfNewData, short latestSchemaId) {
         if (schemaIdOfNewData > latestSchemaId || schemaIdOfNewData < 0) {
             throw new SchemaNotExistException(
@@ -230,7 +294,9 @@ public final class KvWriteProcessor {
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
             long startLogOffset,
-            KvStateAccessor stateAccessor)
+            KvStateAccessor stateAccessor,
+            @Nullable String originalPartitionName,
+            @Nullable HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
         long logOffset = startLogOffset;
 
@@ -241,7 +307,7 @@ public final class KvWriteProcessor {
 
         for (KvRecord kvRecord : kvRecords.records(readContext)) {
             byte[] keyBytes = BytesUtils.toArray(kvRecord.getKey());
-            KvPreWriteBuffer.Key key = stateAccessor.encodeKey(keyBytes);
+            KvPreWriteBuffer.Key key = stateAccessor.encodeKey(keyBytes, originalPartitionName);
             BinaryRow row = kvRecord.getRow();
             BinaryValue currentValue = row == null ? null : new BinaryValue(schemaIdOfNewData, row);
 
@@ -254,7 +320,9 @@ public final class KvWriteProcessor {
                                 walBuilder,
                                 latestSchemaRow,
                                 logOffset,
-                                stateAccessor);
+                                stateAccessor,
+                                keyBytes,
+                                memoizedLakeLookup);
             } else {
                 logOffset =
                         processUpsert(
@@ -266,7 +334,9 @@ public final class KvWriteProcessor {
                                 walBuilder,
                                 latestSchemaRow,
                                 logOffset,
-                                stateAccessor);
+                                stateAccessor,
+                                keyBytes,
+                                memoizedLakeLookup);
             }
         }
     }
@@ -278,19 +348,15 @@ public final class KvWriteProcessor {
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
             long logOffset,
-            KvStateAccessor stateAccessor)
+            KvStateAccessor stateAccessor,
+            byte[] primaryKey,
+            @Nullable HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
-        DeleteBehavior deleteBehavior = currentMerger.deleteBehavior();
-        if (deleteBehavior == DeleteBehavior.IGNORE) {
-            // skip delete rows if the merger doesn't support yet
+        if (shouldIgnoreDeletion(currentMerger)) {
             return logOffset;
-        } else if (deleteBehavior == DeleteBehavior.DISABLE) {
-            throw new DeletionDisabledException(
-                    "Delete operations are disabled for this table. "
-                            + "The table.delete.behavior is set to 'disable'.");
         }
 
-        byte[] oldValueBytes = getFromState(key, stateAccessor);
+        byte[] oldValueBytes = getFromState(key, primaryKey, stateAccessor, memoizedLakeLookup);
         if (oldValueBytes == null) {
             LOG.debug(
                     "The specific key can't be found in kv tablet although the kv record is for deletion, "
@@ -320,20 +386,16 @@ public final class KvWriteProcessor {
             WalBuilder walBuilder,
             PaddingRow latestSchemaRow,
             long logOffset,
-            KvStateAccessor stateAccessor)
+            KvStateAccessor stateAccessor,
+            byte[] primaryKey,
+            @Nullable HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
-        // Optimization: IN WAL mode，when using DefaultRowMerger (full update, not partial update)
-        // and there is no auto-increment column, we can skip fetching old value for better
-        // performance since the result always reflects the new value. In this case, both INSERT and
-        // UPDATE will produce UPDATE_AFTER.
-        if (changelogImage == ChangelogImage.WAL
-                && !autoIncrementUpdater.hasAutoIncrement()
-                && currentMerger instanceof DefaultRowMerger) {
+        if (canSkipOldValueLookup(currentMerger, autoIncrementUpdater)) {
             return applyUpdate(
                     key, null, currentValue, walBuilder, latestSchemaRow, logOffset, stateAccessor);
         }
 
-        byte[] oldValueBytes = getFromState(key, stateAccessor);
+        byte[] oldValueBytes = getFromState(key, primaryKey, stateAccessor, memoizedLakeLookup);
         if (oldValueBytes == null) {
             BinaryValue valueToInsert = currentMerger.merge(null, currentValue);
             return applyInsert(
@@ -408,9 +470,39 @@ public final class KvWriteProcessor {
     }
 
     private byte[] getFromState(
-            KvPreWriteBuffer.Key encodedPrimaryKey, KvStateAccessor stateAccessor)
+            KvPreWriteBuffer.Key encodedPrimaryKey,
+            byte[] primaryKey,
+            KvStateAccessor stateAccessor,
+            @Nullable HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
-        return stateAccessor.lookup(encodedPrimaryKey).value();
+        KvStateLookupResult localResult = stateAccessor.lookup(encodedPrimaryKey);
+        if (localResult.status() != KvStateLookupResult.Status.NOT_FOUND
+                || memoizedLakeLookup == null) {
+            return localResult.value();
+        }
+        return memoizedLakeLookup.lookup(primaryKey);
+    }
+
+    private boolean canSkipOldValueLookup(
+            RowMerger currentMerger, AutoIncrementUpdater autoIncrementUpdater) {
+        // A full-row WAL upsert does not need the old value: its result is always the incoming row,
+        // and WAL mode emits only UPDATE_AFTER. Partial updates and auto-increment writes still
+        // need the old value to construct the final row or distinguish an insert from an update.
+        return changelogImage == ChangelogImage.WAL
+                && !autoIncrementUpdater.hasAutoIncrement()
+                && currentMerger instanceof DefaultRowMerger;
+    }
+
+    private static boolean shouldIgnoreDeletion(RowMerger currentMerger) {
+        DeleteBehavior deleteBehavior = currentMerger.deleteBehavior();
+        if (deleteBehavior == DeleteBehavior.IGNORE) {
+            return true;
+        } else if (deleteBehavior == DeleteBehavior.DISABLE) {
+            throw new DeletionDisabledException(
+                    "Delete operations are disabled for this table. "
+                            + "The table.delete.behavior is set to 'disable'.");
+        }
+        return false;
     }
 
     private WalBuilder createWalBuilder(int schemaId, RowType rowType) throws Exception {
@@ -441,6 +533,24 @@ public final class KvWriteProcessor {
                         memorySegmentPool);
             default:
                 throw new IllegalArgumentException("Unsupported log format: " + logFormat);
+        }
+    }
+
+    private static final class WriteContext {
+        private final Schema latestSchema;
+        private final short latestSchemaId;
+        private final AutoIncrementUpdater autoIncrementUpdater;
+        private final RowMerger rowMerger;
+
+        private WriteContext(
+                Schema latestSchema,
+                short latestSchemaId,
+                AutoIncrementUpdater autoIncrementUpdater,
+                RowMerger rowMerger) {
+            this.latestSchema = latestSchema;
+            this.latestSchemaId = latestSchemaId;
+            this.autoIncrementUpdater = autoIncrementUpdater;
+            this.rowMerger = rowMerger;
         }
     }
 }

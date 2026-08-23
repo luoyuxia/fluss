@@ -62,6 +62,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
@@ -111,6 +113,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     private final @Nullable PluginManager pluginManager;
     private final Counter capacityEvictions;
     private final Cache<Long, CachedLakeTableLookuper> lakeTableLookupers;
+    private final ConcurrentMap<Long, Long> requiredLakeSnapshotIds = new ConcurrentHashMap<>();
     private final File historicalLookupCacheRootDir;
     private final long dataDirVolumeBytes;
     // TODO: Introduce a minimum lookup cache disk ratio (default 0.01). When disk usage is high,
@@ -260,11 +263,18 @@ class HistoricalLakeLookupManager implements AutoCloseable {
     public void close() {
         lakeTableLookupers.invalidateAll();
         lakeTableLookupers.cleanUp();
+        requiredLakeSnapshotIds.clear();
     }
 
     /** Invalidates the cached lake lookuper for the given table. */
     void invalidateTableLookuper(long tableId) {
+        requiredLakeSnapshotIds.remove(tableId);
         lakeTableLookupers.invalidate(tableId);
+    }
+
+    /** Records the required opaque lake snapshot ID, which is compared only by equality. */
+    void requireLakeSnapshot(long tableId, long snapshotId) {
+        requiredLakeSnapshotIds.put(tableId, snapshotId);
     }
 
     /** Returns the number of table lookupers currently cached. */
@@ -467,39 +477,11 @@ class HistoricalLakeLookupManager implements AutoCloseable {
         }
     }
 
-    @Nullable
-    byte[] lookupValue(
-            TableInfo tableInfo,
-            SchemaInfo schemaInfo,
-            ResolvedPartitionSpec originalPartitionSpec,
-            int bucketId,
-            byte[] key,
-            LakeTableLookuper.LookupMetricRecorder lookupMetricRecorder)
-            throws Exception {
-        checkState(started, "Historical lake lookup manager has not been started.");
-        LookupContext context =
-                new LookupContext(
-                        tableInfo.getTableId(),
-                        schemaInfo.getSchemaId(),
-                        tableInfo.getTablePath(),
-                        new LakeTableLookuper.LookupContext(
-                                originalPartitionSpec,
-                                bucketId,
-                                (short) schemaInfo.getSchemaId(),
-                                schemaInfo.getSchema().getRowType(),
-                                lookupMetricRecorder));
-        CachedLakeTableLookuper cachedLookuper = acquireLookuper(context, tableInfo);
-        try {
-            return cachedLookuper.lookuper.lookup(key, context.lookupContext);
-        } finally {
-            cachedLookuper.release();
-        }
-    }
-
     private CachedLakeTableLookuper acquireLookuper(LookupContext context, TableInfo tableInfo) {
         long currentLakeConfigVersion = lakeConfigVersion;
         Configuration currentConf = conf;
         long cacheSizeBytes = lookupCacheMaxDiskBytesPerTable;
+        Long requiredLakeSnapshotId = requiredLakeSnapshotIds.get(context.tableId);
         return lakeTableLookupers
                 .asMap()
                 .compute(
@@ -514,7 +496,10 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                                     || selectedLookuper.schemaId != context.schemaId
                                     || selectedLookuper.lakeConfigVersion
                                             != currentLakeConfigVersion
-                                    || selectedLookuper.cacheSizeBytes != cacheSizeBytes) {
+                                    || selectedLookuper.cacheSizeBytes != cacheSizeBytes
+                                    || !Objects.equals(
+                                            selectedLookuper.lakeSnapshotId,
+                                            requiredLakeSnapshotId)) {
                                 File tableLookupDir =
                                         FlussPaths.historicalLookupTableDir(
                                                 historicalLookupCacheRootDir,
@@ -534,6 +519,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                                                 context.schemaId,
                                                 currentLakeConfigVersion,
                                                 cacheSizeBytes,
+                                                requiredLakeSnapshotId,
                                                 tableLookupDir,
                                                 lookuper);
                             }
@@ -569,6 +555,9 @@ class HistoricalLakeLookupManager implements AutoCloseable {
         private final int schemaId;
         private final long lakeConfigVersion;
         private final long cacheSizeBytes;
+        /** The required opaque lake snapshot ID when this lookuper was created, or null if none. */
+        private final @Nullable Long lakeSnapshotId;
+
         private final File tableLookupDir;
         private final LakeTableLookuper lookuper;
         private int activeLookups;
@@ -581,6 +570,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                 int schemaId,
                 long lakeConfigVersion,
                 long cacheSizeBytes,
+                @Nullable Long lakeSnapshotId,
                 File tableLookupDir,
                 LakeTableLookuper lookuper) {
             this.tableId = tableId;
@@ -588,6 +578,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
             this.schemaId = schemaId;
             this.lakeConfigVersion = lakeConfigVersion;
             this.cacheSizeBytes = cacheSizeBytes;
+            this.lakeSnapshotId = lakeSnapshotId;
             this.tableLookupDir = tableLookupDir;
             this.lookuper = lookuper;
         }

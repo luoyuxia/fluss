@@ -1209,6 +1209,7 @@ mod tests {
                 error_message: None,
                 log_end_offset: None,
                 pressure: Some(0.5),
+                original_partition_name: None,
             }],
         };
         sender

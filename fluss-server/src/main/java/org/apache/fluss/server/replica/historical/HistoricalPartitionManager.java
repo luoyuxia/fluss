@@ -36,9 +36,11 @@ import org.apache.fluss.server.entity.LookupDataForBucket;
 import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.kv.KvStateLookupResult;
 import org.apache.fluss.server.kv.KvStateLookupResult.Status;
+import org.apache.fluss.server.kv.historical.HistoricalValueLookup;
 import org.apache.fluss.server.log.LogAppendInfo;
 import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.storage.LocalDiskManager;
+import org.apache.fluss.utils.ByteArrayWrapper;
 import org.apache.fluss.utils.concurrent.Scheduler;
 
 import javax.annotation.Nullable;
@@ -46,9 +48,10 @@ import javax.annotation.Nullable;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -113,7 +116,9 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                                             new HistoricalPartitionThrottledException(
                                                     "Historical lookup is throttled for "
                                                             + tableBucket
-                                                            + "."))));
+                                                            + " (original partition "
+                                                            + lookupData.originalPartitionName()
+                                                            + ")."))));
         } catch (RuntimeException e) {
             return CompletableFuture.completedFuture(
                     new LookupResultForBucket(
@@ -125,7 +130,7 @@ public final class HistoricalPartitionManager implements AutoCloseable {
     }
 
     /** Writes records to the local overlay of a historical partition. */
-    public CompletableFuture<PutKvResultForBucket> put(
+    public CompletableFuture<PutKvResultForBucket> putKv(
             Replica replica,
             PutKvDataForBucket putData,
             @Nullable int[] targetColumns,
@@ -136,10 +141,8 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                     checkNotNull(
                             putData.originalPartitionName(),
                             "originalPartitionName must not be null");
-            HistoricalWriteKey orderingKey =
-                    new HistoricalWriteKey(putData.tableBucket(), originalPartitionName);
             return taskExecutor.submitOrdered(
-                    orderingKey,
+                    putData.tableBucket(),
                     () -> {
                         try {
                             LogAppendInfo appendInfo =
@@ -149,24 +152,34 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                                             targetColumns,
                                             mergeMode,
                                             requiredAcks);
-                            return new PutKvResultForBucket(
-                                    putData.tableBucket(), appendInfo.lastOffset() + 1);
+                            return PutKvResultForBucket.historicalSuccess(
+                                    putData.tableBucket(),
+                                    appendInfo.lastOffset() + 1,
+                                    originalPartitionName);
                         } catch (Throwable t) {
-                            return new PutKvResultForBucket(
-                                    putData.tableBucket(), ApiError.fromThrowable(t));
+                            return PutKvResultForBucket.historicalFailure(
+                                    putData.tableBucket(),
+                                    ApiError.fromThrowable(t),
+                                    originalPartitionName);
                         }
                     },
                     () ->
-                            new PutKvResultForBucket(
+                            PutKvResultForBucket.historicalFailure(
                                     putData.tableBucket(),
                                     ApiError.fromThrowable(
                                             new HistoricalPartitionThrottledException(
                                                     "Historical write is throttled for "
                                                             + putData.tableBucket()
-                                                            + "."))));
+                                                            + " (original partition "
+                                                            + originalPartitionName
+                                                            + ").")),
+                                    originalPartitionName));
         } catch (RuntimeException e) {
             return CompletableFuture.completedFuture(
-                    new PutKvResultForBucket(putData.tableBucket(), ApiError.fromThrowable(e)));
+                    PutKvResultForBucket.historicalFailure(
+                            putData.tableBucket(),
+                            ApiError.fromThrowable(e),
+                            putData.originalPartitionName()));
         }
     }
 
@@ -178,6 +191,11 @@ public final class HistoricalPartitionManager implements AutoCloseable {
     /** Invalidates the cached lake lookuper for the given table. */
     public void invalidateTableLookuper(long tableId) {
         lakeLookupManager.invalidateTableLookuper(tableId);
+    }
+
+    /** Requires future fallback lookups to reload after the given lake snapshot notification. */
+    public void requireLakeSnapshot(long tableId, long lakeSnapshotId) {
+        lakeLookupManager.requireLakeSnapshot(tableId, lakeSnapshotId);
     }
 
     /** Returns the number of accepted historical operations that have not completed. */
@@ -215,19 +233,56 @@ public final class HistoricalPartitionManager implements AutoCloseable {
         ResolvedPartitionSpec originalPartitionSpec =
                 ResolvedPartitionSpec.fromPartitionName(
                         tableInfo.getPartitionKeys(), originalPartitionName);
+        // The public put path holds the TableBucket ordering slot until processPut returns, so
+        // local state cannot be changed by a later historical write between resolve and apply.
+        int expectedLeaderEpoch = replica.getLeaderEpoch();
+        List<byte[]> keysRequiringLakeLookup =
+                replica.findKeysRequiringLakeLookup(
+                        putData.records(),
+                        targetColumns,
+                        mergeMode,
+                        originalPartitionName,
+                        expectedLeaderEpoch,
+                        requiredAcks);
+
+        Map<ByteArrayWrapper, KvStateLookupResult> lakeResults = new HashMap<>();
+        if (!keysRequiringLakeLookup.isEmpty()) {
+            List<byte[]> lakeValues =
+                    lakeLookupManager.lookup(
+                            new LookupDataForBucket(
+                                    putData.tableBucket(),
+                                    keysRequiringLakeLookup,
+                                    originalPartitionName),
+                            tableInfo,
+                            replica.getLatestSchemaInfo(),
+                            originalPartitionSpec,
+                            replica.tableMetrics()::recordHistoricalLakeLookup);
+            for (int i = 0; i < keysRequiringLakeLookup.size(); i++) {
+                byte[] lakeValue = lakeValues.get(i);
+                lakeResults.put(
+                        new ByteArrayWrapper(keysRequiringLakeLookup.get(i)),
+                        lakeValue == null
+                                ? KvStateLookupResult.notFound()
+                                : KvStateLookupResult.present(lakeValue));
+            }
+        }
+
+        HistoricalValueLookup memoizedLakeLookup =
+                primaryKey -> {
+                    KvStateLookupResult result =
+                            checkNotNull(
+                                    lakeResults.get(new ByteArrayWrapper(primaryKey)),
+                                    "No resolved lake value for a historical write key");
+                    return result.value();
+                };
+
         return replica.putHistoricalRecordsToLeader(
                 putData.records(),
                 targetColumns,
                 mergeMode,
                 originalPartitionName,
-                primaryKey ->
-                        lakeLookupManager.lookupValue(
-                                tableInfo,
-                                replica.getLatestSchemaInfo(),
-                                originalPartitionSpec,
-                                putData.tableBucket().getBucket(),
-                                primaryKey,
-                                replica.tableMetrics()::recordHistoricalLakeLookup),
+                memoizedLakeLookup,
+                expectedLeaderEpoch,
                 requiredAcks);
     }
 
@@ -293,34 +348,6 @@ public final class HistoricalPartitionManager implements AutoCloseable {
         } catch (Exception e) {
             return new LookupResultForBucket(
                     tableBucket, null, originalPartitionName, ApiError.fromThrowable(e));
-        }
-    }
-
-    private static final class HistoricalWriteKey {
-        private final TableBucket tableBucket;
-        private final String originalPartitionName;
-
-        private HistoricalWriteKey(TableBucket tableBucket, String originalPartitionName) {
-            this.tableBucket = tableBucket;
-            this.originalPartitionName = originalPartitionName;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof HistoricalWriteKey)) {
-                return false;
-            }
-            HistoricalWriteKey that = (HistoricalWriteKey) o;
-            return tableBucket.equals(that.tableBucket)
-                    && originalPartitionName.equals(that.originalPartitionName);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(tableBucket, originalPartitionName);
         }
     }
 }

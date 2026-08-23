@@ -21,12 +21,17 @@ import org.apache.fluss.annotation.Internal;
 
 import javax.annotation.Nullable;
 
-/** Looks up an encoded value outside the local historical KV tablet. */
+/** Resolves a lake value already memoized for the current historical write request. */
 @Internal
 @FunctionalInterface
 public interface HistoricalValueLookup {
 
-    /** Returns the encoded value for the primary key, or null when it does not exist. */
+    /**
+     * Returns the encoded value for the primary key, or null when it does not exist.
+     *
+     * <p>This method is invoked while the KV write lock is held and must not perform lake or file
+     * I/O.
+     */
     @Nullable
-    byte[] lookup(byte[] primaryKey) throws Exception;
+    byte[] lookup(byte[] primaryKey);
 }

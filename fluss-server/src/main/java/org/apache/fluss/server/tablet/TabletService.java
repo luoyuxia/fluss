@@ -285,7 +285,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
     public CompletableFuture<PutKvResponse> putKv(PutKvRequest request) {
         authorizeTable(WRITE, request.getTableId());
 
-        Map<TableBucket, PutKvDataForBucket> putKvData = toPutKvDataForBuckets(request);
+        List<PutKvDataForBucket> putKvData = toPutKvDataForBuckets(request);
         // Get mergeMode from request, default to DEFAULT if not set
         MergeMode mergeMode =
                 request.hasAggMode()
@@ -296,7 +296,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
             replicaManager.putHistoricalRecordsToKv(
                     request.getTimeoutMs(),
                     request.getAcks(),
-                    putKvData.values(),
+                    putKvData,
                     getTargetColumns(request),
                     mergeMode,
                     currentSession().getApiVersion(),
@@ -304,7 +304,7 @@ public final class TabletService extends RpcServiceBase implements TabletServerG
         } else {
             Map<TableBucket, KvRecordBatch> recordsByBucket = new HashMap<>();
             putKvData.forEach(
-                    (tableBucket, putData) -> recordsByBucket.put(tableBucket, putData.records()));
+                    putData -> recordsByBucket.put(putData.tableBucket(), putData.records()));
             replicaManager.putRecordsToKv(
                     request.getTimeoutMs(),
                     request.getAcks(),

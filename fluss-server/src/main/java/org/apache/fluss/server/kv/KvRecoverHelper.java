@@ -19,6 +19,7 @@ package org.apache.fluss.server.kv;
 
 import org.apache.fluss.metadata.KvFormat;
 import org.apache.fluss.metadata.LogFormat;
+import org.apache.fluss.metadata.ResolvedPartitionSpec;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.SchemaGetter;
 import org.apache.fluss.metadata.TableInfo;
@@ -36,6 +37,7 @@ import org.apache.fluss.row.encode.RowEncoder;
 import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
+import org.apache.fluss.server.kv.historical.HistoricalKvKeyEncoder;
 import org.apache.fluss.server.log.FetchIsolation;
 import org.apache.fluss.server.log.LogTablet;
 import org.apache.fluss.server.zk.ZooKeeperClient;
@@ -50,9 +52,14 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.apache.fluss.server.TabletManagerBase.getTableInfo;
+import static org.apache.fluss.server.kv.KvStateAccessor.HISTORICAL_TOMBSTONE;
+import static org.apache.fluss.utils.PartitionUtils.convertValueOfType;
+import static org.apache.fluss.utils.Preconditions.checkArgument;
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /** A helper for recovering Kv from log. */
 public class KvRecoverHelper {
@@ -67,6 +74,7 @@ public class KvRecoverHelper {
     private final KvFormat kvFormat;
     private final LogFormat logFormat;
     private final RemoteLogFetcher remoteLogFetcher;
+    private final boolean historicalPartition;
 
     // will be initialized when first encounter a log record during recovering from log
     private Integer currentSchemaId;
@@ -77,6 +85,7 @@ public class KvRecoverHelper {
     private final SchemaGetter schemaGetter;
 
     private InternalRow.FieldGetter[] currentFieldGetters;
+    private @Nullable HistoricalPartitionNameExtractor historicalPartitionNameExtractor;
 
     public KvRecoverHelper(
             KvTablet kvTablet,
@@ -88,7 +97,8 @@ public class KvRecoverHelper {
             KvFormat kvFormat,
             LogFormat logFormat,
             SchemaGetter schemaGetter,
-            RemoteLogFetcher remoteLogFetcher) {
+            RemoteLogFetcher remoteLogFetcher,
+            boolean historicalPartition) {
         this.kvTablet = kvTablet;
         this.logTablet = logTablet;
         this.recoverPointOffset = recoverPointOffset;
@@ -99,6 +109,7 @@ public class KvRecoverHelper {
         this.logFormat = logFormat;
         this.schemaGetter = schemaGetter;
         this.remoteLogFetcher = remoteLogFetcher;
+        this.historicalPartition = historicalPartition;
     }
 
     public void recover() throws Exception {
@@ -134,7 +145,11 @@ public class KvRecoverHelper {
             ThrowingConsumer<KeyValueAndLogOffset, Exception> resumeRecordApplier =
                     (resumeRecord) -> {
                         if (resumeRecord.value == null) {
-                            kvBatchWriter.delete(resumeRecord.key);
+                            if (historicalPartition) {
+                                kvBatchWriter.put(resumeRecord.key, HISTORICAL_TOMBSTONE);
+                            } else {
+                                kvBatchWriter.delete(resumeRecord.key);
+                            }
                         } else {
                             kvBatchWriter.put(resumeRecord.key, resumeRecord.value);
                         }
@@ -263,6 +278,13 @@ public class KvRecoverHelper {
                 if (changeType != ChangeType.UPDATE_BEFORE) {
                     InternalRow logRow = logRecord.getRow();
                     byte[] key = keyEncoder.encodeKey(logRow);
+                    if (historicalPartition) {
+                        key =
+                                HistoricalKvKeyEncoder.encode(
+                                        checkNotNull(historicalPartitionNameExtractor)
+                                                .partitionName(logRow),
+                                        key);
+                    }
                     byte[] value = null;
                     if (changeType != ChangeType.DELETE) {
                         // the log row format may not compatible with kv row format,
@@ -331,10 +353,54 @@ public class KvRecoverHelper {
                         tableInfo.getPhysicalPrimaryKeys(),
                         tableInfo.getTableConfig(),
                         tableInfo.isDefaultBucketKey());
+        historicalPartitionNameExtractor =
+                historicalPartition
+                        ? new HistoricalPartitionNameExtractor(tableInfo, currentRowType)
+                        : null;
         rowEncoder = RowEncoder.create(kvFormat, dataTypes);
         currentFieldGetters = new InternalRow.FieldGetter[currentRowType.getFieldCount()];
         for (int i = 0; i < currentRowType.getFieldCount(); i++) {
             currentFieldGetters[i] = InternalRow.createFieldGetter(currentRowType.getTypeAt(i), i);
+        }
+    }
+
+    /** Extracts the original partition name from a historical WAL row. */
+    private static final class HistoricalPartitionNameExtractor {
+        private final List<String> partitionKeys;
+        private final InternalRow.FieldGetter[] partitionGetters;
+        private final DataType[] partitionTypes;
+
+        private HistoricalPartitionNameExtractor(TableInfo tableInfo, RowType rowType) {
+            this.partitionKeys = tableInfo.getPartitionKeys();
+            checkArgument(
+                    !partitionKeys.isEmpty(),
+                    "Historical KV recovery requires at least one partition key.");
+            this.partitionGetters = new InternalRow.FieldGetter[partitionKeys.size()];
+            this.partitionTypes = new DataType[partitionKeys.size()];
+            for (int i = 0; i < partitionKeys.size(); i++) {
+                int fieldIndex = rowType.getFieldIndex(partitionKeys.get(i));
+                checkArgument(
+                        fieldIndex >= 0,
+                        "Partition column %s is absent from the recovery schema.",
+                        partitionKeys.get(i));
+                partitionTypes[i] = rowType.getTypeAt(fieldIndex);
+                partitionGetters[i] = InternalRow.createFieldGetter(partitionTypes[i], fieldIndex);
+            }
+        }
+
+        private String partitionName(InternalRow row) {
+            List<String> partitionValues = new ArrayList<>(partitionKeys.size());
+            for (int i = 0; i < partitionKeys.size(); i++) {
+                Object value = partitionGetters[i].getFieldOrNull(row);
+                partitionValues.add(
+                        convertValueOfType(
+                                checkNotNull(
+                                        value,
+                                        "Partition column %s must not be null.",
+                                        partitionKeys.get(i)),
+                                partitionTypes[i].getTypeRoot()));
+            }
+            return new ResolvedPartitionSpec(partitionKeys, partitionValues).getPartitionName();
         }
     }
 

@@ -19,14 +19,18 @@ package org.apache.fluss.server.utils;
 
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.record.KvRecordBatch;
+import org.apache.fluss.rpc.entity.PutKvResultForBucket;
 import org.apache.fluss.rpc.messages.PbPutKvReqForBucket;
+import org.apache.fluss.rpc.messages.PbPutKvRespForBucket;
 import org.apache.fluss.rpc.messages.PutKvRequest;
+import org.apache.fluss.rpc.messages.PutKvResponse;
 import org.apache.fluss.server.entity.PutKvDataForBucket;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.Map;
+import java.util.List;
 
 import static org.apache.fluss.record.TestData.DATA_1_WITH_KEY_AND_VALUE;
 import static org.apache.fluss.server.testutils.RpcMessageTestUtils.newPutKvRequest;
@@ -38,22 +42,40 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ServerRpcMessageUtilsTest {
 
     @Test
-    void testDecodeHistoricalPutKvRequest() throws Exception {
+    void testHistoricalPutKvRequestAndResponsePreserveOriginalPartitions() throws Exception {
         long tableId = 1L;
         long partitionId = 2L;
         KvRecordBatch records = genKvRecordBatch(DATA_1_WITH_KEY_AND_VALUE);
         PutKvRequest request = newPutKvRequest(tableId, 0, 1, records);
         PbPutKvReqForBucket bucketRequest = request.getBucketsReqsList().get(0);
         bucketRequest.setPartitionId(partitionId).setOriginalPartitionName("dt=2025-01-01");
+        request.addAllBucketsReqs(
+                Collections.singletonList(
+                        new PbPutKvReqForBucket()
+                                .copyFrom(bucketRequest)
+                                .setOriginalPartitionName("dt=2025-01-02")));
 
         TableBucket tableBucket = new TableBucket(tableId, partitionId, 0);
-        Map<TableBucket, PutKvDataForBucket> decoded =
-                ServerRpcMessageUtils.toPutKvDataForBuckets(request);
-        assertThat(decoded).containsOnlyKeys(tableBucket);
-        assertThat(decoded.get(tableBucket).originalPartitionName()).isEqualTo("dt=2025-01-01");
-        assertThat(decoded.get(tableBucket).records()).isEqualTo(records);
+        List<PutKvDataForBucket> decoded = ServerRpcMessageUtils.toPutKvDataForBuckets(request);
+        assertThat(decoded).extracting(PutKvDataForBucket::tableBucket).containsOnly(tableBucket);
+        assertThat(decoded)
+                .extracting(PutKvDataForBucket::originalPartitionName)
+                .containsExactly("dt=2025-01-01", "dt=2025-01-02");
+        assertThat(decoded).extracting(PutKvDataForBucket::records).containsOnly(records);
 
-        request.addAllBucketsReqs(Collections.singletonList(bucketRequest));
+        PutKvResponse response =
+                ServerRpcMessageUtils.makePutKvResponse(
+                        Arrays.asList(
+                                PutKvResultForBucket.historicalSuccess(
+                                        tableBucket, 1L, "dt=2025-01-01"),
+                                PutKvResultForBucket.historicalSuccess(
+                                        tableBucket, 2L, "dt=2025-01-02")));
+        assertThat(response.getBucketsRespsList())
+                .extracting(PbPutKvRespForBucket::getOriginalPartitionName)
+                .containsExactly("dt=2025-01-01", "dt=2025-01-02");
+
+        request.addAllBucketsReqs(
+                Collections.singletonList(new PbPutKvReqForBucket().copyFrom(bucketRequest)));
         assertThatThrownBy(() -> ServerRpcMessageUtils.toPutKvDataForBuckets(request))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("duplicate table bucket");

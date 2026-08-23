@@ -27,21 +27,21 @@ import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
- * Result of looking up a key from local KV state.
+ * Result of looking up a key from a KV state source.
  *
- * <p>{@link Status#NOT_FOUND} only means that the key was not found in local KV state, so a
- * historical lookup may still query lake storage. {@link Status#DELETED} confirms that the key has
- * been deleted and must stop the fallback from exposing an older value in lake storage.
+ * <p>{@link Status#NOT_FOUND} means that the queried source has no state for the key, so the caller
+ * may consult another source. {@link Status#DELETED} confirms that the key has been deleted and
+ * must stop fallback from exposing an older value.
  */
 @Internal
 public final class KvStateLookupResult {
 
-    /** Status of a local KV state lookup. */
+    /** Status of a KV state lookup. */
     public enum Status {
-        /** The key was not found in local KV state. */
+        /** The key was not found in the queried state source. */
         NOT_FOUND,
 
-        /** Local state contains a non-empty encoded value. */
+        /** The queried state source contains a non-empty encoded value. */
         PRESENT,
 
         /** The key is known to have been deleted. */
@@ -61,7 +61,7 @@ public final class KvStateLookupResult {
         this.value = value;
     }
 
-    /** Returns a result indicating that the key was not found in local KV state. */
+    /** Returns a result indicating that the key was not found in the queried state source. */
     public static KvStateLookupResult notFound() {
         return NOT_FOUND;
     }

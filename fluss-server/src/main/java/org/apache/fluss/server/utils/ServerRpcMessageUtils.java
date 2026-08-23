@@ -1108,10 +1108,10 @@ public class ServerRpcMessageUtils {
      * writes cannot be mixed in one request. Historical target and partition eligibility are
      * validated by the historical write path.
      */
-    public static Map<TableBucket, PutKvDataForBucket> toPutKvDataForBuckets(
-            PutKvRequest putKvRequest) {
+    public static List<PutKvDataForBucket> toPutKvDataForBuckets(PutKvRequest putKvRequest) {
         long tableId = putKvRequest.getTableId();
-        Map<TableBucket, PutKvDataForBucket> putKvData = new HashMap<>();
+        List<PutKvDataForBucket> putKvData = new ArrayList<>(putKvRequest.getBucketsReqsCount());
+        Map<TableBucket, Set<String>> originalPartitionsByBucket = new HashMap<>();
         boolean historicalWriteRequest =
                 putKvRequest.getBucketsReqsCount() > 0
                         && putKvRequest.getBucketsReqAt(0).hasOriginalPartitionName();
@@ -1129,19 +1129,22 @@ public class ServerRpcMessageUtils {
                                     ? putKvReqForBucket.getPartitionId()
                                     : null,
                             putKvReqForBucket.getBucketId());
-            PutKvDataForBucket previous =
-                    putKvData.putIfAbsent(
-                            tableBucket,
-                            new PutKvDataForBucket(
-                                    tableBucket,
-                                    kvRecords,
-                                    putKvReqForBucket.hasOriginalPartitionName()
-                                            ? putKvReqForBucket.getOriginalPartitionName()
-                                            : null));
-            if (previous != null) {
+            String originalPartitionName =
+                    putKvReqForBucket.hasOriginalPartitionName()
+                            ? putKvReqForBucket.getOriginalPartitionName()
+                            : null;
+            Set<String> originalPartitions =
+                    originalPartitionsByBucket.computeIfAbsent(
+                            tableBucket, ignored -> new HashSet<>());
+            if (!originalPartitions.add(originalPartitionName)) {
                 throw new IllegalArgumentException(
-                        "A PutKv request contains duplicate table bucket " + tableBucket + '.');
+                        "A PutKv request contains duplicate table bucket "
+                                + tableBucket
+                                + " and original partition "
+                                + originalPartitionName
+                                + '.');
             }
+            putKvData.add(new PutKvDataForBucket(tableBucket, kvRecords, originalPartitionName));
         }
         return putKvData;
     }
@@ -1240,6 +1243,9 @@ public class ServerRpcMessageUtils {
             TableBucket tableBucket = bucketResult.getTableBucket();
             if (tableBucket.getPartitionId() != null) {
                 putKvBucket.setPartitionId(tableBucket.getPartitionId());
+            }
+            if (bucketResult.getOriginalPartitionName() != null) {
+                putKvBucket.setOriginalPartitionName(bucketResult.getOriginalPartitionName());
             }
 
             if (bucketResult.failed()) {

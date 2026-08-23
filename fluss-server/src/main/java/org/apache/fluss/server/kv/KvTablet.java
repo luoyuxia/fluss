@@ -37,8 +37,6 @@ import org.apache.fluss.row.arrow.ArrowWriterPool;
 import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
-import org.apache.fluss.server.kv.historical.HistoricalKvKeyEncoder;
-import org.apache.fluss.server.kv.historical.HistoricalKvStateAccessor;
 import org.apache.fluss.server.kv.historical.HistoricalValueLookup;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.PreparedFlush;
@@ -83,7 +81,9 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import static org.apache.fluss.server.kv.KvStateAccessor.HISTORICAL_TOMBSTONE;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 import static org.apache.fluss.utils.Preconditions.checkState;
 import static org.apache.fluss.utils.concurrent.LockUtils.inReadLock;
 import static org.apache.fluss.utils.concurrent.LockUtils.inWriteLock;
@@ -108,8 +108,6 @@ public final class KvTablet {
 
     private static final long ROW_COUNT_DISABLED = -1;
 
-    private static final byte[] HISTORICAL_TOMBSTONE = new byte[0];
-
     /**
      * Max records per native write of the asynchronous flush; mirrors the batching capacity of
      * {@code RocksDBWriteBatchWrapper} (hundreds of keys per write batch is RocksDB best practice).
@@ -127,7 +125,7 @@ public final class KvTablet {
     private final long writeBatchSize;
     private final RocksDBKv rocksDBKv;
     private final KvPreWriteBuffer kvPreWriteBuffer;
-    private final LocalKvStateAccessor localKvStateAccessor;
+    private final KvStateAccessor kvStateAccessor;
     private final KvWriteProcessor kvWriteProcessor;
     private final TabletServerMetricGroup serverMetricGroup;
     private final KvFlushScheduler kvFlushScheduler;
@@ -197,7 +195,8 @@ public final class KvTablet {
         this.kvFlushScheduler = kvFlushScheduler;
         this.closeFlushScheduler = closeFlushScheduler;
         this.kvPreWriteBuffer = new KvPreWriteBuffer(serverMetricGroup);
-        this.localKvStateAccessor = new LocalKvStateAccessor(kvPreWriteBuffer, rocksDBKv);
+        this.kvStateAccessor =
+                new KvStateAccessor(kvPreWriteBuffer, rocksDBKv, historicalPartition);
         this.kvWriteProcessor =
                 new KvWriteProcessor(
                         tableBucket,
@@ -213,8 +212,13 @@ public final class KvTablet {
         this.rocksDBStatistics = rocksDBStatistics;
         this.autoIncrementManager = autoIncrementManager;
         this.flushCompleteListener = flushCompleteListener;
-        // disable row count for WAL image mode.
-        this.rowCount = changelogImage == ChangelogImage.WAL ? ROW_COUNT_DISABLED : 0L;
+        // TODO: Support row count for historical partitions.
+        // Historical state only contains the WAL tail that has not been tiered to lake, so it
+        // cannot maintain a table-level row count.
+        this.rowCount =
+                historicalPartition || changelogImage == ChangelogImage.WAL
+                        ? ROW_COUNT_DISABLED
+                        : 0L;
     }
 
     /**
@@ -402,6 +406,11 @@ public final class KvTablet {
         return kvTabletDir;
     }
 
+    /** Returns the total size in bytes of the live RocksDB SST files. */
+    public long liveSstFilesSize() {
+        return rocksDBKv.liveSstFilesSize();
+    }
+
     /**
      * Get RocksDB statistics accessor for this tablet.
      *
@@ -488,36 +497,71 @@ public final class KvTablet {
     public LogAppendInfo putAsLeader(
             KvRecordBatch kvRecords, @Nullable int[] targetColumns, MergeMode mergeMode)
             throws Exception {
-        checkState(!historicalPartition, "%s is a historical KV tablet", tableBucket);
-        return putAsLeader(kvRecords, targetColumns, mergeMode, localKvStateAccessor);
+        checkState(
+                !historicalPartition,
+                "putAsLeader is not supported for historical KV tablet %s",
+                tableBucket);
+        return putAsLeader(kvRecords, targetColumns, mergeMode, null, null);
     }
 
     /**
      * Puts records for one original partition into this historical KV tablet.
      *
      * <p>The original partition name namespaces the physical primary keys because one historical
-     * bucket can contain records from multiple original partitions. Local misses are resolved by
-     * the supplied fallback before the merge is applied.
+     * bucket can contain records from multiple original partitions. The supplied fallback may only
+     * read lake results already resolved for this request; it must not perform lake I/O while the
+     * tablet lock is held.
      */
     public LogAppendInfo putHistoricalAsLeader(
             KvRecordBatch kvRecords,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
             String originalPartitionName,
-            HistoricalValueLookup fallbackLookup)
+            HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
         checkState(historicalPartition, "%s is not a historical KV tablet", tableBucket);
-        KvStateAccessor historicalStateAccessor =
-                new HistoricalKvStateAccessor(
-                        localKvStateAccessor, originalPartitionName, fallbackLookup);
-        return putAsLeader(kvRecords, targetColumns, mergeMode, historicalStateAccessor);
+        return putAsLeader(
+                kvRecords,
+                targetColumns,
+                mergeMode,
+                checkNotNull(originalPartitionName, "originalPartitionName must not be null"),
+                checkNotNull(memoizedLakeLookup, "memoizedLakeLookup must not be null"));
+    }
+
+    /**
+     * Finds keys whose historical write requires an old value that is absent from local state.
+     *
+     * <p>This method only reads local state. Lake I/O must be performed by the caller after this
+     * method releases the tablet lock.
+     */
+    public List<byte[]> findKeysRequiringLakeLookup(
+            KvRecordBatch kvRecords,
+            @Nullable int[] targetColumns,
+            MergeMode mergeMode,
+            String originalPartitionName)
+            throws Exception {
+        checkState(historicalPartition, "%s is not a historical KV tablet", tableBucket);
+        return inWriteLock(
+                kvLock,
+                () -> {
+                    rocksDBKv.checkIfRocksDBClosed();
+                    return kvWriteProcessor.findKeysRequiringLakeLookup(
+                            kvRecords,
+                            targetColumns,
+                            mergeMode,
+                            kvStateAccessor,
+                            checkNotNull(
+                                    originalPartitionName,
+                                    "originalPartitionName must not be null"));
+                });
     }
 
     private LogAppendInfo putAsLeader(
             KvRecordBatch kvRecords,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
-            KvStateAccessor stateAccessor)
+            @Nullable String originalPartitionName,
+            @Nullable HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
         return inWriteLock(
                 kvLock,
@@ -541,7 +585,12 @@ public final class KvTablet {
                     }
 
                     return kvWriteProcessor.putAsLeader(
-                            kvRecords, targetColumns, mergeMode, stateAccessor);
+                            kvRecords,
+                            targetColumns,
+                            mergeMode,
+                            kvStateAccessor,
+                            originalPartitionName,
+                            memoizedLakeLookup);
                 });
     }
 
@@ -849,13 +898,13 @@ public final class KvTablet {
     /** put key,value,logOffset into pre-write buffer directly. */
     void putToPreWriteBuffer(
             ChangeType changeType, byte[] key, @Nullable byte[] value, long logOffset) {
-        KvPreWriteBuffer.Key wrapKey = localKvStateAccessor.encodeKey(key);
+        KvPreWriteBuffer.Key wrapKey = KvPreWriteBuffer.Key.of(key);
         if (changeType == ChangeType.DELETE && value == null) {
-            localKvStateAccessor.delete(wrapKey, logOffset);
+            kvStateAccessor.delete(wrapKey, logOffset);
         } else if (changeType == ChangeType.INSERT) {
-            localKvStateAccessor.insert(wrapKey, value, logOffset);
+            kvStateAccessor.insert(wrapKey, value, logOffset);
         } else if (changeType == ChangeType.UPDATE_AFTER) {
-            localKvStateAccessor.update(wrapKey, value, logOffset);
+            kvStateAccessor.update(wrapKey, value, logOffset);
         } else {
             throw new IllegalArgumentException(
                     "Unsupported change type for putToPreWriteBuffer: " + changeType);
@@ -871,11 +920,6 @@ public final class KvTablet {
      */
     public Executor getGuardedExecutor() {
         return runnable -> inWriteLock(kvLock, runnable::run);
-    }
-
-    // Get from the state pre-write buffer first, then fall back to the underlying storage.
-    private byte[] getFromBufferOrKv(KvPreWriteBuffer.Key key) throws IOException {
-        return localKvStateAccessor.lookup(key).value();
     }
 
     public List<byte[]> multiGet(List<byte[]> keys) throws IOException {
@@ -896,13 +940,20 @@ public final class KvTablet {
      * #multiGet} so that clients only observe flushed data.
      */
     public List<byte[]> multiGetFromBufferOrKv(List<byte[]> keys) throws IOException {
+        checkState(
+                !historicalPartition,
+                "multiGetFromBufferOrKv is not supported for historical KV tablet %s",
+                tableBucket);
         return inReadLock(
                 kvLock,
                 () -> {
                     rocksDBKv.checkIfRocksDBClosed();
                     List<byte[]> values = new ArrayList<>(keys.size());
                     for (byte[] key : keys) {
-                        values.add(getFromBufferOrKv(localKvStateAccessor.encodeKey(key)));
+                        values.add(
+                                kvStateAccessor
+                                        .lookup(kvStateAccessor.encodeKey(key, null))
+                                        .value());
                     }
                     return values;
                 });
@@ -918,7 +969,7 @@ public final class KvTablet {
                     rocksDBKv.checkIfRocksDBClosed();
                     byte[] value =
                             rocksDBKv.get(
-                                    HistoricalKvKeyEncoder.encode(originalPartitionName, key));
+                                    kvStateAccessor.encodeKey(key, originalPartitionName).get());
                     if (value == null) {
                         return KvStateLookupResult.notFound();
                     }

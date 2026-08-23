@@ -24,6 +24,7 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.utils.ExecutorUtils;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.time.Duration;
@@ -79,7 +80,7 @@ public final class HistoricalPartitionTaskExecutor implements AutoCloseable {
     /** Creates a historical-partition task executor backed by the supplied executor. */
     @VisibleForTesting
     public HistoricalPartitionTaskExecutor(
-            Configuration conf, ExecutorService historicalPartitionExecutor) {
+            Configuration conf, @Nullable ExecutorService historicalPartitionExecutor) {
         checkNotNull(conf, "conf must not be null.");
         this.maxQueuedHistoricalRequests =
                 conf.get(ConfigOptions.NETTY_SERVER_MAX_QUEUED_HISTORICAL_REQUESTS);

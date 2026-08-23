@@ -162,6 +162,32 @@ class HistoricalLakeLookupManagerTest {
     }
 
     @Test
+    void testRefreshesLookuperWhenLakeSnapshotChanges() throws Exception {
+        TestingHistoricalLakeLookupManager manager = createTestingManager();
+
+        lookup(manager, PARTITION_TABLE_INFO);
+        TestingLakeTableLookuper initialLookuper = manager.createdLookupers.get(0);
+
+        manager.requireLakeSnapshot(PARTITION_TABLE_ID, 10L);
+        lookup(manager, PARTITION_TABLE_INFO);
+        assertThat(initialLookuper.closed).isTrue();
+        assertThat(manager.createdLookupers).hasSize(2);
+
+        TestingLakeTableLookuper snapshotTenLookuper = manager.createdLookupers.get(1);
+        // Snapshot IDs are opaque; a numerically smaller ID may identify a newer snapshot.
+        manager.requireLakeSnapshot(PARTITION_TABLE_ID, 9L);
+        lookup(manager, PARTITION_TABLE_INFO);
+        assertThat(snapshotTenLookuper.closed).isTrue();
+        assertThat(manager.createdLookupers).hasSize(3);
+
+        TestingLakeTableLookuper snapshotNineLookuper = manager.createdLookupers.get(2);
+        manager.requireLakeSnapshot(PARTITION_TABLE_ID, 9L);
+        lookup(manager, PARTITION_TABLE_INFO);
+        assertThat(snapshotNineLookuper.closed).isFalse();
+        assertThat(manager.createdLookupers).hasSize(3);
+    }
+
+    @Test
     void testDoesNotReplaceLookuperForUnrelatedTableConfigChange() throws Exception {
         TestingHistoricalLakeLookupManager manager = createTestingManager();
 

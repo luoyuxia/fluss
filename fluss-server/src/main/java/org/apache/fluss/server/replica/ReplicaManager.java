@@ -763,29 +763,36 @@ public class ReplicaManager implements ServerReconfigurable {
             return;
         }
 
-        Map<TableBucket, PutKvResultForBucket> results = new ConcurrentHashMap<>();
+        List<PutKvResultForBucket> results = Collections.synchronizedList(new ArrayList<>());
         AtomicInteger remaining = new AtomicInteger(entriesPerBucket.size());
         entriesPerBucket.forEach(
                 putData ->
                         historicalPutKv(putData, targetColumns, mergeMode, requiredAcks, apiVersion)
                                 .whenComplete(
                                         (result, error) -> {
-                                            PutKvResultForBucket completedResult = result;
-                                            if (error != null) {
-                                                completedResult =
-                                                        new PutKvResultForBucket(
-                                                                putData.tableBucket(),
-                                                                ApiError.fromThrowable(error));
-                                            }
-                                            results.put(putData.tableBucket(), completedResult);
-                                            if (remaining.decrementAndGet() == 0) {
-                                                maybeAddDelayedWrite(
-                                                        timeoutMs,
-                                                        requiredAcks,
-                                                        entriesPerBucket.size(),
-                                                        results,
-                                                        responseCallback);
-                                            }
+                                            PutKvResultForBucket completedResult =
+                                                    error == null
+                                                            ? result
+                                                            : PutKvResultForBucket
+                                                                    .historicalFailure(
+                                                                            putData.tableBucket(),
+                                                                            ApiError.fromThrowable(
+                                                                                    error),
+                                                                            putData
+                                                                                    .originalPartitionName());
+                                            maybeAddDelayedWrite(
+                                                    timeoutMs,
+                                                    requiredAcks,
+                                                    1,
+                                                    Collections.singletonMap(
+                                                            putData.tableBucket(), completedResult),
+                                                    delayedResult -> {
+                                                        results.add(delayedResult.get(0));
+                                                        if (remaining.decrementAndGet() == 0) {
+                                                            responseCallback.accept(
+                                                                    new ArrayList<>(results));
+                                                        }
+                                                    });
                                         }));
     }
 
@@ -822,11 +829,11 @@ public class ReplicaManager implements ServerReconfigurable {
                             putData.originalPartitionName());
             TableMetricGroup historicalPutMetrics = tableMetrics;
             return historicalPartitionManager
-                    .put(replica, copiedData, targetColumns, mergeMode, requiredAcks)
+                    .putKv(replica, copiedData, targetColumns, mergeMode, requiredAcks)
                     .thenApply(
                             result -> {
                                 if (result.failed()
-                                        && isUnexpectedHistoricalPartitionException(
+                                        && isUnexpectedHistoricalException(
                                                 result.getError().exception())) {
                                     historicalPutMetrics.failedHistoricalPutKvRequests().inc();
                                 }
@@ -834,12 +841,12 @@ public class ReplicaManager implements ServerReconfigurable {
                             });
         } catch (Throwable t) {
             ApiError error = ApiError.fromThrowable(t);
-            if (tableMetrics != null
-                    && isUnexpectedHistoricalPartitionException(error.exception())) {
+            if (tableMetrics != null && isUnexpectedHistoricalException(error.exception())) {
                 tableMetrics.failedHistoricalPutKvRequests().inc();
             }
             return CompletableFuture.completedFuture(
-                    new PutKvResultForBucket(putData.tableBucket(), error));
+                    PutKvResultForBucket.historicalFailure(
+                            putData.tableBucket(), error, putData.originalPartitionName()));
         }
     }
 
@@ -947,7 +954,7 @@ public class ReplicaManager implements ServerReconfigurable {
                                     + replica.getTablePath()
                                     + " is not a primary key table.");
                 }
-                if (!isHistoricalPartitionReplica(replica)) {
+                if (!replica.isHistoricalPartition()) {
                     throw new InvalidPartitionException(
                             "Historical lookup request must target a historical partition.");
                 }
@@ -977,7 +984,7 @@ public class ReplicaManager implements ServerReconfigurable {
                                                 data.originalPartitionName(),
                                                 ApiError.fromThrowable(error));
                         if (completedResult.failed()
-                                && isUnexpectedHistoricalPartitionException(
+                                && isUnexpectedHistoricalException(
                                         completedResult.getError().exception())) {
                             replica.tableMetrics().failedHistoricalLookupRequests().inc();
                         }
@@ -1076,10 +1083,6 @@ public class ReplicaManager implements ServerReconfigurable {
             responseCallback.accept(lookupResultForBucketMap);
         }
         LOG.debug("Lookup from local kv in {}ms", System.currentTimeMillis() - startTime);
-    }
-
-    private boolean isHistoricalPartitionReplica(Replica replica) {
-        return replica.isHistoricalPartition();
     }
 
     /**
@@ -1250,7 +1253,7 @@ public class ReplicaManager implements ServerReconfigurable {
                                 try {
                                     boolean deletingHistoricalPartition =
                                             data.isDeleteRemote()
-                                                    && isHistoricalPartitionReplica(replica);
+                                                    && replica.isHistoricalPartition();
                                     result.add(
                                             stopReplica(
                                                     tb,
@@ -1392,10 +1395,13 @@ public class ReplicaManager implements ServerReconfigurable {
                 // register replica to remote log manager first.
                 remoteLogManager.registerReplica(replica);
 
-                replica.makeLeader(data);
+                // Load the latest lake progress before leader activation. Historical KV recovery
+                // requires its lake log end offset, while failures remain best effort for normal
+                // replicas.
                 if (replica.isDataLakeEnabled()) {
                     updateWithLakeTableSnapshot(replica);
                 }
+                replica.makeLeader(data);
 
                 // start the remote log tiering tasks for leaders
                 remoteLogManager.startLogTiering(replica);
@@ -1409,7 +1415,7 @@ public class ReplicaManager implements ServerReconfigurable {
     }
 
     // NOTE: This method can be removed when fetchFromLake is deprecated
-    private void updateWithLakeTableSnapshot(Replica replica) {
+    private void updateWithLakeTableSnapshot(Replica replica) throws Exception {
         TableBucket tb = replica.getTableBucket();
         try {
             Optional<LakeTableSnapshot> optLakeTableSnapshot =
@@ -1418,14 +1424,27 @@ public class ReplicaManager implements ServerReconfigurable {
                 LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
                 long snapshotId = optLakeTableSnapshot.get().getSnapshotId();
                 replica.getLogTablet().updateLakeTableSnapshotId(snapshotId);
+                if (replica.isHistoricalPartition()) {
+                    // The historical overlay will be rebuilt from this snapshot's lake offset.
+                    // Refresh a cached lookuper before it becomes the fallback for data omitted
+                    // from the rebuilt overlay.
+                    historicalPartitionManager.requireLakeSnapshot(
+                            replica.getTableBucket().getTableId(), snapshotId);
+                }
                 lakeTableSnapshot
                         .getLogEndOffset(tb)
                         .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
             }
         } catch (Exception e) {
+            if (replica.isHistoricalPartition()) {
+                // Historical recovery uses the lake offset as its durable base and replays the
+                // retained WAL from that offset. Reject leader activation if the latest lake
+                // progress cannot be loaded, instead of rebuilding the overlay from stale state.
+                throw e;
+            }
             // Lake commit cleanup can race with this best-effort refresh and remove the
             // referenced offsets file. A failure only leaves the snapshot/offset state stale
-            // until the next synchronization, so it must not fail the leader transition.
+            // until the next synchronization, so it must not fail a normal leader transition.
             LOG.warn("Failed to update replica {} with lake table snapshot.", tb, e);
         }
     }
@@ -1939,7 +1958,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 || e instanceof StorageBackpressureException);
     }
 
-    private boolean isUnexpectedHistoricalPartitionException(Exception e) {
+    private boolean isUnexpectedHistoricalException(Exception e) {
         return isUnexpectedException(e)
                 && !(e instanceof HistoricalPartitionThrottledException
                         || e instanceof InvalidPartitionException
