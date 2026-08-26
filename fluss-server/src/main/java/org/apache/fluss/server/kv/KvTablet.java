@@ -531,8 +531,8 @@ public final class KvTablet {
     /**
      * Finds keys whose historical write requires an old value that is absent from local state.
      *
-     * <p>This method only reads local state. Lake I/O must be performed by the caller after this
-     * method releases the tablet lock.
+     * <p>This method only reads KV entries and uses the tablet read lock. Lake I/O must be
+     * performed by the caller after this method releases the tablet lock.
      */
     public List<byte[]> findKeysRequiringLakeLookup(
             KvRecordBatch kvRecords,
@@ -541,7 +541,7 @@ public final class KvTablet {
             String originalPartitionName)
             throws Exception {
         checkState(historicalPartition, "%s is not a historical KV tablet", tableBucket);
-        return inWriteLock(
+        return inReadLock(
                 kvLock,
                 () -> {
                     rocksDBKv.checkIfRocksDBClosed();

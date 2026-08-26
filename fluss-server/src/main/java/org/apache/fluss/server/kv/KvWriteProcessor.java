@@ -82,9 +82,6 @@ import java.util.Set;
  * current request. Resolving that result from lake storage remains the caller's responsibility and
  * must happen outside the tablet lock. The merge and WAL generation path is shared by both write
  * kinds.
- *
- * <p>One instance belongs to one {@link KvTablet} and is invoked while that tablet's write lock is
- * held.
  */
 @Internal
 @NotThreadSafe
@@ -469,13 +466,24 @@ public final class KvWriteProcessor {
         }
     }
 
+    /**
+     * Returns the previous value from local state, falling back to the memoized lake result only on
+     * a genuine local miss.
+     *
+     * @param localStateKey the key used by the local prewrite buffer and RocksDB; it wraps {@code
+     *     primaryKey} for a normal partition and adds the original partition namespace for a
+     *     historical partition
+     * @param primaryKey the encoded bytes of the logical primary key, without the historical
+     *     partition namespace; used by the lake lookup
+     * @return the previous value, or null if the key is absent or locally marked as deleted
+     */
     private byte[] getFromState(
-            KvPreWriteBuffer.Key encodedPrimaryKey,
+            KvPreWriteBuffer.Key localStateKey,
             byte[] primaryKey,
             KvStateAccessor stateAccessor,
             @Nullable HistoricalValueLookup memoizedLakeLookup)
             throws Exception {
-        KvStateLookupResult localResult = stateAccessor.lookup(encodedPrimaryKey);
+        KvStateLookupResult localResult = stateAccessor.lookup(localStateKey);
         if (localResult.status() != KvStateLookupResult.Status.NOT_FOUND
                 || memoizedLakeLookup == null) {
             return localResult.value();
