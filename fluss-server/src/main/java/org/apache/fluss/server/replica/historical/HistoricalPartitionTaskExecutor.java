@@ -141,23 +141,46 @@ public final class HistoricalPartitionTaskExecutor implements AutoCloseable {
             return CompletableFuture.completedFuture(throttledResult.get());
         }
 
-        CompletableFuture<T> future;
-        CompletableFuture<Void> tail;
         try {
-            synchronized (orderedTasksLock) {
-                CompletableFuture<Void> previousTail = orderedTaskTails.get(orderingKey);
-                if (previousTail == null) {
-                    future = CompletableFuture.supplyAsync(task, executor);
-                } else {
-                    future = previousTail.thenApplyAsync(ignored -> task.get(), executor);
-                }
-                // Convert success or failure into a normal completion used only for sequencing.
-                tail = future.handle((ignored, error) -> null);
-                orderedTaskTails.put(orderingKey, tail);
-            }
+            return enqueueOrdered(orderingKey, task, true);
         } catch (RuntimeException e) {
             requestPermits.release();
             throw e;
+        }
+    }
+
+    /**
+     * Submits an internal maintenance task after all accepted tasks with the same ordering key.
+     *
+     * <p>Maintenance work is not a client request and therefore does not consume a request permit.
+     */
+    public CompletableFuture<Void> submitOrderedMaintenance(
+            Object orderingKey, Runnable maintenanceTask) {
+        checkNotNull(orderingKey, "orderingKey must not be null.");
+        checkNotNull(maintenanceTask, "maintenanceTask must not be null.");
+        return enqueueOrdered(
+                orderingKey,
+                () -> {
+                    maintenanceTask.run();
+                    return null;
+                },
+                false);
+    }
+
+    private <T> CompletableFuture<T> enqueueOrdered(
+            Object orderingKey, Supplier<T> task, boolean releaseRequestPermit) {
+        CompletableFuture<T> future;
+        CompletableFuture<Void> tail;
+        synchronized (orderedTasksLock) {
+            CompletableFuture<Void> previousTail = orderedTaskTails.get(orderingKey);
+            if (previousTail == null) {
+                future = CompletableFuture.supplyAsync(task, executor);
+            } else {
+                future = previousTail.thenApplyAsync(ignored -> task.get(), executor);
+            }
+            // Convert success or failure into a normal completion used only for sequencing.
+            tail = future.handle((ignored, error) -> null);
+            orderedTaskTails.put(orderingKey, tail);
         }
 
         CompletableFuture<Void> currentTail = tail;
@@ -167,17 +190,24 @@ public final class HistoricalPartitionTaskExecutor implements AutoCloseable {
                         orderedTaskTails.remove(orderingKey, currentTail);
                     }
                 });
-        return trackAcceptedRequest(future);
+        return trackAcceptedRequest(future, releaseRequestPermit);
     }
 
     private <T> CompletableFuture<T> trackAcceptedRequest(CompletableFuture<T> future) {
+        return trackAcceptedRequest(future, true);
+    }
+
+    private <T> CompletableFuture<T> trackAcceptedRequest(
+            CompletableFuture<T> future, boolean releaseRequestPermit) {
         pendingRequests.add(future);
         future.whenComplete(
                 (ignored, error) -> {
-                    // Release the permit exactly once when the accepted task reaches a terminal
-                    // state, including exceptional completion and cancellation.
                     pendingRequests.remove(future);
-                    requestPermits.release();
+                    if (releaseRequestPermit) {
+                        // Release the permit exactly once when the accepted request reaches a
+                        // terminal state, including exceptional completion and cancellation.
+                        requestPermits.release();
+                    }
                 });
         return future;
     }

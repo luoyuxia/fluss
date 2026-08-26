@@ -222,6 +222,8 @@ public final class Replica {
     private volatile @Nullable KvTablet kvTablet;
     private volatile @Nullable CloseableRegistry closeableRegistryForKv;
     private @Nullable PeriodicSnapshotManager kvSnapshotManager;
+    // The lake log end offset used as the durable base of the current historical KV overlay.
+    private volatile long historicalKvBaseOffset = -1L;
 
     /**
      * Server-wide {@link ScannerManager}. Active sessions for this bucket are closed in {@link
@@ -378,6 +380,58 @@ public final class Replica {
 
     public long getLakeLogEndOffset() {
         return logTablet.getLakeLogEndOffset();
+    }
+
+    /** Returns whether the lake and local log end offsets match for historical KV cleanup. */
+    public boolean isHistoricalKvCleanupReady() {
+        return inReadLock(
+                leaderIsrUpdateLock,
+                () -> {
+                    long localLogEndOffset = logTablet.localLogEndOffset();
+                    return isHistoricalKvCleanupReady(localLogEndOffset);
+                });
+    }
+
+    /**
+     * Drops and recreates a fully tiered historical KV overlay if leadership and offsets still
+     * match.
+     *
+     * @param expectedLeaderEpoch leader epoch captured when cleanup was scheduled
+     * @param logEndOffset matching lake and local log end offset that triggered cleanup
+     * @param prepareLakeLookup marks the covering lake snapshot before the overlay is dropped
+     * @return whether the overlay was cleaned
+     */
+    public boolean cleanupHistoricalKv(
+            int expectedLeaderEpoch, long logEndOffset, Runnable prepareLakeLookup) {
+        checkNotNull(prepareLakeLookup, "prepareLakeLookup must not be null");
+        return inWriteLock(
+                leaderIsrUpdateLock,
+                () -> {
+                    long localLogEndOffset = logTablet.localLogEndOffset();
+                    if (leaderEpoch != expectedLeaderEpoch
+                            || localLogEndOffset != logEndOffset
+                            || !isHistoricalKvCleanupReady(localLogEndOffset)) {
+                        return false;
+                    }
+
+                    LOG.info(
+                            "Cleaning historical KV overlay for {} at local log end offset {} "
+                                    + "covered by lake log end offset {}.",
+                            tableBucket,
+                            localLogEndOffset,
+                            logTablet.getLakeLogEndOffset());
+                    try {
+                        // A lookup started after the rebuilt empty overlay is published must open
+                        // a lake view that covers the state removed by this cleanup.
+                        prepareLakeLookup.run();
+                        dropKv();
+                        createHistoricalKvAfterCleanup();
+                        return true;
+                    } catch (RuntimeException e) {
+                        fatalErrorHandler.onFatalError(e);
+                        throw e;
+                    }
+                });
     }
 
     public boolean isDataLakeEnabled() {
@@ -725,6 +779,16 @@ public final class Replica {
         }
     }
 
+    private boolean isHistoricalKvCleanupReady(long localLogEndOffset) {
+        return isLeader()
+                && isHistoricalPartition()
+                && isKvTable()
+                && kvTablet != null
+                && historicalKvBaseOffset >= 0L
+                && historicalKvBaseOffset < localLogEndOffset
+                && logTablet.getLakeLogEndOffset() == localLogEndOffset;
+    }
+
     private void createKv() {
         try {
             // create a closeable registry for the closable related to kv
@@ -754,10 +818,7 @@ public final class Replica {
         }
         // A historical KV tablet is a disposable overlay over the lake snapshot. It is recovered
         // by replaying WAL from the lake log end offset and does not create its own KV snapshots.
-        if (isHistoricalPartition()) {
-            // TODO: Clean up historical KV state after the corresponding WAL is fully tiered to
-            // lake storage.
-        } else {
+        if (!isHistoricalPartition()) {
             startPeriodicKvSnapshot(snapshotUsed.orElse(null));
         }
     }
@@ -776,6 +837,26 @@ public final class Replica {
             checkNotNull(kvManager);
             kvManager.dropKv(tableBucket);
             kvTablet = null;
+        }
+        historicalKvBaseOffset = -1L;
+    }
+
+    private void createHistoricalKvAfterCleanup() {
+        checkState(isHistoricalPartition(), "Only a historical KV overlay can be cleaned.");
+        try {
+            closeableRegistryForKv = new CloseableRegistry();
+            closeableRegistry.registerCloseable(closeableRegistryForKv);
+            initKvTablet();
+        } catch (Exception e) {
+            try {
+                dropKv();
+            } catch (Exception cleanupError) {
+                e.addSuppressed(cleanupError);
+            }
+            throw new KvStorageException(
+                    String.format(
+                            "Failed to recreate historical KV overlay for bucket %s.", tableBucket),
+                    e);
         }
     }
 
@@ -898,6 +979,9 @@ public final class Replica {
 
             logTablet.updateMinRetainOffset(restoreStartOffset);
             recoverKvTablet(restoreStartOffset, rowCount, autoIncIDRange);
+            if (isHistoricalPartition()) {
+                historicalKvBaseOffset = restoreStartOffset;
+            }
         } catch (Exception e) {
             throw new KvStorageException(
                     String.format(
@@ -1044,8 +1128,10 @@ public final class Replica {
 
     private long historicalRecoveryStartOffset() {
         long lakeLogEndOffset = logTablet.getLakeLogEndOffset();
+        long localLogEndOffset = logTablet.localLogEndOffset();
         long logStartOffset = logTablet.logStartOffset();
-        long recoveryStartOffset = lakeLogEndOffset >= 0 ? lakeLogEndOffset : 0L;
+        long recoveryStartOffset =
+                lakeLogEndOffset >= 0 ? Math.min(lakeLogEndOffset, localLogEndOffset) : 0L;
         checkState(
                 recoveryStartOffset >= logStartOffset,
                 "Cannot recover historical KV state: recovery start offset %s is before the "
@@ -1161,9 +1247,14 @@ public final class Replica {
                                         "Leader not local for bucket %s on tabletServer %d",
                                         tableBucket, localTabletServerId));
                     }
-                    if (isHistoricalPartition()) {
+                    // Historical primary-key writes must go through PUT_KV so the server can
+                    // preserve the original partition namespace and consult the lake on a local
+                    // miss. Append-only records already contain their partition columns, so a log
+                    // table can append them directly to its historical system partition.
+                    if (isHistoricalPartition() && isKvTable()) {
                         throw new InvalidPartitionException(
-                                "Normal write request must not target a historical partition.");
+                                "Produce-log request must not target the historical partition of "
+                                        + "a primary-key table.");
                     }
 
                     validateInSyncReplicaSize(requiredAcks);

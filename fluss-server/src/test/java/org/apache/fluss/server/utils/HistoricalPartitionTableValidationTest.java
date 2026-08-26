@@ -26,6 +26,7 @@ import org.apache.fluss.types.DataTypes;
 
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class HistoricalPartitionTableValidationTest {
@@ -54,7 +55,6 @@ class HistoricalPartitionTableValidationTest {
                                 + "'table.datalake.enabled' must be set to true; "
                                 + "'table.datalake.format' must be set to 'paimon' "
                                 + "(currently not set); "
-                                + "the table must define a primary key; "
                                 + "the table must define exactly one partition key (found 0).");
 
         // Case 2: Aggregate requirements before related validators can report only one failure.
@@ -80,7 +80,32 @@ class HistoricalPartitionTableValidationTest {
                         "'table.datalake.historical-partition.enabled' has unmet requirements: "
                                 + "'table.datalake.format' must be set to 'paimon' "
                                 + "(currently 'iceberg'); "
-                                + "the table must define a primary key; "
                                 + "the table must define exactly one partition key (found 0).");
+    }
+
+    @Test
+    void testAllowsHistoricalPartitionForLogTable() {
+        TableDescriptor logTableDescriptor =
+                TableDescriptor.builder()
+                        .schema(
+                                Schema.newBuilder()
+                                        .column("id", DataTypes.INT())
+                                        .column("dt", DataTypes.STRING())
+                                        .build())
+                        .partitionedBy("dt")
+                        .distributedBy(1, "id")
+                        .property(ConfigOptions.TABLE_REPLICATION_FACTOR, 1)
+                        .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)
+                        .property(ConfigOptions.TABLE_AUTO_PARTITION_KEY, "dt")
+                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
+                        .property(ConfigOptions.TABLE_DATALAKE_FORMAT, DataLakeFormat.PAIMON)
+                        .property(ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED, true)
+                        .build();
+
+        assertThatCode(
+                        () ->
+                                TableDescriptorValidation.validateTableDescriptor(
+                                        logTableDescriptor, 100, DataLakeFormat.PAIMON))
+                .doesNotThrowAnyException();
     }
 }

@@ -22,8 +22,10 @@ import org.apache.fluss.client.initializer.BucketOffsetsRetrieverImpl;
 import org.apache.fluss.client.initializer.OffsetsInitializer.BucketOffsetsRetriever;
 import org.apache.fluss.client.metadata.KvSnapshots;
 import org.apache.fluss.client.metadata.LakeSnapshot;
+import org.apache.fluss.client.metadata.MetadataUpdater;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.metadata.PartitionInfo;
+import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
@@ -36,6 +38,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -43,6 +46,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.apache.fluss.client.table.scanner.log.LogScanner.EARLIEST_OFFSET;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkState;
 
 /** A generator for lake splits. */
@@ -51,9 +55,11 @@ public class TieringSplitGenerator {
     private static final Logger LOG = LoggerFactory.getLogger(TieringSplitGenerator.class);
 
     private final Admin flussAdmin;
+    private final MetadataUpdater metadataUpdater;
 
-    public TieringSplitGenerator(Admin flussAdmin) {
+    public TieringSplitGenerator(Admin flussAdmin, MetadataUpdater metadataUpdater) {
         this.flussAdmin = flussAdmin;
+        this.metadataUpdater = metadataUpdater;
     }
 
     public List<TieringSplit> generateTableSplits(TableInfo tableInfo) throws Exception {
@@ -92,6 +98,21 @@ public class TieringSplitGenerator {
                                     Collectors.toMap(
                                             PartitionInfo::getPartitionId,
                                             PartitionInfo::getPartitionName));
+            if (tableInfo.getTableConfig().isHistoricalPartitionEnabled()) {
+                // The internal historical partition is intentionally omitted from
+                // listPartitionInfos(), but tiering must consume it to synchronize historical
+                // writes to the lake table. Resolve it explicitly and include it in the splits.
+                PhysicalTablePath historicalPath =
+                        PhysicalTablePath.of(tablePath, HISTORICAL_PARTITION_VALUE);
+                // Partition metadata is decoded using the tableId-to-path mapping already present
+                // in the Cluster, so initialize the table metadata before requesting the internal
+                // partition directly.
+                metadataUpdater.checkAndUpdateTableMetadata(Collections.singleton(tablePath));
+                metadataUpdater.checkAndUpdatePartitionMetadata(historicalPath);
+                partitionNameById.put(
+                        metadataUpdater.getPartitionIdOrElseThrow(historicalPath),
+                        HISTORICAL_PARTITION_VALUE);
+            }
 
             return generatePartitionTableSplit(
                     tableInfo, partitionNameById, bucketOffsetsRetriever, lakeSnapshotInfo);
@@ -112,6 +133,7 @@ public class TieringSplitGenerator {
         for (Map.Entry<Long, String> partitionNameByIdEntry : partitionNameById.entrySet()) {
             long partitionId = partitionNameByIdEntry.getKey();
             String partitionName = partitionNameByIdEntry.getValue();
+            boolean historicalPartition = HISTORICAL_PARTITION_VALUE.equals(partitionName);
             Map<Integer, Long> latestBucketsOffset =
                     bucketOffsetsRetriever.latestOffsets(
                             partitionName,
@@ -119,7 +141,7 @@ public class TieringSplitGenerator {
                                     .boxed()
                                     .collect(Collectors.toList()));
             KvSnapshots latestKvSnapshots = null;
-            if (tableInfo.hasPrimaryKey()) {
+            if (tableInfo.hasPrimaryKey() && !historicalPartition) {
                 // get the table partition latest kv snapshot info
                 try {
                     latestKvSnapshots =
@@ -134,6 +156,8 @@ public class TieringSplitGenerator {
                             ExceptionUtils.stripCompletionException(e));
                 }
             }
+            // Historical KV replicas do not create regular KV snapshots. Their lake snapshot is
+            // the durable base, so tier them from the retained WAL like log tables.
 
             splits.addAll(
                     generateTableSplit(
@@ -142,7 +166,8 @@ public class TieringSplitGenerator {
                             partitionName,
                             lakeSnapshotInfo,
                             latestKvSnapshots,
-                            latestBucketsOffset));
+                            latestBucketsOffset,
+                            historicalPartition));
         }
         return splits;
     }
@@ -172,7 +197,13 @@ public class TieringSplitGenerator {
         }
 
         return generateTableSplit(
-                tableInfo, null, null, lakeSnapshotInfo, latestKvSnapshots, latestBucketsOffset);
+                tableInfo,
+                null,
+                null,
+                lakeSnapshotInfo,
+                latestKvSnapshots,
+                latestBucketsOffset,
+                false);
     }
 
     private List<TieringSplit> generateTableSplit(
@@ -181,10 +212,11 @@ public class TieringSplitGenerator {
             @Nullable String partitionName,
             @Nullable LakeSnapshot lakeSnapshotInfo,
             @Nullable KvSnapshots latestKvSnapshots,
-            Map<Integer, Long> latestBucketsOffset) {
+            Map<Integer, Long> latestBucketsOffset,
+            boolean historicalPartition) {
         List<TieringSplit> splits = new ArrayList<>();
 
-        if (tableInfo.hasPrimaryKey()) {
+        if (tableInfo.hasPrimaryKey() && !historicalPartition) {
             // it's primary key table
             checkState(latestKvSnapshots != null);
             for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {
