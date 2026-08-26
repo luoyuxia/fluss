@@ -28,10 +28,12 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.exception.IllegalConfigurationException;
+import org.apache.fluss.exception.PartitionNotExistException;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.rpc.gateway.TabletServerGateway;
 import org.apache.fluss.rpc.metrics.ClientMetricGroup;
+import org.apache.fluss.utils.AutoPartitionStrategy;
 import org.apache.fluss.utils.CopyOnWriteMap;
 import org.apache.fluss.utils.clock.SystemClock;
 import org.apache.fluss.utils.concurrent.ExecutorThreadFactory;
@@ -42,6 +44,9 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -51,6 +56,9 @@ import java.util.concurrent.TimeUnit;
 import static org.apache.fluss.config.ConfigOptions.NoKeyAssigner.ROUND_ROBIN;
 import static org.apache.fluss.config.ConfigOptions.NoKeyAssigner.STICKY;
 import static org.apache.fluss.utils.ExceptionUtils.toException;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
+import static org.apache.fluss.utils.PartitionUtils.generateAutoPartitionTime;
+import static org.apache.fluss.utils.PartitionUtils.isPastAutoPartition;
 
 /**
  * A client that write records to server.
@@ -70,6 +78,7 @@ public class WriterClient {
     private static final Logger LOG = LoggerFactory.getLogger(WriterClient.class);
 
     public static final String SENDER_THREAD_PREFIX = "fluss-write-sender";
+    private static final Duration MAX_DEFAULT_TIME_ZONE_DIFFERENCE = Duration.ofHours(26);
     /**
      * {@link ConfigOptions#CLIENT_WRITER_MAX_INFLIGHT_REQUESTS_PER_BUCKET} should be less than or
      * equal to this value when idempotence producer enabled to ensure message ordering.
@@ -194,7 +203,12 @@ public class WriterClient {
             PhysicalTablePath physicalTablePath = record.getPhysicalTablePath();
             // Skip the call entirely on non-partitioned tables; there is no partition to create.
             if (tableInfo.isPartitioned()) {
-                dynamicPartitionCreator.checkAndCreatePartitionAsync(physicalTablePath, tableInfo);
+                if (mayBeExpiredHistoricalPartition(physicalTablePath, tableInfo, Instant.now())) {
+                    resolveHistoricalWriteTarget(physicalTablePath);
+                } else {
+                    dynamicPartitionCreator.checkAndCreatePartitionAsync(
+                            physicalTablePath, tableInfo);
+                }
             }
 
             // maybe create bucket assigner.
@@ -237,6 +251,71 @@ public class WriterClient {
                             record.getPhysicalTablePath(),
                             sender != null && sender.isRunning() ? "running" : "closed"),
                     e);
+        }
+    }
+
+    static boolean mayBeExpiredHistoricalPartition(
+            PhysicalTablePath physicalTablePath, TableInfo tableInfo, Instant now) {
+        String partitionName = physicalTablePath.getPartitionName();
+        AutoPartitionStrategy strategy = tableInfo.getTableConfig().getAutoPartitionStrategy();
+        if (partitionName == null
+                || !tableInfo.getTableConfig().isHistoricalPartitionEnabled()
+                || strategy.numToRetain() < 0) {
+            return false;
+        }
+
+        // The table's default time zone is not persisted. Shift the expiration boundary by the
+        // largest IANA time-zone difference, then apply retention in the table's partition unit.
+        Instant latestPotentialServerTime = now.plus(MAX_DEFAULT_TIME_ZONE_DIFFERENCE);
+        if (!isPastAutoPartition(partitionName, strategy, latestPotentialServerTime)) {
+            return false;
+        }
+        ZonedDateTime latestPotentialServerDateTime =
+                ZonedDateTime.ofInstant(latestPotentialServerTime, strategy.timeZone().toZoneId());
+        String earliestPotentialRetainedPartition =
+                generateAutoPartitionTime(
+                        latestPotentialServerDateTime,
+                        -strategy.numToRetain(),
+                        strategy.timeUnit(),
+                        strategy);
+        return partitionName.compareTo(earliestPotentialRetainedPartition) < 0;
+    }
+
+    private synchronized void resolveHistoricalWriteTarget(PhysicalTablePath originalPath) {
+        if (accumulator.hasWriteTarget(originalPath)) {
+            return;
+        }
+
+        // The time check only limits metadata traffic. Invalidate a potentially stale cached route
+        // and authoritatively choose the target before the record enters the queue.
+        metadataUpdater.invalidPhysicalTableBucketAndPartitionMeta(
+                Collections.singleton(originalPath));
+        PhysicalTablePath targetPath = originalPath;
+        try {
+            if (!metadataUpdater.checkAndUpdatePartitionMetadata(originalPath)) {
+                throw new FlussRuntimeException(
+                        "Failed to resolve write target for " + originalPath + '.');
+            }
+        } catch (PartitionNotExistException ignored) {
+            targetPath =
+                    PhysicalTablePath.of(originalPath.getTablePath(), HISTORICAL_PARTITION_VALUE);
+            // TODO: Activate this target only after Server retirement guarantees that all accepted
+            // original writes have been tiered to the lake.
+            if (!metadataUpdater.checkAndUpdatePartitionMetadata(targetPath)) {
+                throw new PartitionNotExistException(
+                        "Historical partition " + targetPath + " does not exist.");
+            }
+        }
+
+        if (!accumulator.tryRouteWritesTo(
+                originalPath, targetPath, metadataUpdater.getPartitionIdOrElseThrow(targetPath))) {
+            throw new FlussRuntimeException(
+                    "Cannot route writes for "
+                            + originalPath
+                            + " to "
+                            + targetPath
+                            + " because the accumulator already contains writes for a different "
+                            + "physical target.");
         }
     }
 

@@ -439,6 +439,14 @@ public class ConfigOptions {
                             .withDescription(
                                     "The duration after which an idle historical partition table lookuper is removed from the cache.");
 
+    public static final ConfigOption<Duration> SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME =
+            key("server.historical-partition.kv-cleanup.idle-time")
+                    .durationType()
+                    .defaultValue(Duration.ofMinutes(30))
+                    .withDescription(
+                            "The historical KV write idle time after which a fully tiered local overlay can be cleaned. "
+                                    + "Set to 0 to disable idle cleanup.");
+
     public static final ConfigOption<Double> SERVER_DATA_DISK_WRITE_LIMIT_RATIO =
             key("server.data-disk.write-limit-ratio")
                     .doubleType()
@@ -1925,11 +1933,12 @@ public class ConfigOptions {
                     .booleanType()
                     .defaultValue(false)
                     .withDescription(
-                            "Whether to enable historical partition lookup for the table. "
+                            "Whether to enable historical partition access for the table. "
                                     + "When enabled, the coordinator creates and retains a system partition "
-                                    + "for routing lookups of expired partitions to lake storage. "
-                                    + "Currently, this option only supports auto-partitioned Paimon primary "
-                                    + "key tables with a single partition key. Disabled by default. "
+                                    + "for routing writes to expired partitions and, for primary-key tables, "
+                                    + "lookups of expired partitions to lake storage. Currently, this option "
+                                    + "only supports auto-partitioned Paimon tables with a single partition "
+                                    + "key. Disabled by default. "
                                     + "After changing this option, restart existing lookup jobs that need "
                                     + "to look up historical partition data so that their clients load the "
                                     + "updated table configuration.");

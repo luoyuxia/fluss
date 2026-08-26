@@ -82,6 +82,7 @@ import org.apache.fluss.server.entity.NotifyLakeTableOffsetData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrData;
 import org.apache.fluss.server.entity.NotifyLeaderAndIsrResultForBucket;
 import org.apache.fluss.server.entity.NotifyRemoteLogOffsetsData;
+import org.apache.fluss.server.entity.ProduceLogDataForBucket;
 import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.entity.StopReplicaData;
 import org.apache.fluss.server.entity.StopReplicaResultForBucket;
@@ -373,7 +374,8 @@ public class ReplicaManager implements ServerReconfigurable {
                         localDiskManager,
                         dataDir,
                         dataDirVolumeBytes,
-                        scheduler);
+                        scheduler,
+                        clock);
 
         registerMetrics();
     }
@@ -417,6 +419,7 @@ public class ReplicaManager implements ServerReconfigurable {
     public void validate(Configuration newConfig) throws ConfigException {
         // Type validation is already handled by DynamicServerConfig.
         // Here we only do basic sanity checks.
+        historicalPartitionManager.validate(newConfig);
         int newMinInSyncReplicas =
                 newConfig.get(ConfigOptions.LOG_REPLICA_MIN_IN_SYNC_REPLICAS_NUMBER);
         if (newMinInSyncReplicas <= 0) {
@@ -686,6 +689,51 @@ public class ReplicaManager implements ServerReconfigurable {
         // maybe do delay write operation.
         maybeAddDelayedWrite(
                 timeoutMs, requiredAcks, entriesPerBucket.size(), appendResult, responseCallback);
+    }
+
+    /** Appends historical log batches while preserving each original partition in the response. */
+    public void appendHistoricalRecordsToLog(
+            int timeoutMs,
+            int requiredAcks,
+            Collection<ProduceLogDataForBucket> entriesPerBucket,
+            @Nullable UserContext userContext,
+            Consumer<List<ProduceLogResultForBucket>> responseCallback) {
+        if (entriesPerBucket.isEmpty()) {
+            responseCallback.accept(Collections.emptyList());
+            return;
+        }
+
+        List<ProduceLogResultForBucket> results = Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger remaining = new AtomicInteger(entriesPerBucket.size());
+        for (ProduceLogDataForBucket bucketData : entriesPerBucket) {
+            String originalPartitionName =
+                    checkNotNull(
+                            bucketData.originalPartitionName(),
+                            "originalPartitionName must not be null");
+            appendRecordsToLog(
+                    timeoutMs,
+                    requiredAcks,
+                    Collections.singletonMap(bucketData.tableBucket(), bucketData.records()),
+                    userContext,
+                    bucketResults -> {
+                        ProduceLogResultForBucket result = bucketResults.get(0);
+                        ProduceLogResultForBucket historicalResult =
+                                result.failed()
+                                        ? ProduceLogResultForBucket.historicalFailure(
+                                                result.getTableBucket(),
+                                                result.getError(),
+                                                originalPartitionName)
+                                        : ProduceLogResultForBucket.historicalSuccess(
+                                                result.getTableBucket(),
+                                                result.getBaseOffset(),
+                                                result.getWriteLogEndOffset(),
+                                                originalPartitionName);
+                        results.add(historicalResult);
+                        if (remaining.decrementAndGet() == 0) {
+                            responseCallback.accept(new ArrayList<>(results));
+                        }
+                    });
+        }
     }
 
     /**
@@ -1350,7 +1398,8 @@ public class ReplicaManager implements ServerReconfigurable {
                             lakeBucketOffsets.entrySet()) {
                         TableBucket tb = lakeBucketOffsetEntry.getKey();
                         LakeBucketOffset lakeBucketOffset = lakeBucketOffsetEntry.getValue();
-                        LogTablet logTablet = getReplicaOrException(tb).getLogTablet();
+                        Replica replica = getReplicaOrException(tb);
+                        LogTablet logTablet = replica.getLogTablet();
                         logTablet.updateLakeTableSnapshotId(lakeBucketOffset.getSnapshotId());
 
                         lakeBucketOffset
@@ -1359,7 +1408,19 @@ public class ReplicaManager implements ServerReconfigurable {
 
                         lakeBucketOffset
                                 .getLogEndOffset()
-                                .ifPresent(logTablet::updateLakeLogEndOffset);
+                                .ifPresent(
+                                        lakeLogEndOffset -> {
+                                            logTablet.updateLakeLogEndOffset(lakeLogEndOffset);
+                                            if (replica.isHistoricalPartition()
+                                                    && replica.isKvTable()) {
+                                                // Only an explicit log-end-offset notification can
+                                                // make historical cleanup eligible.
+                                                historicalPartitionManager.onLakeProgress(
+                                                        replica,
+                                                        lakeBucketOffset.getSnapshotId(),
+                                                        lakeLogEndOffset);
+                                            }
+                                        });
 
                         lakeBucketOffset
                                 .getMaxTimestamp()
@@ -1402,7 +1463,13 @@ public class ReplicaManager implements ServerReconfigurable {
                 if (replica.isDataLakeEnabled()) {
                     updateWithLakeTableSnapshot(replica);
                 }
+                int previousLeaderEpoch = replica.getLeaderEpoch();
                 replica.makeLeader(data);
+                if (replica.isHistoricalPartition()
+                        && replica.isKvTable()
+                        && previousLeaderEpoch != replica.getLeaderEpoch()) {
+                    historicalPartitionManager.onLeaderActivated(replica);
+                }
 
                 // start the remote log tiering tasks for leaders
                 remoteLogManager.startLogTiering(replica);
@@ -1425,6 +1492,9 @@ public class ReplicaManager implements ServerReconfigurable {
                 LakeTableSnapshot lakeTableSnapshot = optLakeTableSnapshot.get();
                 long snapshotId = optLakeTableSnapshot.get().getSnapshotId();
                 replica.getLogTablet().updateLakeTableSnapshotId(snapshotId);
+                lakeTableSnapshot
+                        .getLogEndOffset(tb)
+                        .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
                 if (replica.isHistoricalPartition()) {
                     // The historical overlay will be rebuilt from this snapshot's lake offset.
                     // Refresh a cached lookuper before it becomes the fallback for data omitted
@@ -1432,9 +1502,6 @@ public class ReplicaManager implements ServerReconfigurable {
                     historicalPartitionManager.requireLakeSnapshot(
                             replica.getTableBucket().getTableId(), snapshotId);
                 }
-                lakeTableSnapshot
-                        .getLogEndOffset(tb)
-                        .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
             }
         } catch (Exception e) {
             if (replica.isHistoricalPartition()) {
@@ -1475,6 +1542,9 @@ public class ReplicaManager implements ServerReconfigurable {
                 if (replica.makeFollower(data)) {
                     replicasBecomeFollower.add(replica);
                     scannerManager.closeScannersForBucket(tb);
+                }
+                if (replica.isHistoricalPartition()) {
+                    historicalPartitionManager.onReplicaStopped(tb);
                 }
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
@@ -2278,6 +2348,9 @@ public class ReplicaManager implements ServerReconfigurable {
         HostedReplica replica = getReplica(tb);
         if (replica instanceof OnlineReplica) {
             Replica replicaToDelete = ((OnlineReplica) replica).getReplica();
+            if (replicaToDelete.isHistoricalPartition()) {
+                historicalPartitionManager.onReplicaStopped(tb);
+            }
             if (deleteLocal) {
                 if (allReplicas.remove(tb) != null) {
                     serverMetricGroup.removeTableBucketMetricGroup(
