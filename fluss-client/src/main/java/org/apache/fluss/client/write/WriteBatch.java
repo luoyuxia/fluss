@@ -54,6 +54,14 @@ public abstract class WriteBatch {
     protected final List<WriteCallback> callbacks = new ArrayList<>();
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
     private final AtomicInteger attempts = new AtomicInteger(0);
+    /**
+     * The original partition name for a batch targeting the historical system partition.
+     *
+     * <p>It is null for a normal write and contains the logical partition namespace for a
+     * historical write.
+     */
+    private final @Nullable String originalPartitionName;
+
     protected boolean reopened;
     protected int recordCount;
     private long drainedMs;
@@ -68,12 +76,14 @@ public abstract class WriteBatch {
             PhysicalTablePath physicalTablePath,
             int schemaId,
             WriteFormat writeFormat,
+            @Nullable String originalPartitionName,
             long createdMs) {
         this.physicalTablePath = physicalTablePath;
         this.createdMs = createdMs;
         this.tableId = tableId;
         this.schemaId = schemaId;
         this.writeFormat = checkNotNull(writeFormat, "write format must be not null");
+        this.originalPartitionName = originalPartitionName;
         this.bucketId = bucketId;
         this.requestFuture = new RequestFuture();
         this.recordCount = 0;
@@ -203,6 +213,11 @@ public abstract class WriteBatch {
 
     public PhysicalTablePath physicalTablePath() {
         return physicalTablePath;
+    }
+
+    /** Returns the original partition name for a historical write, or null for a normal write. */
+    public @Nullable String getOriginalPartitionName() {
+        return originalPartitionName;
     }
 
     public RequestFuture getRequestFuture() {

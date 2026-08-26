@@ -192,6 +192,37 @@ public class DynamicConfigChangeTest {
     }
 
     @Test
+    void testAlterHistoricalKvCleanupIdleTime() throws Exception {
+        DynamicConfigManager dynamicConfigManager = createManager(new Configuration());
+        AtomicReference<Duration> cleanupIdleTime = new AtomicReference<>();
+        dynamicConfigManager.register(
+                new ServerReconfigurable() {
+                    @Override
+                    public void validate(Configuration newConfig) throws ConfigException {}
+
+                    @Override
+                    public void reconfigure(Configuration newConfig) {
+                        cleanupIdleTime.set(
+                                newConfig.get(
+                                        ConfigOptions
+                                                .SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME));
+                    }
+                });
+        dynamicConfigManager.startup();
+
+        alterConfig(
+                dynamicConfigManager,
+                ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME.key(),
+                "5min");
+
+        assertThat(cleanupIdleTime.get()).isEqualTo(Duration.ofMinutes(5));
+        assertThat(zookeeperClient.fetchEntityConfig())
+                .containsEntry(
+                        ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME.key(),
+                        "5min");
+    }
+
+    @Test
     void testOverrideConfigs() throws Exception {
         Configuration configuration = new Configuration();
         configuration.setString(DATALAKE_FORMAT.key(), "paimon");

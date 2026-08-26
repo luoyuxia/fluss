@@ -45,6 +45,7 @@ import org.apache.fluss.utils.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
 import java.util.ArrayList;
@@ -52,10 +53,12 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makeProduceLogRequest;
 import static org.apache.fluss.client.utils.ClientRpcMessageUtils.makePutKvRequest;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
@@ -228,8 +231,8 @@ public class Sender implements Runnable {
                 // TODO: this try-catch is not needed when we don't update metadata for
                 //  unready partitions
                 Throwable t = ExceptionUtils.stripExecutionException(e);
-                if (t.getCause() instanceof PartitionNotExistException) {
-                    // ignore this exception, this is probably happen because the partition
+                if (t instanceof PartitionNotExistException) {
+                    abortIfHistoricalWriteTargetMissing(readyCheckResult.unknownLeaderTables);
                 } else {
                     throw e;
                 }
@@ -250,10 +253,8 @@ public class Sender implements Runnable {
         // get the list of batches prepare to send.
         Map<Integer, List<ReadyWriteBatch>> batches =
                 accumulator.drain(clusterSnapshot, readyNodes, maxRequestSize);
-
         if (!batches.isEmpty()) {
             addToInflightBatches(batches);
-
             // TODO add logic for batch expire.
 
             sendWriteRequests(batches);
@@ -410,23 +411,74 @@ public class Sender implements Runnable {
         } else {
             writeBatchByTable.forEach(
                     (tableId, writeBatches) -> {
-                        if (isLogBatches(writeBatches)) {
-                            sendProduceLogRequestAndHandleResponse(
-                                    gateway,
-                                    makeProduceLogRequest(
-                                            tableId, acks, maxRequestTimeoutMs, writeBatches),
-                                    tableId,
-                                    writeBatches);
-                        } else {
-                            sendPutKvRequestAndHandleResponse(
-                                    gateway,
-                                    makePutKvRequest(
-                                            tableId, acks, maxRequestTimeoutMs, writeBatches),
-                                    tableId,
-                                    writeBatches);
+                        boolean logBatches = isLogBatches(writeBatches);
+                        for (List<ReadyWriteBatch> requestGroup : packRequestGroups(writeBatches)) {
+                            if (logBatches) {
+                                sendProduceLogRequestAndHandleResponse(
+                                        gateway,
+                                        makeProduceLogRequest(
+                                                tableId, acks, maxRequestTimeoutMs, requestGroup),
+                                        tableId,
+                                        requestGroup);
+                            } else {
+                                sendPutKvRequestAndHandleResponse(
+                                        gateway,
+                                        makePutKvRequest(
+                                                tableId, acks, maxRequestTimeoutMs, requestGroup),
+                                        tableId,
+                                        requestGroup);
+                            }
                         }
                     });
         }
+    }
+
+    /**
+     * Splits normal and historical batches into separate requests.
+     *
+     * <p>Normal and historical writes cannot share a request. Both write protocols correlate
+     * historical responses by {@link TableBucket} and original partition name, so different
+     * original partitions targeting the same historical table bucket can remain in one request.
+     */
+    private static List<List<ReadyWriteBatch>> packRequestGroups(
+            List<ReadyWriteBatch> writeBatches) {
+        List<ReadyWriteBatch> normalBatches = new ArrayList<>();
+        List<ReadyWriteBatch> historicalBatches = new ArrayList<>();
+
+        for (ReadyWriteBatch readyWriteBatch : writeBatches) {
+            if (readyWriteBatch.writeBatch().getOriginalPartitionName() == null) {
+                normalBatches.add(readyWriteBatch);
+            } else {
+                historicalBatches.add(readyWriteBatch);
+            }
+        }
+
+        List<List<ReadyWriteBatch>> requestGroups = new ArrayList<>(2);
+        if (!normalBatches.isEmpty()) {
+            requestGroups.add(normalBatches);
+        }
+        if (!historicalBatches.isEmpty()) {
+            requestGroups.add(historicalBatches);
+        }
+        return requestGroups;
+    }
+
+    private static Map<WriteBatchKey, ReadyWriteBatch> toBatchesByKey(
+            List<ReadyWriteBatch> writeBatches) {
+        Map<WriteBatchKey, ReadyWriteBatch> recordsByKey = new HashMap<>();
+        for (ReadyWriteBatch readyWriteBatch : writeBatches) {
+            WriteBatch writeBatch = readyWriteBatch.writeBatch();
+            WriteBatchKey key =
+                    new WriteBatchKey(
+                            readyWriteBatch.tableBucket(), writeBatch.getOriginalPartitionName());
+            ReadyWriteBatch previous = recordsByKey.put(key, readyWriteBatch);
+            checkArgument(
+                    previous == null,
+                    "A write request contains duplicate table bucket %s and original partition %s.",
+                    readyWriteBatch.tableBucket(),
+                    writeBatch.getOriginalPartitionName());
+        }
+        return recordsByKey;
     }
 
     /**
@@ -447,8 +499,7 @@ public class Sender implements Runnable {
             ProduceLogRequest request,
             long tableId,
             List<ReadyWriteBatch> writeBatches) {
-        Map<TableBucket, ReadyWriteBatch> recordsByBucket = new HashMap<>();
-        writeBatches.forEach(batch -> recordsByBucket.put(batch.tableBucket(), batch));
+        Map<WriteBatchKey, ReadyWriteBatch> recordsByKey = toBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
         gateway.produceLog(request)
                 .whenComplete(
@@ -458,8 +509,7 @@ public class Sender implements Runnable {
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {
-                                handleProduceLogResponse(
-                                        produceLogResponse, tableId, recordsByBucket);
+                                handleProduceLogResponse(produceLogResponse, tableId, recordsByKey);
                             }
                         });
     }
@@ -469,8 +519,7 @@ public class Sender implements Runnable {
             PutKvRequest request,
             long tableId,
             List<ReadyWriteBatch> writeBatches) {
-        Map<TableBucket, ReadyWriteBatch> recordsByBucket = new HashMap<>();
-        writeBatches.forEach(batch -> recordsByBucket.put(batch.tableBucket(), batch));
+        Map<WriteBatchKey, ReadyWriteBatch> recordsByKey = toBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
         gateway.putKv(request)
                 .whenComplete(
@@ -480,7 +529,7 @@ public class Sender implements Runnable {
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {
-                                handlePutKvResponse(putKvResponse, tableId, recordsByBucket);
+                                handlePutKvResponse(putKvResponse, tableId, recordsByKey);
                             }
                         });
     }
@@ -488,7 +537,7 @@ public class Sender implements Runnable {
     private void handleProduceLogResponse(
             ProduceLogResponse response,
             long tableId,
-            Map<TableBucket, ReadyWriteBatch> recordsByBucket) {
+            Map<WriteBatchKey, ReadyWriteBatch> recordsByKey) {
         Set<PhysicalTablePath> invalidMetadataTablesSet = new HashSet<>();
         for (PbProduceLogRespForBucket logRespForBucket : response.getBucketsRespsList()) {
             TableBucket tb =
@@ -498,7 +547,13 @@ public class Sender implements Runnable {
                                     ? logRespForBucket.getPartitionId()
                                     : null,
                             logRespForBucket.getBucketId());
-            ReadyWriteBatch writeBatch = recordsByBucket.get(tb);
+            ReadyWriteBatch writeBatch =
+                    recordsByKey.get(
+                            new WriteBatchKey(
+                                    tb,
+                                    logRespForBucket.hasOriginalPartitionName()
+                                            ? logRespForBucket.getOriginalPartitionName()
+                                            : null));
             if (logRespForBucket.hasErrorCode()) {
                 Set<PhysicalTablePath> invalidMetadataTables =
                         handleWriteBatchException(
@@ -514,7 +569,7 @@ public class Sender implements Runnable {
     private void handlePutKvResponse(
             PutKvResponse putKvResponse,
             long tableId,
-            Map<TableBucket, ReadyWriteBatch> recordsByBucket) {
+            Map<WriteBatchKey, ReadyWriteBatch> recordsByKey) {
         Set<PhysicalTablePath> invalidMetadataTablesSet = new HashSet<>();
         for (PbPutKvRespForBucket respForBucket : putKvResponse.getBucketsRespsList()) {
             TableBucket tb =
@@ -528,7 +583,13 @@ public class Sender implements Runnable {
                 accumulator.updateThrottle(tb, respForBucket.getPressure());
             }
 
-            ReadyWriteBatch writeBatch = recordsByBucket.get(tb);
+            ReadyWriteBatch writeBatch =
+                    recordsByKey.get(
+                            new WriteBatchKey(
+                                    tb,
+                                    respForBucket.hasOriginalPartitionName()
+                                            ? respForBucket.getOriginalPartitionName()
+                                            : null));
             if (writeBatch == null) {
                 continue;
             }
@@ -566,6 +627,14 @@ public class Sender implements Runnable {
             ReadyWriteBatch readyWriteBatch, ApiError error) {
         Set<PhysicalTablePath> invalidMetadataTables = new HashSet<>();
         WriteBatch writeBatch = readyWriteBatch.writeBatch();
+        // Historical queues use the original path as their accumulator key, so capture the actual
+        // RPC target before any retry handling.
+        PhysicalTablePath requestTargetPath =
+                writeBatch.getOriginalPartitionName() == null
+                        ? writeBatch.physicalTablePath()
+                        : PhysicalTablePath.of(
+                                writeBatch.physicalTablePath().getTablePath(),
+                                HISTORICAL_PARTITION_VALUE);
         if (error.exception() instanceof StorageBackpressureException) {
             // Hard rejection: the storage engine reached its slowdown trigger and rejected the
             // write. Map it to full pressure (internal hard-rejection value 1.0f) so the bucket is
@@ -634,7 +703,10 @@ public class Sender implements Runnable {
                             readyWriteBatch.tableBucket(),
                             error.exception());
                 }
-                invalidMetadataTables.add(writeBatch.physicalTablePath());
+                // A historical batch remains keyed by its original partition path in the
+                // accumulator, but its RPC is sent to the internal historical partition. Invalidate
+                // the actual RPC target so the retry refreshes the historical bucket metadata.
+                invalidMetadataTables.add(requestTargetPath);
             }
         } else {
             LOG.warn(
@@ -647,6 +719,35 @@ public class Sender implements Runnable {
             failBatch(readyWriteBatch, error.exception(), writeBatch.attempts() < this.retries);
         }
         return invalidMetadataTables;
+    }
+
+    private void abortIfHistoricalWriteTargetMissing(Set<PhysicalTablePath> unknownLeaderTables)
+            throws Exception {
+        for (PhysicalTablePath targetPath : unknownLeaderTables) {
+            if (!accumulator.isHistoricalPartitionEnabled(targetPath)) {
+                continue;
+            }
+            try {
+                metadataUpdater.checkAndUpdatePartitionMetadata(targetPath);
+            } catch (Exception e) {
+                Throwable t = ExceptionUtils.stripExecutionException(e);
+                if (t instanceof PartitionNotExistException) {
+                    // Retrying a historical-enabled table without a leader would leave its
+                    // batches queued indefinitely. Fail only after checking the target itself so
+                    // ordinary writes in the bulk metadata request keep their existing behavior.
+                    PartitionNotExistException missingTargetException =
+                            new PartitionNotExistException(
+                                    "Write target "
+                                            + targetPath
+                                            + " for a historical-partition-enabled table no "
+                                            + "longer exists according to refreshed metadata.");
+                    missingTargetException.initCause(t);
+                    maybeAbortBatches(missingTargetException);
+                    return;
+                }
+                throw e;
+            }
+        }
     }
 
     private void updateWriterMetrics(Map<Integer, List<ReadyWriteBatch>> batches) {
@@ -718,5 +819,33 @@ public class Sender implements Runnable {
      */
     void destroyResources() {
         accumulator.destroyResources();
+    }
+
+    private static final class WriteBatchKey {
+        private final TableBucket tableBucket;
+        private final @Nullable String originalPartitionName;
+
+        private WriteBatchKey(TableBucket tableBucket, @Nullable String originalPartitionName) {
+            this.tableBucket = tableBucket;
+            this.originalPartitionName = originalPartitionName;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof WriteBatchKey)) {
+                return false;
+            }
+            WriteBatchKey that = (WriteBatchKey) o;
+            return tableBucket.equals(that.tableBucket)
+                    && Objects.equals(originalPartitionName, that.originalPartitionName);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(tableBucket, originalPartitionName);
+        }
     }
 }

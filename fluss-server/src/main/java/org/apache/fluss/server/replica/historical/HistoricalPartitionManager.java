@@ -19,7 +19,9 @@ package org.apache.fluss.server.replica.historical;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.annotation.VisibleForTesting;
+import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.ConfigException;
 import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidPartitionException;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
@@ -43,11 +45,17 @@ import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.storage.LocalDiskManager;
 import org.apache.fluss.utils.ByteArraySlice;
 import org.apache.fluss.utils.ByteArrayWrapper;
+import org.apache.fluss.utils.clock.Clock;
+import org.apache.fluss.utils.clock.SystemClock;
 import org.apache.fluss.utils.concurrent.Scheduler;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -55,15 +63,29 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /** Coordinates lookup, write, and lifecycle operations for historical partitions. */
 @Internal
 public final class HistoricalPartitionManager implements AutoCloseable {
 
+    private static final Logger LOG = LoggerFactory.getLogger(HistoricalPartitionManager.class);
+    private static final long MAX_HISTORICAL_KV_SIZE_BYTES = 5L * 1024 * 1024 * 1024;
+
     private final HistoricalPartitionTaskExecutor taskExecutor;
     private final HistoricalLakeLookupManager lakeLookupManager;
+    private final Clock clock;
+    private volatile long cleanupIdleTimeMs;
+    private final long maxHistoricalKvSizeBytes;
+    // Per-physical-bucket state for coordinating historical write admission and overlay cleanup.
+    // The state is replaced when a new leader epoch is activated and removed when the local
+    // replica stops.
+    private final ConcurrentMap<TableBucket, HistoricalWriteState> historicalWriteStates;
 
     /** Creates a historical partition manager from the tablet server dependencies. */
     public HistoricalPartitionManager(
@@ -72,8 +94,10 @@ public final class HistoricalPartitionManager implements AutoCloseable {
             LocalDiskManager localDiskManager,
             File dataDir,
             long dataDirVolumeBytes,
-            Scheduler scheduler) {
+            Scheduler scheduler,
+            Clock clock) {
         this(
+                conf,
                 new HistoricalPartitionTaskExecutor(conf),
                 new HistoricalLakeLookupManager(
                         conf,
@@ -81,21 +105,85 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                         localDiskManager,
                         dataDir,
                         dataDirVolumeBytes,
-                        scheduler));
+                        scheduler),
+                clock,
+                MAX_HISTORICAL_KV_SIZE_BYTES);
     }
 
     @VisibleForTesting
     HistoricalPartitionManager(
             HistoricalPartitionTaskExecutor taskExecutor,
             HistoricalLakeLookupManager lakeLookupManager) {
+        this(
+                new Configuration(),
+                taskExecutor,
+                lakeLookupManager,
+                SystemClock.getInstance(),
+                MAX_HISTORICAL_KV_SIZE_BYTES);
+    }
+
+    @VisibleForTesting
+    HistoricalPartitionManager(
+            Configuration conf,
+            HistoricalPartitionTaskExecutor taskExecutor,
+            HistoricalLakeLookupManager lakeLookupManager,
+            Clock clock,
+            long maxHistoricalKvSizeBytes) {
+        Duration cleanupIdleTime =
+                conf.get(ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME);
+        checkArgument(
+                !cleanupIdleTime.isNegative(),
+                "%s must not be negative.",
+                ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME.key());
+        checkArgument(
+                maxHistoricalKvSizeBytes > 0L, "maxHistoricalKvSizeBytes must be greater than 0.");
         this.taskExecutor = checkNotNull(taskExecutor, "taskExecutor must not be null");
         this.lakeLookupManager =
                 checkNotNull(lakeLookupManager, "lakeLookupManager must not be null");
+        this.clock = checkNotNull(clock, "clock must not be null");
+        this.cleanupIdleTimeMs = cleanupIdleTime.toMillis();
+        this.maxHistoricalKvSizeBytes = maxHistoricalKvSizeBytes;
+        this.historicalWriteStates = new ConcurrentHashMap<>();
     }
 
     /** Starts the resources used by historical partition operations. */
     public void startup(Scheduler scheduler) {
         lakeLookupManager.startup(scheduler);
+    }
+
+    /** Starts tracking cleanup activity for a newly activated historical KV leader. */
+    public void onLeaderActivated(Replica replica) {
+        historicalWriteStates.put(
+                replica.getTableBucket(), new HistoricalWriteState(clock.milliseconds()));
+    }
+
+    /** Stops tracking cleanup activity for a replica that is no longer a local leader. */
+    public void onReplicaStopped(TableBucket tableBucket) {
+        historicalWriteStates.remove(tableBucket);
+    }
+
+    /** Records new lake progress and schedules any cleanup that it makes eligible. */
+    public void onLakeProgress(Replica replica, long lakeSnapshotId, long lakeLogEndOffset) {
+        if (!replica.isLeader() || !replica.isKvTable()) {
+            return;
+        }
+        int expectedLeaderEpoch = replica.getLeaderEpoch();
+        long localLogEndOffset = replica.getLocalLogEndOffset();
+        if (lakeLogEndOffset != localLogEndOffset) {
+            return;
+        }
+        HistoricalWriteState state = historicalWriteStateFor(replica);
+        boolean maxSizeReached = state.maxSizeReached.get();
+        // Lake progress is the cleanup trigger. The ordered cleanup task rechecks the latest write
+        // time when it actually runs, so a write accepted after this notification cancels an idle
+        // cleanup without being overtaken by it.
+        scheduleCleanup(
+                replica,
+                state,
+                maxSizeReached,
+                lakeSnapshotId,
+                expectedLeaderEpoch,
+                lakeLogEndOffset);
     }
 
     /** Looks up historical keys from the local overlay and then lake storage. */
@@ -119,7 +207,8 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                                                             + tableBucket
                                                             + " (original partition "
                                                             + lookupData.originalPartitionName()
-                                                            + ")."))));
+                                                            + ") because the historical request "
+                                                            + "queue is full."))));
         } catch (RuntimeException e) {
             return CompletableFuture.completedFuture(
                     new LookupResultForBucket(
@@ -141,6 +230,20 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                     checkNotNull(
                             putData.originalPartitionName(),
                             "originalPartitionName must not be null");
+            HistoricalWriteState state = historicalWriteStateFor(replica);
+            if (state.maxSizeReached.get()) {
+                return CompletableFuture.completedFuture(
+                        maxSizeThrottledResult(
+                                putData, originalPartitionName, maxHistoricalKvSizeBytes));
+            }
+            long liveSstSize = replica.logicalStorageKvSize();
+            if (liveSstSize >= maxHistoricalKvSizeBytes) {
+                markMaxSizeReached(replica, state);
+                return CompletableFuture.completedFuture(
+                        maxSizeThrottledResult(
+                                putData, originalPartitionName, maxHistoricalKvSizeBytes));
+            }
+            state.lastHistoricalWriteMs = clock.milliseconds();
             return taskExecutor.submitOrdered(
                     putData.tableBucket(),
                     () -> {
@@ -152,6 +255,7 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                                             targetColumns,
                                             mergeMode,
                                             requiredAcks);
+                            state.lastHistoricalWriteMs = clock.milliseconds();
                             return PutKvResultForBucket.historicalSuccess(
                                     putData.tableBucket(),
                                     appendInfo.lastOffset() + 1,
@@ -163,17 +267,7 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                                     originalPartitionName);
                         }
                     },
-                    () ->
-                            PutKvResultForBucket.historicalFailure(
-                                    putData.tableBucket(),
-                                    ApiError.fromThrowable(
-                                            new HistoricalPartitionThrottledException(
-                                                    "Historical write is throttled for "
-                                                            + putData.tableBucket()
-                                                            + " (original partition "
-                                                            + originalPartitionName
-                                                            + ").")),
-                                    originalPartitionName));
+                    () -> requestLimitThrottledResult(putData, originalPartitionName));
         } catch (RuntimeException e) {
             return CompletableFuture.completedFuture(
                     PutKvResultForBucket.historicalFailure(
@@ -183,9 +277,33 @@ public final class HistoricalPartitionManager implements AutoCloseable {
         }
     }
 
-    /** Applies dynamic historical lookup configuration changes. */
+    /** Validates dynamic historical partition configuration changes. */
+    public void validate(Configuration newConf) throws ConfigException {
+        Duration newCleanupIdleTime =
+                newConf.get(ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME);
+        if (newCleanupIdleTime.isNegative()) {
+            throw new ConfigException(
+                    String.format(
+                            "Invalid configuration for %s, it must not be negative.",
+                            ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME.key()));
+        }
+    }
+
+    /** Applies dynamic historical partition configuration changes. */
     public void reconfigure(Configuration newConf) {
         lakeLookupManager.reconfigure(newConf);
+        long newCleanupIdleTimeMs =
+                newConf.get(ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME)
+                        .toMillis();
+        if (newCleanupIdleTimeMs == cleanupIdleTimeMs) {
+            return;
+        }
+        long oldCleanupIdleTimeMs = cleanupIdleTimeMs;
+        cleanupIdleTimeMs = newCleanupIdleTimeMs;
+        LOG.info(
+                "Historical KV cleanup idle time reconfigured: {} ms -> {} ms.",
+                oldCleanupIdleTimeMs,
+                newCleanupIdleTimeMs);
     }
 
     /** Invalidates the cached lake lookuper for the given table. */
@@ -286,8 +404,117 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                 requiredAcks);
     }
 
+    private void markMaxSizeReached(Replica replica, HistoricalWriteState state) {
+        if (state.maxSizeReached.compareAndSet(false, true)) {
+            LOG.warn(
+                    "Pausing historical writes for {} because its live SST size reached the "
+                            + "maximum size {} bytes.",
+                    replica.getTableBucket(),
+                    maxHistoricalKvSizeBytes);
+        }
+    }
+
+    private HistoricalWriteState historicalWriteStateFor(Replica replica) {
+        return historicalWriteStates.computeIfAbsent(
+                replica.getTableBucket(),
+                ignored -> new HistoricalWriteState(clock.milliseconds()));
+    }
+
+    private void scheduleCleanup(
+            Replica replica,
+            HistoricalWriteState state,
+            boolean maxSizeReached,
+            long lakeSnapshotId,
+            int expectedLeaderEpoch,
+            long logEndOffset) {
+        CompletableFuture<Void> cleanupFuture;
+        cleanupFuture =
+                taskExecutor.submitOrderedMaintenance(
+                        replica.getTableBucket(),
+                        () ->
+                                runCleanup(
+                                        replica,
+                                        state,
+                                        maxSizeReached,
+                                        lakeSnapshotId,
+                                        expectedLeaderEpoch,
+                                        logEndOffset));
+        cleanupFuture.whenComplete(
+                (ignored, error) -> {
+                    if (error != null) {
+                        LOG.error(
+                                "Historical KV cleanup failed for {}.",
+                                replica.getTableBucket(),
+                                error);
+                    }
+                });
+    }
+
+    private void runCleanup(
+            Replica replica,
+            HistoricalWriteState state,
+            boolean maxSizeReached,
+            long lakeSnapshotId,
+            int expectedLeaderEpoch,
+            long logEndOffset) {
+        long now = clock.milliseconds();
+        if (historicalWriteStates.get(replica.getTableBucket()) != state
+                || expectedLeaderEpoch != replica.getLeaderEpoch()
+                || (!maxSizeReached
+                        && (cleanupIdleTimeMs <= 0L
+                                || now < state.lastHistoricalWriteMs
+                                || now - state.lastHistoricalWriteMs < cleanupIdleTimeMs))) {
+            return;
+        }
+
+        if (replica.cleanupHistoricalKv(
+                expectedLeaderEpoch,
+                logEndOffset,
+                () -> requireLakeSnapshot(replica.getTableBucket().getTableId(), lakeSnapshotId))) {
+            state.maxSizeReached.set(false);
+            LOG.info(
+                    "Cleaned {} historical KV overlay for {}.",
+                    maxSizeReached ? "max-size-triggered" : "idle-triggered",
+                    replica.getTableBucket());
+        }
+    }
+
+    private static PutKvResultForBucket requestLimitThrottledResult(
+            PutKvDataForBucket putData, String originalPartitionName) {
+        return PutKvResultForBucket.historicalFailure(
+                putData.tableBucket(),
+                ApiError.fromThrowable(
+                        new HistoricalPartitionThrottledException(
+                                "Historical write is throttled for "
+                                        + putData.tableBucket()
+                                        + " (original partition "
+                                        + originalPartitionName
+                                        + ") because the historical request queue is full.")),
+                originalPartitionName);
+    }
+
+    private static PutKvResultForBucket maxSizeThrottledResult(
+            PutKvDataForBucket putData, String originalPartitionName, long maxHistoricalKvSize) {
+        return PutKvResultForBucket.historicalFailure(
+                putData.tableBucket(),
+                ApiError.fromThrowable(
+                        new HistoricalPartitionThrottledException(
+                                "Historical write is throttled for "
+                                        + putData.tableBucket()
+                                        + " (original partition "
+                                        + originalPartitionName
+                                        + ") because its historical KV overlay reached the live "
+                                        + "SST maximum size of "
+                                        + maxHistoricalKvSize
+                                        + " bytes. New writes are paused until lake tiering "
+                                        + "covers all previously accepted writes and the local "
+                                        + "overlay cleanup completes.")),
+                originalPartitionName);
+    }
+
     @Override
     public void close() {
+        historicalWriteStates.clear();
         taskExecutor.close();
         lakeLookupManager.close();
     }
@@ -350,6 +577,21 @@ public final class HistoricalPartitionManager implements AutoCloseable {
         } catch (Exception e) {
             return new LookupResultForBucket(
                     tableBucket, originalPartitionName, ApiError.fromThrowable(e));
+        }
+    }
+
+    /** Per-bucket historical write activity and maximum-size state. */
+    private static final class HistoricalWriteState {
+        // Latched when the live SST size reaches the maximum. It is cleared only after a cleanup
+        // covered by lake progress succeeds, so transient RocksDB size changes cannot resume
+        // writes prematurely.
+        private final AtomicBoolean maxSizeReached = new AtomicBoolean();
+
+        // Updated when a write is admitted and again when it completes successfully.
+        private volatile long lastHistoricalWriteMs;
+
+        private HistoricalWriteState(long lastHistoricalWriteMs) {
+            this.lastHistoricalWriteMs = lastHistoricalWriteMs;
         }
     }
 }

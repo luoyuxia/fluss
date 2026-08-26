@@ -24,11 +24,20 @@ import org.apache.fluss.exception.ConfigException;
 
 import java.time.Duration;
 
-/** Validates dynamic historical lookup cache settings. */
+/** Validates dynamic historical partition settings used outside the coordinator. */
 final class HistoricalLookupCacheConfigValidator implements ServerReconfigurable {
 
     @Override
     public void validate(Configuration newConfig) throws ConfigException {
+        Duration newCleanupIdleTime =
+                newConfig.get(ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME);
+        if (newCleanupIdleTime.isNegative()) {
+            throw new ConfigException(
+                    String.format(
+                            "Invalid configuration for %s, it must not be negative.",
+                            ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME.key()));
+        }
+
         double newMaxRatio =
                 newConfig.get(
                         ConfigOptions.SERVER_HISTORICAL_PARTITION_LOOKUP_CACHE_MAX_DISK_RATIO);
