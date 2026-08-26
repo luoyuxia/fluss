@@ -1249,6 +1249,9 @@ pub struct PbPutKvReqForBucket {
     pub bucket_id: i32,
     #[prost(bytes = "bytes", required, tag = "3")]
     pub records: ::prost::bytes::Bytes,
+    /// The original partition name for historical PK writes. It is unset for normal writes.
+    #[prost(string, optional, tag = "4")]
+    pub original_partition_name: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PbPutKvRespForBucket {
@@ -1269,6 +1272,9 @@ pub struct PbPutKvRespForBucket {
     /// introduced in v1.0
     #[prost(float, optional, tag = "6")]
     pub pressure: ::core::option::Option<f32>,
+    /// The original partition name for historical PK writes. It is unset for normal writes.
+    #[prost(string, optional, tag = "7")]
+    pub original_partition_name: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PbLookupReqForBucket {
