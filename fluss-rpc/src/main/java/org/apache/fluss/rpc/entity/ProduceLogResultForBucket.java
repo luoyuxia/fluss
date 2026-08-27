@@ -31,6 +31,7 @@ import java.util.Objects;
 @Internal
 public class ProduceLogResultForBucket extends WriteResultForBucket {
     private final long baseOffset;
+    // Identifies the original partition for a historical write; null for a normal write.
     private final @Nullable String originalPartitionName;
 
     public ProduceLogResultForBucket(TableBucket tableBucket, long baseOffset, long endOffset) {

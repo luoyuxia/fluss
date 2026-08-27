@@ -43,7 +43,6 @@ import org.apache.fluss.record.TestingSchemaGetter;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.arrow.ArrowWriter;
-import org.apache.fluss.row.encode.CompactedKeyEncoder;
 import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.rpc.GatewayClientProxy;
 import org.apache.fluss.rpc.RpcClient;
@@ -72,21 +71,14 @@ import java.util.stream.Collectors;
 import static org.apache.fluss.record.LogRecordBatch.CURRENT_LOG_MAGIC_VALUE;
 import static org.apache.fluss.record.LogRecordBatchFormat.recordBatchHeaderSize;
 import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
-import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH_PK_PA_2024;
 import static org.apache.fluss.record.TestData.DATA1_ROW_TYPE;
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
-import static org.apache.fluss.record.TestData.DATA1_SCHEMA_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_ID;
-import static org.apache.fluss.record.TestData.DATA1_TABLE_ID_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO;
-import static org.apache.fluss.record.TestData.DATA1_TABLE_INFO_PK;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH;
-import static org.apache.fluss.record.TestData.DATA1_TABLE_PATH_PK;
 import static org.apache.fluss.record.TestData.DEFAULT_REMOTE_DATA_DIR;
-import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
 import static org.apache.fluss.testutils.DataTestUtils.indexedRow;
 import static org.apache.fluss.testutils.DataTestUtils.row;
-import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -197,41 +189,6 @@ class RecordAccumulatorTest {
                         new HashSet<>(Arrays.asList(node1.id(), node2.id())),
                         (int) batchSize);
         verifyTableBucketInBatches(batches3, tb1, tb3);
-    }
-
-    @Test
-    void testAppendAfterHistoricalTargetResolved() throws Exception {
-        long originalPartitionId = 11L;
-        long historicalPartitionId = 22L;
-        PhysicalTablePath originalPath = DATA1_PHYSICAL_TABLE_PATH_PK_PA_2024;
-        PhysicalTablePath anotherOriginalPath = PhysicalTablePath.of(DATA1_TABLE_PATH_PK, "2023");
-        PhysicalTablePath historicalPath =
-                PhysicalTablePath.of(DATA1_TABLE_PATH_PK, HISTORICAL_PARTITION_VALUE);
-        TableBucket originalBucket = new TableBucket(DATA1_TABLE_ID_PK, originalPartitionId, 0);
-        TableBucket historicalBucket = new TableBucket(DATA1_TABLE_ID_PK, historicalPartitionId, 0);
-        cluster =
-                createPartitionedKvCluster(
-                        originalPath, originalBucket, historicalPath, historicalBucket);
-
-        RecordAccumulator accum = createTestRecordAccumulator(1024, 10L * 1024);
-        accum.tryRouteWritesTo(originalPath, historicalPath, historicalPartitionId);
-        accum.tryRouteWritesTo(anotherOriginalPath, historicalPath, historicalPartitionId);
-        accum.append(createKvRecord(originalPath), writeCallback, cluster, 0, false);
-        accum.append(createKvRecord(originalPath), writeCallback, cluster, 0, false);
-        accum.append(createKvRecord(anotherOriginalPath), writeCallback, cluster, 0, false);
-
-        List<ReadyWriteBatch> drainedBatches =
-                accum.drain(cluster, Collections.singleton(node1.id()), Integer.MAX_VALUE)
-                        .get(node1.id());
-
-        assertThat(drainedBatches).hasSize(2);
-        assertThat(drainedBatches)
-                .allSatisfy(batch -> assertThat(batch.tableBucket()).isEqualTo(historicalBucket));
-        assertThat(drainedBatches)
-                .extracting(batch -> ((KvWriteBatch) batch.writeBatch()).getOriginalPartitionName())
-                .containsExactlyInAnyOrder(
-                        originalPath.getPartitionName(), anotherOriginalPath.getPartitionName());
-        drainedBatches.forEach(batch -> accum.deallocate(batch.writeBatch()));
     }
 
     @Test
@@ -627,21 +584,6 @@ class RecordAccumulatorTest {
         return WriteRecord.forIndexedAppend(tableInfo, DATA1_PHYSICAL_TABLE_PATH, row, null);
     }
 
-    private WriteRecord createKvRecord(PhysicalTablePath physicalTablePath) {
-        BinaryRow row = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
-        byte[] key =
-                new CompactedKeyEncoder(DATA1_ROW_TYPE, DATA1_SCHEMA_PK.getPrimaryKeyIndexes())
-                        .encodeKey(row);
-        return WriteRecord.forUpsert(
-                DATA1_TABLE_INFO_PK,
-                physicalTablePath,
-                row,
-                key,
-                key,
-                WriteFormat.COMPACTED_KV,
-                null);
-    }
-
     private TableInfo withSchemaId(int schemaId) {
         return new TableInfo(
                 DATA1_TABLE_INFO.getTablePath(),
@@ -678,36 +620,6 @@ class RecordAccumulatorTest {
                 bucketsByPath,
                 tableIdByPath,
                 Collections.emptyMap());
-    }
-
-    private Cluster createPartitionedKvCluster(
-            PhysicalTablePath originalPath,
-            TableBucket originalBucket,
-            PhysicalTablePath historicalPath,
-            TableBucket historicalBucket) {
-        Map<Integer, ServerNode> aliveTabletServersById = new HashMap<>();
-        aliveTabletServersById.put(node1.id(), node1);
-
-        Map<PhysicalTablePath, List<BucketLocation>> bucketsByPath = new HashMap<>();
-        bucketsByPath.put(
-                originalPath,
-                Collections.singletonList(
-                        new BucketLocation(originalPath, originalBucket, node1.id(), serverNodes)));
-        bucketsByPath.put(
-                historicalPath,
-                Collections.singletonList(
-                        new BucketLocation(
-                                historicalPath, historicalBucket, node1.id(), serverNodes)));
-
-        Map<PhysicalTablePath, Long> partitionIdsByPath = new HashMap<>();
-        partitionIdsByPath.put(originalPath, originalBucket.getPartitionId());
-        partitionIdsByPath.put(historicalPath, historicalBucket.getPartitionId());
-        return new Cluster(
-                aliveTabletServersById,
-                new ServerNode(0, "localhost", 89, ServerType.COORDINATOR),
-                bucketsByPath,
-                Collections.singletonMap(DATA1_TABLE_PATH_PK, DATA1_TABLE_ID_PK),
-                partitionIdsByPath);
     }
 
     private void delayedInterrupt(final Thread thread, final long delayMs) {

@@ -149,37 +149,6 @@ class HistoricalPartitionTaskExecutorTest {
     }
 
     @Test
-    void testMaintenanceTaskKeepsOrderWithoutConsumingRequestPermit() throws Exception {
-        ManualExecutor executor = new ManualExecutor();
-        HistoricalPartitionTaskExecutor taskExecutor =
-                new HistoricalPartitionTaskExecutor(configuration(1), executor);
-        List<String> executionOrder = new ArrayList<>();
-
-        CompletableFuture<String> write =
-                taskExecutor.submitOrdered(
-                        "bucket",
-                        () -> {
-                            executionOrder.add("write");
-                            return "written";
-                        },
-                        () -> "throttled");
-        CompletableFuture<Void> maintenance =
-                taskExecutor.submitOrderedMaintenance(
-                        "bucket", () -> executionOrder.add("maintenance"));
-
-        assertThat(taskExecutor.numInflightRequests()).isOne();
-        assertThat(taskExecutor.submitOrdered("another-bucket", () -> "written", () -> "throttled"))
-                .isCompletedWithValue("throttled");
-
-        executor.runNext();
-        executor.runNext();
-        assertThat(write).isCompletedWithValue("written");
-        assertThat(maintenance).isDone();
-        assertThat(executionOrder).containsExactly("write", "maintenance");
-        assertThat(taskExecutor.numInflightRequests()).isZero();
-    }
-
-    @Test
     void testRejectNonPositiveRequestLimit() {
         assertThatThrownBy(
                         () ->

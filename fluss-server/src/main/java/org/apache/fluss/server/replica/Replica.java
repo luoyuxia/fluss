@@ -382,35 +382,28 @@ public final class Replica {
         return logTablet.getLakeLogEndOffset();
     }
 
-    /** Returns whether the lake and local log end offsets match for historical KV cleanup. */
-    public boolean isHistoricalKvCleanupReady() {
-        return inReadLock(
-                leaderIsrUpdateLock,
-                () -> {
-                    long localLogEndOffset = logTablet.localLogEndOffset();
-                    return isHistoricalKvCleanupReady(localLogEndOffset);
-                });
-    }
-
     /**
      * Drops and recreates a fully tiered historical KV overlay if leadership and offsets still
      * match.
      *
      * @param expectedLeaderEpoch leader epoch captured when cleanup was scheduled
      * @param logEndOffset matching lake and local log end offset that triggered cleanup
-     * @param prepareLakeLookup marks the covering lake snapshot before the overlay is dropped
+     * @param beforeCleanup action to run before the overlay is dropped
      * @return whether the overlay was cleaned
      */
     public boolean cleanupHistoricalKv(
-            int expectedLeaderEpoch, long logEndOffset, Runnable prepareLakeLookup) {
-        checkNotNull(prepareLakeLookup, "prepareLakeLookup must not be null");
+            int expectedLeaderEpoch, long logEndOffset, Runnable beforeCleanup) {
+        checkNotNull(beforeCleanup, "beforeCleanup must not be null");
         return inWriteLock(
                 leaderIsrUpdateLock,
                 () -> {
                     long localLogEndOffset = logTablet.localLogEndOffset();
+                    // Keep the scheduled snapshot and offset paired: newer lake progress may make
+                    // the current lake and local offsets match while this task still references an
+                    // older snapshot.
                     if (leaderEpoch != expectedLeaderEpoch
                             || localLogEndOffset != logEndOffset
-                            || !isHistoricalKvCleanupReady(localLogEndOffset)) {
+                            || !isEligibleForHistoricalKvCleanup(localLogEndOffset)) {
                         return false;
                     }
 
@@ -420,17 +413,14 @@ public final class Replica {
                             tableBucket,
                             localLogEndOffset,
                             logTablet.getLakeLogEndOffset());
-                    try {
-                        // A lookup started after the rebuilt empty overlay is published must open
-                        // a lake view that covers the state removed by this cleanup.
-                        prepareLakeLookup.run();
-                        dropKv();
-                        createHistoricalKvAfterCleanup();
-                        return true;
-                    } catch (RuntimeException e) {
-                        fatalErrorHandler.onFatalError(e);
-                        throw e;
-                    }
+                    // A lookup started after the rebuilt empty overlay is published must open a
+                    // lake view that covers the state removed by this cleanup.
+                    beforeCleanup.run();
+                    dropKv();
+                    // TODO: Retry rebuilding this historical bucket instead of waiting for
+                    // failover or restart.
+                    createKv();
+                    return true;
                 });
     }
 
@@ -779,7 +769,9 @@ public final class Replica {
         }
     }
 
-    private boolean isHistoricalKvCleanupReady(long localLogEndOffset) {
+    private boolean isEligibleForHistoricalKvCleanup(long localLogEndOffset) {
+        // The overlay must have a known lake base, contain writes after that base, and have all
+        // those writes covered by lake before it can be discarded.
         return isLeader()
                 && isHistoricalPartition()
                 && isKvTable()
@@ -804,17 +796,33 @@ public final class Replica {
 
         // init kv tablet and get the snapshot it uses to init if have any
         Optional<CompletedSnapshot> snapshotUsed = Optional.empty();
+        Exception lastError = null;
         for (int i = 1; i <= INIT_KV_TABLET_MAX_RETRY_TIMES; i++) {
             try {
                 snapshotUsed = initKvTablet();
+                lastError = null;
                 break;
             } catch (Exception e) {
+                lastError = e;
                 LOG.warn(
-                        "Fail to init kv tablet for bucket {}, retrying for {} times",
+                        "Failed to init kv tablet for bucket {} on attempt {}/{}.",
                         tableBucket,
                         i,
+                        INIT_KV_TABLET_MAX_RETRY_TIMES,
                         e);
             }
+        }
+        if (lastError != null) {
+            try {
+                dropKv();
+            } catch (Exception cleanupError) {
+                lastError.addSuppressed(cleanupError);
+            }
+            throw new KvStorageException(
+                    String.format(
+                            "Failed to create KV tablet for bucket %s after %s attempts.",
+                            tableBucket, INIT_KV_TABLET_MAX_RETRY_TIMES),
+                    lastError);
         }
         // A historical KV tablet is a disposable overlay over the lake snapshot. It is recovered
         // by replaying WAL from the lake log end offset and does not create its own KV snapshots.
@@ -839,25 +847,6 @@ public final class Replica {
             kvTablet = null;
         }
         historicalKvBaseOffset = -1L;
-    }
-
-    private void createHistoricalKvAfterCleanup() {
-        checkState(isHistoricalPartition(), "Only a historical KV overlay can be cleaned.");
-        try {
-            closeableRegistryForKv = new CloseableRegistry();
-            closeableRegistry.registerCloseable(closeableRegistryForKv);
-            initKvTablet();
-        } catch (Exception e) {
-            try {
-                dropKv();
-            } catch (Exception cleanupError) {
-                e.addSuppressed(cleanupError);
-            }
-            throw new KvStorageException(
-                    String.format(
-                            "Failed to recreate historical KV overlay for bucket %s.", tableBucket),
-                    e);
-        }
     }
 
     private void mayFlushKv(long newHighWatermark) {
@@ -2637,4 +2626,5 @@ public final class Replica {
     public PeriodicSnapshotManager getKvSnapshotManager() {
         return kvSnapshotManager;
     }
+
 }

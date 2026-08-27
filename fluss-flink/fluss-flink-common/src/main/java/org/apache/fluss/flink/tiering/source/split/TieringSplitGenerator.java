@@ -141,24 +141,31 @@ public class TieringSplitGenerator {
                                     .boxed()
                                     .collect(Collectors.toList()));
             KvSnapshots latestKvSnapshots = null;
-            if (tableInfo.hasPrimaryKey() && !historicalPartition) {
-                // get the table partition latest kv snapshot info
-                try {
+            if (tableInfo.hasPrimaryKey()) {
+                if (historicalPartition) {
+                    // Historical KV replicas use the lake snapshot as their durable base and tier
+                    // only the retained WAL, so they have no local KV snapshots to tier.
                     latestKvSnapshots =
-                            flussAdmin
-                                    .getLatestKvSnapshots(tableInfo.getTablePath(), partitionName)
-                                    .get();
-                } catch (Exception e) {
-                    throw new FlinkRuntimeException(
-                            String.format(
-                                    "Failed to get table snapshot for table %s and partition %s",
-                                    tableInfo.getTablePath(), partitionName),
-                            ExceptionUtils.stripCompletionException(e));
+                            new KvSnapshots(
+                                    tableInfo.getTableId(),
+                                    partitionId,
+                                    Collections.emptyMap(),
+                                    Collections.emptyMap());
+                } else {
+                    try {
+                        latestKvSnapshots =
+                                flussAdmin
+                                        .getLatestKvSnapshots(tableInfo.getTablePath(), partitionName)
+                                        .get();
+                    } catch (Exception e) {
+                        throw new FlinkRuntimeException(
+                                String.format(
+                                        "Failed to get table snapshot for table %s and partition %s",
+                                        tableInfo.getTablePath(), partitionName),
+                                ExceptionUtils.stripCompletionException(e));
+                    }
                 }
             }
-            // Historical KV replicas do not create regular KV snapshots. Their lake snapshot is
-            // the durable base, so tier them from the retained WAL like log tables.
-
             splits.addAll(
                     generateTableSplit(
                             tableInfo,
@@ -166,8 +173,7 @@ public class TieringSplitGenerator {
                             partitionName,
                             lakeSnapshotInfo,
                             latestKvSnapshots,
-                            latestBucketsOffset,
-                            historicalPartition));
+                            latestBucketsOffset));
         }
         return splits;
     }
@@ -202,8 +208,7 @@ public class TieringSplitGenerator {
                 null,
                 lakeSnapshotInfo,
                 latestKvSnapshots,
-                latestBucketsOffset,
-                false);
+                latestBucketsOffset);
     }
 
     private List<TieringSplit> generateTableSplit(
@@ -212,11 +217,10 @@ public class TieringSplitGenerator {
             @Nullable String partitionName,
             @Nullable LakeSnapshot lakeSnapshotInfo,
             @Nullable KvSnapshots latestKvSnapshots,
-            Map<Integer, Long> latestBucketsOffset,
-            boolean historicalPartition) {
+            Map<Integer, Long> latestBucketsOffset) {
         List<TieringSplit> splits = new ArrayList<>();
 
-        if (tableInfo.hasPrimaryKey() && !historicalPartition) {
+        if (tableInfo.hasPrimaryKey()) {
             // it's primary key table
             checkState(latestKvSnapshots != null);
             for (int bucket = 0; bucket < tableInfo.getNumBuckets(); bucket++) {

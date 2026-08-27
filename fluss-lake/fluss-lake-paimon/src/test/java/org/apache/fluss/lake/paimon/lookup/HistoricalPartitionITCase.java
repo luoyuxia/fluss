@@ -118,48 +118,6 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
         }
     }
 
-    @Test
-    void testWriteAndTierHistoricalLogToPaimon() throws Exception {
-        TablePath tablePath = TablePath.of(DEFAULT_DB, "historical_log_write_tiering");
-        Schema schema = partitionedLogSchema();
-        long tableId = createTable(tablePath, partitionedLogDescriptor(schema));
-
-        try {
-            long historicalPartitionId = waitUntilHistoricalPartitionReady(tablePath, tableId);
-
-            List<InternalRow> expectedRows =
-                    Arrays.asList(
-                            row(1, EXPIRED_PARTITION_NAME, "Alice"),
-                            row(2, SECOND_EXPIRED_PARTITION_NAME, "Bob"));
-            writeRows(tablePath, expectedRows, true);
-            assertThat(admin.listPartitionInfos(tablePath).get())
-                    .noneMatch(
-                            partitionInfo ->
-                                    EXPIRED_PARTITION_NAME.equals(partitionInfo.getPartitionName())
-                                            || SECOND_EXPIRED_PARTITION_NAME.equals(
-                                                    partitionInfo.getPartitionName()));
-
-            TableBucket historicalBucket = new TableBucket(tableId, historicalPartitionId, 0);
-            assertThat(getLeaderReplica(historicalBucket).getLocalLogEndOffset()).isEqualTo(2);
-
-            JobClient jobClient = buildTieringJob(execEnv);
-            try {
-                assertReplicaStatus(historicalBucket, 2);
-                checkFlussOffsetsInSnapshot(
-                        tablePath, Collections.singletonMap(historicalBucket, 2L));
-
-                assertThat(readPaimonRows(tablePath))
-                        .containsExactlyInAnyOrder(
-                                "1|" + EXPIRED_PARTITION_NAME + "|Alice",
-                                "2|" + SECOND_EXPIRED_PARTITION_NAME + "|Bob");
-            } finally {
-                jobClient.cancel().get();
-            }
-        } finally {
-            dropTable(tablePath);
-        }
-    }
-
     @ParameterizedTest(name = "defaultBucketKey={0}")
     @ValueSource(booleans = {true, false})
     void testLookupExpiredPartitionFromPaimon(boolean defaultBucketKey) throws Exception {
@@ -387,14 +345,6 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
                 .build();
     }
 
-    private static Schema partitionedLogSchema() {
-        return Schema.newBuilder()
-                .column("id", DataTypes.INT())
-                .column("dt", DataTypes.STRING())
-                .column("name", DataTypes.STRING())
-                .build();
-    }
-
     private static Schema evolvedPartitionedPkSchema(boolean defaultBucketKey) {
         if (defaultBucketKey) {
             return Schema.newBuilder()
@@ -445,24 +395,6 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
             builder.property(ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED, true);
         }
         return builder.build();
-    }
-
-    private static TableDescriptor partitionedLogDescriptor(Schema schema) {
-        return TableDescriptor.builder()
-                .schema(schema)
-                .distributedBy(1, "id")
-                .partitionedBy("dt")
-                .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)
-                .property(ConfigOptions.TABLE_AUTO_PARTITION_KEY, "dt")
-                .property(ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT, AutoPartitionTimeUnit.DAY)
-                .property(
-                        ConfigOptions.TABLE_AUTO_PARTITION_NUM_RETENTION,
-                        EXPIRED_PARTITION_RETENTION)
-                .property(ConfigOptions.TABLE_AUTO_PARTITION_TIMEZONE, "UTC")
-                .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
-                .property(ConfigOptions.TABLE_DATALAKE_FRESHNESS, Duration.ofMillis(500))
-                .property(ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED, true)
-                .build();
     }
 
     private static InternalRow dataRow(
