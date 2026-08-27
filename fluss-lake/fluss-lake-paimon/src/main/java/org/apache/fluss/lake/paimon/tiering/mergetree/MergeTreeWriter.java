@@ -51,24 +51,6 @@ public class MergeTreeWriter extends RecordWriter<KeyValue> {
             @Nullable String partition,
             List<String> partitionKeys,
             RowType flussRowType,
-            boolean paimonIncludingSystemColumns) {
-        this(
-                fileStoreTable,
-                tableBucket,
-                partition,
-                partitionKeys,
-                flussRowType,
-                (String[]) null,
-                paimonIncludingSystemColumns,
-                false);
-    }
-
-    public MergeTreeWriter(
-            FileStoreTable fileStoreTable,
-            TableBucket tableBucket,
-            @Nullable String partition,
-            List<String> partitionKeys,
-            RowType flussRowType,
             @Nullable String[] ioTmpDirs,
             boolean paimonIncludingSystemColumns,
             boolean historicalPartition) {

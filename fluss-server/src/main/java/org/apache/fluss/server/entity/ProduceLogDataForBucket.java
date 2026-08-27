@@ -26,6 +26,7 @@ import javax.annotation.Nullable;
 public class ProduceLogDataForBucket {
     private final TableBucket tableBucket;
     private final MemoryLogRecords records;
+    // Identifies the original partition for a historical write; null for a normal write.
     private final @Nullable String originalPartitionName;
 
     public ProduceLogDataForBucket(

@@ -127,6 +127,7 @@ import org.apache.fluss.utils.ByteArraySlice;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.FlussPaths;
 import org.apache.fluss.utils.clock.Clock;
+import org.apache.fluss.utils.concurrent.FutureUtils;
 import org.apache.fluss.utils.concurrent.Scheduler;
 
 import org.slf4j.Logger;
@@ -698,14 +699,11 @@ public class ReplicaManager implements ServerReconfigurable {
             Collection<ProduceLogDataForBucket> entriesPerBucket,
             @Nullable UserContext userContext,
             Consumer<List<ProduceLogResultForBucket>> responseCallback) {
-        if (entriesPerBucket.isEmpty()) {
-            responseCallback.accept(Collections.emptyList());
-            return;
-        }
-
-        List<ProduceLogResultForBucket> results = Collections.synchronizedList(new ArrayList<>());
-        AtomicInteger remaining = new AtomicInteger(entriesPerBucket.size());
+        List<CompletableFuture<ProduceLogResultForBucket>> resultFutures =
+                new ArrayList<>(entriesPerBucket.size());
         for (ProduceLogDataForBucket bucketData : entriesPerBucket) {
+            CompletableFuture<ProduceLogResultForBucket> resultFuture = new CompletableFuture<>();
+            resultFutures.add(resultFuture);
             String originalPartitionName =
                     checkNotNull(
                             bucketData.originalPartitionName(),
@@ -728,12 +726,11 @@ public class ReplicaManager implements ServerReconfigurable {
                                                 result.getBaseOffset(),
                                                 result.getWriteLogEndOffset(),
                                                 originalPartitionName);
-                        results.add(historicalResult);
-                        if (remaining.decrementAndGet() == 0) {
-                            responseCallback.accept(new ArrayList<>(results));
-                        }
+                        resultFuture.complete(historicalResult);
                     });
         }
+        FutureUtils.combineAll(resultFutures)
+                .thenAccept(results -> responseCallback.accept(new ArrayList<>(results)));
     }
 
     /**

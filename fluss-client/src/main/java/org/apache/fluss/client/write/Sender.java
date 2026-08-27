@@ -410,38 +410,24 @@ public class Sender implements Runnable {
                     batches);
         } else {
             writeBatchByTable.forEach(
-                    (tableId, writeBatches) -> {
-                        boolean logBatches = isLogBatches(writeBatches);
-                        for (List<ReadyWriteBatch> requestGroup : packRequestGroups(writeBatches)) {
-                            if (logBatches) {
-                                sendProduceLogRequestAndHandleResponse(
-                                        gateway,
-                                        makeProduceLogRequest(
-                                                tableId, acks, maxRequestTimeoutMs, requestGroup),
-                                        tableId,
-                                        requestGroup);
-                            } else {
-                                sendPutKvRequestAndHandleResponse(
-                                        gateway,
-                                        makePutKvRequest(
-                                                tableId, acks, maxRequestTimeoutMs, requestGroup),
-                                        tableId,
-                                        requestGroup);
-                            }
-                        }
-                    });
+                    (tableId, writeBatches) ->
+                            sendWriteRequestsForTable(gateway, tableId, acks, writeBatches));
         }
     }
 
     /**
-     * Splits normal and historical batches into separate requests.
+     * Sends normal and historical batches in separate requests.
      *
      * <p>Normal and historical writes cannot share a request. Both write protocols correlate
      * historical responses by {@link TableBucket} and original partition name, so different
      * original partitions targeting the same historical table bucket can remain in one request.
      */
-    private static List<List<ReadyWriteBatch>> packRequestGroups(
+    private void sendWriteRequestsForTable(
+            TabletServerGateway gateway,
+            long tableId,
+            short acks,
             List<ReadyWriteBatch> writeBatches) {
+        boolean logBatches = isLogBatches(writeBatches);
         List<ReadyWriteBatch> normalBatches = new ArrayList<>();
         List<ReadyWriteBatch> historicalBatches = new ArrayList<>();
 
@@ -453,32 +439,50 @@ public class Sender implements Runnable {
             }
         }
 
-        List<List<ReadyWriteBatch>> requestGroups = new ArrayList<>(2);
-        if (!normalBatches.isEmpty()) {
-            requestGroups.add(normalBatches);
-        }
-        if (!historicalBatches.isEmpty()) {
-            requestGroups.add(historicalBatches);
-        }
-        return requestGroups;
+        sendBatchesInRequest(gateway, tableId, acks, logBatches, normalBatches);
+        sendBatchesInRequest(gateway, tableId, acks, logBatches, historicalBatches);
     }
 
-    private static Map<WriteBatchKey, ReadyWriteBatch> toBatchesByKey(
+    private void sendBatchesInRequest(
+            TabletServerGateway gateway,
+            long tableId,
+            short acks,
+            boolean logBatches,
             List<ReadyWriteBatch> writeBatches) {
-        Map<WriteBatchKey, ReadyWriteBatch> recordsByKey = new HashMap<>();
+        if (writeBatches.isEmpty()) {
+            return;
+        }
+        if (logBatches) {
+            sendProduceLogRequestAndHandleResponse(
+                    gateway,
+                    makeProduceLogRequest(tableId, acks, maxRequestTimeoutMs, writeBatches),
+                    tableId,
+                    writeBatches);
+        } else {
+            sendPutKvRequestAndHandleResponse(
+                    gateway,
+                    makePutKvRequest(tableId, acks, maxRequestTimeoutMs, writeBatches),
+                    tableId,
+                    writeBatches);
+        }
+    }
+
+    private static Map<WriteBatchKey, ReadyWriteBatch> toWriteBatchesByKey(
+            List<ReadyWriteBatch> writeBatches) {
+        Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey = new HashMap<>();
         for (ReadyWriteBatch readyWriteBatch : writeBatches) {
             WriteBatch writeBatch = readyWriteBatch.writeBatch();
             WriteBatchKey key =
                     new WriteBatchKey(
                             readyWriteBatch.tableBucket(), writeBatch.getOriginalPartitionName());
-            ReadyWriteBatch previous = recordsByKey.put(key, readyWriteBatch);
+            ReadyWriteBatch previous = writeBatchesByKey.put(key, readyWriteBatch);
             checkArgument(
                     previous == null,
                     "A write request contains duplicate table bucket %s and original partition %s.",
                     readyWriteBatch.tableBucket(),
                     writeBatch.getOriginalPartitionName());
         }
-        return recordsByKey;
+        return writeBatchesByKey;
     }
 
     /**
@@ -499,7 +503,7 @@ public class Sender implements Runnable {
             ProduceLogRequest request,
             long tableId,
             List<ReadyWriteBatch> writeBatches) {
-        Map<WriteBatchKey, ReadyWriteBatch> recordsByKey = toBatchesByKey(writeBatches);
+        Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey = toWriteBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
         gateway.produceLog(request)
                 .whenComplete(
@@ -509,7 +513,8 @@ public class Sender implements Runnable {
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {
-                                handleProduceLogResponse(produceLogResponse, tableId, recordsByKey);
+                                handleProduceLogResponse(
+                                        produceLogResponse, tableId, writeBatchesByKey);
                             }
                         });
     }
@@ -519,7 +524,7 @@ public class Sender implements Runnable {
             PutKvRequest request,
             long tableId,
             List<ReadyWriteBatch> writeBatches) {
-        Map<WriteBatchKey, ReadyWriteBatch> recordsByKey = toBatchesByKey(writeBatches);
+        Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey = toWriteBatchesByKey(writeBatches);
         long startTime = System.currentTimeMillis();
         gateway.putKv(request)
                 .whenComplete(
@@ -529,7 +534,7 @@ public class Sender implements Runnable {
                             if (e != null) {
                                 handleWriteRequestException(e, writeBatches);
                             } else {
-                                handlePutKvResponse(putKvResponse, tableId, recordsByKey);
+                                handlePutKvResponse(putKvResponse, tableId, writeBatchesByKey);
                             }
                         });
     }
@@ -537,7 +542,7 @@ public class Sender implements Runnable {
     private void handleProduceLogResponse(
             ProduceLogResponse response,
             long tableId,
-            Map<WriteBatchKey, ReadyWriteBatch> recordsByKey) {
+            Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey) {
         Set<PhysicalTablePath> invalidMetadataTablesSet = new HashSet<>();
         for (PbProduceLogRespForBucket logRespForBucket : response.getBucketsRespsList()) {
             TableBucket tb =
@@ -548,7 +553,7 @@ public class Sender implements Runnable {
                                     : null,
                             logRespForBucket.getBucketId());
             ReadyWriteBatch writeBatch =
-                    recordsByKey.get(
+                    writeBatchesByKey.get(
                             new WriteBatchKey(
                                     tb,
                                     logRespForBucket.hasOriginalPartitionName()
@@ -569,7 +574,7 @@ public class Sender implements Runnable {
     private void handlePutKvResponse(
             PutKvResponse putKvResponse,
             long tableId,
-            Map<WriteBatchKey, ReadyWriteBatch> recordsByKey) {
+            Map<WriteBatchKey, ReadyWriteBatch> writeBatchesByKey) {
         Set<PhysicalTablePath> invalidMetadataTablesSet = new HashSet<>();
         for (PbPutKvRespForBucket respForBucket : putKvResponse.getBucketsRespsList()) {
             TableBucket tb =
@@ -584,7 +589,7 @@ public class Sender implements Runnable {
             }
 
             ReadyWriteBatch writeBatch =
-                    recordsByKey.get(
+                    writeBatchesByKey.get(
                             new WriteBatchKey(
                                     tb,
                                     respForBucket.hasOriginalPartitionName()
@@ -721,6 +726,11 @@ public class Sender implements Runnable {
         return invalidMetadataTables;
     }
 
+    /**
+     * Aborts pending writes when metadata confirms their target is missing. Such writes cannot make
+     * progress without a leader, and rerouting existing batches to the historical target is unsafe
+     * because their outcome and idempotent state may belong to the original target.
+     */
     private void abortIfHistoricalWriteTargetMissing(Set<PhysicalTablePath> unknownLeaderTables)
             throws Exception {
         for (PhysicalTablePath targetPath : unknownLeaderTables) {
@@ -732,6 +742,18 @@ public class Sender implements Runnable {
             } catch (Exception e) {
                 Throwable t = ExceptionUtils.stripExecutionException(e);
                 if (t instanceof PartitionNotExistException) {
+                    // This target was considered usable when its batches were enqueued or first
+                    // attempted, but is now confirmed missing. Transparently rerouting those
+                    // batches to the historical partition is unsafe: an original-target attempt
+                    // may have been accepted despite a lost response, and writer ID / batch
+                    // sequence state cannot be reused across different physical TableBuckets. A
+                    // safe failover must stop draining this path, wait for its in-flight requests,
+                    // classify ambiguous outcomes, reset writer state, and preserve per-bucket
+                    // ordering. This race requires partition retirement to overlap a writer that
+                    // still holds the original route, so it is expected to be uncommon; fail
+                    // closed for now.
+                    // TODO: Implement safe in-flight historical failover if this path occurs
+                    // frequently in practice.
                     // Retrying a historical-enabled table without a leader would leave its
                     // batches queued indefinitely. Fail only after checking the target itself so
                     // ordinary writes in the bulk metadata request keep their existing behavior.
@@ -823,6 +845,9 @@ public class Sender implements Runnable {
 
     private static final class WriteBatchKey {
         private final TableBucket tableBucket;
+
+        // Distinguishes historical writes from different original partitions that share a target
+        // bucket. Normal writes have no original partition name.
         private final @Nullable String originalPartitionName;
 
         private WriteBatchKey(TableBucket tableBucket, @Nullable String originalPartitionName) {

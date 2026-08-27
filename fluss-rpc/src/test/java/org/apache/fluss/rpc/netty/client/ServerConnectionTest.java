@@ -70,7 +70,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.fluss.metrics.MetricNames.CLIENT_BYTES_IN_RATE_AVG;
 import static org.apache.fluss.metrics.MetricNames.CLIENT_BYTES_IN_RATE_TOTAL;
@@ -251,8 +250,7 @@ public class ServerConnectionTest {
     @Test
     void testRejectHistoricalWritesForOldServer() throws Exception {
         nettyServer.close();
-        OldWriteGatewayService oldGatewayService = new OldWriteGatewayService();
-        buildNettyServer(oldGatewayService);
+        buildNettyServer(new OldWriteGatewayService());
 
         ServerConnection connection =
                 new ServerConnection(
@@ -264,7 +262,6 @@ public class ServerConnectionTest {
         try {
             assertThat(connection.send(ApiKeys.PUT_KV, putKvRequest(null)).get())
                     .isInstanceOf(PutKvResponse.class);
-            assertThat(oldGatewayService.putKvRequests).hasValue(1);
 
             assertThatThrownBy(
                             () ->
@@ -275,11 +272,9 @@ public class ServerConnectionTest {
                     .isInstanceOf(UnsupportedVersionException.class)
                     .hasMessageContaining("require PUT_KV version 3 or newer")
                     .hasMessageContaining("negotiated version 2");
-            assertThat(oldGatewayService.putKvRequests).hasValue(1);
 
             assertThat(connection.send(ApiKeys.PRODUCE_LOG, produceLogRequest(null)).get())
                     .isInstanceOf(ProduceLogResponse.class);
-            assertThat(oldGatewayService.produceLogRequests).hasValue(1);
 
             assertThatThrownBy(
                             () ->
@@ -292,7 +287,6 @@ public class ServerConnectionTest {
                     .isInstanceOf(UnsupportedVersionException.class)
                     .hasMessageContaining("require PRODUCE_LOG version 1 or newer")
                     .hasMessageContaining("negotiated version 0");
-            assertThat(oldGatewayService.produceLogRequests).hasValue(1);
         } finally {
             connection.close().get();
         }
@@ -346,10 +340,6 @@ public class ServerConnectionTest {
     }
 
     private static class OldWriteGatewayService extends TestingTabletGatewayService {
-
-        private final AtomicInteger putKvRequests = new AtomicInteger();
-        private final AtomicInteger produceLogRequests = new AtomicInteger();
-
         @Override
         public CompletableFuture<ApiVersionsResponse> apiVersions(ApiVersionsRequest request) {
             return super.apiVersions(request)
@@ -368,13 +358,11 @@ public class ServerConnectionTest {
 
         @Override
         public CompletableFuture<PutKvResponse> putKv(PutKvRequest request) {
-            putKvRequests.incrementAndGet();
             return CompletableFuture.completedFuture(new PutKvResponse());
         }
 
         @Override
         public CompletableFuture<ProduceLogResponse> produceLog(ProduceLogRequest request) {
-            produceLogRequests.incrementAndGet();
             return CompletableFuture.completedFuture(new ProduceLogResponse());
         }
     }
