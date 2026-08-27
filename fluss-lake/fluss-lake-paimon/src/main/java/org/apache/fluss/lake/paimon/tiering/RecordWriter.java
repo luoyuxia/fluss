@@ -42,6 +42,7 @@ public abstract class RecordWriter<T> implements AutoCloseable {
     protected final int bucket;
     protected final List<String> partitionKeys;
     protected final boolean historicalPartition;
+    // Null for historical writers, which derive the original partition from each record.
     protected final @Nullable BinaryRow fixedPartition;
     protected final FlussRecordAsPaimonRow flussRecordAsPaimonRow;
 

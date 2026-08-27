@@ -444,7 +444,7 @@ public class ConfigOptions {
                     .durationType()
                     .defaultValue(Duration.ofMinutes(30))
                     .withDescription(
-                            "The historical KV write idle time after which a fully tiered local overlay can be cleaned. "
+                            "The idle time after which fully tiered historical KV write state in the local overlay can be cleaned. "
                                     + "Set to 0 to disable idle cleanup.");
 
     public static final ConfigOption<Double> SERVER_DATA_DISK_WRITE_LIMIT_RATIO =

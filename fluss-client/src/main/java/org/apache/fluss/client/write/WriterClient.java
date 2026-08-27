@@ -78,7 +78,6 @@ public class WriterClient {
     private static final Logger LOG = LoggerFactory.getLogger(WriterClient.class);
 
     public static final String SENDER_THREAD_PREFIX = "fluss-write-sender";
-    private static final Duration MAX_DEFAULT_TIME_ZONE_DIFFERENCE = Duration.ofHours(26);
     /**
      * {@link ConfigOptions#CLIENT_WRITER_MAX_INFLIGHT_REQUESTS_PER_BUCKET} should be less than or
      * equal to this value when idempotence producer enabled to ensure message ordering.
@@ -254,6 +253,18 @@ public class WriterClient {
         }
     }
 
+    /**
+     * Returns whether a partition is old enough that it may have expired under its retention
+     * policy.
+     *
+     * <p>This client-side precheck uses the time zone resolved from the table configuration. A
+     * {@code true} result does not confirm that the partition is missing; the caller must refresh
+     * metadata before routing the write to a historical partition. If the table does not explicitly
+     * configure a time zone and the Client and Coordinator use different defaults, they may
+     * classify partitions near the retention boundary differently. Late classification may fail a
+     * write to an already removed original partition, while early classification only causes an
+     * extra metadata refresh.
+     */
     static boolean mayBeExpiredHistoricalPartition(
             PhysicalTablePath physicalTablePath, TableInfo tableInfo, Instant now) {
         String partitionName = physicalTablePath.getPartitionName();
@@ -264,25 +275,19 @@ public class WriterClient {
             return false;
         }
 
-        // The table's default time zone is not persisted. Shift the expiration boundary by the
-        // largest IANA time-zone difference, then apply retention in the table's partition unit.
-        Instant latestPotentialServerTime = now.plus(MAX_DEFAULT_TIME_ZONE_DIFFERENCE);
-        if (!isPastAutoPartition(partitionName, strategy, latestPotentialServerTime)) {
+        if (!isPastAutoPartition(partitionName, strategy, now)) {
             return false;
         }
-        ZonedDateTime latestPotentialServerDateTime =
-                ZonedDateTime.ofInstant(latestPotentialServerTime, strategy.timeZone().toZoneId());
-        String earliestPotentialRetainedPartition =
+        ZonedDateTime currentDateTime =
+                ZonedDateTime.ofInstant(now, strategy.timeZone().toZoneId());
+        String earliestRetainedPartition =
                 generateAutoPartitionTime(
-                        latestPotentialServerDateTime,
-                        -strategy.numToRetain(),
-                        strategy.timeUnit(),
-                        strategy);
-        return partitionName.compareTo(earliestPotentialRetainedPartition) < 0;
+                        currentDateTime, -strategy.numToRetain(), strategy.timeUnit(), strategy);
+        return partitionName.compareTo(earliestRetainedPartition) < 0;
     }
 
     private synchronized void resolveHistoricalWriteTarget(PhysicalTablePath originalPath) {
-        if (accumulator.hasWriteTarget(originalPath)) {
+        if (accumulator.hasHistoricalWriteTarget(originalPath)) {
             return;
         }
 
@@ -307,16 +312,8 @@ public class WriterClient {
             }
         }
 
-        if (!accumulator.tryRouteWritesTo(
-                originalPath, targetPath, metadataUpdater.getPartitionIdOrElseThrow(targetPath))) {
-            throw new FlussRuntimeException(
-                    "Cannot route writes for "
-                            + originalPath
-                            + " to "
-                            + targetPath
-                            + " because the accumulator already contains writes for a different "
-                            + "physical target.");
-        }
+        accumulator.routeWritesTo(
+                originalPath, targetPath, metadataUpdater.getPartitionIdOrElseThrow(targetPath));
     }
 
     private void maybeAbortBatches(Throwable t) {

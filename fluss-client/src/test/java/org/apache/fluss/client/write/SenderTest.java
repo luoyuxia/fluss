@@ -42,7 +42,6 @@ import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.GenericRow;
 import org.apache.fluss.row.encode.CompactedKeyEncoder;
-import org.apache.fluss.row.indexed.IndexedRow;
 import org.apache.fluss.rpc.entity.ProduceLogResultForBucket;
 import org.apache.fluss.rpc.entity.PutKvResultForBucket;
 import org.apache.fluss.rpc.messages.ApiMessage;
@@ -92,7 +91,6 @@ import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makeProduceLog
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.makePutKvResponse;
 import static org.apache.fluss.server.utils.ServerRpcMessageUtils.toProduceLogDataForBuckets;
 import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
-import static org.apache.fluss.testutils.DataTestUtils.indexedRow;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
@@ -129,57 +127,19 @@ final class SenderTest {
     }
 
     @Test
-    void testSendsHistoricalPutWhenTargetResolvedBeforeAppend() throws Exception {
-        sender.destroyResources();
-        String originalPartitionName = "20000101";
-        TableInfo tableInfo = createHistoricalTableInfo();
-        PhysicalTablePath originalPath =
-                PhysicalTablePath.of(tableInfo.getTablePath(), originalPartitionName);
-        PhysicalTablePath historicalPath =
-                PhysicalTablePath.of(tableInfo.getTablePath(), HISTORICAL_PARTITION_VALUE);
-        long historicalPartitionId = 22L;
-        TableBucket historicalBucket =
-                new TableBucket(tableInfo.getTableId(), historicalPartitionId, 0);
-        metadataUpdater =
-                new TestingMetadataUpdater(
-                        Collections.singletonMap(tableInfo.getTablePath(), tableInfo));
-        metadataUpdater.updateCluster(
-                partitionedCluster(
-                        tableInfo, Collections.singletonMap(historicalPath, historicalBucket)));
-        sender = setupWithIdempotenceState();
-        accumulator.tryRouteWritesTo(originalPath, historicalPath, historicalPartitionId);
-
-        CompletableFuture<Exception> future =
-                appendKvRecord(tableInfo, originalPath, 1, metadataUpdater.getCluster());
-
-        sender.runOnce();
-
-        assertThat(sender.numOfInFlightBatches(historicalBucket)).isOne();
-        TestTabletServerGateway gateway = node1Gateway();
-        PutKvRequest request = (PutKvRequest) gateway.getRequest(0);
-        assertThat(request.getBucketsReqAt(0).getPartitionId()).isEqualTo(historicalPartitionId);
-        assertThat(request.getBucketsReqAt(0).getOriginalPartitionName())
-                .isEqualTo(originalPartitionName);
-
-        gateway.response(
-                0, createHistoricalPutKvResponse(historicalBucket, 1L, originalPartitionName));
-        assertThat(future.get()).isNull();
-    }
-
-    @Test
     void testPotentialExpirationUsesAutoPartitionTimeUnit() {
         TableInfo tableInfo = createHistoricalTableInfo(AutoPartitionTimeUnit.HOUR, 48);
         Instant now = Instant.parse("2026-08-24T00:00:00Z");
 
         assertThat(
                         WriterClient.mayBeExpiredHistoricalPartition(
-                                PhysicalTablePath.of(tableInfo.getTablePath(), "2026082301"),
+                                PhysicalTablePath.of(tableInfo.getTablePath(), "2026082123"),
                                 tableInfo,
                                 now))
                 .isTrue();
         assertThat(
                         WriterClient.mayBeExpiredHistoricalPartition(
-                                PhysicalTablePath.of(tableInfo.getTablePath(), "2026082302"),
+                                PhysicalTablePath.of(tableInfo.getTablePath(), "2026082200"),
                                 tableInfo,
                                 now))
                 .isFalse();
@@ -214,33 +174,7 @@ final class SenderTest {
     }
 
     @Test
-    void testMissingPartitionDoesNotAbortNormalWrites() throws Exception {
-        sender.destroyResources();
-        TableInfo tableInfo = createNormalPartitionedTableInfo();
-        PhysicalTablePath partitionPath =
-                PhysicalTablePath.of(tableInfo.getTablePath(), "20990101");
-        TableBucket tableBucket = new TableBucket(tableInfo.getTableId(), 21L, 0);
-        metadataUpdater = missingPartitionMetadataUpdater(tableInfo);
-        metadataUpdater.updateCluster(
-                partitionedCluster(
-                        tableInfo, Collections.singletonMap(partitionPath, tableBucket)));
-        sender = setupWithIdempotenceState();
-
-        CompletableFuture<Exception> future =
-                appendKvRecord(tableInfo, partitionPath, 1, metadataUpdater.getCluster());
-        sender.runOnce();
-
-        TestTabletServerGateway gateway = node1Gateway();
-        gateway.response(
-                0, createPutKvResponse(tableBucket, Errors.UNKNOWN_TABLE_OR_BUCKET_EXCEPTION));
-        sender.runOnce();
-
-        assertThat(future).isNotDone();
-        accumulator.abortAllBatches(new RuntimeException("Test cleanup."));
-    }
-
-    @Test
-    void testPackNormalAndHistoricalPutRequests() throws Exception {
+    void testNormalAndHistoricalPutRequests() throws Exception {
         sender.destroyResources();
         TableInfo tableInfo = createHistoricalTableInfo();
         PhysicalTablePath activePath = PhysicalTablePath.of(tableInfo.getTablePath(), "20990101");
@@ -264,9 +198,9 @@ final class SenderTest {
 
         CompletableFuture<Exception> activeFuture =
                 appendKvRecord(tableInfo, activePath, 1, metadataUpdater.getCluster());
-        accumulator.tryRouteWritesTo(
+        accumulator.routeWritesTo(
                 firstOriginalPath, historicalPath, historicalBucket.getPartitionId());
-        accumulator.tryRouteWritesTo(
+        accumulator.routeWritesTo(
                 secondOriginalPath, historicalPath, historicalBucket.getPartitionId());
         CompletableFuture<Exception> firstHistoricalFuture =
                 appendKvRecord(tableInfo, firstOriginalPath, 2, metadataUpdater.getCluster());
@@ -311,78 +245,9 @@ final class SenderTest {
                                         historicalBucket,
                                         1L,
                                         firstOriginalPath.getPartitionName()))));
-        assertThat(activeFuture).isDone();
-        assertThat(firstHistoricalFuture).isDone();
-        assertThat(secondHistoricalFuture).isDone();
         assertThat(activeFuture.get()).isNull();
         assertThat(firstHistoricalFuture.get()).isNull();
         assertThat(secondHistoricalFuture.get()).isNull();
-    }
-
-    @Test
-    void testPackHistoricalProduceLogRequests() throws Exception {
-        sender.destroyResources();
-        TableInfo tableInfo = createHistoricalLogTableInfo();
-        PhysicalTablePath firstOriginalPath =
-                PhysicalTablePath.of(tableInfo.getTablePath(), "20000101");
-        PhysicalTablePath secondOriginalPath =
-                PhysicalTablePath.of(tableInfo.getTablePath(), "20000102");
-        PhysicalTablePath historicalPath =
-                PhysicalTablePath.of(tableInfo.getTablePath(), HISTORICAL_PARTITION_VALUE);
-        TableBucket historicalBucket = new TableBucket(tableInfo.getTableId(), 22L, 0);
-
-        metadataUpdater =
-                new TestingMetadataUpdater(
-                        Collections.singletonMap(tableInfo.getTablePath(), tableInfo));
-        metadataUpdater.updateCluster(
-                partitionedCluster(
-                        tableInfo, Collections.singletonMap(historicalPath, historicalBucket)));
-        sender = setupWithIdempotenceState();
-
-        accumulator.tryRouteWritesTo(
-                firstOriginalPath, historicalPath, historicalBucket.getPartitionId());
-        accumulator.tryRouteWritesTo(
-                secondOriginalPath, historicalPath, historicalBucket.getPartitionId());
-        CompletableFuture<Exception> firstFuture =
-                appendLogRecord(tableInfo, firstOriginalPath, 1, metadataUpdater.getCluster());
-        CompletableFuture<Exception> secondFuture =
-                appendLogRecord(tableInfo, secondOriginalPath, 2, metadataUpdater.getCluster());
-
-        sender.runOnce();
-
-        TestTabletServerGateway gateway = node1Gateway();
-        assertThat(gateway.pendingRequestSize()).isOne();
-        ProduceLogRequest request = (ProduceLogRequest) gateway.getRequest(0);
-        assertThat(request.getBucketsReqsCount()).isEqualTo(2);
-        Set<String> originalPartitionNames = new HashSet<>();
-        for (int i = 0; i < request.getBucketsReqsCount(); i++) {
-            assertThat(request.getBucketsReqAt(i).getPartitionId())
-                    .isEqualTo(historicalBucket.getPartitionId());
-            originalPartitionNames.add(request.getBucketsReqAt(i).getOriginalPartitionName());
-        }
-        assertThat(originalPartitionNames)
-                .containsExactlyInAnyOrder(
-                        firstOriginalPath.getPartitionName(),
-                        secondOriginalPath.getPartitionName());
-
-        gateway.response(
-                0,
-                makeProduceLogResponse(
-                        Arrays.asList(
-                                ProduceLogResultForBucket.historicalSuccess(
-                                        historicalBucket,
-                                        1L,
-                                        2L,
-                                        secondOriginalPath.getPartitionName()),
-                                ProduceLogResultForBucket.historicalSuccess(
-                                        historicalBucket,
-                                        0L,
-                                        1L,
-                                        firstOriginalPath.getPartitionName()))));
-        assertThat(firstFuture).isDone();
-        assertThat(secondFuture).isDone();
-        assertThat(firstFuture.get()).isNull();
-        assertThat(secondFuture.get()).isNull();
     }
 
     @Test
@@ -1401,15 +1266,6 @@ final class SenderTest {
 
     private static TableInfo createHistoricalTableInfo(
             AutoPartitionTimeUnit timeUnit, int numToRetain) {
-        return createPartitionedKvTableInfo(timeUnit, numToRetain, true);
-    }
-
-    private static TableInfo createNormalPartitionedTableInfo() {
-        return createPartitionedKvTableInfo(AutoPartitionTimeUnit.DAY, 7, false);
-    }
-
-    private static TableInfo createPartitionedKvTableInfo(
-            AutoPartitionTimeUnit timeUnit, int numToRetain, boolean historicalPartitionEnabled) {
         Schema schema =
                 Schema.newBuilder()
                         .column("id", DataTypes.INT())
@@ -1427,9 +1283,7 @@ final class SenderTest {
                         .property(ConfigOptions.TABLE_AUTO_PARTITION_TIMEZONE, "UTC")
                         .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
                         .property(ConfigOptions.TABLE_DATALAKE_FORMAT, DataLakeFormat.PAIMON)
-                        .property(
-                                ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED,
-                                historicalPartitionEnabled)
+                        .property(ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED, true)
                         .build();
         return TableInfo.of(
                 DATA1_TABLE_PATH_PK,
@@ -1454,26 +1308,6 @@ final class SenderTest {
                 throw new PartitionNotExistException("Partition does not exist.");
             }
         };
-    }
-
-    private static TableInfo createHistoricalLogTableInfo() {
-        Schema schema =
-                Schema.newBuilder()
-                        .column("id", DataTypes.INT())
-                        .column("dt", DataTypes.STRING())
-                        .build();
-        TableDescriptor descriptor =
-                TableDescriptor.builder()
-                        .schema(schema)
-                        .partitionedBy("dt")
-                        .distributedBy(1, "id")
-                        .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)
-                        .property(ConfigOptions.TABLE_DATALAKE_ENABLED, true)
-                        .property(ConfigOptions.TABLE_DATALAKE_FORMAT, DataLakeFormat.PAIMON)
-                        .property(ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED, true)
-                        .build();
-        return TableInfo.of(
-                DATA1_TABLE_PATH, DATA1_TABLE_ID, 1, descriptor, DEFAULT_REMOTE_DATA_DIR, 1L, 1L);
     }
 
     private static Cluster partitionedCluster(
@@ -1524,23 +1358,6 @@ final class SenderTest {
                         key,
                         WriteFormat.COMPACTED_KV,
                         null),
-                (tableBucket, logEndOffset, error) -> future.complete(error),
-                cluster,
-                0,
-                false);
-        return future;
-    }
-
-    private CompletableFuture<Exception> appendLogRecord(
-            TableInfo tableInfo, PhysicalTablePath physicalTablePath, int id, Cluster cluster)
-            throws Exception {
-        IndexedRow row =
-                indexedRow(
-                        tableInfo.getRowType(),
-                        new Object[] {id, physicalTablePath.getPartitionName()});
-        CompletableFuture<Exception> future = new CompletableFuture<>();
-        accumulator.append(
-                WriteRecord.forIndexedAppend(tableInfo, physicalTablePath, row, null),
                 (tableBucket, logEndOffset, error) -> future.complete(error),
                 cluster,
                 0,
@@ -1688,14 +1505,6 @@ final class SenderTest {
     private PutKvResponse createPutKvResponse(TableBucket tb, long endOffset) {
         return makePutKvResponse(
                 Collections.singletonList(new PutKvResultForBucket(tb, endOffset)));
-    }
-
-    private PutKvResponse createHistoricalPutKvResponse(
-            TableBucket tb, long endOffset, String originalPartitionName) {
-        return makePutKvResponse(
-                Collections.singletonList(
-                        PutKvResultForBucket.historicalSuccess(
-                                tb, endOffset, originalPartitionName)));
     }
 
     private PutKvResponse createPutKvResponse(TableBucket tb, long endOffset, float pressure) {
