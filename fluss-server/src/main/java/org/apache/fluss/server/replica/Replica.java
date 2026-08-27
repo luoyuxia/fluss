@@ -224,6 +224,9 @@ public final class Replica {
     private @Nullable PeriodicSnapshotManager kvSnapshotManager;
     // The lake log end offset used as the durable base of the current historical KV overlay.
     private volatile long historicalKvBaseOffset = -1L;
+    // Replaced together with the historical KV overlay so stale cleanup tasks can be fenced by
+    // identity without external replica lifecycle callbacks.
+    private volatile @Nullable HistoricalWriteState historicalWriteState;
 
     /**
      * Server-wide {@link ScannerManager}. Active sessions for this bucket are closed in {@link
@@ -380,6 +383,11 @@ public final class Replica {
 
     public long getLakeLogEndOffset() {
         return logTablet.getLakeLogEndOffset();
+    }
+
+    /** Returns the state owned by the active historical KV overlay, or null if none is active. */
+    public @Nullable HistoricalWriteState getHistoricalWriteState() {
+        return historicalWriteState;
     }
 
     /**
@@ -824,9 +832,9 @@ public final class Replica {
                             tableBucket, INIT_KV_TABLET_MAX_RETRY_TIMES),
                     lastError);
         }
-        // A historical KV tablet is a disposable overlay over the lake snapshot. It is recovered
-        // by replaying WAL from the lake log end offset and does not create its own KV snapshots.
-        if (!isHistoricalPartition()) {
+        if (isHistoricalPartition()) {
+            historicalWriteState = new HistoricalWriteState(clock.milliseconds());
+        } else {
             startPeriodicKvSnapshot(snapshotUsed.orElse(null));
         }
     }
@@ -846,6 +854,7 @@ public final class Replica {
             kvManager.dropKv(tableBucket);
             kvTablet = null;
         }
+        historicalWriteState = null;
         historicalKvBaseOffset = -1L;
     }
 
@@ -2630,4 +2639,37 @@ public final class Replica {
         return kvSnapshotManager;
     }
 
+    /** Write activity and maximum-size state owned by one historical KV overlay. */
+    @ThreadSafe
+    public static final class HistoricalWriteState {
+        // Latched when the live SST size reaches the maximum. Replacing the overlay replaces this
+        // state, so transient RocksDB size changes cannot resume writes prematurely.
+        private final AtomicBoolean maxSizeReached = new AtomicBoolean();
+
+        private volatile long lastWriteMs;
+
+        private HistoricalWriteState(long lastWriteMs) {
+            this.lastWriteMs = lastWriteMs;
+        }
+
+        /** Returns whether historical writes are paused by the maximum-size limit. */
+        public boolean maxSizeReached() {
+            return maxSizeReached.get();
+        }
+
+        /** Latches the maximum-size limit and returns whether this call changed the state. */
+        public boolean markMaxSizeReached() {
+            return maxSizeReached.compareAndSet(false, true);
+        }
+
+        /** Records the latest historical write activity time. */
+        public void recordWrite(long timestampMs) {
+            lastWriteMs = timestampMs;
+        }
+
+        /** Returns the latest historical write activity time. */
+        public long lastWriteMs() {
+            return lastWriteMs;
+        }
+    }
 }
