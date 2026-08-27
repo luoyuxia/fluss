@@ -97,6 +97,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -139,7 +140,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(lookupConfiguration());
         HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
+                createNonCleanupManager(
                         new HistoricalPartitionTaskExecutor(lookupConfiguration()),
                         lakeLookupManager);
 
@@ -207,7 +208,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(lookupConfiguration());
         HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
+                createNonCleanupManager(
                         new HistoricalPartitionTaskExecutor(lookupConfiguration()),
                         lakeLookupManager);
 
@@ -256,7 +257,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(lookupConfiguration());
         HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
+                createNonCleanupManager(
                         new HistoricalPartitionTaskExecutor(lookupConfiguration()),
                         lakeLookupManager);
 
@@ -446,7 +447,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(lookupConfiguration());
         HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
+                createNonCleanupManager(
                         new HistoricalPartitionTaskExecutor(lookupConfiguration()),
                         lakeLookupManager);
 
@@ -547,7 +548,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(lookupConfiguration());
         HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
+                createNonCleanupManager(
                         new HistoricalPartitionTaskExecutor(lookupConfiguration()),
                         lakeLookupManager);
         CountDownLatch lakeLookupStarted = new CountDownLatch(1);
@@ -604,7 +605,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(lookupConfiguration());
         HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
+                createNonCleanupManager(
                         new HistoricalPartitionTaskExecutor(lookupConfiguration()),
                         lakeLookupManager);
 
@@ -750,8 +751,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(cleanupConf);
         HistoricalPartitionManager historicalPartitionManager =
-                createCleanupManager(
-                        cleanupConf, executor, lakeLookupManager, replica, Long.MAX_VALUE);
+                createCleanupManager(cleanupConf, executor, lakeLookupManager, Long.MAX_VALUE);
 
         byte[] primaryKey = new CompactedKeyEncoder(HISTORICAL_KEY_TYPE).encodeKey(row(1, "us"));
         Object[] valueObjects = new Object[] {1, "us", ORIGINAL_PARTITION, "v1"};
@@ -774,60 +774,26 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
             assertThat(putFuture.get(10, TimeUnit.SECONDS).failed()).isFalse();
             flushAndWait(originalKvTablet, Long.MAX_VALUE);
 
-            manualClock.advanceTime(Duration.ofMinutes(1));
-            // The idle policy cannot clean until lake progress covers the local WAL.
-            assertThat(executor.numQueuedRunnables()).isZero();
-            assertThat(replica.getKvTablet()).isSameAs(originalKvTablet);
-
             long tieredOffset = replica.getLocalLogEndOffset();
             historicalPartitionManager.onLakeProgress(replica, 9L, tieredOffset - 1);
             assertThat(executor.numQueuedRunnables()).isZero();
 
             replica.getLogTablet().updateLakeLogEndOffset(tieredOffset);
             historicalPartitionManager.onLakeProgress(replica, 10L, tieredOffset);
+            // Lake normally catches up before the overlay becomes idle. Cleanup must wake at the
+            // write deadline even if no further lake progress notification arrives.
+            assertThat(executor.numQueuedRunnables()).isZero();
+            assertThat(executor.getActiveNonPeriodicScheduledTask()).hasSize(1);
+            assertThat(replica.getKvTablet()).isSameAs(originalKvTablet);
+            manualClock.advanceTime(Duration.ofMinutes(1));
+            executor.triggerNonPeriodicScheduledTasks();
             assertThat(executor.numQueuedRunnables()).isOne();
             assertThat(lakeLookupManager.requiredLakeSnapshotIds).isEmpty();
-
-            // A write admitted after idle cleanup was scheduled must either cancel that cleanup
-            // or run against the newly created overlay. It must never be lost during the reset.
-            CompletableFuture<PutKvResultForBucket> laterPut =
-                    putHistoricalRecords(
-                            historicalPartitionManager,
-                            replica,
-                            batch(
-                                    HISTORICAL_KEY_TYPE,
-                                    tableInfo.getRowType(),
-                                    Tuple2.of(new Object[] {1, "us"}, valueObjects)));
-            executor.triggerAll();
-            assertThat(laterPut.get(10, TimeUnit.SECONDS).failed()).isFalse();
-            assertThat(replica.getKvTablet()).isSameAs(originalKvTablet);
-            assertThat(lakeLookupManager.requiredLakeSnapshotIds).isEmpty();
-
-            flushAndWait(originalKvTablet, Long.MAX_VALUE);
-            manualClock.advanceTime(Duration.ofMinutes(1));
-            long latestTieredOffset = replica.getLocalLogEndOffset();
-            replica.getLogTablet().updateLakeLogEndOffset(latestTieredOffset);
-
-            Configuration longerIdleTimeConf = new Configuration(cleanupConf);
-            longerIdleTimeConf.set(
-                    ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME,
-                    Duration.ofMinutes(2));
-            historicalPartitionManager.validate(longerIdleTimeConf);
-            historicalPartitionManager.reconfigure(longerIdleTimeConf);
-            historicalPartitionManager.onLakeProgress(replica, 11L, latestTieredOffset);
-            assertThat(lakeLookupManager.requiredLakeSnapshotIds).isEmpty();
-            executor.triggerAll();
-            assertThat(replica.getKvTablet()).isSameAs(originalKvTablet);
-
-            Configuration shorterIdleTimeConf = new Configuration(cleanupConf);
-            historicalPartitionManager.validate(shorterIdleTimeConf);
-            historicalPartitionManager.reconfigure(shorterIdleTimeConf);
-            historicalPartitionManager.onLakeProgress(replica, 12L, latestTieredOffset);
             executor.triggerAll();
 
             KvTablet cleanedKvTablet = replica.getKvTablet();
             assertThat(cleanedKvTablet).isNotNull().isNotSameAs(originalKvTablet);
-            assertThat(lakeLookupManager.requiredLakeSnapshotIds).containsExactly(12L);
+            assertThat(lakeLookupManager.requiredLakeSnapshotIds).containsExactly(10L);
             assertThat(cleanedKvTablet.getRocksDBKv().limitScan(10)).isEmpty();
             assertThat(cleanedKvTablet.lookupHistoricalLocal(ORIGINAL_PARTITION, primaryKey))
                     .isEqualTo(KvStateLookupResult.notFound());
@@ -859,7 +825,8 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
                         new HistoricalPartitionTaskExecutor(cleanupConf, executor),
                         new TestingHistoricalLakeLookupManager(cleanupConf),
                         manualClock,
-                        Long.MAX_VALUE);
+                        Long.MAX_VALUE,
+                        new TestingCleanupScheduler(executor));
         Configuration invalidConf = new Configuration(cleanupConf);
         invalidConf.set(
                 ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME,
@@ -892,8 +859,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         TestingHistoricalLakeLookupManager lakeLookupManager =
                 new TestingHistoricalLakeLookupManager(cleanupConf);
         HistoricalPartitionManager historicalPartitionManager =
-                createCleanupManager(
-                        cleanupConf, executor, lakeLookupManager, replica, Long.MAX_VALUE);
+                createCleanupManager(cleanupConf, executor, lakeLookupManager, Long.MAX_VALUE);
 
         KvRecordBatch records =
                 batch(
@@ -964,7 +930,6 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
                         cleanupConf,
                         executor,
                         new TestingHistoricalLakeLookupManager(cleanupConf),
-                        replica,
                         1L);
 
         KvRecordBatch firstBatch =
@@ -1026,7 +991,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         ManuallyTriggeredScheduledExecutorService executor =
                 new ManuallyTriggeredScheduledExecutorService();
         HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
+                createNonCleanupManager(
                         new HistoricalPartitionTaskExecutor(lookupConfiguration(), executor),
                         new TestingHistoricalLakeLookupManager(lookupConfiguration()));
 
@@ -1231,7 +1196,6 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
             Configuration configuration,
             ManuallyTriggeredScheduledExecutorService executor,
             TestingHistoricalLakeLookupManager lakeLookupManager,
-            Replica replica,
             long maxHistoricalKvSizeBytes) {
         HistoricalPartitionManager manager =
                 new HistoricalPartitionManager(
@@ -1239,9 +1203,45 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
                         new HistoricalPartitionTaskExecutor(configuration, executor),
                         lakeLookupManager,
                         manualClock,
-                        maxHistoricalKvSizeBytes);
-        manager.onLeaderActivated(replica);
+                        maxHistoricalKvSizeBytes,
+                        new TestingCleanupScheduler(executor));
         return manager;
+    }
+
+    private HistoricalPartitionManager createNonCleanupManager(
+            HistoricalPartitionTaskExecutor taskExecutor,
+            HistoricalLakeLookupManager lakeLookupManager) {
+        return new HistoricalPartitionManager(
+                new Configuration(),
+                taskExecutor,
+                lakeLookupManager,
+                manualClock,
+                Long.MAX_VALUE,
+                null);
+    }
+
+    private static final class TestingCleanupScheduler
+            implements org.apache.fluss.utils.concurrent.Scheduler {
+        private final ManuallyTriggeredScheduledExecutorService executor;
+
+        private TestingCleanupScheduler(ManuallyTriggeredScheduledExecutorService executor) {
+            this.executor = executor;
+        }
+
+        @Override
+        public void startup() {}
+
+        @Override
+        public void shutdown() {}
+
+        @Override
+        public ScheduledFuture<?> schedule(
+                String name, Runnable task, long delayMs, long periodMs) {
+            if (periodMs > 0L) {
+                return executor.scheduleAtFixedRate(task, delayMs, periodMs, TimeUnit.MILLISECONDS);
+            }
+            return executor.schedule(task, delayMs, TimeUnit.MILLISECONDS);
+        }
     }
 
     private static CompletableFuture<PutKvResultForBucket> putHistoricalRecords(

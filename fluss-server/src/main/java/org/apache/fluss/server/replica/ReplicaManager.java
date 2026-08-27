@@ -1460,13 +1460,7 @@ public class ReplicaManager implements ServerReconfigurable {
                 if (replica.isDataLakeEnabled()) {
                     updateWithLakeTableSnapshot(replica);
                 }
-                int previousLeaderEpoch = replica.getLeaderEpoch();
                 replica.makeLeader(data);
-                if (replica.isHistoricalPartition()
-                        && replica.isKvTable()
-                        && previousLeaderEpoch != replica.getLeaderEpoch()) {
-                    historicalPartitionManager.onLeaderActivated(replica);
-                }
 
                 // start the remote log tiering tasks for leaders
                 remoteLogManager.startLogTiering(replica);
@@ -1539,9 +1533,6 @@ public class ReplicaManager implements ServerReconfigurable {
                 if (replica.makeFollower(data)) {
                     replicasBecomeFollower.add(replica);
                     scannerManager.closeScannersForBucket(tb);
-                }
-                if (replica.isHistoricalPartition()) {
-                    historicalPartitionManager.onReplicaStopped(tb);
                 }
                 // stop the remote log tiering tasks for followers
                 remoteLogManager.stopLogTiering(replica);
@@ -2345,9 +2336,6 @@ public class ReplicaManager implements ServerReconfigurable {
         HostedReplica replica = getReplica(tb);
         if (replica instanceof OnlineReplica) {
             Replica replicaToDelete = ((OnlineReplica) replica).getReplica();
-            if (replicaToDelete.isHistoricalPartition()) {
-                historicalPartitionManager.onReplicaStopped(tb);
-            }
             if (deleteLocal) {
                 if (allReplicas.remove(tb) != null) {
                     serverMetricGroup.removeTableBucketMetricGroup(
