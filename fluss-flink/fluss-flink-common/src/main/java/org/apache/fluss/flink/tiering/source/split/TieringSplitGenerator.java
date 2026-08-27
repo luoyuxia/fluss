@@ -155,7 +155,8 @@ public class TieringSplitGenerator {
                     try {
                         latestKvSnapshots =
                                 flussAdmin
-                                        .getLatestKvSnapshots(tableInfo.getTablePath(), partitionName)
+                                        .getLatestKvSnapshots(
+                                                tableInfo.getTablePath(), partitionName)
                                         .get();
                     } catch (Exception e) {
                         throw new FlinkRuntimeException(
@@ -203,12 +204,7 @@ public class TieringSplitGenerator {
         }
 
         return generateTableSplit(
-                tableInfo,
-                null,
-                null,
-                lakeSnapshotInfo,
-                latestKvSnapshots,
-                latestBucketsOffset);
+                tableInfo, null, null, lakeSnapshotInfo, latestKvSnapshots, latestBucketsOffset);
     }
 
     private List<TieringSplit> generateTableSplit(

@@ -244,8 +244,7 @@ class PaimonTieringTest {
         SimpleVersionedSerializer<PaimonWriteResult> serializer =
                 paimonLakeTieringFactory.getWriteResultSerializer();
         writeResult =
-                serializer.deserialize(
-                        serializer.getVersion(), serializer.serialize(writeResult));
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(writeResult));
         assertHistoricalPartitions(writeResult);
 
         try (LakeCommitter<PaimonWriteResult, PaimonCommittable> committer =
@@ -824,9 +823,7 @@ class PaimonTieringTest {
             long offset, long timestamp, int key, String partition, ChangeType changeType) {
         GenericRow row =
                 GenericRow.of(
-                        key,
-                        BinaryString.fromString("value"),
-                        BinaryString.fromString(partition));
+                        key, BinaryString.fromString("value"), BinaryString.fromString(partition));
         return new GenericRecord(offset, timestamp, changeType, row);
     }
 
