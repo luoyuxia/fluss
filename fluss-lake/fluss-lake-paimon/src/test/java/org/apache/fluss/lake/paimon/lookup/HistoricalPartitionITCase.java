@@ -86,33 +86,79 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
         long tableId =
                 createTable(
                         tablePath,
-                        partitionedPkDescriptor(schema, true, EXPIRED_PARTITION_RETENTION));
+                        partitionedDescriptor(schema, true, EXPIRED_PARTITION_RETENTION));
 
         try {
             long historicalPartitionId = waitUntilHistoricalPartitionReady(tablePath, tableId);
 
-            InternalRow expectedRow = dataRow(true, 1, "unused", "Alice");
+            InternalRow tieredRow = dataRow(true, 1, "unused", "Alice");
             assertThat(admin.listPartitionInfos(tablePath).get())
                     .noneMatch(p -> EXPIRED_PARTITION_NAME.equals(p.getPartitionName()));
-            writeRows(tablePath, Collections.singletonList(expectedRow), false);
+            writeRows(tablePath, Collections.singletonList(tieredRow), false);
             // Historical writes must not recreate the expired original partition.
             assertThat(admin.listPartitionInfos(tablePath).get())
                     .noneMatch(p -> EXPIRED_PARTITION_NAME.equals(p.getPartitionName()));
 
             TableBucket historicalBucket = new TableBucket(tableId, historicalPartitionId, 0);
             assertThat(getLeaderReplica(historicalBucket).getLocalLogEndOffset()).isEqualTo(1);
-            JobClient jobClient = buildTieringJob(execEnv);
-            try {
-                assertReplicaStatus(historicalBucket, 1);
-                checkFlussOffsetsInSnapshot(
-                        tablePath, Collections.singletonMap(historicalBucket, 1L));
-                assertThat(readPaimonRows(tablePath))
-                        .containsExactly("1|" + EXPIRED_PARTITION_NAME + "|Alice");
-            } finally {
-                jobClient.cancel().get();
-            }
+            tierAndVerifyPaimonRows(
+                    tablePath, historicalBucket, 1L, "1|" + EXPIRED_PARTITION_NAME + "|Alice");
 
-            restartLeaderAndVerifyLookup(tablePath, historicalBucket, schema, expectedRow);
+            // Leave an untiered update after the Paimon snapshot. Restart recovery must apply this
+            // changelog over the tiered row.
+            InternalRow updatedRow = dataRow(true, 1, "unused", "Alice-updated");
+            writeRows(tablePath, Collections.singletonList(updatedRow), false);
+            // FULL changelog emits UPDATE_BEFORE and UPDATE_AFTER for the update.
+            assertThat(getLeaderReplica(historicalBucket).getLocalLogEndOffset()).isEqualTo(3);
+            assertThat(getLeaderReplica(historicalBucket).getLakeLogEndOffset()).isEqualTo(1);
+
+            restartLeaderAndVerifyLookup(tablePath, historicalBucket, schema, updatedRow);
+
+            // Verify that the recovered local state can resolve the previous value for another
+            // update, and that a newly started tiering job can synchronize the resulting changelog.
+            InternalRow postRecoveryRow = dataRow(true, 1, "unused", "Alice-after-recovery");
+            writeRows(tablePath, Collections.singletonList(postRecoveryRow), false);
+            assertThat(getLeaderReplica(historicalBucket).getLocalLogEndOffset()).isEqualTo(5);
+            assertThat(getLeaderReplica(historicalBucket).getLakeLogEndOffset()).isEqualTo(1);
+            tierAndVerifyPaimonRows(
+                    tablePath,
+                    historicalBucket,
+                    5L,
+                    "1|" + EXPIRED_PARTITION_NAME + "|Alice-after-recovery");
+        } finally {
+            dropTable(tablePath);
+        }
+    }
+
+    @Test
+    void testWriteAndTierHistoricalLogToPaimon() throws Exception {
+        TablePath tablePath = TablePath.of(DEFAULT_DB, "historical_log_write_tiering");
+        long tableId =
+                createTable(
+                        tablePath,
+                        partitionedDescriptor(
+                                partitionedLogSchema(), true, EXPIRED_PARTITION_RETENTION));
+
+        try {
+            long historicalPartitionId = waitUntilHistoricalPartitionReady(tablePath, tableId);
+            List<InternalRow> rows =
+                    Arrays.asList(
+                            row(1, EXPIRED_PARTITION_NAME, "Alice"),
+                            row(2, EXPIRED_PARTITION_NAME, "Bob"));
+
+            writeRows(tablePath, rows, true);
+            // Historical writes must not recreate the expired original partition.
+            assertThat(admin.listPartitionInfos(tablePath).get())
+                    .noneMatch(p -> EXPIRED_PARTITION_NAME.equals(p.getPartitionName()));
+
+            TableBucket historicalBucket = new TableBucket(tableId, historicalPartitionId, 0);
+            assertThat(getLeaderReplica(historicalBucket).getLocalLogEndOffset()).isEqualTo(2);
+            tierAndVerifyPaimonRows(
+                    tablePath,
+                    historicalBucket,
+                    2L,
+                    "1|" + EXPIRED_PARTITION_NAME + "|Alice",
+                    "2|" + EXPIRED_PARTITION_NAME + "|Bob");
         } finally {
             dropTable(tablePath);
         }
@@ -128,7 +174,7 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
                                 ? "historical_lookup_default_bucket"
                                 : "historical_lookup_bucket_subset");
         Schema oldSchema = partitionedPkSchema(defaultBucketKey);
-        long tableId = createTable(tablePath, partitionedPkDescriptor(oldSchema, false));
+        long tableId = createTable(tablePath, partitionedDescriptor(oldSchema, false));
 
         // Enable historical lookup through ALTER TABLE to cover dynamic creation of the
         // coordinator-owned historical system partition.
@@ -298,6 +344,23 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
         return actualRows;
     }
 
+    private void tierAndVerifyPaimonRows(
+            TablePath tablePath,
+            TableBucket historicalBucket,
+            long expectedLogEndOffset,
+            String... expectedRows)
+            throws Exception {
+        JobClient jobClient = buildTieringJob(execEnv);
+        try {
+            assertReplicaStatus(historicalBucket, expectedLogEndOffset);
+            checkFlussOffsetsInSnapshot(
+                    tablePath, Collections.singletonMap(historicalBucket, expectedLogEndOffset));
+            assertThat(readPaimonRows(tablePath)).containsExactlyInAnyOrder(expectedRows);
+        } finally {
+            jobClient.cancel().get();
+        }
+    }
+
     private void restartLeaderAndVerifyLookup(
             TablePath tablePath,
             TableBucket historicalBucket,
@@ -345,6 +408,14 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
                 .build();
     }
 
+    private static Schema partitionedLogSchema() {
+        return Schema.newBuilder()
+                .column("id", DataTypes.INT())
+                .column("dt", DataTypes.STRING())
+                .column("name", DataTypes.STRING())
+                .build();
+    }
+
     private static Schema evolvedPartitionedPkSchema(boolean defaultBucketKey) {
         if (defaultBucketKey) {
             return Schema.newBuilder()
@@ -365,19 +436,19 @@ class HistoricalPartitionITCase extends FlinkPaimonTieringTestBase {
                 .build();
     }
 
-    private static TableDescriptor partitionedPkDescriptor(
+    private static TableDescriptor partitionedDescriptor(
             Schema schema, boolean historicalPartitionEnabled) {
-        return partitionedPkDescriptor(
+        return partitionedDescriptor(
                 schema, historicalPartitionEnabled, INITIAL_PARTITION_RETENTION);
     }
 
-    private static TableDescriptor partitionedPkDescriptor(
+    private static TableDescriptor partitionedDescriptor(
             Schema schema, boolean historicalPartitionEnabled, int partitionRetention) {
         TableDescriptor.Builder builder =
                 TableDescriptor.builder()
                         .schema(schema)
-                        // This is the default bucket key for (id, dt), and a strict subset of the
-                        // physical primary key for (id, sub_id, dt).
+                        // For primary-key tables, id is the default bucket key for (id, dt) and a
+                        // strict subset of the physical primary key for (id, sub_id, dt).
                         .distributedBy(1, "id")
                         .partitionedBy("dt")
                         .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)

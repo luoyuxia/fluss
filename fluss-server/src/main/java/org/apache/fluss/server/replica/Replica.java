@@ -222,11 +222,11 @@ public final class Replica {
     private volatile @Nullable KvTablet kvTablet;
     private volatile @Nullable CloseableRegistry closeableRegistryForKv;
     private @Nullable PeriodicSnapshotManager kvSnapshotManager;
-    // The lake log end offset used as the durable base of the current historical KV overlay.
+    // The lake log end offset from which the current local historical KV state was rebuilt.
     private volatile long historicalKvBaseOffset = -1L;
-    // Replaced together with the historical KV overlay so stale cleanup tasks can be fenced by
-    // identity without external replica lifecycle callbacks.
-    private volatile @Nullable HistoricalWriteState historicalWriteState;
+    // Replaced whenever the local historical KV state is rebuilt so delayed cleanup tasks for an
+    // earlier state can be ignored.
+    private volatile @Nullable HistoricalKvCleanupState historicalKvCleanupState;
 
     /**
      * Server-wide {@link ScannerManager}. Active sessions for this bucket are closed in {@link
@@ -332,8 +332,8 @@ public final class Replica {
     public long logicalStorageKvSize() {
         if (isLeader() && isKvTable()) {
             if (isHistoricalPartition()) {
-                // Historical KV tablets do not create snapshots, so account for the local overlay
-                // using live SST files instead.
+                // Historical KV tablets do not create snapshots, so use live SST files to account
+                // for their local state instead.
                 KvTablet currentKvTablet = kvTablet;
                 return currentKvTablet == null ? 0L : currentKvTablet.liveSstFilesSize();
             }
@@ -385,22 +385,22 @@ public final class Replica {
         return logTablet.getLakeLogEndOffset();
     }
 
-    /** Returns the state owned by the active historical KV overlay, or null if none is active. */
-    public @Nullable HistoricalWriteState getHistoricalWriteState() {
-        return historicalWriteState;
+    /** Returns the cleanup state for the local historical KV state, or null if it is not ready. */
+    public @Nullable HistoricalKvCleanupState getHistoricalKvCleanupState() {
+        return historicalKvCleanupState;
     }
 
     /**
-     * Drops and recreates a fully tiered historical KV overlay if leadership and offsets still
-     * match.
+     * Drops and recreates local historical KV state after its writes are fully tiered, provided
+     * leadership and offsets still match.
      *
-     * @param expectedLeaderEpoch leader epoch captured when cleanup was scheduled
-     * @param logEndOffset matching lake and local log end offset that triggered cleanup
-     * @param beforeCleanup action to run before the overlay is dropped
-     * @return whether the overlay was cleaned
+     * @param expectedLeaderEpoch leader epoch required when cleanup runs
+     * @param tieredLogEndOffset fully tiered log end offset required when cleanup runs
+     * @param beforeCleanup action to run before the local KV state is dropped
+     * @return whether the local KV state was cleaned
      */
     public boolean cleanupHistoricalKv(
-            int expectedLeaderEpoch, long logEndOffset, Runnable beforeCleanup) {
+            int expectedLeaderEpoch, long tieredLogEndOffset, Runnable beforeCleanup) {
         checkNotNull(beforeCleanup, "beforeCleanup must not be null");
         return inWriteLock(
                 leaderIsrUpdateLock,
@@ -410,19 +410,19 @@ public final class Replica {
                     // the current lake and local offsets match while this task still references an
                     // older snapshot.
                     if (leaderEpoch != expectedLeaderEpoch
-                            || localLogEndOffset != logEndOffset
+                            || localLogEndOffset != tieredLogEndOffset
                             || !isEligibleForHistoricalKvCleanup(localLogEndOffset)) {
                         return false;
                     }
 
                     LOG.info(
-                            "Cleaning historical KV overlay for {} at local log end offset {} "
+                            "Cleaning local historical KV state for {} at log end offset {} "
                                     + "covered by lake log end offset {}.",
                             tableBucket,
                             localLogEndOffset,
                             logTablet.getLakeLogEndOffset());
-                    // A lookup started after the rebuilt empty overlay is published must open a
-                    // lake view that covers the state removed by this cleanup.
+                    // A lookup started after the empty local KV state is rebuilt must open a lake
+                    // view that covers the data removed by this cleanup.
                     beforeCleanup.run();
                     dropKv();
                     // TODO: Retry rebuilding this historical bucket instead of waiting for
@@ -778,7 +778,7 @@ public final class Replica {
     }
 
     private boolean isEligibleForHistoricalKvCleanup(long localLogEndOffset) {
-        // The overlay must have a known lake base, contain writes after that base, and have all
+        // Local KV state must have a known lake base, contain writes after that base, and have all
         // those writes covered by lake before it can be discarded.
         return isLeader()
                 && isHistoricalPartition()
@@ -833,7 +833,7 @@ public final class Replica {
                     lastError);
         }
         if (isHistoricalPartition()) {
-            historicalWriteState = new HistoricalWriteState(clock.milliseconds());
+            historicalKvCleanupState = new HistoricalKvCleanupState(clock.milliseconds());
         } else {
             startPeriodicKvSnapshot(snapshotUsed.orElse(null));
         }
@@ -854,7 +854,7 @@ public final class Replica {
             kvManager.dropKv(tableBucket);
             kvTablet = null;
         }
-        historicalWriteState = null;
+        historicalKvCleanupState = null;
         historicalKvBaseOffset = -1L;
     }
 
@@ -912,8 +912,8 @@ public final class Replica {
 
         // get the offset from which, we should restore from. default is 0
         long restoreStartOffset = isHistoricalPartition() ? historicalRecoveryStartOffset() : 0;
-        // The lake snapshot is the durable base for a historical overlay. Historical replicas
-        // therefore never restore a normal KV snapshot, even if one exists from older code.
+        // Lake is the durable base for local historical KV state. Historical replicas therefore
+        // never restore a normal KV snapshot, even if one exists from older code.
         Optional<CompletedSnapshot> optCompletedSnapshot =
                 isHistoricalPartition() ? Optional.empty() : getLatestSnapshot(tableBucket);
         try {
@@ -1363,7 +1363,7 @@ public final class Replica {
                 });
     }
 
-    /** Writes records to the local historical KV overlay of the leader replica. */
+    /** Writes records to the local historical KV state of the leader replica. */
     public LogAppendInfo putHistoricalRecordsToLeader(
             KvRecordBatch kvRecords,
             @Nullable int[] targetColumns,
@@ -1412,7 +1412,7 @@ public final class Replica {
         validateInSyncReplicaSize(requiredAcks);
     }
 
-    /** Looks up keys from the local historical KV overlay of the leader replica. */
+    /** Looks up keys from the local historical KV state of the leader replica. */
     public List<KvStateLookupResult> lookupHistoricalLocal(
             String originalPartitionName, List<byte[]> keys) throws Exception {
         return inReadLock(
@@ -2636,16 +2636,17 @@ public final class Replica {
         return kvSnapshotManager;
     }
 
-    /** Write activity and maximum-size state owned by one historical KV overlay. */
+    /** Tracks write activity and cleanup conditions for the current local historical KV state. */
     @ThreadSafe
-    public static final class HistoricalWriteState {
-        // Latched when the live SST size reaches the maximum. Replacing the overlay replaces this
-        // state, so transient RocksDB size changes cannot resume writes prematurely.
+    public static final class HistoricalKvCleanupState {
+        // Latched when the live SST size reaches the maximum. Rebuilding the local KV state resets
+        // this flag, while transient RocksDB size changes do not resume writes prematurely.
         private final AtomicBoolean maxSizeReached = new AtomicBoolean();
 
+        private volatile @Nullable CleanupCandidate cleanupCandidate;
         private volatile long lastWriteMs;
 
-        private HistoricalWriteState(long lastWriteMs) {
+        private HistoricalKvCleanupState(long lastWriteMs) {
             this.lastWriteMs = lastWriteMs;
         }
 
@@ -2659,6 +2660,18 @@ public final class Replica {
             return maxSizeReached.compareAndSet(false, true);
         }
 
+        /** Updates the cleanup candidate for the current local historical KV state. */
+        public void updateCleanupCandidate(
+                long lakeSnapshotId, int expectedLeaderEpoch, long tieredLogEndOffset) {
+            cleanupCandidate =
+                    new CleanupCandidate(lakeSnapshotId, expectedLeaderEpoch, tieredLogEndOffset);
+        }
+
+        /** Returns the cleanup candidate, or null if none is available. */
+        public @Nullable CleanupCandidate cleanupCandidate() {
+            return cleanupCandidate;
+        }
+
         /** Records the latest historical write activity time. */
         public void recordWrite(long timestampMs) {
             lastWriteMs = timestampMs;
@@ -2667,6 +2680,35 @@ public final class Replica {
         /** Returns the latest historical write activity time. */
         public long lastWriteMs() {
             return lastWriteMs;
+        }
+
+        /** A candidate for cleaning up local historical KV state. */
+        public static final class CleanupCandidate {
+            private final long lakeSnapshotId;
+            private final int expectedLeaderEpoch;
+            private final long tieredLogEndOffset;
+
+            private CleanupCandidate(
+                    long lakeSnapshotId, int expectedLeaderEpoch, long tieredLogEndOffset) {
+                this.lakeSnapshotId = lakeSnapshotId;
+                this.expectedLeaderEpoch = expectedLeaderEpoch;
+                this.tieredLogEndOffset = tieredLogEndOffset;
+            }
+
+            /** Returns the lake snapshot ID that covers the local KV state. */
+            public long lakeSnapshotId() {
+                return lakeSnapshotId;
+            }
+
+            /** Returns the leader epoch required to run cleanup. */
+            public int expectedLeaderEpoch() {
+                return expectedLeaderEpoch;
+            }
+
+            /** Returns the log end offset covered by the lake snapshot. */
+            public long tieredLogEndOffset() {
+                return tieredLogEndOffset;
+            }
         }
     }
 }
