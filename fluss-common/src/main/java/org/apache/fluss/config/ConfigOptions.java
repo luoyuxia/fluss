@@ -442,9 +442,9 @@ public class ConfigOptions {
     public static final ConfigOption<Duration> SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME =
             key("server.historical-partition.kv-cleanup.idle-time")
                     .durationType()
-                    .defaultValue(Duration.ofMinutes(30))
+                    .defaultValue(Duration.ofHours(3))
                     .withDescription(
-                            "The idle time after which fully tiered historical KV write state in the local overlay can be cleaned. "
+                            "The idle time after all local historical KV writes are tiered before the local state can be cleaned. "
                                     + "Set to 0 to disable idle cleanup.");
 
     public static final ConfigOption<Double> SERVER_DATA_DISK_WRITE_LIMIT_RATIO =
