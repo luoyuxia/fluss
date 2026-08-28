@@ -1487,9 +1487,9 @@ public class ReplicaManager implements ServerReconfigurable {
                         .getLogEndOffset(tb)
                         .ifPresent(replica.getLogTablet()::updateLakeLogEndOffset);
                 if (replica.isHistoricalPartition()) {
-                    // The historical overlay will be rebuilt from this snapshot's lake offset.
+                    // Local historical KV state will be rebuilt from this snapshot's lake offset.
                     // Refresh a cached lookuper before it becomes the fallback for data omitted
-                    // from the rebuilt overlay.
+                    // from the rebuilt local state.
                     historicalPartitionManager.requireLakeSnapshot(
                             replica.getTableBucket().getTableId(), snapshotId);
                 }
@@ -1498,7 +1498,7 @@ public class ReplicaManager implements ServerReconfigurable {
             if (replica.isHistoricalPartition()) {
                 // Historical recovery uses the lake offset as its durable base and replays the
                 // retained WAL from that offset. Reject leader activation if the latest lake
-                // progress cannot be loaded, instead of rebuilding the overlay from stale state.
+                // progress cannot be loaded, instead of rebuilding local KV from stale state.
                 throw e;
             }
             // Lake commit cleanup can race with this best-effort refresh and remove the

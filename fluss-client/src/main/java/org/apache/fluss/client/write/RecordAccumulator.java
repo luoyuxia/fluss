@@ -364,6 +364,9 @@ public final class RecordAccumulator {
             return;
         }
 
+        // Pair with appendNewBatch(). For a historical route change, either a normal batch is
+        // registered as incomplete first and rejects the switch, or batch creation observes the
+        // historical target.
         synchronized (existing) {
             if (existing.targetPath.equals(targetPath)) {
                 existing.partitionId = targetPartitionId;
@@ -703,7 +706,13 @@ public final class RecordAccumulator {
                         writeBatches.get(physicalTablePath),
                         "Write batches for %s must exist.",
                         physicalTablePath);
-        synchronized (bucketAndWriteBatches) {
+        // Only historical-enabled tables need to coordinate with routeWritesTo(). Other tables
+        // reuse the deque monitor already held by the caller, avoiding cross-bucket serialization.
+        Object routeLock =
+                tableInfo.getTableConfig().isHistoricalPartitionEnabled()
+                        ? bucketAndWriteBatches
+                        : deque;
+        synchronized (routeLock) {
             RecordAppendResult appendResult = tryAppend(writeRecord, callback, deque);
             if (appendResult != null) {
                 // Somebody else found us a batch, return the one we waited for! Hopefully this

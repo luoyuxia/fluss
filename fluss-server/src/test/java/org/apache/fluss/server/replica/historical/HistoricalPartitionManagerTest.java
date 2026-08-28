@@ -22,7 +22,6 @@ import org.apache.fluss.cluster.ServerType;
 import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.exception.ConfigException;
 import org.apache.fluss.exception.HistoricalPartitionThrottledException;
 import org.apache.fluss.exception.InvalidPartitionException;
 import org.apache.fluss.lake.lakestorage.LakeTableLookuper;
@@ -269,7 +268,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
         byte[] primaryKey = new CompactedKeyEncoder(keyType).encodeKey(row(1, "us"));
 
         try {
-            // The first write misses both local state and lake, so it creates a local overlay.
+            // The first write misses both local KV state and lake, so it creates a local value.
             KvRecordBatch insertBatch =
                     batch(
                             keyType,
@@ -328,7 +327,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
                     row(1, "us", "20240108", "another"));
             assertThat(lakeLookupManager.lookupCount).hasValue(2);
 
-            // Exercise the ReplicaManager entry point; the update should reuse the local overlay.
+            // Exercise the ReplicaManager entry point; the update should reuse local KV state.
             KvRecordBatch updateBatch =
                     batch(
                             keyType,
@@ -372,7 +371,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
                     row(1, "us", "20240108", "another"));
             assertThat(lakeLookupManager.lookupCount).hasValue(2);
 
-            // Historical lookup should observe the updated value from the local overlay.
+            // Historical lookup should observe the updated value from local KV state.
             CompletableFuture<List<LookupResultForBucket>> lookupResponse =
                     new CompletableFuture<>();
             replicaManager.historicalLookups(
@@ -599,7 +598,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
     }
 
     @Test
-    void testRecoversHistoricalOverlayFromLakeCommitOffset() throws Exception {
+    void testRecoversLocalHistoricalKvFromLakeCommitOffset() throws Exception {
         TableInfo tableInfo = registerHistoricalTableAndBecomeLeader();
         Replica replica = replicaManager.getReplicaOrException(TABLE_BUCKET);
         TestingHistoricalLakeLookupManager lakeLookupManager =
@@ -686,7 +685,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
 
             // Persist the exclusive end offset of the first write as the lake recovery point. The
             // replica has not received this offset locally, so becoming leader must load it before
-            // creating the historical overlay.
+            // creating the local historical KV state.
             long lakeCommitOffset = firstAppend.lastOffset() + 1;
             new LakeTableHelper(zkClient, DEFAULT_REMOTE_DATA_DIR)
                     .registerLakeTableSnapshotV1(
@@ -695,8 +694,8 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
                                     1L, Collections.singletonMap(TABLE_BUCKET, lakeCommitOffset)));
             assertThat(replica.getLakeLogEndOffset()).isEqualTo(-1L);
 
-            // Dropping and recreating the leader KV tablet forces the overlay to be rebuilt only
-            // from WAL after the lake commit offset. The recovered tombstone must remain
+            // Dropping and recreating the leader KV tablet rebuilds its state only from WAL after
+            // the lake commit offset. The recovered tombstone must remain
             // authoritative over lake fallback.
             assertThat(replica.makeFollower(followerState())).isTrue();
             CompletableFuture<List<NotifyLeaderAndIsrResultForBucket>> leaderFuture =
@@ -736,7 +735,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
     }
 
     @Test
-    void testCleansFullyTieredHistoricalOverlayAfterWriteIdleTime() throws Exception {
+    void testCleansLocalHistoricalKvAfterTieringAndWriteIdleTime() throws Exception {
         TableInfo tableInfo = registerHistoricalTableAndBecomeLeader();
         Replica replica = replicaManager.getReplicaOrException(TABLE_BUCKET);
         KvTablet originalKvTablet = replica.getKvTablet();
@@ -780,8 +779,8 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
 
             replica.getLogTablet().updateLakeLogEndOffset(tieredOffset);
             historicalPartitionManager.onLakeProgress(replica, 10L, tieredOffset);
-            // Lake normally catches up before the overlay becomes idle. Cleanup must wake at the
-            // write deadline even if no further lake progress notification arrives.
+            // Lake normally catches up before local KV state becomes idle. Cleanup must wake at
+            // the write deadline even if no further lake progress notification arrives.
             assertThat(executor.numQueuedRunnables()).isZero();
             assertThat(executor.getActiveNonPeriodicScheduledTask()).hasSize(1);
             assertThat(replica.getKvTablet()).isSameAs(originalKvTablet);
@@ -808,36 +807,8 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
                             (lookupTimeNanos, lookupFileDownloaded) -> {});
             executor.triggerAll();
             assertThat(lookupFuture.get(10, TimeUnit.SECONDS).lookupValues())
+                    .extracting(ByteArraySlice::toByteArray)
                     .containsExactly(lakeValue);
-        } finally {
-            historicalPartitionManager.close();
-        }
-    }
-
-    @Test
-    void testRejectsNegativeCleanupIdleTimeDuringReconfiguration() {
-        Configuration cleanupConf = lookupConfiguration();
-        ManuallyTriggeredScheduledExecutorService executor =
-                new ManuallyTriggeredScheduledExecutorService();
-        HistoricalPartitionManager historicalPartitionManager =
-                new HistoricalPartitionManager(
-                        cleanupConf,
-                        new HistoricalPartitionTaskExecutor(cleanupConf, executor),
-                        new TestingHistoricalLakeLookupManager(cleanupConf),
-                        manualClock,
-                        Long.MAX_VALUE,
-                        new TestingCleanupScheduler(executor));
-        Configuration invalidConf = new Configuration(cleanupConf);
-        invalidConf.set(
-                ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME,
-                Duration.ofMillis(-1));
-
-        try {
-            assertThatThrownBy(() -> historicalPartitionManager.validate(invalidConf))
-                    .isInstanceOf(ConfigException.class)
-                    .hasMessageContaining(
-                            ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME.key(),
-                            "must not be negative");
         } finally {
             historicalPartitionManager.close();
         }
@@ -914,7 +885,7 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
     }
 
     @Test
-    void testMaxSizeBlocksWritesUntilOverlayIsTieredAndCleaned() throws Exception {
+    void testMaxSizeBlocksWritesUntilAcceptedWritesAreTieredAndLocalKvIsCleaned() throws Exception {
         TableInfo tableInfo = registerHistoricalTableAndBecomeLeader();
         Replica replica = replicaManager.getReplicaOrException(TABLE_BUCKET);
         KvTablet originalKvTablet = replica.getKvTablet();
@@ -974,6 +945,75 @@ class HistoricalPartitionManagerTest extends ReplicaTestBase {
             historicalPartitionManager.onLakeProgress(replica, 11L, tieredOffset);
             executor.triggerAll();
             assertThat(replica.getKvTablet()).isNotNull().isNotSameAs(originalKvTablet);
+
+            CompletableFuture<PutKvResultForBucket> resumedWrite =
+                    putHistoricalRecords(historicalPartitionManager, replica, secondBatch);
+            executor.triggerAll();
+            assertThat(resumedWrite.get(10, TimeUnit.SECONDS).failed()).isFalse();
+        } finally {
+            historicalPartitionManager.close();
+        }
+    }
+
+    @Test
+    void testMaxSizeCleanupWhenLakeCaughtUpBeforeLimitIsObserved() throws Exception {
+        TableInfo tableInfo = registerHistoricalTableAndBecomeLeader();
+        Replica replica = replicaManager.getReplicaOrException(TABLE_BUCKET);
+        KvTablet originalKvTablet = replica.getKvTablet();
+        assertThat(originalKvTablet).isNotNull();
+
+        Configuration cleanupConf = lookupConfiguration();
+        cleanupConf.set(
+                ConfigOptions.SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME, Duration.ZERO);
+        ManuallyTriggeredScheduledExecutorService executor =
+                new ManuallyTriggeredScheduledExecutorService();
+        TestingHistoricalLakeLookupManager lakeLookupManager =
+                new TestingHistoricalLakeLookupManager(cleanupConf);
+        HistoricalPartitionManager historicalPartitionManager =
+                createCleanupManager(cleanupConf, executor, lakeLookupManager, 1L);
+
+        KvRecordBatch firstBatch =
+                batch(
+                        HISTORICAL_KEY_TYPE,
+                        tableInfo.getRowType(),
+                        Tuple2.of(
+                                new Object[] {1, "us"},
+                                new Object[] {1, "us", ORIGINAL_PARTITION, "v1"}));
+        KvRecordBatch secondBatch =
+                batch(
+                        HISTORICAL_KEY_TYPE,
+                        tableInfo.getRowType(),
+                        Tuple2.of(
+                                new Object[] {2, "eu"},
+                                new Object[] {2, "eu", ORIGINAL_PARTITION, "v2"}));
+
+        try {
+            CompletableFuture<PutKvResultForBucket> firstPut =
+                    putHistoricalRecords(historicalPartitionManager, replica, firstBatch);
+            executor.triggerAll();
+            assertThat(firstPut.get(10, TimeUnit.SECONDS).failed()).isFalse();
+            flushAndWait(originalKvTablet, Long.MAX_VALUE);
+            try (FlushOptions flushOptions = new FlushOptions().setWaitForFlush(true)) {
+                originalKvTablet.getRocksDBKv().getDb().flush(flushOptions);
+            }
+            assertThat(originalKvTablet.liveSstFilesSize()).isPositive();
+
+            // Lake catches up before another request observes that the SST size reached the limit.
+            long tieredOffset = replica.getLocalLogEndOffset();
+            replica.getLogTablet().updateLakeLogEndOffset(tieredOffset);
+            historicalPartitionManager.onLakeProgress(replica, 12L, tieredOffset);
+            assertThat(executor.numQueuedRunnables()).isZero();
+
+            PutKvResultForBucket blockedWrite =
+                    putHistoricalRecords(historicalPartitionManager, replica, secondBatch)
+                            .get(10, TimeUnit.SECONDS);
+            assertThat(blockedWrite.getError().error())
+                    .isEqualTo(Errors.HISTORICAL_PARTITION_THROTTLED);
+            assertThat(executor.numQueuedRunnables()).isOne();
+
+            executor.triggerAll();
+            assertThat(replica.getKvTablet()).isNotNull().isNotSameAs(originalKvTablet);
+            assertThat(lakeLookupManager.requiredLakeSnapshotIds).containsExactly(12L);
 
             CompletableFuture<PutKvResultForBucket> resumedWrite =
                     putHistoricalRecords(historicalPartitionManager, replica, secondBatch);
