@@ -286,7 +286,7 @@ public final class HistoricalPartitionManager implements AutoCloseable {
         lakeLookupManager.invalidateTableLookuper(tableId);
     }
 
-    /** Requires future fallback lookups to reload after the given lake snapshot notification. */
+    /** Requires future fallback lookups to refresh after the given lake snapshot notification. */
     public void requireLakeSnapshot(long tableId, long lakeSnapshotId) {
         lakeLookupManager.requireLakeSnapshot(tableId, lakeSnapshotId);
     }
