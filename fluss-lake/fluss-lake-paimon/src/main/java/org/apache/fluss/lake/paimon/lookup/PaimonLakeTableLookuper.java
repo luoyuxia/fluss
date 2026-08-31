@@ -357,6 +357,10 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             int bucket,
             org.apache.paimon.data.InternalRow key)
             throws IOException {
+        // TODO: Remove this lock once https://github.com/apache/paimon/issues/9483 is fixed in the
+        // Paimon version used by Fluss. If concurrent lookup is needed sooner, bring Paimon's
+        // LocalTableQuery implementation into Fluss and make it thread-safe, following the approach
+        // in https://github.com/apache/fluss/pull/4113.
         synchronized (paimonLookupLock) {
             return localTableQuery.lookup(partition, bucket, key);
         }
