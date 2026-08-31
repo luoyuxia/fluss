@@ -232,7 +232,7 @@ public class Sender implements Runnable {
                 //  unready partitions
                 Throwable t = ExceptionUtils.stripExecutionException(e);
                 if (t instanceof PartitionNotExistException) {
-                    abortIfHistoricalWriteTargetMissing(readyCheckResult.unknownLeaderTables);
+                    rerouteHistoricalWritesIfTargetMissing(readyCheckResult.unknownLeaderTables);
                 } else {
                     throw e;
                 }
@@ -709,12 +709,8 @@ public class Sender implements Runnable {
         return invalidMetadataTables;
     }
 
-    /**
-     * Aborts pending writes when metadata confirms their target is missing. Such writes cannot make
-     * progress without a leader, and rerouting existing batches to the historical target is unsafe
-     * because their outcome and idempotent state may belong to the original target.
-     */
-    private void abortIfHistoricalWriteTargetMissing(Set<PhysicalTablePath> unknownLeaderTables)
+    /** Reroutes pending writes after metadata confirms that their original target is missing. */
+    private void rerouteHistoricalWritesIfTargetMissing(Set<PhysicalTablePath> unknownLeaderTables)
             throws Exception {
         for (PhysicalTablePath targetPath : unknownLeaderTables) {
             if (!accumulator.isHistoricalPartitionEnabled(targetPath)) {
@@ -725,34 +721,51 @@ public class Sender implements Runnable {
             } catch (Exception e) {
                 Throwable t = ExceptionUtils.stripExecutionException(e);
                 if (t instanceof PartitionNotExistException) {
-                    // This target was considered usable when its batches were enqueued or first
-                    // attempted, but is now confirmed missing. Transparently rerouting those
-                    // batches to the historical partition is unsafe: an original-target attempt
-                    // may have been accepted despite a lost response, and writer ID / batch
-                    // sequence state cannot be reused across different physical TableBuckets. A
-                    // safe failover must stop draining this path, wait for its in-flight requests,
-                    // classify ambiguous outcomes, reset writer state, and preserve per-bucket
-                    // ordering. This race requires partition retirement to overlap a writer that
-                    // still holds the original route, so it is expected to be uncommon; fail
-                    // closed for now.
-                    // TODO: Implement safe in-flight historical failover if this path occurs
-                    // frequently in practice.
-                    // Retrying a historical-enabled table without a leader would leave its
-                    // batches queued indefinitely. Fail only after checking the target itself so
-                    // ordinary writes in the bulk metadata request keep their existing behavior.
-                    PartitionNotExistException missingTargetException =
-                            new PartitionNotExistException(
-                                    "Write target "
-                                            + targetPath
-                                            + " for a historical-partition-enabled table no "
-                                            + "longer exists according to refreshed metadata.");
-                    missingTargetException.initCause(t);
-                    maybeAbortBatches(missingTargetException);
-                    return;
+                    if (HISTORICAL_PARTITION_VALUE.equals(targetPath.getPartitionName())) {
+                        abortMissingHistoricalWriteTarget(targetPath, t);
+                        return;
+                    }
+                    PhysicalTablePath historicalPath =
+                            PhysicalTablePath.of(
+                                    targetPath.getTablePath(), HISTORICAL_PARTITION_VALUE);
+                    try {
+                        if (!metadataUpdater.checkAndUpdatePartitionMetadata(historicalPath)) {
+                            abortMissingHistoricalWriteTarget(historicalPath, null);
+                            return;
+                        }
+                    } catch (Exception historicalTargetError) {
+                        Throwable historicalTargetCause =
+                                ExceptionUtils.stripExecutionException(historicalTargetError);
+                        if (historicalTargetCause instanceof PartitionNotExistException) {
+                            abortMissingHistoricalWriteTarget(
+                                    historicalPath, historicalTargetCause);
+                            return;
+                        }
+                        throw historicalTargetError;
+                    }
+                    accumulator.rerouteWritesToHistorical(
+                            targetPath,
+                            historicalPath,
+                            metadataUpdater.getPartitionIdOrElseThrow(historicalPath));
+                    continue;
                 }
                 throw e;
             }
         }
+    }
+
+    private void abortMissingHistoricalWriteTarget(
+            PhysicalTablePath targetPath, @Nullable Throwable cause) {
+        PartitionNotExistException missingTargetException =
+                new PartitionNotExistException(
+                        "Write target "
+                                + targetPath
+                                + " for a historical-partition-enabled table no longer exists "
+                                + "according to refreshed metadata.");
+        if (cause != null) {
+            missingTargetException.initCause(cause);
+        }
+        maybeAbortBatches(missingTargetException);
     }
 
     private void updateWriterMetrics(Map<Integer, List<ReadyWriteBatch>> batches) {

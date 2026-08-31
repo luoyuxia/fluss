@@ -60,7 +60,9 @@ public abstract class WriteBatch {
      * <p>It is null for a normal write and contains the logical partition namespace for a
      * historical write.
      */
-    private final @Nullable String originalPartitionName;
+    private volatile @Nullable String originalPartitionName;
+    /** The original-target sequence used to order batches while they are being rerouted. */
+    private volatile int historicalRerouteSequence = NO_BATCH_SEQUENCE;
 
     protected boolean reopened;
     protected int recordCount;
@@ -206,6 +208,27 @@ public abstract class WriteBatch {
     /** Returns the original partition name for a historical write, or null for a normal write. */
     public @Nullable String getOriginalPartitionName() {
         return originalPartitionName;
+    }
+
+    /** Marks this batch for the historical target while retaining its original send order. */
+    void rerouteToHistoricalPartition(String originalPartitionName) {
+        String checkedOriginalPartitionName =
+                checkNotNull(originalPartitionName, "originalPartitionName must not be null.");
+        if (this.originalPartitionName != null
+                && !this.originalPartitionName.equals(checkedOriginalPartitionName)) {
+            throw new IllegalStateException(
+                    String.format(
+                            "Batch for %s is already routed from original partition %s.",
+                            physicalTablePath, this.originalPartitionName));
+        }
+        if (this.originalPartitionName == null) {
+            historicalRerouteSequence = batchSequence();
+            this.originalPartitionName = checkedOriginalPartitionName;
+        }
+    }
+
+    int historicalRerouteSequence() {
+        return historicalRerouteSequence;
     }
 
     public RequestFuture getRequestFuture() {
