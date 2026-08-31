@@ -241,15 +241,32 @@ public final class RecordAccumulator {
             }
 
             memorySegments = allocateMemorySegments(writeRecord, physicalTablePath);
-            synchronized (dq) {
-                RecordAppendResult appendResult =
-                        appendNewBatch(
-                                writeRecord, callback, bucketId, tableInfo, dq, memorySegments);
-                if (appendResult.newBatchCreated) {
-                    memorySegments = Collections.emptyList();
+            RecordAppendResult appendResult;
+            if (tableInfo.getTableConfig().isHistoricalPartitionEnabled()) {
+                // Match the route -> deque order used while an expired partition is rerouted.
+                synchronized (bucketAndWriteBatches) {
+                    synchronized (dq) {
+                        appendResult =
+                                appendNewBatch(
+                                        writeRecord,
+                                        callback,
+                                        bucketId,
+                                        tableInfo,
+                                        dq,
+                                        memorySegments);
+                    }
                 }
-                return appendResult;
+            } else {
+                synchronized (dq) {
+                    appendResult =
+                            appendNewBatch(
+                                    writeRecord, callback, bucketId, tableInfo, dq, memorySegments);
+                }
             }
+            if (appendResult.newBatchCreated) {
+                memorySegments = Collections.emptyList();
+            }
+            return appendResult;
         } finally {
             // Other append operations by the Sender thread may have created a new batch, causing
             // the temporarily allocated memorySegments here to go unused, and therefore, it needs
@@ -330,13 +347,32 @@ public final class RecordAccumulator {
     public void reEnqueue(ReadyWriteBatch readyWriteBatch) {
         WriteBatch batch = readyWriteBatch.writeBatch();
         batch.reEnqueued();
-        Deque<WriteBatch> deque =
-                getOrCreateDeque(readyWriteBatch.tableBucket(), batch.physicalTablePath());
-        synchronized (deque) {
-            if (idempotenceManager.idempotenceEnabled()) {
-                insertInSequenceOrder(deque, batch, readyWriteBatch.tableBucket());
-            } else {
-                deque.addFirst(batch);
+        BucketAndWriteBatches writeTarget =
+                checkNotNull(
+                        writeBatches.get(batch.physicalTablePath()),
+                        "Write target for %s must exist.",
+                        batch.physicalTablePath());
+        synchronized (writeTarget) {
+            boolean rerouted =
+                    writeTarget.isHistoricalWriteTarget()
+                            && batch.getOriginalPartitionName() == null;
+            if (rerouted) {
+                prepareBatchForHistoricalTarget(
+                        batch,
+                        readyWriteBatch.tableBucket(),
+                        checkNotNull(batch.physicalTablePath().getPartitionName()));
+            }
+
+            Deque<WriteBatch> deque =
+                    getOrCreateDeque(readyWriteBatch.tableBucket(), batch.physicalTablePath());
+            synchronized (deque) {
+                if (rerouted) {
+                    insertReroutedBatchInOriginalOrder(deque, batch);
+                } else if (idempotenceManager.idempotenceEnabled()) {
+                    insertInSequenceOrder(deque, batch, readyWriteBatch.tableBucket());
+                } else {
+                    deque.addFirst(batch);
+                }
             }
         }
     }
@@ -390,6 +426,85 @@ public final class RecordAccumulator {
                             "Cannot route writes for %s to %s because this writer already routed "
                                     + "the partition to %s.",
                             originalPath, targetPath, existing.targetPath));
+        }
+    }
+
+    /** Reroutes queued writes from a retired partition to the historical partition. */
+    void rerouteWritesToHistorical(
+            PhysicalTablePath originalPath,
+            PhysicalTablePath historicalPath,
+            long historicalPartitionId) {
+        BucketAndWriteBatches writeTarget =
+                checkNotNull(
+                        writeBatches.get(originalPath),
+                        "Write target for %s must exist.",
+                        originalPath);
+        synchronized (writeTarget) {
+            if (writeTarget.isHistoricalWriteTarget()) {
+                writeTarget.partitionId = historicalPartitionId;
+                return;
+            }
+
+            String originalPartitionName = checkNotNull(originalPath.getPartitionName());
+            for (Map.Entry<Integer, Deque<WriteBatch>> entry : writeTarget.batches.entrySet()) {
+                Deque<WriteBatch> deque = entry.getValue();
+                synchronized (deque) {
+                    for (WriteBatch batch : deque) {
+                        TableBucket previousTableBucket = null;
+                        if (idempotenceManager.idempotenceEnabled() && batch.hasBatchSequence()) {
+                            previousTableBucket =
+                                    new TableBucket(
+                                            batch.tableId(),
+                                            checkNotNull(
+                                                    writeTarget.partitionId,
+                                                    "Original partition ID must be resolved before rerouting."),
+                                            entry.getKey());
+                        }
+                        prepareBatchForHistoricalTarget(
+                                batch, previousTableBucket, originalPartitionName);
+                    }
+                }
+            }
+            writeTarget.targetPath = historicalPath;
+            writeTarget.partitionId = historicalPartitionId;
+        }
+    }
+
+    private void prepareBatchForHistoricalTarget(
+            WriteBatch batch,
+            @Nullable TableBucket previousTableBucket,
+            String originalPartitionName) {
+        batch.rerouteToHistoricalPartition(originalPartitionName);
+        if (idempotenceManager.idempotenceEnabled() && batch.hasBatchSequence()) {
+            idempotenceManager.removeInFlightBatch(
+                    new ReadyWriteBatch(
+                            checkNotNull(
+                                    previousTableBucket,
+                                    "Previous table bucket must be known for an assigned batch."),
+                            batch));
+            batch.resetWriterState(NO_WRITER_ID, NO_BATCH_SEQUENCE);
+        }
+    }
+
+    private static void insertReroutedBatchInOriginalOrder(
+            Deque<WriteBatch> deque, WriteBatch batch) {
+        int rerouteSequence = batch.historicalRerouteSequence();
+        if (rerouteSequence == NO_BATCH_SEQUENCE) {
+            deque.addFirst(batch);
+            return;
+        }
+
+        List<WriteBatch> precedingBatches = new ArrayList<>();
+        WriteBatch queuedBatch = deque.peekFirst();
+        while (queuedBatch != null
+                && queuedBatch.historicalRerouteSequence() != NO_BATCH_SEQUENCE
+                && queuedBatch.historicalRerouteSequence() < rerouteSequence) {
+            precedingBatches.add(deque.pollFirst());
+            queuedBatch = deque.peekFirst();
+        }
+        deque.addFirst(batch);
+        for (int i = precedingBatches.size() - 1; i >= 0; i--) {
+            deque.addFirst(precedingBatches.get(i));
         }
     }
 
@@ -706,43 +821,35 @@ public final class RecordAccumulator {
                         writeBatches.get(physicalTablePath),
                         "Write batches for %s must exist.",
                         physicalTablePath);
-        // Only historical-enabled tables need to coordinate with routeWritesTo(). Other tables
-        // reuse the deque monitor already held by the caller, avoiding cross-bucket serialization.
-        Object routeLock =
-                tableInfo.getTableConfig().isHistoricalPartitionEnabled()
-                        ? bucketAndWriteBatches
-                        : deque;
-        synchronized (routeLock) {
-            RecordAppendResult appendResult = tryAppend(writeRecord, callback, deque);
-            if (appendResult != null) {
-                // Somebody else found us a batch, return the one we waited for! Hopefully this
-                // doesn't happen often...
-                return appendResult;
-            }
-
-            PreAllocatedPagedOutputView outputView = new PreAllocatedPagedOutputView(segments);
-            int schemaId = tableInfo.getSchemaId();
-            WriteFormat writeFormat = writeRecord.getWriteFormat();
-            String originalPartitionName =
-                    bucketAndWriteBatches.isHistoricalWriteTarget()
-                            ? checkNotNull(physicalTablePath.getPartitionName())
-                            : null;
-            final WriteBatch batch =
-                    createWriteBatch(
-                            writeRecord,
-                            bucketId,
-                            tableInfo,
-                            writeFormat,
-                            physicalTablePath,
-                            outputView,
-                            schemaId,
-                            originalPartitionName);
-
-            batch.tryAppend(writeRecord, callback);
-            deque.addLast(batch);
-            incomplete.add(batch);
-            return new RecordAppendResult(deque.size() > 1 || batch.isClosed(), true, false);
+        RecordAppendResult appendResult = tryAppend(writeRecord, callback, deque);
+        if (appendResult != null) {
+            // Somebody else found us a batch, return the one we waited for! Hopefully this
+            // doesn't happen often...
+            return appendResult;
         }
+
+        PreAllocatedPagedOutputView outputView = new PreAllocatedPagedOutputView(segments);
+        int schemaId = tableInfo.getSchemaId();
+        WriteFormat writeFormat = writeRecord.getWriteFormat();
+        String originalPartitionName =
+                bucketAndWriteBatches.isHistoricalWriteTarget()
+                        ? checkNotNull(physicalTablePath.getPartitionName())
+                        : null;
+        final WriteBatch batch =
+                createWriteBatch(
+                        writeRecord,
+                        bucketId,
+                        tableInfo,
+                        writeFormat,
+                        physicalTablePath,
+                        outputView,
+                        schemaId,
+                        originalPartitionName);
+
+        batch.tryAppend(writeRecord, callback);
+        deque.addLast(batch);
+        incomplete.add(batch);
+        return new RecordAppendResult(deque.size() > 1 || batch.isClosed(), true, false);
     }
 
     private WriteBatch createWriteBatch(
