@@ -61,12 +61,12 @@ public interface LakeTableLookuper extends AutoCloseable {
     byte[] lookup(byte[] key, LookupContext context) throws Exception;
 
     /**
-     * Refreshes the registered lake data files while preserving reusable local lookup files.
+     * Requests that registered lake data files be refreshed before the next lookup.
      *
-     * <p>This method may be called concurrently with {@link #lookup(byte[], LookupContext)}.
-     * Implementations must ensure that it is thread-safe.
+     * <p>This method must not perform I/O and may be called concurrently with {@link
+     * #lookup(byte[], LookupContext)}. Implementations must ensure that it is thread-safe.
      */
-    default void refresh() throws Exception {
+    default void refresh() {
         throw new UnsupportedOperationException(
                 "Refreshing registered files is not supported by this lake table lookuper.");
     }

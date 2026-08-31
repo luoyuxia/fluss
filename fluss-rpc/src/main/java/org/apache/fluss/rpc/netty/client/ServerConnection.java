@@ -385,20 +385,18 @@ final class ServerConnection {
             }
         }
 
-        if (apiKey != ApiKeys.PUT_KV || version >= HISTORICAL_PUT_KV_MIN_VERSION) {
-            return;
-        }
-
-        PutKvRequest putKvRequest = (PutKvRequest) rawRequest;
-        if (hasHistoricalPut(putKvRequest)) {
-            throw new UnsupportedVersionException(
-                    "Historical partition writes require PUT_KV version "
-                            + HISTORICAL_PUT_KV_MIN_VERSION
-                            + " or newer, but server "
-                            + node
-                            + " negotiated version "
-                            + version
-                            + '.');
+        if (apiKey == ApiKeys.PUT_KV && version < HISTORICAL_PUT_KV_MIN_VERSION) {
+            PutKvRequest putKvRequest = (PutKvRequest) rawRequest;
+            if (hasHistoricalPut(putKvRequest)) {
+                throw new UnsupportedVersionException(
+                        "Historical partition writes require PUT_KV version "
+                                + HISTORICAL_PUT_KV_MIN_VERSION
+                                + " or newer, but server "
+                                + node
+                                + " negotiated version "
+                                + version
+                                + '.');
+            }
         }
     }
 

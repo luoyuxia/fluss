@@ -22,7 +22,6 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.exception.FlussRuntimeException;
-import org.apache.fluss.exception.KvStorageException;
 import org.apache.fluss.exception.LakeStorageNotConfiguredException;
 import org.apache.fluss.lake.lakestorage.LakeStorage;
 import org.apache.fluss.lake.lakestorage.LakeStoragePlugin;
@@ -590,13 +589,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                 throw new IllegalStateException("Lake table lookuper has been invalidated.");
             }
             if (!Objects.equals(lakeSnapshotId, requiredLakeSnapshotId)) {
-                try {
-                    lookuper.refresh();
-                } catch (Exception e) {
-                    throw new KvStorageException(
-                            "Failed to refresh historical lake lookup files for " + tablePath + ".",
-                            e);
-                }
+                lookuper.refresh();
                 lakeSnapshotId = requiredLakeSnapshotId;
             }
             activeLookups++;

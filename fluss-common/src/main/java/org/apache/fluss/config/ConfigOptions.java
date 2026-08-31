@@ -439,14 +439,6 @@ public class ConfigOptions {
                             .withDescription(
                                     "The duration after which an idle historical partition table lookuper is removed from the cache.");
 
-    public static final ConfigOption<Duration> SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME =
-            key("server.historical-partition.kv-cleanup.idle-time")
-                    .durationType()
-                    .defaultValue(Duration.ofHours(3))
-                    .withDescription(
-                            "The idle time after all local historical KV writes are tiered before the local state can be cleaned. "
-                                    + "Set to 0 to disable idle cleanup.");
-
     public static final ConfigOption<Double> SERVER_DATA_DISK_WRITE_LIMIT_RATIO =
             key("server.data-disk.write-limit-ratio")
                     .doubleType()
