@@ -90,9 +90,9 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
  * lookup I/O failure refreshes that partition-bucket with the files from the latest snapshot and
  * retries once.
  *
- * <p>An explicit refresh rescans every registered partition-bucket and updates its file set in
- * place. Paimon keeps lookup files for data files that remain active and lazily downloads lookup
- * files only for newly added data files.
+ * <p>An explicit refresh request is applied during the next lookup initialization. It rescans every
+ * registered partition-bucket and updates its file set in place. Paimon keeps lookup files for data
+ * files that remain active and lazily downloads lookup files only for newly added data files.
  *
  * <p>Calls to {@link LocalTableQuery#lookup} are serialized because Paimon 2.0 shares mutable
  * lookup-store comparator state across local lookup files.
@@ -128,6 +128,8 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     private volatile @Nullable LocalTableQuery localTableQuery;
     // Guarded by lookupStateLock.
     private volatile boolean closed;
+    private volatile boolean refreshRequired;
+    private volatile boolean refreshInProgress;
 
     /** Creates a lookuper with the specified local lookup cache limit. */
     public PaimonLakeTableLookuper(
@@ -156,7 +158,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         checkNotNull(key, "key must not be null.");
         checkNotNull(context, "context must not be null.");
         checkNotClosed();
-        ensureInitialized(context.valueRowType());
+        initialize(context.valueRowType());
 
         try (TrackingMetrics ignored = new TrackingMetrics(lookupFileDownloaded, context)) {
             return lookupInternal(key, context);
@@ -172,19 +174,8 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
 
     @Override
     public void refresh() {
-        synchronized (lookupStateLock) {
-            checkNotClosed();
-            Map<PaimonPartitionBucket, List<DataFileMeta>> filesBeforeRefresh =
-                    new LinkedHashMap<>(registeredFiles);
-            Map<PaimonPartitionBucket, List<DataFileMeta>> latestFiles =
-                    scanDataFiles(filesBeforeRefresh.keySet());
-            filesBeforeRefresh.forEach(
-                    (partitionBucket, files) ->
-                            refreshFiles(
-                                    partitionBucket,
-                                    files,
-                                    () -> latestFiles.get(partitionBucket)));
-        }
+        checkNotClosed();
+        refreshRequired = true;
     }
 
     @Override
@@ -213,17 +204,31 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         }
     }
 
-    private void ensureInitialized(RowType valueRowType) throws Exception {
-        if (localTableQuery == null) {
+    private void initialize(RowType valueRowType) throws Exception {
+        if (localTableQuery == null || refreshRequired || refreshInProgress) {
             synchronized (lookupStateLock) {
                 if (localTableQuery == null) {
-                    initialize(valueRowType);
+                    initializeLookupState(valueRowType);
+                }
+                if (refreshRequired) {
+                    // Clear the flag before refreshing so a concurrent request is retained for the
+                    // next lookup. Restore it if this refresh fails.
+                    refreshInProgress = true;
+                    refreshRequired = false;
+                    try {
+                        refreshFilesFromLatestSnapshot();
+                    } catch (RuntimeException e) {
+                        refreshRequired = true;
+                        throw e;
+                    } finally {
+                        refreshInProgress = false;
+                    }
                 }
             }
         }
     }
 
-    private void initialize(RowType valueRowType) throws Exception {
+    private void initializeLookupState(RowType valueRowType) throws Exception {
         Catalog newCatalog = null;
         IOManager newIOManager = null;
         LocalTableQuery newLocalTableQuery = null;
@@ -279,6 +284,17 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
                 IOUtils.closeQuietly(newCatalog, "Paimon catalog");
             }
         }
+    }
+
+    private void refreshFilesFromLatestSnapshot() {
+        Map<PaimonPartitionBucket, List<DataFileMeta>> filesBeforeRefresh =
+                new LinkedHashMap<>(registeredFiles);
+        Map<PaimonPartitionBucket, List<DataFileMeta>> latestFiles =
+                scanDataFiles(filesBeforeRefresh.keySet());
+        filesBeforeRefresh.forEach(
+                (partitionBucket, files) ->
+                        refreshFiles(
+                                partitionBucket, files, () -> latestFiles.get(partitionBucket)));
     }
 
     private FileStoreTable withLookupCacheOptions(FileStoreTable table) {

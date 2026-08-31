@@ -222,11 +222,6 @@ public final class Replica {
     private volatile @Nullable KvTablet kvTablet;
     private volatile @Nullable CloseableRegistry closeableRegistryForKv;
     private @Nullable PeriodicSnapshotManager kvSnapshotManager;
-    // The lake log end offset from which the current local historical KV state was rebuilt.
-    private volatile long historicalKvBaseOffset = -1L;
-    // Replaced whenever the local historical KV state is rebuilt so delayed cleanup tasks for an
-    // earlier state can be ignored.
-    private volatile @Nullable HistoricalKvCleanupState historicalKvCleanupState;
 
     /**
      * Server-wide {@link ScannerManager}. Active sessions for this bucket are closed in {@link
@@ -383,53 +378,6 @@ public final class Replica {
 
     public long getLakeLogEndOffset() {
         return logTablet.getLakeLogEndOffset();
-    }
-
-    /** Returns the cleanup state for the local historical KV state, or null if it is not ready. */
-    public @Nullable HistoricalKvCleanupState getHistoricalKvCleanupState() {
-        return historicalKvCleanupState;
-    }
-
-    /**
-     * Drops and recreates local historical KV state after its writes are fully tiered, provided
-     * leadership and offsets still match.
-     *
-     * @param expectedLeaderEpoch leader epoch required when cleanup runs
-     * @param tieredLogEndOffset fully tiered log end offset required when cleanup runs
-     * @param beforeCleanup action to run before the local KV state is dropped
-     * @return whether the local KV state was cleaned
-     */
-    public boolean cleanupHistoricalKv(
-            int expectedLeaderEpoch, long tieredLogEndOffset, Runnable beforeCleanup) {
-        checkNotNull(beforeCleanup, "beforeCleanup must not be null");
-        return inWriteLock(
-                leaderIsrUpdateLock,
-                () -> {
-                    long localLogEndOffset = logTablet.localLogEndOffset();
-                    // Keep the scheduled snapshot and offset paired: newer lake progress may make
-                    // the current lake and local offsets match while this task still references an
-                    // older snapshot.
-                    if (leaderEpoch != expectedLeaderEpoch
-                            || localLogEndOffset != tieredLogEndOffset
-                            || !isEligibleForHistoricalKvCleanup(localLogEndOffset)) {
-                        return false;
-                    }
-
-                    LOG.info(
-                            "Cleaning local historical KV state for {} at log end offset {} "
-                                    + "covered by lake log end offset {}.",
-                            tableBucket,
-                            localLogEndOffset,
-                            logTablet.getLakeLogEndOffset());
-                    // A lookup started after the empty local KV state is rebuilt must open a lake
-                    // view that covers the data removed by this cleanup.
-                    beforeCleanup.run();
-                    dropKv();
-                    // TODO: Retry rebuilding this historical bucket instead of waiting for
-                    // failover or restart.
-                    createKv();
-                    return true;
-                });
     }
 
     public boolean isDataLakeEnabled() {
@@ -777,18 +725,6 @@ public final class Replica {
         }
     }
 
-    private boolean isEligibleForHistoricalKvCleanup(long localLogEndOffset) {
-        // Local KV state must have a known lake base, contain writes after that base, and have all
-        // those writes covered by lake before it can be discarded.
-        return isLeader()
-                && isHistoricalPartition()
-                && isKvTable()
-                && kvTablet != null
-                && historicalKvBaseOffset >= 0L
-                && historicalKvBaseOffset < localLogEndOffset
-                && logTablet.getLakeLogEndOffset() == localLogEndOffset;
-    }
-
     private void createKv() {
         try {
             // create a closeable registry for the closable related to kv
@@ -832,9 +768,7 @@ public final class Replica {
                             tableBucket, INIT_KV_TABLET_MAX_RETRY_TIMES),
                     lastError);
         }
-        if (isHistoricalPartition()) {
-            historicalKvCleanupState = new HistoricalKvCleanupState(clock.milliseconds());
-        } else {
+        if (!isHistoricalPartition()) {
             startPeriodicKvSnapshot(snapshotUsed.orElse(null));
         }
     }
@@ -854,8 +788,6 @@ public final class Replica {
             kvManager.dropKv(tableBucket);
             kvTablet = null;
         }
-        historicalKvCleanupState = null;
-        historicalKvBaseOffset = -1L;
     }
 
     private void mayFlushKv(long newHighWatermark) {
@@ -977,9 +909,6 @@ public final class Replica {
 
             logTablet.updateMinRetainOffset(restoreStartOffset);
             recoverKvTablet(restoreStartOffset, rowCount, autoIncIDRange);
-            if (isHistoricalPartition()) {
-                historicalKvBaseOffset = restoreStartOffset;
-            }
         } catch (Exception e) {
             throw new KvStorageException(
                     String.format(
@@ -1128,8 +1057,13 @@ public final class Replica {
         long lakeLogEndOffset = logTablet.getLakeLogEndOffset();
         long localLogEndOffset = logTablet.localLogEndOffset();
         long logStartOffset = logTablet.logStartOffset();
-        long recoveryStartOffset =
-                lakeLogEndOffset >= 0 ? Math.min(lakeLogEndOffset, localLogEndOffset) : 0L;
+        checkState(
+                lakeLogEndOffset < 0 || lakeLogEndOffset <= localLogEndOffset,
+                "Cannot recover historical KV state: lake log end offset %s is beyond the "
+                        + "local log end offset %s.",
+                lakeLogEndOffset,
+                localLogEndOffset);
+        long recoveryStartOffset = lakeLogEndOffset >= 0 ? lakeLogEndOffset : 0L;
         checkState(
                 recoveryStartOffset >= logStartOffset,
                 "Cannot recover historical KV state: recovery start offset %s is before the "
@@ -1245,14 +1179,11 @@ public final class Replica {
                                         "Leader not local for bucket %s on tabletServer %d",
                                         tableBucket, localTabletServerId));
                     }
-                    // Historical primary-key writes must go through PUT_KV so the server can
-                    // preserve the original partition namespace and consult the lake on a local
-                    // miss. Append-only records already contain their partition columns, so a log
-                    // table can append them directly to its historical system partition.
-                    if (isHistoricalPartition() && isKvTable()) {
+                    // Primary-key writes must go through PUT_KV so the log and local KV state are
+                    // updated together. PRODUCE_LOG is only valid for append-only tables.
+                    if (isKvTable()) {
                         throw new InvalidPartitionException(
-                                "Produce-log request must not target the historical partition of "
-                                        + "a primary-key table.");
+                                "Produce-log request must not target a primary-key table.");
                     }
 
                     validateInSyncReplicaSize(requiredAcks);
@@ -2637,81 +2568,5 @@ public final class Replica {
     @Nullable
     public PeriodicSnapshotManager getKvSnapshotManager() {
         return kvSnapshotManager;
-    }
-
-    /** Tracks write activity and cleanup conditions for the current local historical KV state. */
-    @ThreadSafe
-    public static final class HistoricalKvCleanupState {
-        // Latched when the live SST size reaches the maximum. Rebuilding the local KV state resets
-        // this flag, while transient RocksDB size changes do not resume writes prematurely.
-        private final AtomicBoolean maxSizeReached = new AtomicBoolean();
-
-        private volatile @Nullable CleanupCandidate cleanupCandidate;
-        private volatile long lastWriteMs;
-
-        private HistoricalKvCleanupState(long lastWriteMs) {
-            this.lastWriteMs = lastWriteMs;
-        }
-
-        /** Returns whether historical writes are paused by the maximum-size limit. */
-        public boolean maxSizeReached() {
-            return maxSizeReached.get();
-        }
-
-        /** Latches the maximum-size limit and returns whether this call changed the state. */
-        public boolean markMaxSizeReached() {
-            return maxSizeReached.compareAndSet(false, true);
-        }
-
-        /** Updates the cleanup candidate for the current local historical KV state. */
-        public void updateCleanupCandidate(
-                long lakeSnapshotId, int expectedLeaderEpoch, long tieredLogEndOffset) {
-            cleanupCandidate =
-                    new CleanupCandidate(lakeSnapshotId, expectedLeaderEpoch, tieredLogEndOffset);
-        }
-
-        /** Returns the cleanup candidate, or null if none is available. */
-        public @Nullable CleanupCandidate cleanupCandidate() {
-            return cleanupCandidate;
-        }
-
-        /** Records the latest historical write activity time. */
-        public void recordWrite(long timestampMs) {
-            lastWriteMs = timestampMs;
-        }
-
-        /** Returns the latest historical write activity time. */
-        public long lastWriteMs() {
-            return lastWriteMs;
-        }
-
-        /** A candidate for cleaning up local historical KV state. */
-        public static final class CleanupCandidate {
-            private final long lakeSnapshotId;
-            private final int expectedLeaderEpoch;
-            private final long tieredLogEndOffset;
-
-            private CleanupCandidate(
-                    long lakeSnapshotId, int expectedLeaderEpoch, long tieredLogEndOffset) {
-                this.lakeSnapshotId = lakeSnapshotId;
-                this.expectedLeaderEpoch = expectedLeaderEpoch;
-                this.tieredLogEndOffset = tieredLogEndOffset;
-            }
-
-            /** Returns the lake snapshot ID that covers the local KV state. */
-            public long lakeSnapshotId() {
-                return lakeSnapshotId;
-            }
-
-            /** Returns the leader epoch required to run cleanup. */
-            public int expectedLeaderEpoch() {
-                return expectedLeaderEpoch;
-            }
-
-            /** Returns the log end offset covered by the lake snapshot. */
-            public long tieredLogEndOffset() {
-                return tieredLogEndOffset;
-            }
-        }
     }
 }

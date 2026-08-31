@@ -36,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.apache.fluss.record.LogRecordBatchFormat.NO_BATCH_SEQUENCE;
+import static org.apache.fluss.utils.PartitionUtils.HISTORICAL_PARTITION_VALUE;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /** The abstract write batch contains write callback object to wait write request feedback. */
@@ -60,7 +61,7 @@ public abstract class WriteBatch {
      * <p>It is null for a normal write and contains the logical partition namespace for a
      * historical write.
      */
-    private final @Nullable String originalPartitionName;
+    private volatile @Nullable String originalPartitionName;
 
     protected boolean reopened;
     protected int recordCount;
@@ -215,9 +216,22 @@ public abstract class WriteBatch {
         return physicalTablePath;
     }
 
+    /** Returns the physical partition path used as the write RPC target. */
+    public PhysicalTablePath writeTargetPath() {
+        return originalPartitionName == null
+                ? physicalTablePath
+                : PhysicalTablePath.of(
+                        physicalTablePath.getTablePath(), HISTORICAL_PARTITION_VALUE);
+    }
+
     /** Returns the original partition name for a historical write, or null for a normal write. */
     public @Nullable String getOriginalPartitionName() {
         return originalPartitionName;
+    }
+
+    /** Marks this batch as targeting the historical partition. */
+    void rerouteToHistoricalPartition(String partitionName) {
+        originalPartitionName = checkNotNull(partitionName);
     }
 
     public RequestFuture getRequestFuture() {

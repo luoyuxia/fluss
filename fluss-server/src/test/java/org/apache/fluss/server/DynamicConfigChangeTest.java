@@ -192,17 +192,6 @@ public class DynamicConfigChangeTest {
     }
 
     @Test
-    void testAllowsHistoricalKvCleanupIdleTimeToChangeDynamically() {
-        assertThat(
-                        new DynamicServerConfig(new Configuration())
-                                .isAllowedConfig(
-                                        ConfigOptions
-                                                .SERVER_HISTORICAL_PARTITION_KV_CLEANUP_IDLE_TIME
-                                                .key()))
-                .isTrue();
-    }
-
-    @Test
     void testOverrideConfigs() throws Exception {
         Configuration configuration = new Configuration();
         configuration.setString(DATALAKE_FORMAT.key(), "paimon");

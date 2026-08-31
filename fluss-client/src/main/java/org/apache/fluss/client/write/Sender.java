@@ -232,7 +232,7 @@ public class Sender implements Runnable {
                 //  unready partitions
                 Throwable t = ExceptionUtils.stripExecutionException(e);
                 if (t instanceof PartitionNotExistException) {
-                    abortIfHistoricalWriteTargetMissing(readyCheckResult.unknownLeaderTables);
+                    handlePartitionNotExistException(readyCheckResult.unknownLeaderTables);
                 } else {
                     throw e;
                 }
@@ -634,12 +634,7 @@ public class Sender implements Runnable {
         WriteBatch writeBatch = readyWriteBatch.writeBatch();
         // Historical queues use the original path as their accumulator key, so capture the actual
         // RPC target before any retry handling.
-        PhysicalTablePath requestTargetPath =
-                writeBatch.getOriginalPartitionName() == null
-                        ? writeBatch.physicalTablePath()
-                        : PhysicalTablePath.of(
-                                writeBatch.physicalTablePath().getTablePath(),
-                                HISTORICAL_PARTITION_VALUE);
+        PhysicalTablePath writeTargetPath = writeBatch.writeTargetPath();
         if (error.exception() instanceof StorageBackpressureException) {
             // Hard rejection: the storage engine reached its slowdown trigger and rejected the
             // write. Map it to full pressure (internal hard-rejection value 1.0f) so the bucket is
@@ -711,7 +706,7 @@ public class Sender implements Runnable {
                 // A historical batch remains keyed by its original partition path in the
                 // accumulator, but its RPC is sent to the internal historical partition. Invalidate
                 // the actual RPC target so the retry refreshes the historical bucket metadata.
-                invalidMetadataTables.add(requestTargetPath);
+                invalidMetadataTables.add(writeTargetPath);
             }
         } else {
             LOG.warn(
@@ -727,14 +722,13 @@ public class Sender implements Runnable {
     }
 
     /**
-     * Aborts pending writes when metadata confirms their target is missing. Such writes cannot make
-     * progress without a leader, and rerouting existing batches to the historical target is unsafe
-     * because their outcome and idempotent state may belong to the original target.
+     * Rechecks unknown-leader partitions after a bulk metadata update reports {@link
+     * PartitionNotExistException}, and handles missing partitions for tables with historical
+     * partition support.
      */
-    private void abortIfHistoricalWriteTargetMissing(Set<PhysicalTablePath> unknownLeaderTables)
-            throws Exception {
+    private void handlePartitionNotExistException(Set<PhysicalTablePath> unknownLeaderTables) {
         for (PhysicalTablePath targetPath : unknownLeaderTables) {
-            if (!accumulator.isHistoricalPartitionEnabled(targetPath)) {
+            if (!accumulator.isHistoricalPartitionEnabled(targetPath.getTablePath())) {
                 continue;
             }
             try {
@@ -742,34 +736,121 @@ public class Sender implements Runnable {
             } catch (Exception e) {
                 Throwable t = ExceptionUtils.stripExecutionException(e);
                 if (t instanceof PartitionNotExistException) {
-                    // This target was considered usable when its batches were enqueued or first
-                    // attempted, but is now confirmed missing. Transparently rerouting those
-                    // batches to the historical partition is unsafe: an original-target attempt
-                    // may have been accepted despite a lost response, and writer ID / batch
-                    // sequence state cannot be reused across different physical TableBuckets. A
-                    // safe failover must stop draining this path, wait for its in-flight requests,
-                    // classify ambiguous outcomes, reset writer state, and preserve per-bucket
-                    // ordering. This race requires partition retirement to overlap a writer that
-                    // still holds the original route, so it is expected to be uncommon; fail
-                    // closed for now.
-                    // TODO: Implement safe in-flight historical failover if this path occurs
-                    // frequently in practice.
-                    // Retrying a historical-enabled table without a leader would leave its
-                    // batches queued indefinitely. Fail only after checking the target itself so
-                    // ordinary writes in the bulk metadata request keep their existing behavior.
-                    PartitionNotExistException missingTargetException =
-                            new PartitionNotExistException(
-                                    "Write target "
-                                            + targetPath
-                                            + " for a historical-partition-enabled table no "
-                                            + "longer exists according to refreshed metadata.");
-                    missingTargetException.initCause(t);
-                    maybeAbortBatches(missingTargetException);
-                    return;
+                    handleMissingPartition(targetPath, t);
+                    continue;
                 }
                 throw e;
             }
         }
+    }
+
+    /**
+     * Handles a write target after refreshed metadata confirms that it no longer exists.
+     *
+     * <p>A missing historical target has no further fallback and is aborted. An original target is
+     * rerouted only after all requests to it have left the in-flight set, so no response from the
+     * old physical target can race with resetting its queued batches to the historical target.
+     */
+    private void handleMissingPartition(PhysicalTablePath targetPath, Throwable cause) {
+        if (HISTORICAL_PARTITION_VALUE.equals(targetPath.getPartitionName())) {
+            abortBatches(
+                    targetPath,
+                    newPartitionNotExistException(
+                            "Cannot continue historical writes to "
+                                    + targetPath
+                                    + " because refreshed metadata confirms that the partition "
+                                    + "no longer exists.",
+                            cause));
+            return;
+        }
+
+        if (hasInFlightBatches(targetPath)) {
+            // Supporting this case requires waiting for the outstanding responses, detaching the
+            // batches from the original TableBucket's idempotence state, preserving their order,
+            // and assigning new sequences for the historical TableBucket. Keep this transition
+            // simple by failing only the affected target.
+            // TODO: If this race occurs frequently in practice, implement the coordinated
+            // in-flight handoff instead of aborting the batches.
+            abortBatches(
+                    targetPath,
+                    newPartitionNotExistException(
+                            "Cannot safely reroute writes from missing partition "
+                                    + targetPath
+                                    + " while requests to it are still in flight because rerouting "
+                                    + "them to the historical partition could break idempotence.",
+                            cause));
+            return;
+        }
+
+        // TODO: No current in-flight request does not rule out an earlier attempt that was
+        // accepted while its response was lost. Rerouting such a batch can duplicate the write;
+        // target-scoped abort only exposes the ambiguity and cannot prevent an upper-layer replay
+        // from duplicating it. Resolve this with the durable FREEZING/RETIRED handoff; see
+        // https://github.com/apache/fluss/issues/4161.
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(targetPath.getTablePath(), HISTORICAL_PARTITION_VALUE);
+        @Nullable Throwable historicalTargetCause = null;
+        try {
+            if (metadataUpdater.checkAndUpdatePartitionMetadata(historicalPath)) {
+                accumulator.rerouteQueuedWritesToHistorical(
+                        targetPath,
+                        historicalPath,
+                        metadataUpdater.getPartitionIdOrElseThrow(historicalPath));
+                return;
+            }
+        } catch (PartitionNotExistException e) {
+            historicalTargetCause = e;
+        }
+
+        abortBatches(
+                targetPath,
+                newPartitionNotExistException(
+                        "Cannot reroute writes from "
+                                + targetPath
+                                + " because historical write target "
+                                + historicalPath
+                                + " does not exist according to refreshed metadata.",
+                        historicalTargetCause));
+    }
+
+    /** Returns whether a request to {@code targetPath} is still awaiting a response. */
+    private boolean hasInFlightBatches(PhysicalTablePath targetPath) {
+        return !getInFlightBatches(targetPath).isEmpty();
+    }
+
+    private List<ReadyWriteBatch> getInFlightBatches(PhysicalTablePath targetPath) {
+        List<ReadyWriteBatch> matchedBatches = new ArrayList<>();
+        synchronized (inFlightBatchesLock) {
+            for (List<ReadyWriteBatch> batches : inFlightBatches.values()) {
+                for (ReadyWriteBatch batch : batches) {
+                    if (batch.writeBatch().writeTargetPath().equals(targetPath)) {
+                        matchedBatches.add(batch);
+                    }
+                }
+            }
+        }
+        return matchedBatches;
+    }
+
+    private void abortBatches(PhysicalTablePath targetPath, PartitionNotExistException exception) {
+        List<ReadyWriteBatch> matchingInFlightBatches = getInFlightBatches(targetPath);
+        // Make the batches terminal before detaching their in-flight bookkeeping.
+        accumulator.abortBatches(targetPath, exception);
+        for (ReadyWriteBatch batch : matchingInFlightBatches) {
+            maybeRemoveFromInflightBatches(batch);
+            if (idempotenceManager.idempotenceEnabled()) {
+                idempotenceManager.removeInFlightBatch(batch);
+            }
+        }
+    }
+
+    private static PartitionNotExistException newPartitionNotExistException(
+            String message, @Nullable Throwable cause) {
+        PartitionNotExistException exception = new PartitionNotExistException(message);
+        if (cause != null) {
+            exception.initCause(cause);
+        }
+        return exception;
     }
 
     private void updateWriterMetrics(Map<Integer, List<ReadyWriteBatch>> batches) {
