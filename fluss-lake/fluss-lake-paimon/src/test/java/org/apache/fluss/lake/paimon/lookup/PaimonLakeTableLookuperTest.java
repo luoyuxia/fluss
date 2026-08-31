@@ -165,6 +165,73 @@ class PaimonLakeTableLookuperTest {
     }
 
     @Test
+    void testConcurrentFirstLookupsForDifferentPartitions() throws Exception {
+        TablePath tablePath = TablePath.of(DB, "concurrent_first_lookups");
+        Schema schema = pkSchema();
+        FileStoreTable table = createPaimonTable(tablePath, partitionedPkDescriptor(schema));
+        writeAndCommitData(
+                table,
+                Collections.singletonMap(
+                        0,
+                        Arrays.asList(
+                                paimonRow(1, "20240101", "Alice"),
+                                paimonRow(2, "20240102", "Bob"))));
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            // Recreate the local query so every attempt submits two cold-cache lookups together.
+            for (int attempt = 0; attempt < 10; attempt++) {
+                CountDownLatch downloadsStarted = new CountDownLatch(2);
+                Runnable diskWriteGuard =
+                        () -> {
+                            downloadsStarted.countDown();
+                            try {
+                                // Without Fluss-level serialization, both downloads reach this
+                                // guard and continue together, exercising Paimon's shared mutable
+                                // lookup-store comparator. With serialization, the short wait
+                                // expires and the downloads proceed one at a time.
+                                downloadsStarted.await(100, TimeUnit.MILLISECONDS);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new RuntimeException(e);
+                            }
+                        };
+
+                try (LakeTableLookuper lookuper =
+                        new PaimonLakeTableLookuper(
+                                paimonConfig,
+                                tablePath,
+                                tempWarehouseDir.getAbsolutePath(),
+                                tableConfig(KvFormat.COMPACTED),
+                                LOOKUP_CACHE_MAX_DISK_BYTES,
+                                diskWriteGuard)) {
+                    Future<byte[]> firstLookup =
+                            executor.submit(
+                                    () ->
+                                            lookuper.lookup(
+                                                    paimonKey(schema, 1, "20240101"),
+                                                    lookupContext(
+                                                            schema, "20240101", 0, SCHEMA_ID)));
+                    Future<byte[]> secondLookup =
+                            executor.submit(
+                                    () ->
+                                            lookuper.lookup(
+                                                    paimonKey(schema, 2, "20240102"),
+                                                    lookupContext(
+                                                            schema, "20240102", 0, SCHEMA_ID)));
+
+                    BinaryValue firstValue = decodeValue(firstLookup.get(), SCHEMA_ID, schema);
+                    BinaryValue secondValue = decodeValue(secondLookup.get(), SCHEMA_ID, schema);
+                    assertRow(firstValue.row, 1, "20240101", "Alice");
+                    assertRow(secondValue.row, 2, "20240102", "Bob");
+                }
+            }
+        } finally {
+            ExecutorUtils.gracefulShutdown(30, TimeUnit.SECONDS, executor);
+        }
+    }
+
+    @Test
     void testDiskWriteLockBlocksOnlyLookupFileDownloads() throws Exception {
         TablePath tablePath = TablePath.of(DB, "disk_write_lock");
         Schema schema = pkSchema();
@@ -434,22 +501,6 @@ class PaimonLakeTableLookuperTest {
         List<DataFileMeta> filesBeforeCompaction = dataFiles(table, partition, 0);
         assertThat(filesBeforeCompaction).hasSize(5);
 
-        AtomicBoolean blockDownloads = new AtomicBoolean();
-        CountDownLatch downloadStarted = new CountDownLatch(1);
-        CountDownLatch continueDownload = new CountDownLatch(1);
-        Runnable diskWriteGuard =
-                () -> {
-                    if (blockDownloads.get()) {
-                        downloadStarted.countDown();
-                        try {
-                            continueDownload.await();
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new RuntimeException(e);
-                        }
-                    }
-                };
-
         try (LakeTableLookuper lookuper =
                 new PaimonLakeTableLookuper(
                         paimonConfig,
@@ -457,7 +508,7 @@ class PaimonLakeTableLookuperTest {
                         tempWarehouseDir.getAbsolutePath(),
                         tableConfig(KvFormat.COMPACTED),
                         LOOKUP_CACHE_MAX_DISK_BYTES,
-                        diskWriteGuard)) {
+                        NO_OP_DISK_WRITE_GUARD)) {
             assertThat(
                             lookuper.lookup(
                                     paimonKey(schema, 5, "20240101"),
@@ -513,34 +564,19 @@ class PaimonLakeTableLookuperTest {
                             SCHEMA_ID,
                             (lookupTimeNanos, lookupFileDownloaded) ->
                                     cachedLookupDownloads.add(lookupFileDownloaded));
-            ExecutorService executor = Executors.newFixedThreadPool(2);
-            blockDownloads.set(true);
-            try {
-                Future<byte[]> refreshedLookup =
-                        executor.submit(
-                                () ->
-                                        lookuper.lookup(
-                                                paimonKey(schema, 1, "20240101"),
-                                                refreshedContext));
-                assertThat(downloadStarted.await(30, TimeUnit.SECONDS)).isTrue();
+            BinaryValue refreshedValue =
+                    decodeValue(
+                            lookuper.lookup(paimonKey(schema, 1, "20240101"), refreshedContext),
+                            SCHEMA_ID,
+                            schema);
+            assertRow(refreshedValue.row, 1, "20240101", "name-1");
 
-                Future<byte[]> cachedLookup =
-                        executor.submit(
-                                () ->
-                                        lookuper.lookup(
-                                                paimonKey(schema, 6, "20240102"), cachedContext));
-                BinaryValue cachedValue =
-                        decodeValue(cachedLookup.get(30, TimeUnit.SECONDS), SCHEMA_ID, schema);
-                assertRow(cachedValue.row, 6, "20240102", "name-6");
-
-                continueDownload.countDown();
-                BinaryValue refreshedValue =
-                        decodeValue(refreshedLookup.get(30, TimeUnit.SECONDS), SCHEMA_ID, schema);
-                assertRow(refreshedValue.row, 1, "20240101", "name-1");
-            } finally {
-                continueDownload.countDown();
-                ExecutorUtils.gracefulShutdown(30, TimeUnit.SECONDS, executor);
-            }
+            BinaryValue cachedValue =
+                    decodeValue(
+                            lookuper.lookup(paimonKey(schema, 6, "20240102"), cachedContext),
+                            SCHEMA_ID,
+                            schema);
+            assertRow(cachedValue.row, 6, "20240102", "name-6");
 
             assertThat(refreshedLookupDownloads).containsExactly(true);
             assertThat(cachedLookupDownloads).containsExactly(false);

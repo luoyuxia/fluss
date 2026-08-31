@@ -87,9 +87,8 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
  * lookup I/O failure refreshes that partition-bucket with the files from the latest snapshot and
  * retries once.
  *
- * <p>Lookup concurrency is delegated to {@link LocalTableQuery}. Older Paimon versions may
- * serialize lookups internally, while Paimon 2.0 supports concurrent lookups without an additional
- * Fluss-level lock.
+ * <p>Calls to {@link LocalTableQuery#lookup} are serialized because Paimon 2.0 shares mutable
+ * lookup-store comparator state across local lookup files.
  *
  * <p>Close is expected only after the owner has drained active lookups. It is synchronized with
  * lazy initialization, but deliberately does not add a lifecycle lock to every lookup.
@@ -104,6 +103,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     private final Runnable diskWriteGuard;
 
     private final ThreadLocal<Boolean> lookupFileDownloaded;
+    private final Object paimonLookupLock;
     private final Object initializationLock;
     private final Map<PaimonPartitionBucket, List<DataFileMeta>> registeredFiles;
 
@@ -137,6 +137,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         this.lookupCacheMaxDiskBytes = lookupCacheMaxDiskBytes;
         this.diskWriteGuard = checkNotNull(diskWriteGuard, "diskWriteGuard must not be null.");
         this.lookupFileDownloaded = new ThreadLocal<>();
+        this.paimonLookupLock = new Object();
         this.initializationLock = new Object();
         this.registeredFiles = new ConcurrentHashMap<>();
     }
@@ -339,15 +340,25 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
             throws IOException {
         List<DataFileMeta> filesBeforeLookup = initializeFiles(partition, bucket);
         try {
-            return localTableQuery.lookup(partition, bucket, key);
+            return lookupLocalTable(partition, bucket, key);
         } catch (IOException firstError) {
             refreshFilesIfUnchanged(partition, bucket, filesBeforeLookup);
             try {
-                return localTableQuery.lookup(partition, bucket, key);
+                return lookupLocalTable(partition, bucket, key);
             } catch (IOException retryError) {
                 retryError.addSuppressed(firstError);
                 throw retryError;
             }
+        }
+    }
+
+    private @Nullable org.apache.paimon.data.InternalRow lookupLocalTable(
+            org.apache.paimon.data.BinaryRow partition,
+            int bucket,
+            org.apache.paimon.data.InternalRow key)
+            throws IOException {
+        synchronized (paimonLookupLock) {
+            return localTableQuery.lookup(partition, bucket, key);
         }
     }
 
