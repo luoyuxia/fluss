@@ -37,12 +37,11 @@ import org.apache.fluss.server.entity.LookupDataForBucket;
 import org.apache.fluss.server.entity.PutKvDataForBucket;
 import org.apache.fluss.server.kv.KvStateLookupResult;
 import org.apache.fluss.server.kv.KvStateLookupResult.Status;
-import org.apache.fluss.server.kv.historical.HistoricalValueLookup;
+import org.apache.fluss.server.kv.historical.HistoricalWritePreviousValues;
 import org.apache.fluss.server.log.LogAppendInfo;
 import org.apache.fluss.server.replica.Replica;
 import org.apache.fluss.server.storage.LocalDiskManager;
 import org.apache.fluss.utils.ByteArraySlice;
-import org.apache.fluss.utils.ByteArrayWrapper;
 import org.apache.fluss.utils.concurrent.Scheduler;
 
 import javax.annotation.Nullable;
@@ -50,10 +49,8 @@ import javax.annotation.Nullable;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -227,8 +224,8 @@ public final class HistoricalPartitionManager implements AutoCloseable {
         // The public put path holds the TableBucket ordering slot until processPut returns, so
         // local state cannot be changed by a later historical write between resolve and apply.
         int expectedLeaderEpoch = replica.getLeaderEpoch();
-        List<byte[]> keysRequiringLakeLookup =
-                replica.findKeysRequiringLakeLookup(
+        HistoricalWritePreviousValues previousValues =
+                replica.probePreviousValues(
                         putData.records(),
                         targetColumns,
                         mergeMode,
@@ -236,7 +233,7 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                         expectedLeaderEpoch,
                         requiredAcks);
 
-        Map<ByteArrayWrapper, KvStateLookupResult> lakeResults = new HashMap<>();
+        List<byte[]> keysRequiringLakeLookup = previousValues.keysRequiringLakeLookup();
         if (!keysRequiringLakeLookup.isEmpty()) {
             List<byte[]> lakeValues =
                     lakeLookupManager.lookup(
@@ -249,24 +246,9 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                             originalPartitionSpec,
                             replica.tableMetrics()::recordHistoricalLakeLookup);
             for (int i = 0; i < keysRequiringLakeLookup.size(); i++) {
-                byte[] lakeValue = lakeValues.get(i);
-                lakeResults.put(
-                        new ByteArrayWrapper(keysRequiringLakeLookup.get(i)),
-                        lakeValue == null
-                                ? KvStateLookupResult.notFound()
-                                : KvStateLookupResult.present(lakeValue));
+                previousValues.resolveLakeValue(keysRequiringLakeLookup.get(i), lakeValues.get(i));
             }
         }
-
-        HistoricalValueLookup memoizedLakeLookup =
-                primaryKey -> {
-                    KvStateLookupResult result =
-                            checkNotNull(
-                                    lakeResults.get(new ByteArrayWrapper(primaryKey)),
-                                    "No resolved lake value for a historical write key");
-                    return result.value();
-                };
-
         // TODO: Tag historical values and tombstones with WAL offsets for incremental cleanup; see
         //  https://github.com/apache/fluss/issues/4159.
         return replica.putHistoricalRecordsToLeader(
@@ -274,7 +256,7 @@ public final class HistoricalPartitionManager implements AutoCloseable {
                 targetColumns,
                 mergeMode,
                 originalPartitionName,
-                memoizedLakeLookup,
+                previousValues,
                 expectedLeaderEpoch,
                 requiredAcks);
     }

@@ -65,7 +65,7 @@ import org.apache.fluss.server.kv.KvStateLookupResult;
 import org.apache.fluss.server.kv.KvTablet;
 import org.apache.fluss.server.kv.RemoteLogFetcher;
 import org.apache.fluss.server.kv.autoinc.AutoIncIDRange;
-import org.apache.fluss.server.kv.historical.HistoricalValueLookup;
+import org.apache.fluss.server.kv.historical.HistoricalWritePreviousValues;
 import org.apache.fluss.server.kv.rocksdb.RocksDBKvBuilder;
 import org.apache.fluss.server.kv.scan.OpenScanResult;
 import org.apache.fluss.server.kv.scan.ScannerContext;
@@ -1270,12 +1270,12 @@ public final class Replica {
     }
 
     /**
-     * Finds historical write keys that require lake fallback without mutating local KV state.
+     * Probes the local previous values required by a historical write without mutating KV state.
      *
      * <p>The caller must keep historical writes for this table bucket ordered until the subsequent
      * {@link #putHistoricalRecordsToLeader} call completes.
      */
-    public List<byte[]> findKeysRequiringLakeLookup(
+    public HistoricalWritePreviousValues probePreviousValues(
             KvRecordBatch kvRecords,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
@@ -1289,7 +1289,7 @@ public final class Replica {
                     validateHistoricalWrite(expectedLeaderEpoch, requiredAcks);
                     KvTablet kv = this.kvTablet;
                     checkNotNull(kv, "KvTablet for the historical replica shouldn't be null.");
-                    return kv.findKeysRequiringLakeLookup(
+                    return kv.probePreviousValues(
                             kvRecords, targetColumns, mergeMode, originalPartitionName);
                 });
     }
@@ -1300,7 +1300,7 @@ public final class Replica {
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
             String originalPartitionName,
-            HistoricalValueLookup memoizedLakeLookup,
+            HistoricalWritePreviousValues previousValues,
             int expectedLeaderEpoch,
             int requiredAcks)
             throws Exception {
@@ -1316,7 +1316,7 @@ public final class Replica {
                                     targetColumns,
                                     mergeMode,
                                     originalPartitionName,
-                                    memoizedLakeLookup);
+                                    previousValues);
                     maybeIncrementLeaderHW(logTablet, clock.milliseconds());
                     return appendInfo;
                 });
