@@ -17,13 +17,12 @@
 
 package org.apache.fluss.server.kv;
 
-import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.record.BinaryValue;
 import org.apache.fluss.rocksdb.RocksDBHandle;
 import org.apache.fluss.row.BinaryRow;
 import org.apache.fluss.row.encode.KvValueLayout;
 import org.apache.fluss.row.encode.ValueEncoder;
-import org.apache.fluss.utils.clock.ManualClock;
+import org.apache.fluss.server.kv.historical.HistoricalKvTombstone;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -34,59 +33,68 @@ import org.rocksdb.FlushOptions;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.apache.fluss.record.TestData.DATA1_ROW_TYPE;
 import static org.apache.fluss.record.TestData.DEFAULT_SCHEMA_ID;
 import static org.apache.fluss.testutils.DataTestUtils.compactedRow;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests row TTL cleanup with native Flink compaction filter. */
-class RowTtlCompactionFilterTest {
+/** Tests exclusive-offset cleanup for offset-tagged historical values and tombstones. */
+class HistoricalKvCompactionFilterTest {
 
     @TempDir private Path tempDir;
 
     @Test
-    void testFlinkCompactionFilterReadsTimestampFromTaggedValue() throws Exception {
-        byte[] expiredKey = "expired-key".getBytes(StandardCharsets.UTF_8);
-        byte[] freshKey = "fresh-key".getBytes(StandardCharsets.UTF_8);
+    void testRemovesOnlyOffsetsBelowCleanupOffset() throws Exception {
+        AtomicLong cleanupOffset = new AtomicLong(0L);
+        byte[] valueBeforeKey = bytes("value-before");
+        byte[] tombstoneBeforeKey = bytes("tombstone-before");
+        byte[] valueAtKey = bytes("value-at");
+        byte[] tombstoneAtKey = bytes("tombstone-at");
+        byte[] valueAfterKey = bytes("value-after");
+        byte[] tombstoneAfterKey = bytes("tombstone-after");
         BinaryRow row = compactedRow(DATA1_ROW_TYPE, new Object[] {1, "a"});
-        long now = 123456789L;
 
         try (FlinkCompactionFilter.FlinkCompactionFilterFactory filterFactory =
                         RowTtlCompactionFilterFactory.create(
-                                KvValueLayout.TAGGED, Duration.ofHours(1L), new ManualClock(now));
+                                KvValueLayout.TAGGED, 0L, 1L, () -> cleanupOffset.get() - 1L);
                 DBOptions dbOptions = new DBOptions().setCreateIfMissing(true);
                 ColumnFamilyOptions cfOptions =
                         new ColumnFamilyOptions().setCompactionFilterFactory(filterFactory);
                 RocksDBHandle handle = new RocksDBHandle(tempDir.toFile(), dbOptions, cfOptions);
                 FlushOptions flushOptions = new FlushOptions().setWaitForFlush(true)) {
             handle.openDB();
-            handle.getDb()
-                    .put(expiredKey, encodeTaggedValue(row, now - Duration.ofHours(2L).toMillis()));
-            handle.getDb().put(freshKey, encodeTaggedValue(row, now));
+            handle.getDb().put(valueBeforeKey, encodeValue(row, 4L));
+            handle.getDb().put(tombstoneBeforeKey, HistoricalKvTombstone.encode(4L));
+            handle.getDb().put(valueAtKey, encodeValue(row, 5L));
+            handle.getDb().put(tombstoneAtKey, HistoricalKvTombstone.encode(5L));
+            handle.getDb().put(valueAfterKey, encodeValue(row, 6L));
+            handle.getDb().put(tombstoneAfterKey, HistoricalKvTombstone.encode(6L));
             handle.getDb().flush(flushOptions);
 
             handle.getDb().compactRange();
+            assertThat(handle.getDb().get(valueBeforeKey)).isNotNull();
+            assertThat(handle.getDb().get(tombstoneBeforeKey)).isNotNull();
 
-            assertThat(handle.getDb().get(expiredKey)).isNull();
-            assertThat(handle.getDb().get(freshKey)).isNotNull();
+            cleanupOffset.set(5L);
+            handle.getDb().compactRange();
+
+            assertThat(handle.getDb().get(valueBeforeKey)).isNull();
+            assertThat(handle.getDb().get(tombstoneBeforeKey)).isNull();
+            assertThat(handle.getDb().get(valueAtKey)).isNotNull();
+            assertThat(handle.getDb().get(tombstoneAtKey)).isNotNull();
+            assertThat(handle.getDb().get(valueAfterKey)).isNotNull();
+            assertThat(handle.getDb().get(tombstoneAfterKey)).isNotNull();
         }
     }
 
-    @Test
-    void testCreateRejectsInvalidTtlDuration() {
-        assertThatThrownBy(
-                        () ->
-                                RowTtlCompactionFilterFactory.create(
-                                        KvValueLayout.TAGGED, Duration.ZERO, new ManualClock(0L)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(ConfigOptions.TABLE_KV_TTL.key());
+    private static byte[] encodeValue(BinaryRow row, long logOffset) {
+        return ValueEncoder.forLayout(KvValueLayout.TAGGED)
+                .encodeValue(new BinaryValue(DEFAULT_SCHEMA_ID, row), logOffset);
     }
 
-    private static byte[] encodeTaggedValue(BinaryRow row, long valueTag) {
-        return ValueEncoder.forLayout(KvValueLayout.TAGGED, ignored -> valueTag)
-                .encodeValue(new BinaryValue(DEFAULT_SCHEMA_ID, row));
+    private static byte[] bytes(String value) {
+        return value.getBytes(StandardCharsets.UTF_8);
     }
 }

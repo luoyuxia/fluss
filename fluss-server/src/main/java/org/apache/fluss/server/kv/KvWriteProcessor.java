@@ -45,6 +45,7 @@ import org.apache.fluss.rpc.protocol.MergeMode;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementManager;
 import org.apache.fluss.server.kv.autoinc.AutoIncrementUpdater;
 import org.apache.fluss.server.kv.historical.HistoricalValueLookup;
+import org.apache.fluss.server.kv.historical.LocalPreviousValueLookupResult;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.TruncateReason;
 import org.apache.fluss.server.kv.rowmerger.DefaultRowMerger;
@@ -66,10 +67,11 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
 
-import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
+
+import static org.apache.fluss.utils.Preconditions.checkNotNull;
 
 /**
  * Processes a KV record batch into local state mutations and the corresponding WAL records.
@@ -81,10 +83,9 @@ import java.util.Set;
  *
  * <p>The supplied {@link KvStateAccessor} defines how keys and state are accessed. Normal writes
  * use the original primary key and local state, while historical writes use partition-scoped keys.
- * On a historical local miss, the processor can consult a lake result already memoized for the
- * current request. Resolving that result from lake storage remains the caller's responsibility and
- * must happen outside the tablet lock. The merge and WAL generation path is shared by both write
- * kinds.
+ * Historical writes use previous values resolved before the tablet write lock is acquired.
+ * Resolving local misses from lake storage remains the caller's responsibility and must happen
+ * outside the tablet lock. The merge and WAL generation path is shared by both write kinds.
  */
 @Internal
 @NotThreadSafe
@@ -158,7 +159,7 @@ public final class KvWriteProcessor {
             MergeMode mergeMode,
             KvStateAccessor stateAccessor,
             @Nullable String originalPartitionName,
-            @Nullable HistoricalValueLookup memoizedLakeLookup)
+            @Nullable HistoricalValueLookup historicalValueLookup)
             throws Exception {
         WriteContext writeContext = createWriteContext(kvRecords, targetColumns, mergeMode);
         RowType latestRowType = writeContext.latestSchema.getRowType();
@@ -185,7 +186,7 @@ public final class KvWriteProcessor {
                     logEndOffsetOfPrevBatch,
                     stateAccessor,
                     originalPartitionName,
-                    memoizedLakeLookup);
+                    historicalValueLookup);
 
             // There will be a situation that these batches of kvRecordBatch have not
             // generated any CDC logs, for example, when client attempts to delete
@@ -221,14 +222,13 @@ public final class KvWriteProcessor {
     }
 
     /**
-     * Finds the original primary keys whose previous values must be loaded from lake storage before
-     * applying a historical write batch.
+     * Probes the local previous values required by a historical write batch.
      *
-     * <p>A key is returned only when its previous value is required and its partition-scoped key is
-     * absent from local state. Records that can establish their result without a previous value are
-     * skipped, and each key is returned at most once.
+     * <p>Every key whose previous value is required is probed at most once. Local values and
+     * deletes are decoded into the returned collection, while true local misses are exposed for
+     * lake lookup. Records that establish their result without a previous value are skipped.
      */
-    List<byte[]> findKeysRequiringLakeLookup(
+    LocalPreviousValueLookupResult probeLocalPreviousValues(
             KvRecordBatch kvRecords,
             @Nullable int[] targetColumns,
             MergeMode mergeMode,
@@ -237,9 +237,9 @@ public final class KvWriteProcessor {
             throws Exception {
         WriteContext writeContext = createWriteContext(kvRecords, targetColumns, mergeMode);
 
-        List<byte[]> keysRequiringLakeLookup = new ArrayList<>();
-        // Track keys whose lake-lookup requirement has already been evaluated.
-        Set<ByteArrayWrapper> keysEvaluatedForLakeLookup = new HashSet<>();
+        LocalPreviousValueLookupResult localLookupResult =
+                new LocalPreviousValueLookupResult(valueDecoder, lakeValueDecoder);
+        Set<ByteArrayWrapper> probedKeys = new HashSet<>();
         KvRecordBatch.ReadContext readContext =
                 KvRecordReadContext.createReadContext(kvFormat, schemaGetter);
         for (KvRecord kvRecord : kvRecords.records(readContext)) {
@@ -252,23 +252,20 @@ public final class KvWriteProcessor {
             } else if (canSkipOldValueLookup(
                     writeContext.rowMerger, writeContext.autoIncrementUpdater)) {
                 // A full-row WAL upsert establishes the state without reading its previous value.
-                keysEvaluatedForLakeLookup.add(wrappedKey);
+                probedKeys.add(wrappedKey);
                 continue;
             }
 
             // Probe local state only for the first record that needs a previous value. A true local
             // miss schedules one lake lookup shared by all records for this key in the batch.
-            if (keysEvaluatedForLakeLookup.add(wrappedKey)
-                    && stateAccessor
-                                    .lookup(
-                                            stateAccessor.encodeKey(
-                                                    primaryKey, originalPartitionName))
-                                    .status()
-                            == KvStateLookupResult.Status.NOT_FOUND) {
-                keysRequiringLakeLookup.add(primaryKey);
+            if (probedKeys.add(wrappedKey)) {
+                localLookupResult.add(
+                        primaryKey,
+                        stateAccessor.lookup(
+                                stateAccessor.encodeKey(primaryKey, originalPartitionName)));
             }
         }
-        return keysRequiringLakeLookup;
+        return localLookupResult;
     }
 
     private WriteContext createWriteContext(
@@ -313,9 +310,13 @@ public final class KvWriteProcessor {
             long startLogOffset,
             KvStateAccessor stateAccessor,
             @Nullable String originalPartitionName,
-            @Nullable HistoricalValueLookup memoizedLakeLookup)
+            @Nullable HistoricalValueLookup historicalValueLookup)
             throws Exception {
         long logOffset = startLogOffset;
+        // Once this batch mutates a historical key, later same-key records must read the staged
+        // value from local state instead of reusing the value memoized before apply.
+        Set<ByteArrayWrapper> stagedHistoricalKeys =
+                historicalValueLookup == null ? Collections.emptySet() : new HashSet<>();
 
         // TODO: reuse the read context
         KvRecordBatch.ReadContext readContext =
@@ -326,6 +327,11 @@ public final class KvWriteProcessor {
             KvPreWriteBuffer.Key key = stateAccessor.encodeKey(keyBytes, originalPartitionName);
             BinaryRow row = kvRecord.getRow();
             BinaryValue currentValue = row == null ? null : new BinaryValue(schemaIdOfNewData, row);
+            long previousLogOffset = logOffset;
+            ByteArrayWrapper historicalKey =
+                    historicalValueLookup == null ? null : new ByteArrayWrapper(keyBytes);
+            boolean useMemoizedPreviousValue =
+                    historicalKey != null && !stagedHistoricalKeys.contains(historicalKey);
 
             if (currentValue == null) {
                 logOffset =
@@ -337,7 +343,8 @@ public final class KvWriteProcessor {
                                 logOffset,
                                 stateAccessor,
                                 keyBytes,
-                                memoizedLakeLookup);
+                                historicalValueLookup,
+                                useMemoizedPreviousValue);
             } else {
                 logOffset =
                         processUpsert(
@@ -350,7 +357,11 @@ public final class KvWriteProcessor {
                                 logOffset,
                                 stateAccessor,
                                 keyBytes,
-                                memoizedLakeLookup);
+                                historicalValueLookup,
+                                useMemoizedPreviousValue);
+            }
+            if (historicalKey != null && logOffset > previousLogOffset) {
+                stagedHistoricalKeys.add(historicalKey);
             }
         }
     }
@@ -363,13 +374,20 @@ public final class KvWriteProcessor {
             long logOffset,
             KvStateAccessor stateAccessor,
             byte[] primaryKey,
-            @Nullable HistoricalValueLookup memoizedLakeLookup)
+            @Nullable HistoricalValueLookup historicalValueLookup,
+            boolean useMemoizedPreviousValue)
             throws Exception {
         if (shouldIgnoreDeletion(currentMerger)) {
             return logOffset;
         }
 
-        BinaryValue oldValue = getPreviousValue(key, primaryKey, stateAccessor, memoizedLakeLookup);
+        BinaryValue oldValue =
+                getPreviousValue(
+                        key,
+                        primaryKey,
+                        stateAccessor,
+                        historicalValueLookup,
+                        useMemoizedPreviousValue);
         if (oldValue == null) {
             LOG.debug(
                     "The specific key can't be found in kv tablet although the kv record is for deletion, "
@@ -399,14 +417,21 @@ public final class KvWriteProcessor {
             long logOffset,
             KvStateAccessor stateAccessor,
             byte[] primaryKey,
-            @Nullable HistoricalValueLookup memoizedLakeLookup)
+            @Nullable HistoricalValueLookup historicalValueLookup,
+            boolean useMemoizedPreviousValue)
             throws Exception {
         if (canSkipOldValueLookup(currentMerger, autoIncrementUpdater)) {
             return applyUpdate(
                     key, null, currentValue, walBuilder, latestSchemaRow, logOffset, stateAccessor);
         }
 
-        BinaryValue oldValue = getPreviousValue(key, primaryKey, stateAccessor, memoizedLakeLookup);
+        BinaryValue oldValue =
+                getPreviousValue(
+                        key,
+                        primaryKey,
+                        stateAccessor,
+                        historicalValueLookup,
+                        useMemoizedPreviousValue);
         if (oldValue == null) {
             BinaryValue valueToInsert = currentMerger.merge(null, currentValue);
             return applyInsert(
@@ -454,7 +479,7 @@ public final class KvWriteProcessor {
             throws Exception {
         BinaryValue newValue = autoIncrementUpdater.updateAutoIncrementColumns(currentValue);
         walBuilder.append(ChangeType.INSERT, latestSchemaRow.replaceRow(newValue.row));
-        stateAccessor.insert(key, valueEncoder.encodeValue(newValue), logOffset);
+        stateAccessor.insert(key, encodeStateValue(newValue, logOffset, stateAccessor), logOffset);
         return logOffset + 1;
     }
 
@@ -469,42 +494,52 @@ public final class KvWriteProcessor {
             throws Exception {
         if (changelogImage == ChangelogImage.WAL) {
             walBuilder.append(ChangeType.UPDATE_AFTER, latestSchemaRow.replaceRow(newValue.row));
-            stateAccessor.update(key, valueEncoder.encodeValue(newValue), logOffset);
+            stateAccessor.update(
+                    key, encodeStateValue(newValue, logOffset, stateAccessor), logOffset);
             return logOffset + 1;
         } else {
             walBuilder.append(ChangeType.UPDATE_BEFORE, latestSchemaRow.replaceRow(oldValue.row));
             walBuilder.append(ChangeType.UPDATE_AFTER, latestSchemaRow.replaceRow(newValue.row));
-            stateAccessor.update(key, valueEncoder.encodeValue(newValue), logOffset + 1);
+            long updateAfterOffset = logOffset + 1;
+            stateAccessor.update(
+                    key,
+                    encodeStateValue(newValue, updateAfterOffset, stateAccessor),
+                    updateAfterOffset);
             return logOffset + 2;
         }
     }
 
+    private byte[] encodeStateValue(
+            BinaryValue value, long logOffset, KvStateAccessor stateAccessor) {
+        return stateAccessor.isHistoricalPartition()
+                ? valueEncoder.encodeValue(value, logOffset)
+                : valueEncoder.encodeValue(value);
+    }
+
     /**
-     * Returns the previous value from local state, falling back to the memoized lake result only on
-     * a genuine local miss.
+     * Returns the previous value from request-scoped historical state or the current local state.
      *
      * @param localStateKey the key used by the local prewrite buffer and RocksDB; it wraps {@code
      *     primaryKey} for a normal partition and adds the original partition namespace for a
      *     historical partition
      * @param primaryKey the encoded bytes of the logical primary key, without the historical
-     *     partition namespace; used by the lake lookup
+     *     partition namespace
      * @return the previous value, or null if the key is absent or locally marked as deleted
      */
     private BinaryValue getPreviousValue(
             KvPreWriteBuffer.Key localStateKey,
             byte[] primaryKey,
             KvStateAccessor stateAccessor,
-            @Nullable HistoricalValueLookup memoizedLakeLookup)
+            @Nullable HistoricalValueLookup historicalValueLookup,
+            boolean useMemoizedPreviousValue)
             throws Exception {
-        KvStateLookupResult localResult = stateAccessor.lookup(localStateKey);
-        if (localResult.status() != KvStateLookupResult.Status.NOT_FOUND
-                || memoizedLakeLookup == null) {
-            return localResult.value() == null
-                    ? null
-                    : valueDecoder.decodeValue(localResult.value());
+        if (useMemoizedPreviousValue) {
+            return checkNotNull(historicalValueLookup, "Historical value lookup must not be null")
+                    .lookup(primaryKey);
         }
-        byte[] lakeValue = memoizedLakeLookup.lookup(primaryKey);
-        return lakeValue == null ? null : lakeValueDecoder.decodeValue(lakeValue);
+
+        KvStateLookupResult localResult = stateAccessor.lookup(localStateKey);
+        return localResult.value() == null ? null : valueDecoder.decodeValue(localResult.value());
     }
 
     private boolean canSkipOldValueLookup(

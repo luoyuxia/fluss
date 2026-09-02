@@ -19,6 +19,7 @@ package org.apache.fluss.server.kv;
 
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.server.kv.historical.HistoricalKvKeyEncoder;
+import org.apache.fluss.server.kv.historical.HistoricalKvTombstone;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.Key;
 import org.apache.fluss.server.kv.prewrite.KvPreWriteBuffer.TruncateReason;
@@ -34,9 +35,6 @@ import static org.apache.fluss.utils.Preconditions.checkNotNull;
 /** Accesses a KV tablet's local prewrite buffer and RocksDB state. */
 @Internal
 public final class KvStateAccessor {
-
-    /** Encoded RocksDB value marking a deleted key in historical KV state. */
-    static final byte[] HISTORICAL_TOMBSTONE = new byte[0];
 
     private final KvPreWriteBuffer preWriteBuffer;
     private final RocksDBKv rocksDBKv;
@@ -85,9 +83,9 @@ public final class KvStateAccessor {
         if (value == null) {
             return KvStateLookupResult.notFound();
         }
-        // Historical KV tablets persist deletes as empty values so that a local miss does not
-        // expose a stale value from lake storage after the buffered delete has been flushed.
-        return value.length == 0
+        // Historical KV tablets persist deletes as offset-tagged tombstones so that a local miss
+        // does not expose a stale value from lake storage after the buffered delete is flushed.
+        return historicalPartition && HistoricalKvTombstone.isTombstone(value)
                 ? KvStateLookupResult.deleted()
                 : KvStateLookupResult.present(value);
     }
@@ -117,5 +115,9 @@ public final class KvStateAccessor {
     /** Truncates pending mutations to the given log offset. */
     public void truncateTo(long logOffset, TruncateReason reason) {
         preWriteBuffer.truncateTo(logOffset, reason);
+    }
+
+    boolean isHistoricalPartition() {
+        return historicalPartition;
     }
 }
