@@ -55,13 +55,9 @@ public abstract class WriteBatch {
     protected final List<WriteCallback> callbacks = new ArrayList<>();
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
     private final AtomicInteger attempts = new AtomicInteger(0);
-    /**
-     * The original partition name for a batch targeting the historical system partition.
-     *
-     * <p>It is null for a normal write and contains the logical partition namespace for a
-     * historical write.
-     */
-    private volatile @Nullable String originalPartitionName;
+    // Whether this batch targets the historical partition. When true, the original partition name
+    // is derived from physicalTablePath.
+    private volatile boolean isHistoricalPartition;
 
     protected boolean reopened;
     protected int recordCount;
@@ -77,14 +73,14 @@ public abstract class WriteBatch {
             PhysicalTablePath physicalTablePath,
             int schemaId,
             WriteFormat writeFormat,
-            @Nullable String originalPartitionName,
+            boolean isHistoricalPartition,
             long createdMs) {
         this.physicalTablePath = physicalTablePath;
         this.createdMs = createdMs;
         this.tableId = tableId;
         this.schemaId = schemaId;
         this.writeFormat = checkNotNull(writeFormat, "write format must be not null");
-        this.originalPartitionName = originalPartitionName;
+        this.isHistoricalPartition = isHistoricalPartition;
         this.bucketId = bucketId;
         this.requestFuture = new RequestFuture();
         this.recordCount = 0;
@@ -218,7 +214,7 @@ public abstract class WriteBatch {
 
     /** Returns the physical partition path used as the write RPC target. */
     public PhysicalTablePath writeTargetPath() {
-        return originalPartitionName == null
+        return !isHistoricalPartition
                 ? physicalTablePath
                 : PhysicalTablePath.of(
                         physicalTablePath.getTablePath(), HISTORICAL_PARTITION_VALUE);
@@ -226,12 +222,15 @@ public abstract class WriteBatch {
 
     /** Returns the original partition name for a historical write, or null for a normal write. */
     public @Nullable String getOriginalPartitionName() {
-        return originalPartitionName;
+        return isHistoricalPartition ? physicalTablePath.getPartitionName() : null;
     }
 
     /** Marks this batch as targeting the historical partition. */
-    void rerouteToHistoricalPartition(String partitionName) {
-        originalPartitionName = checkNotNull(partitionName);
+    void rerouteToHistoricalPartition() {
+        checkNotNull(
+                physicalTablePath.getPartitionName(),
+                "A historical write batch must have an original partition name.");
+        isHistoricalPartition = true;
     }
 
     public RequestFuture getRequestFuture() {

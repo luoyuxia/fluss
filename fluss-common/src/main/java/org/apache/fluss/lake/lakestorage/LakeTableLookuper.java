@@ -66,7 +66,7 @@ public interface LakeTableLookuper extends AutoCloseable {
      * <p>This method must not perform I/O and may be called concurrently with {@link
      * #lookup(byte[], LookupContext)}. Implementations must ensure that it is thread-safe.
      */
-    default void refresh() {
+    default void requestRefresh() {
         throw new UnsupportedOperationException(
                 "Refreshing registered files is not supported by this lake table lookuper.");
     }

@@ -269,60 +269,12 @@ class PaimonLakeTableLookuperTest {
             // The newly committed file is not registered before the explicit refresh.
             assertThat(lookuper.lookup(paimonKey(schema, 3, "20240101"), firstPartition)).isNull();
 
-            List<Boolean> newFileDownloads = new ArrayList<>();
-            List<Boolean> retainedFileDownloads = new ArrayList<>();
-            List<Boolean> unchangedPartitionDownloads = new ArrayList<>();
-            lookuper.refresh();
+            lookuper.requestRefresh();
 
-            BinaryValue newFileValue =
-                    decodeValue(
-                            lookuper.lookup(
-                                    paimonKey(schema, 3, "20240101"),
-                                    lookupContext(
-                                            schema,
-                                            "20240101",
-                                            0,
-                                            SCHEMA_ID,
-                                            (lookupTimeNanos, lookupFileDownloaded) ->
-                                                    newFileDownloads.add(lookupFileDownloaded))),
-                            SCHEMA_ID,
-                            schema);
-            BinaryValue retainedFileValue =
-                    decodeValue(
-                            lookuper.lookup(
-                                    paimonKey(schema, 1, "20240101"),
-                                    lookupContext(
-                                            schema,
-                                            "20240101",
-                                            0,
-                                            SCHEMA_ID,
-                                            (lookupTimeNanos, lookupFileDownloaded) ->
-                                                    retainedFileDownloads.add(
-                                                            lookupFileDownloaded))),
-                            SCHEMA_ID,
-                            schema);
-            BinaryValue unchangedValue =
-                    decodeValue(
-                            lookuper.lookup(
-                                    paimonKey(schema, 2, "20240102"),
-                                    lookupContext(
-                                            schema,
-                                            "20240102",
-                                            0,
-                                            SCHEMA_ID,
-                                            (lookupTimeNanos, lookupFileDownloaded) ->
-                                                    unchangedPartitionDownloads.add(
-                                                            lookupFileDownloaded))),
-                            SCHEMA_ID,
-                            schema);
-
-            assertRow(newFileValue.row, 3, "20240101", "Carol");
-            assertRow(retainedFileValue.row, 1, "20240101", "Alice");
-            assertRow(unchangedValue.row, 2, "20240102", "Bob");
             // Only the new data file needs a local lookup-file download after the bulk refresh.
-            assertThat(newFileDownloads).containsExactly(true);
-            assertThat(retainedFileDownloads).containsExactly(false);
-            assertThat(unchangedPartitionDownloads).containsExactly(false);
+            assertLookupAndFileDownload(lookuper, schema, 3, "20240101", "Carol", true);
+            assertLookupAndFileDownload(lookuper, schema, 1, "20240101", "Alice", false);
+            assertLookupAndFileDownload(lookuper, schema, 2, "20240102", "Bob", false);
         }
     }
 
@@ -969,6 +921,32 @@ class PaimonLakeTableLookuperTest {
             byte[] value, short schemaId, Schema schema, KvFormat kvFormat) {
         return new ValueDecoder(new TestingSchemaGetter(schemaId, schema), kvFormat)
                 .decodeValue(value);
+    }
+
+    private static void assertLookupAndFileDownload(
+            LakeTableLookuper lookuper,
+            Schema schema,
+            int id,
+            String partitionName,
+            String name,
+            boolean expectedFileDownload)
+            throws Exception {
+        List<Boolean> fileDownloads = new ArrayList<>();
+        BinaryValue value =
+                decodeValue(
+                        lookuper.lookup(
+                                paimonKey(schema, id, partitionName),
+                                lookupContext(
+                                        schema,
+                                        partitionName,
+                                        0,
+                                        SCHEMA_ID,
+                                        (lookupTimeNanos, lookupFileDownloaded) ->
+                                                fileDownloads.add(lookupFileDownloaded))),
+                        SCHEMA_ID,
+                        schema);
+        assertRow(value.row, id, partitionName, name);
+        assertThat(fileDownloads).containsExactly(expectedFileDownload);
     }
 
     private static void assertRow(InternalRow row, int id, String dt, String name) {

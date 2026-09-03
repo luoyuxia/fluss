@@ -167,9 +167,9 @@ public class PluginLakeStorageWrapper implements LakeStoragePlugin {
         }
 
         @Override
-        public void refresh() {
+        public void requestRefresh() {
             try (TemporaryClassLoaderContext ignored = TemporaryClassLoaderContext.of(loader)) {
-                inner.refresh();
+                inner.requestRefresh();
             }
         }
 

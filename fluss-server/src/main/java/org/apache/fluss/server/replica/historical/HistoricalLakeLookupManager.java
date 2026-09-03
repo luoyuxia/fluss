@@ -589,7 +589,7 @@ class HistoricalLakeLookupManager implements AutoCloseable {
                 throw new IllegalStateException("Lake table lookuper has been invalidated.");
             }
             if (!Objects.equals(lakeSnapshotId, requiredLakeSnapshotId)) {
-                lookuper.refresh();
+                lookuper.requestRefresh();
                 lakeSnapshotId = requiredLakeSnapshotId;
             }
             activeLookups++;

@@ -137,7 +137,7 @@ public class ArrowLogWriteBatchTest {
                                 DATA1_ROW_TYPE,
                                 DEFAULT_COMPRESSION),
                         new PreAllocatedPagedOutputView(memorySegmentList),
-                        null,
+                        false,
                         System.currentTimeMillis(),
                         null);
         assertThat(arrowLogWriteBatch.pooledMemorySegments()).isEqualTo(memorySegmentList);
@@ -214,7 +214,7 @@ public class ArrowLogWriteBatchTest {
                             DATA1_TABLE_INFO.getSchemaId(),
                             arrowWriter,
                             new PreAllocatedPagedOutputView(memorySegmentList),
-                            null,
+                            false,
                             System.currentTimeMillis(),
                             null);
 
@@ -317,7 +317,7 @@ public class ArrowLogWriteBatchTest {
                         DATA1_ROW_TYPE,
                         DEFAULT_COMPRESSION),
                 new UnmanagedPagedOutputView(128),
-                null,
+                false,
                 System.currentTimeMillis(),
                 null);
     }

@@ -786,7 +786,7 @@ public class Sender implements Runnable {
         // accepted while its response was lost. Rerouting such a batch can duplicate the write;
         // target-scoped abort only exposes the ambiguity and cannot prevent an upper-layer replay
         // from duplicating it. Resolve this with the durable FREEZING/RETIRED handoff; see
-        // https://github.com/apache/fluss/issues/4161.
+        // https://github.com/apache/fluss/issues/4166.
         PhysicalTablePath historicalPath =
                 PhysicalTablePath.of(targetPath.getTablePath(), HISTORICAL_PARTITION_VALUE);
         @Nullable Throwable historicalTargetCause = null;
@@ -796,6 +796,10 @@ public class Sender implements Runnable {
                         targetPath,
                         historicalPath,
                         metadataUpdater.getPartitionIdOrElseThrow(historicalPath));
+                LOG.info(
+                        "Rerouted writes from partition {} to historical partition {}.",
+                        targetPath,
+                        historicalPath);
                 return;
             }
         } catch (PartitionNotExistException e) {

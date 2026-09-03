@@ -67,6 +67,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 import static org.apache.fluss.config.ConfigOptions.KV_FORMAT_VERSION_2;
@@ -115,6 +116,8 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     // Guards lazy initialization, close, and registered file-set updates.
     private final Object lookupStateLock;
     private final Map<PaimonPartitionBucket, List<DataFileMeta>> registeredFiles;
+    // Remains non-zero until a refresh completes without observing another request.
+    private final AtomicLong pendingRefreshRequests;
 
     private @Nullable Catalog catalog;
     private @Nullable FileStoreTable fileStoreTable;
@@ -128,8 +131,6 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     private volatile @Nullable LocalTableQuery localTableQuery;
     // Guarded by lookupStateLock.
     private volatile boolean closed;
-    private volatile boolean refreshRequired;
-    private volatile boolean refreshInProgress;
 
     /** Creates a lookuper with the specified local lookup cache limit. */
     public PaimonLakeTableLookuper(
@@ -151,6 +152,7 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
         this.paimonLookupLock = new Object();
         this.lookupStateLock = new Object();
         this.registeredFiles = new ConcurrentHashMap<>();
+        this.pendingRefreshRequests = new AtomicLong();
     }
 
     @Override
@@ -173,9 +175,9 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     }
 
     @Override
-    public void refresh() {
+    public void requestRefresh() {
         checkNotClosed();
-        refreshRequired = true;
+        pendingRefreshRequests.incrementAndGet();
     }
 
     @Override
@@ -205,24 +207,20 @@ public class PaimonLakeTableLookuper implements LakeTableLookuper {
     }
 
     private void initialize(RowType valueRowType) throws Exception {
-        if (localTableQuery == null || refreshRequired || refreshInProgress) {
+        if (localTableQuery == null || pendingRefreshRequests.get() != 0) {
             synchronized (lookupStateLock) {
                 if (localTableQuery == null) {
                     initializeLookupState(valueRowType);
                 }
-                if (refreshRequired) {
-                    // Clear the flag before refreshing so a concurrent request is retained for the
-                    // next lookup. Restore it if this refresh fails.
-                    refreshInProgress = true;
-                    refreshRequired = false;
-                    try {
-                        refreshFilesFromLatestSnapshot();
-                    } catch (RuntimeException e) {
-                        refreshRequired = true;
-                        throw e;
-                    } finally {
-                        refreshInProgress = false;
-                    }
+                long observedRefreshRequests;
+                while ((observedRefreshRequests = pendingRefreshRequests.get()) != 0) {
+                    // A single scan handles all currently pending refresh requests.
+                    refreshFilesFromLatestSnapshot();
+                    // Clear the whole observed count only if it remained unchanged. If another
+                    // refresh request arrived during the scan, the count was incremented, the CAS
+                    // fails, and the next loop iteration performs another scan for that new
+                    // refresh request.
+                    pendingRefreshRequests.compareAndSet(observedRefreshRequests, 0);
                 }
             }
         }

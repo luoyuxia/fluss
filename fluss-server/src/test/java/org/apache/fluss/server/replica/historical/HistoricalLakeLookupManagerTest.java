@@ -480,7 +480,7 @@ class HistoricalLakeLookupManagerTest {
         }
 
         @Override
-        public void refresh() {
+        public void requestRefresh() {
             if (closed) {
                 throw new IllegalStateException("Lookuper is already closed.");
             }

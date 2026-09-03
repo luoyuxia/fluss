@@ -445,15 +445,14 @@ public final class RecordAccumulator {
                         writeBatches.get(originalPath),
                         "Write target for %s must exist.",
                         originalPath);
-        String originalPartitionName = checkNotNull(originalPath.getPartitionName());
         long originalPartitionId;
         synchronized (writeTarget) {
             if (writeTarget.isHistoricalWriteTarget()) {
                 writeTarget.partitionId = historicalPartitionId;
                 return;
             }
-            // New appends observe the historical route and are created with the original partition
-            // name. Existing queued batches are converted below before the Sender can drain again.
+            // New appends observe the historical route and are marked as historical. Existing
+            // queued batches are converted below before the Sender can drain again.
             originalPartitionId =
                     writeTarget.switchToHistoricalTarget(historicalPath, historicalPartitionId);
         }
@@ -474,7 +473,7 @@ public final class RecordAccumulator {
                                         batch));
                         batch.resetWriterState(NO_WRITER_ID, NO_BATCH_SEQUENCE);
                     }
-                    batch.rerouteToHistoricalPartition(originalPartitionName);
+                    batch.rerouteToHistoricalPartition();
                 }
             }
         }
@@ -798,10 +797,7 @@ public final class RecordAccumulator {
             PreAllocatedPagedOutputView outputView = new PreAllocatedPagedOutputView(segments);
             int schemaId = tableInfo.getSchemaId();
             WriteFormat writeFormat = writeRecord.getWriteFormat();
-            String originalPartitionName =
-                    bucketAndWriteBatches.isHistoricalWriteTarget()
-                            ? checkNotNull(physicalTablePath.getPartitionName())
-                            : null;
+            boolean isHistoricalPartition = bucketAndWriteBatches.isHistoricalWriteTarget();
             final WriteBatch batch =
                     createWriteBatch(
                             writeRecord,
@@ -811,7 +807,7 @@ public final class RecordAccumulator {
                             physicalTablePath,
                             outputView,
                             schemaId,
-                            originalPartitionName);
+                            isHistoricalPartition);
 
             batch.tryAppend(writeRecord, callback);
             deque.addLast(batch);
@@ -828,7 +824,7 @@ public final class RecordAccumulator {
             PhysicalTablePath physicalTablePath,
             PreAllocatedPagedOutputView outputView,
             int schemaId,
-            @Nullable String originalPartitionName) {
+            boolean isHistoricalPartition) {
         // If the table is kv table we need to create a kv batch, otherwise we create a log batch.
         switch (writeFormat) {
             case COMPACTED_KV:
@@ -843,7 +839,7 @@ public final class RecordAccumulator {
                         outputView,
                         writeRecord.getTargetColumns(),
                         writeRecord.getMergeMode(),
-                        originalPartitionName,
+                        isHistoricalPartition,
                         clock.milliseconds());
 
             case ARROW_LOG:
@@ -867,7 +863,7 @@ public final class RecordAccumulator {
                         tableInfo.getSchemaId(),
                         arrowWriter,
                         outputView,
-                        originalPartitionName,
+                        isHistoricalPartition,
                         clock.milliseconds(),
                         statisticsCollector);
 
@@ -879,7 +875,7 @@ public final class RecordAccumulator {
                         schemaId,
                         outputView.getPreAllocatedSize(),
                         outputView,
-                        originalPartitionName,
+                        isHistoricalPartition,
                         clock.milliseconds());
 
             case INDEXED_LOG:
@@ -890,7 +886,7 @@ public final class RecordAccumulator {
                         tableInfo.getSchemaId(),
                         outputView.getPreAllocatedSize(),
                         outputView,
-                        originalPartitionName,
+                        isHistoricalPartition,
                         clock.milliseconds());
 
             default:

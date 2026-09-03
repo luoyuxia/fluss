@@ -254,7 +254,7 @@ public class CompactedLogWriteBatchTest {
                 DATA1_TABLE_INFO.getSchemaId(),
                 writeLimit,
                 new PreAllocatedPagedOutputView(Collections.singletonList(memorySegment)),
-                null,
+                false,
                 System.currentTimeMillis());
     }
 
