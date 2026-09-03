@@ -204,12 +204,13 @@ public abstract class WriteBatch {
         return schemaId;
     }
 
-    WriteFormat writeFormat() {
-        return writeFormat;
-    }
-
     public PhysicalTablePath physicalTablePath() {
         return physicalTablePath;
+    }
+
+    /** Returns whether this batch targets the historical partition. */
+    public boolean isHistoricalPartition() {
+        return isHistoricalPartition;
     }
 
     /** Returns the physical partition path used as the write RPC target. */

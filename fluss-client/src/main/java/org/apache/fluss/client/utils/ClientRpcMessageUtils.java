@@ -147,7 +147,7 @@ public class ClientRpcMessageUtils {
                     if (tableBucket.getPartitionId() != null) {
                         pbProduceLogReqForBucket.setPartitionId(tableBucket.getPartitionId());
                     }
-                    if (readyBatch.writeBatch().getOriginalPartitionName() != null) {
+                    if (readyBatch.writeBatch().isHistoricalPartition()) {
                         pbProduceLogReqForBucket.setOriginalPartitionName(
                                 readyBatch.writeBatch().getOriginalPartitionName());
                     }
@@ -207,7 +207,7 @@ public class ClientRpcMessageUtils {
                         pbPutKvReqForBucket.setPartitionId(tableBucket.getPartitionId());
                     }
                     KvWriteBatch kvWriteBatch = (KvWriteBatch) readyBatch.writeBatch();
-                    if (kvWriteBatch.getOriginalPartitionName() != null) {
+                    if (kvWriteBatch.isHistoricalPartition()) {
                         pbPutKvReqForBucket.setOriginalPartitionName(
                                 kvWriteBatch.getOriginalPartitionName());
                     }

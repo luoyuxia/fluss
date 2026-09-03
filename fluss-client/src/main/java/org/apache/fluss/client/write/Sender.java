@@ -432,10 +432,10 @@ public class Sender implements Runnable {
         List<ReadyWriteBatch> historicalBatches = new ArrayList<>();
 
         for (ReadyWriteBatch readyWriteBatch : writeBatches) {
-            if (readyWriteBatch.writeBatch().getOriginalPartitionName() == null) {
-                normalBatches.add(readyWriteBatch);
-            } else {
+            if (readyWriteBatch.writeBatch().isHistoricalPartition()) {
                 historicalBatches.add(readyWriteBatch);
+            } else {
+                normalBatches.add(readyWriteBatch);
             }
         }
 
