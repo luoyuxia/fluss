@@ -22,6 +22,7 @@ import org.apache.fluss.record.BinaryValue;
 import org.apache.fluss.row.encode.ValueDecoder;
 import org.apache.fluss.server.kv.KvStateLookupResult;
 import org.apache.fluss.utils.ByteArrayWrapper;
+import org.apache.fluss.utils.function.FunctionWithException;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
@@ -78,22 +79,25 @@ public final class LocalValueLookupResult {
         }
     }
 
-    /** Returns a snapshot of true local misses in lake request order. */
-    public List<byte[]> keysMissingLocally() {
+    /**
+     * Looks up true local misses in lake storage and combines them with the local results into an
+     * in-memory lookup for apply. Skips lake lookup when all required values are resolved locally.
+     *
+     * <p>The lake lookup must return one value per supplied key, in the same order. This method may
+     * perform lake I/O and must be called without holding replica or KV locks.
+     */
+    public HistoricalValueLookup createValueLookup(
+            FunctionWithException<List<byte[]>, List<byte[]>, Exception> lakeLookup)
+            throws Exception {
+        checkNotNull(lakeLookup, "Historical lake lookup must not be null");
         List<byte[]> primaryKeys = new ArrayList<>(keysMissingLocally.size());
         for (ByteArrayWrapper keyMissingLocally : keysMissingLocally) {
             primaryKeys.add(keyMissingLocally.getData());
         }
-        return Collections.unmodifiableList(primaryKeys);
-    }
-
-    /**
-     * Combines lake results with the local lookup results and creates an in-memory lookup for
-     * apply.
-     *
-     * <p>Lake values must have the same order as {@link #keysMissingLocally()}.
-     */
-    public HistoricalValueLookup createValueLookup(List<byte[]> lakeValues) {
+        List<byte[]> lakeValues =
+                primaryKeys.isEmpty()
+                        ? Collections.emptyList()
+                        : lakeLookup.apply(Collections.unmodifiableList(primaryKeys));
         checkNotNull(lakeValues, "Historical lake values must not be null");
         checkArgument(
                 lakeValues.size() == keysMissingLocally.size(),

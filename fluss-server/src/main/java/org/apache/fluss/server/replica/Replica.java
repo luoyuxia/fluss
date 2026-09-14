@@ -1322,7 +1322,6 @@ public final class Replica {
             int expectedLeaderEpoch,
             int requiredAcks)
             throws Exception {
-        checkNotNull(lakeLookup, "Historical lake lookup must not be null");
         LocalValueLookupResult localLookupResult =
                 inReadLock(
                         leaderIsrUpdateLock,
@@ -1335,12 +1334,9 @@ public final class Replica {
                                     kvRecords, targetColumns, mergeMode, originalPartitionName);
                         });
 
-        List<byte[]> missingKeys = localLookupResult.keysMissingLocally();
         // Both the replica read lock and the KV read lock have been released before lake I/O.
-        List<byte[]> lakeValues =
-                missingKeys.isEmpty() ? Collections.emptyList() : lakeLookup.apply(missingKeys);
         HistoricalValueLookup historicalValueLookup =
-                localLookupResult.createValueLookup(lakeValues);
+                localLookupResult.createValueLookup(lakeLookup);
 
         return inReadLock(
                 leaderIsrUpdateLock,

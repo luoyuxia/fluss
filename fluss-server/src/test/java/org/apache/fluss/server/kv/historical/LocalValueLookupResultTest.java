@@ -28,6 +28,7 @@ import org.apache.fluss.server.kv.KvStateLookupResult;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -42,7 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class LocalValueLookupResultTest {
 
     @Test
-    void testCreatesLookupFromLocalAndLakeResults() {
+    void testCreatesLookupFromLocalAndLakeResults() throws Exception {
         LocalValueLookupResult localLookupResult = createLookupResult();
         byte[] localValueKey = new byte[] {1};
         byte[] localDeleteKey = new byte[] {2};
@@ -59,14 +60,15 @@ class LocalValueLookupResultTest {
         localLookupResult.add(lakeValueKey, KvStateLookupResult.notFound());
         localLookupResult.add(lakeMissKey, KvStateLookupResult.notFound());
 
-        assertThat(localLookupResult.keysMissingLocally())
-                .containsExactly(lakeValueKey, lakeMissKey);
-
         HistoricalValueLookup valueLookup =
                 localLookupResult.createValueLookup(
-                        Arrays.asList(
-                                ValueEncoder.forLayout(KvValueLayout.PLAIN).encodeValue(lakeValue),
-                                null));
+                        keys -> {
+                            assertThat(keys).containsExactly(lakeValueKey, lakeMissKey);
+                            return Arrays.asList(
+                                    ValueEncoder.forLayout(KvValueLayout.PLAIN)
+                                            .encodeValue(lakeValue),
+                                    null);
+                        });
 
         assertThat(valueLookup.lookup(localValueKey)).isEqualTo(localValue);
         assertThat(valueLookup.lookup(localDeleteKey)).isNull();
@@ -78,13 +80,51 @@ class LocalValueLookupResultTest {
     }
 
     @Test
+    void testSkipsLakeLookupWhenAllKeysAreResolvedLocally() throws Exception {
+        LocalValueLookupResult localLookupResult = createLookupResult();
+        byte[] localValueKey = new byte[] {1};
+        byte[] localDeleteKey = new byte[] {2};
+        BinaryValue localValue = binaryValue(1, "local");
+        localLookupResult.add(
+                localValueKey,
+                KvStateLookupResult.present(
+                        ValueEncoder.forLayout(KvValueLayout.TAGGED).encodeValue(localValue, 10L)));
+        localLookupResult.add(localDeleteKey, KvStateLookupResult.deleted());
+
+        HistoricalValueLookup valueLookup =
+                localLookupResult.createValueLookup(
+                        keys -> {
+                            throw new AssertionError("No lake lookup expected for local results");
+                        });
+
+        assertThat(valueLookup.lookup(localValueKey)).isEqualTo(localValue);
+        assertThat(valueLookup.lookup(localDeleteKey)).isNull();
+    }
+
+    @Test
     void testValidatesLakeResultCountBeforeCreatingLookup() {
         LocalValueLookupResult localLookupResult = createLookupResult();
         localLookupResult.add(new byte[] {1}, KvStateLookupResult.notFound());
 
-        assertThatThrownBy(() -> localLookupResult.createValueLookup(Collections.emptyList()))
+        assertThatThrownBy(
+                        () -> localLookupResult.createValueLookup(keys -> Collections.emptyList()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Expected 1 historical lake values, but received 0");
+    }
+
+    @Test
+    void testPropagatesLakeLookupFailure() {
+        LocalValueLookupResult localLookupResult = createLookupResult();
+        localLookupResult.add(new byte[] {1}, KvStateLookupResult.notFound());
+        IOException failure = new IOException("Lake lookup failed");
+
+        assertThatThrownBy(
+                        () ->
+                                localLookupResult.createValueLookup(
+                                        keys -> {
+                                            throw failure;
+                                        }))
+                .isSameAs(failure);
     }
 
     private static LocalValueLookupResult createLookupResult() {
