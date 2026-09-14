@@ -29,6 +29,7 @@ import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
+import org.apache.fluss.testutils.common.MultiVersionTest;
 import org.apache.fluss.utils.types.Tuple2;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
@@ -139,6 +140,7 @@ abstract class FlinkTableSinkITCase extends AbstractTestBase {
     }
 
     @ParameterizedTest
+    @MultiVersionTest
     @ValueSource(booleans = {true, false})
     void testAppendLog(boolean compressed) throws Exception {
         String compressedProperties =
@@ -528,7 +530,9 @@ abstract class FlinkTableSinkITCase extends AbstractTestBase {
     }
 
     @Test
+    @MultiVersionTest
     void testPartialUpsert() throws Exception {
+        disableSinkRequireOnConflict();
         tEnv.executeSql(
                 "create table sink_test (a int not null primary key not enforced, b bigint, c string) with('bucket.num' = '3')");
 
@@ -694,7 +698,11 @@ abstract class FlinkTableSinkITCase extends AbstractTestBase {
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
+    @MultiVersionTest
     void testIgnoreDelete(boolean isPrimaryKeyTable) throws Exception {
+        if (isPrimaryKeyTable) {
+            disableSinkRequireOnConflict();
+        }
         String sinkName =
                 isPrimaryKeyTable
                         ? "ignore_delete_primary_key_table_sink"
@@ -1984,4 +1992,14 @@ abstract class FlinkTableSinkITCase extends AbstractTestBase {
                         tableName),
                 expectedResults);
     }
+
+    /**
+     * Hook for tests that need the Flink option {@code table.exec.sink.require-on-conflict} (Flink
+     * 2.3+; lives on {@code org.apache.flink.table.api.config.ExecutionConfigOptions} in that
+     * version) disabled. Flink 2.3 enables it by default.
+     *
+     * <p>This base implementation is a no-op so the same test code runs unchanged on every Flink
+     * version. The Flink 2.3-specific subclass overrides it to actually flip the option off.
+     */
+    protected void disableSinkRequireOnConflict() {}
 }

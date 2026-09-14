@@ -19,6 +19,7 @@ package org.apache.fluss.server.replica;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.NotLeaderOrFollowerException;
 import org.apache.fluss.exception.OutOfOrderSequenceException;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.metadata.LogFormat;
@@ -48,6 +49,7 @@ import org.apache.fluss.server.kv.snapshot.KvSnapshotDataDownloader;
 import org.apache.fluss.server.kv.snapshot.KvSnapshotDownloadSpec;
 import org.apache.fluss.server.kv.snapshot.TestingCompletedKvSnapshotCommitter;
 import org.apache.fluss.server.log.FetchParams;
+import org.apache.fluss.server.log.ListOffsetsParam;
 import org.apache.fluss.server.log.LogAppendInfo;
 import org.apache.fluss.server.log.LogReadInfo;
 import org.apache.fluss.server.testutils.KvTestUtils;
@@ -55,6 +57,7 @@ import org.apache.fluss.server.zk.data.LeaderAndIsr;
 import org.apache.fluss.testutils.DataTestUtils;
 import org.apache.fluss.testutils.common.ManuallyTriggeredScheduledExecutorService;
 import org.apache.fluss.types.RowType;
+import org.apache.fluss.utils.ByteArraySlice;
 import org.apache.fluss.utils.CloseableRegistry;
 import org.apache.fluss.utils.concurrent.Executors;
 import org.apache.fluss.utils.function.FunctionWithException;
@@ -149,6 +152,21 @@ final class ReplicaTest extends ReplicaTestBase {
     }
 
     @Test
+    void testGetOffsetRequiresLeader() throws Exception {
+        Replica replica =
+                makeLogReplica(DATA1_PHYSICAL_TABLE_PATH, new TableBucket(DATA1_TABLE_ID, 1));
+
+        assertThat(replica.isLeader()).isFalse();
+        assertThatThrownBy(
+                        () ->
+                                replica.getOffset(
+                                        remoteLogManager,
+                                        new ListOffsetsParam(
+                                                -1, ListOffsetsParam.LATEST_OFFSET_TYPE, null)))
+                .isInstanceOf(NotLeaderOrFollowerException.class);
+    }
+
+    @Test
     void testAppendRecordsToLeader() throws Exception {
         Replica logReplica =
                 makeLogReplica(DATA1_PHYSICAL_TABLE_PATH, new TableBucket(DATA1_TABLE_ID, 1));
@@ -236,7 +254,9 @@ final class ReplicaTest extends ReplicaTestBase {
                                 replicas,
                                 Collections.emptyList(),
                                 INITIAL_COORDINATOR_EPOCH,
-                                followerLeaderEpoch)));
+                                followerLeaderEpoch),
+                        3,
+                        0L));
 
         assertThat(logReplica.isLeader()).isFalse();
         assertThat(localLogSizeGauge.getValue()).isEqualTo(localLogSize);
@@ -1025,7 +1045,7 @@ final class ReplicaTest extends ReplicaTestBase {
         Replica logReplica =
                 makeLogReplica(DATA1_PHYSICAL_TABLE_PATH, new TableBucket(DATA1_TABLE_ID, 1));
         makeLogReplicaAsLeader(logReplica);
-        logReplica.updateIsDataLakeEnabled(true);
+        updateTableConfig(logReplica, ConfigOptions.TABLE_DATALAKE_ENABLED, "true");
 
         long initialTimestamp = manualClock.milliseconds();
         MemoryLogRecords firstBatch =
@@ -1072,7 +1092,7 @@ final class ReplicaTest extends ReplicaTestBase {
     }
 
     @Test
-    void testUpdateIsDataLakeEnabled() throws Exception {
+    void testUpdateTableInfoChangesDataLakeEnabled() throws Exception {
         Replica logReplica =
                 makeLogReplica(DATA1_PHYSICAL_TABLE_PATH, new TableBucket(DATA1_TABLE_ID, 1));
         makeLogReplicaAsLeader(logReplica);
@@ -1081,15 +1101,15 @@ final class ReplicaTest extends ReplicaTestBase {
         assertThat(logReplica.getLogTablet().isDataLakeEnabled()).isFalse();
 
         // update to true
-        logReplica.updateIsDataLakeEnabled(true);
+        updateTableConfig(logReplica, ConfigOptions.TABLE_DATALAKE_ENABLED, "true");
         assertThat(logReplica.getLogTablet().isDataLakeEnabled()).isTrue();
 
         // update with same value should not change anything (no-op)
-        logReplica.updateIsDataLakeEnabled(true);
+        updateTableConfig(logReplica, ConfigOptions.TABLE_DATALAKE_ENABLED, "true");
         assertThat(logReplica.getLogTablet().isDataLakeEnabled()).isTrue();
 
         // update to false
-        logReplica.updateIsDataLakeEnabled(false);
+        updateTableConfig(logReplica, ConfigOptions.TABLE_DATALAKE_ENABLED, "false");
         assertThat(logReplica.getLogTablet().isDataLakeEnabled()).isFalse();
     }
 
@@ -1146,7 +1166,9 @@ final class ReplicaTest extends ReplicaTestBase {
                                 Collections.emptyList(),
                                 INITIAL_COORDINATOR_EPOCH,
                                 // we also use the leader epoch as bucket epoch
-                                leaderEpoch)));
+                                leaderEpoch),
+                        3,
+                        0L));
     }
 
     private void makeLeaderReplica(
@@ -1164,7 +1186,9 @@ final class ReplicaTest extends ReplicaTestBase {
                                 Collections.emptyList(),
                                 INITIAL_COORDINATOR_EPOCH,
                                 // we also use the leader epoch as bucket epoch
-                                leaderEpoch)));
+                                leaderEpoch),
+                        3,
+                        0L));
     }
 
     private static LogRecords fetchRecords(Replica replica) throws IOException {
@@ -1235,7 +1259,11 @@ final class ReplicaTest extends ReplicaTestBase {
             keys.add(expectedKeyValue.f0);
             expectValues.add(expectedKeyValue.f1);
         }
-        assertThat(kvTablet.multiGet(keys)).containsExactlyElementsOf(expectValues);
+        assertThat(
+                        kvTablet.multiGet(keys).stream()
+                                .map(ByteArraySlice::toByteArray)
+                                .collect(Collectors.toList()))
+                .containsExactlyElementsOf(expectValues);
     }
 
     /** A scheduledExecutorService that will execute the scheduled task immediately. */

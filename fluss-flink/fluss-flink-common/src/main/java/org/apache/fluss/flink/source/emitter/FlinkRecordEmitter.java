@@ -73,6 +73,11 @@ public class FlinkRecordEmitter<OUT> implements RecordEmitter<RecordAndPos, OUT,
             HybridSnapshotLogSplitState hybridSnapshotLogSplitState =
                     splitState.asHybridSnapshotLogSplitState();
 
+            if (recordAndPosition.isSnapshotPhaseFinished()) {
+                hybridSnapshotLogSplitState.markSnapshotFinished();
+                return;
+            }
+
             ScanRecord scanRecord = recordAndPosition.record();
             if (scanRecord.logOffset() >= 0) {
                 // record is with a valid offset, means it's in incremental phase,
@@ -99,6 +104,8 @@ public class FlinkRecordEmitter<OUT> implements RecordEmitter<RecordAndPos, OUT,
                         .asLogSplitState()
                         .setNextOffset(recordAndPosition.record().logOffset() + 1);
             }
+        } else if (splitState.isKvBatchSplitState()) {
+            processAndEmitRecord(recordAndPosition.record(), sourceOutput);
         } else if (splitState.isLakeSplit()) {
             if (lakeRecordRecordEmitter == null) {
                 lakeRecordRecordEmitter = new LakeRecordRecordEmitter<>(this::processAndEmitRecord);

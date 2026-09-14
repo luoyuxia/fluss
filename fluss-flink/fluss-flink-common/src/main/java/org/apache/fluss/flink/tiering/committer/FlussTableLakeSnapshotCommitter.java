@@ -97,6 +97,15 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
         return prepareLakeSnapshot(tableId, tablePath, logEndOffsets, false);
     }
 
+    /**
+     * Prepares a complete offset map for the readable snapshot without inheriting newer offsets.
+     */
+    private String prepareReadableSnapshotOffsets(
+            long tableId, TablePath tablePath, Map<TableBucket, Long> snapshotOffsets)
+            throws IOException {
+        return prepareLakeSnapshot(tableId, tablePath, snapshotOffsets, true);
+    }
+
     private String prepareLakeSnapshot(
             long tableId,
             TablePath tablePath,
@@ -172,22 +181,18 @@ public class FlussTableLakeSnapshotCommitter implements AutoCloseable {
                 // These offsets describe the readable snapshot. Do not inherit offsets from a
                 // newer tiered snapshot, including buckets absent from the readable snapshot.
                 String readableSnapshotReadableOffsetsPath =
-                        prepareLakeSnapshot(
-                                tableId,
-                                tablePath,
-                                readableSnapshot.getReadableLogEndOffsets(),
-                                true);
+                        prepareReadableSnapshotOffsets(
+                                tableId, tablePath, readableSnapshot.getReadableLogEndOffsets());
 
                 // reuse tiered path when readable snapshot is the committed snapshot
                 String readableSnapshotTieredOffsetsPath =
                         readableSnapshot.getReadableSnapshotId()
                                         == lakeCommitResult.getCommittedSnapshotId()
                                 ? lakeBucketTieredOffsetsPath
-                                : prepareLakeSnapshot(
+                                : prepareReadableSnapshotOffsets(
                                         tableId,
                                         tablePath,
-                                        readableSnapshot.getTieredLogEndOffsets(),
-                                        true);
+                                        readableSnapshot.getTieredLogEndOffsets());
                 // commit the readable snapshot
                 commit(
                         tableId,

@@ -25,6 +25,7 @@ import org.apache.fluss.client.metadata.TestingMetadataUpdater;
 import org.apache.fluss.client.table.Table;
 import org.apache.fluss.client.table.writer.AppendWriter;
 import org.apache.fluss.client.table.writer.UpsertWriter;
+import org.apache.fluss.cluster.Cluster;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.cluster.rebalance.ServerTag;
 import org.apache.fluss.config.AutoPartitionTimeUnit;
@@ -53,7 +54,6 @@ import org.apache.fluss.exception.ServerNotExistException;
 import org.apache.fluss.exception.ServerTagAlreadyExistException;
 import org.apache.fluss.exception.ServerTagNotExistException;
 import org.apache.fluss.exception.TableNotExistException;
-import org.apache.fluss.exception.TableNotPartitionedException;
 import org.apache.fluss.exception.TooManyBucketsException;
 import org.apache.fluss.exception.TooManyPartitionsException;
 import org.apache.fluss.fs.FsPath;
@@ -118,16 +118,24 @@ import static org.apache.fluss.config.ConfigOptions.CURRENT_KV_FORMAT_VERSION;
 import static org.apache.fluss.config.ConfigOptions.DATALAKE_FORMAT;
 import static org.apache.fluss.config.ConfigOptions.TABLE_DATALAKE_ENABLED;
 import static org.apache.fluss.config.ConfigOptions.TABLE_DATALAKE_FORMAT;
+import static org.apache.fluss.config.ConfigOptions.TABLE_KV_FORMAT_VERSION;
+import static org.apache.fluss.config.ConfigOptions.TABLE_KV_VALUE_LAYOUT_VERSION;
 import static org.apache.fluss.metadata.DataLakeFormat.PAIMON;
 import static org.apache.fluss.record.TestData.DATA1_PARTITIONED_TABLE_DESCRIPTOR;
 import static org.apache.fluss.record.TestData.DATA1_SCHEMA;
+import static org.apache.fluss.row.encode.KvValueLayout.PLAIN;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.InternalRowAssert.assertThatRow;
 import static org.apache.fluss.testutils.common.CommonTestUtils.waitUntil;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Test for {@link FlussAdmin}. */
+/**
+ * Integration tests for {@link FlussAdmin}.
+ *
+ * <p>Tests are split between this class and {@link FlussAdmin2ITCase} to stay within Checkstyle's
+ * 3000-line limit per file. Add new tests to {@link FlussAdmin2ITCase}.
+ */
 class FlussAdminITCase extends ClientToServerITCaseBase {
 
     protected static final TablePath DEFAULT_TABLE_PATH = TablePath.of("test_db", "person");
@@ -162,11 +170,9 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
         Admin admin1 = conn.getAdmin();
         Admin admin2 = conn.getAdmin();
         assertThat(admin1).isEqualTo(admin2);
-
         TableInfo t1 = admin1.getTableInfo(DEFAULT_TABLE_PATH).get();
         TableInfo t2 = admin2.getTableInfo(DEFAULT_TABLE_PATH).get();
         assertThat(t1).isEqualTo(t2);
-
         admin1.close();
         admin2.close();
     }
@@ -295,10 +301,8 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
         TableDescriptor tableDescriptor =
                 DEFAULT_TABLE_DESCRIPTOR.withReplicationFactor(3).withDataLakeFormat(PAIMON);
         Map<String, String> options = new HashMap<>(tableDescriptor.getProperties());
-        options.put(
-                ConfigOptions.TABLE_KV_FORMAT_VERSION.key(),
-                String.valueOf(CURRENT_KV_FORMAT_VERSION));
-        options.put(ConfigOptions.TABLE_KV_STANDBY_REPLICA_ENABLED.key(), "true");
+        options.put(TABLE_KV_FORMAT_VERSION.key(), String.valueOf(CURRENT_KV_FORMAT_VERSION));
+        options.put(TABLE_KV_VALUE_LAYOUT_VERSION.key(), String.valueOf(PLAIN.version()));
         assertThat(tableInfo.toTableDescriptor())
                 .isEqualTo(tableDescriptor.withProperties(options));
         assertThat(schemaInfo2).isEqualTo(schemaInfo);
@@ -325,10 +329,8 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
         TableDescriptor expected =
                 DEFAULT_TABLE_DESCRIPTOR.withReplicationFactor(3).withDataLakeFormat(PAIMON);
         options = new HashMap<>(expected.getProperties());
-        options.put(
-                ConfigOptions.TABLE_KV_FORMAT_VERSION.key(),
-                String.valueOf(CURRENT_KV_FORMAT_VERSION));
-        options.put(ConfigOptions.TABLE_KV_STANDBY_REPLICA_ENABLED.key(), "true");
+        options.put(TABLE_KV_FORMAT_VERSION.key(), String.valueOf(CURRENT_KV_FORMAT_VERSION));
+        options.put(TABLE_KV_VALUE_LAYOUT_VERSION.key(), String.valueOf(PLAIN.version()));
         assertThat(tableInfo.toTableDescriptor()).isEqualTo(expected.withProperties(options));
         assertThat(schemaInfo2).isEqualTo(schemaInfo);
         // assert created time
@@ -429,8 +431,45 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
     }
 
     @Test
+    void testAlterTableLogTtl() throws Exception {
+        TablePath tablePath = TablePath.of("test_db", "alter_table_log_ttl");
+        admin.createTable(tablePath, DEFAULT_TABLE_DESCRIPTOR, false).get();
+        // verify initial value matches DEFAULT_TABLE_DESCRIPTOR (1 day)
+        TableInfo tableInfo = admin.getTableInfo(tablePath).get();
+        assertThat(tableInfo.getTableConfig().getLogTTLMs())
+                .isEqualTo(Duration.ofDays(1).toMillis());
+
+        // alter to 3d and verify metadata
+        List<TableChange> tableChanges =
+                Collections.singletonList(TableChange.set(ConfigOptions.TABLE_LOG_TTL.key(), "3d"));
+        admin.alterTable(tablePath, tableChanges, false).get();
+
+        tableInfo = admin.getTableInfo(tablePath).get();
+        assertThat(tableInfo.getTableConfig().getLogTTLMs())
+                .isEqualTo(Duration.ofDays(3).toMillis());
+
+        // alter to 30d to verify multiple updates work.
+        tableChanges =
+                Collections.singletonList(
+                        TableChange.set(ConfigOptions.TABLE_LOG_TTL.key(), "30d"));
+        admin.alterTable(tablePath, tableChanges, false).get();
+        tableInfo = admin.getTableInfo(tablePath).get();
+        assertThat(tableInfo.getTableConfig().getLogTTLMs())
+                .isEqualTo(Duration.ofDays(30).toMillis());
+
+        // reset; value falls back to default.
+        tableChanges =
+                Collections.singletonList(TableChange.reset(ConfigOptions.TABLE_LOG_TTL.key()));
+        admin.alterTable(tablePath, tableChanges, false).get();
+        tableInfo = admin.getTableInfo(tablePath).get();
+        assertThat(tableInfo.toTableDescriptor().getProperties())
+                .doesNotContainKey(ConfigOptions.TABLE_LOG_TTL.key());
+        assertThat(tableInfo.getTableConfig().getLogTTLMs())
+                .isEqualTo(ConfigOptions.TABLE_LOG_TTL.defaultValue().toMillis());
+    }
+
+    @Test
     void testAlterTableColumn() throws Exception {
-        // create table
         TablePath tablePath = TablePath.of("test_db", "alter_table_1");
         admin.createTable(tablePath, DEFAULT_TABLE_DESCRIPTOR, false).get();
 
@@ -865,6 +904,29 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
                 .isInstanceOf(InvalidConfigException.class)
                 .hasMessage("'table.log.tiered.local-segments' must be greater than 0.");
 
+        TableDescriptor invalidLocalTtl =
+                TableDescriptor.builder()
+                        .schema(DEFAULT_SCHEMA)
+                        .comment("test table")
+                        .property(ConfigOptions.TABLE_LOG_TTL.key(), "1h")
+                        .property(ConfigOptions.TABLE_LOG_LOCAL_TTL.key(), "2h")
+                        .build();
+        assertThatThrownBy(() -> admin.createTable(tablePath, invalidLocalTtl, false).get())
+                .cause()
+                .isInstanceOf(InvalidConfigException.class)
+                .hasMessage("'table.log.local-ttl' must be less than or equal to 'table.log.ttl'.");
+
+        TableDescriptor disabledLocalTtl =
+                TableDescriptor.builder()
+                        .schema(DEFAULT_SCHEMA)
+                        .comment("test table")
+                        .property(ConfigOptions.TABLE_LOG_LOCAL_TTL.key(), "0ms")
+                        .build();
+        admin.createTable(tablePath, disabledLocalTtl, false).join();
+        assertThat(admin.getTableInfo(tablePath).join().getTableConfig().getLocalLogTTLMs())
+                .isZero();
+        admin.dropTable(tablePath, false).join();
+
         TableDescriptor t4 =
                 TableDescriptor.builder()
                         .schema(DEFAULT_SCHEMA) // no pk
@@ -929,6 +991,24 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
     }
 
     @Test
+    void testCreateTableWithLocalTtlAndInfiniteRemoteTtl() throws Exception {
+        TablePath tablePath =
+                TablePath.of(
+                        DEFAULT_TABLE_PATH.getDatabaseName(),
+                        "test_local_ttl_with_infinite_remote_ttl");
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(DEFAULT_SCHEMA)
+                        .property(ConfigOptions.TABLE_LOG_TTL.key(), "0ms")
+                        .property(ConfigOptions.TABLE_LOG_LOCAL_TTL.key(), "1h")
+                        .build();
+
+        admin.createTable(tablePath, tableDescriptor, false).get();
+        assertThat(admin.tableExists(tablePath).get()).isTrue();
+        admin.dropTable(tablePath, false).get();
+    }
+
+    @Test
     void testCreateTableWithInvalidReplicationFactor() throws Exception {
         TablePath tablePath = TablePath.of(DEFAULT_TABLE_PATH.getDatabaseName(), "t1");
         // set replica factor to a non positive number, should also throw exception
@@ -983,10 +1063,8 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
             TableDescriptor expected =
                     DEFAULT_TABLE_DESCRIPTOR.withReplicationFactor(3).withDataLakeFormat(PAIMON);
             Map<String, String> options = new HashMap<>(expected.getProperties());
-            options.put(
-                    ConfigOptions.TABLE_KV_FORMAT_VERSION.key(),
-                    String.valueOf(CURRENT_KV_FORMAT_VERSION));
-            options.put(ConfigOptions.TABLE_KV_STANDBY_REPLICA_ENABLED.key(), "true");
+            options.put(TABLE_KV_FORMAT_VERSION.key(), String.valueOf(CURRENT_KV_FORMAT_VERSION));
+            options.put(TABLE_KV_VALUE_LAYOUT_VERSION.key(), String.valueOf(PLAIN.version()));
             assertThat(tableInfo.toTableDescriptor()).isEqualTo(expected.withProperties(options));
         }
     }
@@ -1086,45 +1164,6 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
     }
 
     @Test
-    void testListPartitionInfos() throws Exception {
-        String dbName = DEFAULT_TABLE_PATH.getDatabaseName();
-        TablePath nonPartitionedTablePath = TablePath.of(dbName, "test_non_partitioned_table");
-        admin.createTable(nonPartitionedTablePath, DEFAULT_TABLE_DESCRIPTOR, true).get();
-        assertThatThrownBy(() -> admin.listPartitionInfos(nonPartitionedTablePath).get())
-                .cause()
-                .isInstanceOf(TableNotPartitionedException.class)
-                .hasMessage("Table '%s' is not a partitioned table.", nonPartitionedTablePath);
-
-        TableDescriptor partitionedTable =
-                TableDescriptor.builder()
-                        .schema(
-                                Schema.newBuilder()
-                                        .column("id", DataTypes.STRING())
-                                        .column("name", DataTypes.STRING())
-                                        .column("pt", DataTypes.STRING())
-                                        .build())
-                        .comment("test table")
-                        .distributedBy(3, "id")
-                        .partitionedBy("pt")
-                        .property(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED, true)
-                        .property(
-                                ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT,
-                                AutoPartitionTimeUnit.YEAR)
-                        .build();
-        TablePath partitionedTablePath = TablePath.of(dbName, "test_partitioned_table");
-        admin.createTable(partitionedTablePath, partitionedTable, true).get();
-        Map<String, Long> partitionIdByNames =
-                FLUSS_CLUSTER_EXTENSION.waitUntilPartitionAllReady(partitionedTablePath);
-
-        List<PartitionInfo> partitionInfos = admin.listPartitionInfos(partitionedTablePath).get();
-        assertThat(partitionInfos).hasSize(partitionIdByNames.size());
-        for (PartitionInfo partitionInfo : partitionInfos) {
-            assertThat(partitionIdByNames.get(partitionInfo.getPartitionName()))
-                    .isEqualTo(partitionInfo.getPartitionId());
-        }
-    }
-
-    @Test
     void testListPartitionInfosAfterTabletServerRestart() throws Exception {
         String dbName = DEFAULT_TABLE_PATH.getDatabaseName();
         TablePath partitionedTablePath = TablePath.of(dbName, "test_retry_partitioned_table");
@@ -1160,13 +1199,11 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
 
         // Restart the coordinator server so that the lease uses a stale cached address.
         restartCoordinatorServer(zkClient);
-
         lease.acquireSnapshots(snapshots).get();
         assertThat(zkClient.getKvSnapshotLeaseMetadata(lease.leaseId())).isPresent();
 
         // Verify that release also refreshes metadata and retries against the new coordinator.
         restartCoordinatorServer(zkClient);
-
         lease.releaseSnapshots(Collections.singleton(tableBucket)).get();
         assertThat(zkClient.getKvSnapshotLeaseMetadata(lease.leaseId())).isNotPresent();
 
@@ -2433,6 +2470,51 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
     }
 
     @Test
+    void testAlterTableLocalLogTtl() throws Exception {
+        TablePath tablePath = TablePath.of("test_db", "test_alter_local_log_ttl");
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(DEFAULT_SCHEMA)
+                        .distributedBy(3)
+                        .property(ConfigOptions.TABLE_LOG_TTL.key(), "7d")
+                        .property(ConfigOptions.TABLE_LOG_LOCAL_TTL.key(), "2h")
+                        .build();
+
+        admin.createTable(tablePath, tableDescriptor, false).get();
+        TableInfo tableInfo = admin.getTableInfo(tablePath).get();
+        TableBucket tableBucket = new TableBucket(tableInfo.getTableId(), 0);
+        LogTablet logTablet =
+                FLUSS_CLUSTER_EXTENSION.waitAndGetLeaderReplica(tableBucket).getLogTablet();
+        assertThat(logTablet.getEffectiveLocalLogTtlMs()).isEqualTo(Duration.ofHours(2).toMillis());
+
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.set(ConfigOptions.TABLE_LOG_LOCAL_TTL.key(), "3h")),
+                        false)
+                .get();
+        assertThat(admin.getTableInfo(tablePath).get().getTableConfig().getLocalLogTTLMs())
+                .isEqualTo(Duration.ofHours(3).toMillis());
+        waitUntil(
+                () -> logTablet.getEffectiveLocalLogTtlMs() == Duration.ofHours(3).toMillis(),
+                Duration.ofSeconds(30),
+                "Waiting for local log TTL to propagate to TabletServer");
+
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.reset(ConfigOptions.TABLE_LOG_LOCAL_TTL.key())),
+                        false)
+                .get();
+        waitUntil(
+                () -> logTablet.getEffectiveLocalLogTtlMs() == Duration.ofDays(7).toMillis(),
+                Duration.ofSeconds(30),
+                "Waiting for local log TTL reset to propagate to TabletServer");
+
+        admin.dropTable(tablePath, false).get();
+    }
+
+    @Test
     public void testCreateTableWithInvalidAggFunctionDataType() throws Exception {
         TablePath tablePath =
                 TablePath.of(
@@ -2793,7 +2875,11 @@ class FlussAdminITCase extends ClientToServerITCaseBase {
 
         ListOffsetsRequest request =
                 makeListOffsetsRequest(
-                        1L, null, Arrays.asList(0, 1, 2), new OffsetSpec.LatestSpec());
+                        1L,
+                        null,
+                        Arrays.asList(0, 1, 2),
+                        new OffsetSpec.LatestSpec(),
+                        Cluster.empty());
         Map<Integer, ListOffsetsRequest> leaderToRequestMap = new HashMap<>();
         leaderToRequestMap.put(1, request);
 

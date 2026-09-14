@@ -35,9 +35,14 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import static org.apache.fluss.record.TestData.DATA1;
+import static org.apache.fluss.record.TestData.DATA1_PHYSICAL_TABLE_PATH;
 import static org.apache.fluss.record.TestData.DATA1_TABLE_ID;
 import static org.apache.fluss.testutils.DataTestUtils.genMemoryLogRecordsByObject;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
@@ -124,6 +129,84 @@ public class AdjustIsrTest extends ReplicaTestBase {
                 TimeUnit.MILLISECONDS);
         replica.maybeShrinkIsr();
         assertThat(replica.getIsr()).containsExactlyInAnyOrder(1);
+    }
+
+    @Test
+    void testShrinkIsrUsesLatestStateAfterLeaderChange() throws Exception {
+        TableBucket tb = new TableBucket(DATA1_TABLE_ID, 1);
+        Replica replica = makeLogReplica(DATA1_PHYSICAL_TABLE_PATH, tb);
+        NotifyLeaderAndIsrData leaderData =
+                new NotifyLeaderAndIsrData(
+                        DATA1_PHYSICAL_TABLE_PATH,
+                        tb,
+                        Arrays.asList(1, 2),
+                        new LeaderAndIsr(1, 0, Arrays.asList(1, 2), Collections.emptyList(), 0, 0),
+                        3,
+                        0L);
+
+        ReentrantReadWriteLock leaderIsrUpdateLock = replica.getLeaderIsrUpdateLock();
+
+        ExecutorService executor = Executors.newFixedThreadPool(3);
+        try {
+            AtomicReference<Thread> makeLeaderThread = new AtomicReference<>();
+            AtomicReference<Thread> advanceClockThread = new AtomicReference<>();
+            AtomicReference<Thread> shrinkIsrThread = new AtomicReference<>();
+
+            leaderIsrUpdateLock.writeLock().lock();
+            CompletableFuture<Void> makeLeaderFuture;
+            CompletableFuture<Void> advanceClockFuture;
+            CompletableFuture<Void> shrinkIsrFuture;
+            try {
+                makeLeaderFuture =
+                        CompletableFuture.runAsync(
+                                () -> {
+                                    makeLeaderThread.set(Thread.currentThread());
+                                    try {
+                                        replica.makeLeader(leaderData);
+                                    } catch (Exception e) {
+                                        throw new RuntimeException(e);
+                                    }
+                                },
+                                executor);
+                waitUntilQueued(leaderIsrUpdateLock, makeLeaderThread);
+
+                advanceClockFuture =
+                        CompletableFuture.runAsync(
+                                () -> {
+                                    advanceClockThread.set(Thread.currentThread());
+                                    leaderIsrUpdateLock.writeLock().lock();
+                                    try {
+                                        manualClock.advanceTime(
+                                                conf.get(ConfigOptions.LOG_REPLICA_MAX_LAG_TIME)
+                                                                .toMillis()
+                                                        + 1,
+                                                TimeUnit.MILLISECONDS);
+                                    } finally {
+                                        leaderIsrUpdateLock.writeLock().unlock();
+                                    }
+                                },
+                                executor);
+                waitUntilQueued(leaderIsrUpdateLock, advanceClockThread);
+
+                shrinkIsrFuture =
+                        CompletableFuture.runAsync(
+                                () -> {
+                                    shrinkIsrThread.set(Thread.currentThread());
+                                    replica.maybeShrinkIsr();
+                                },
+                                executor);
+                waitUntilQueued(leaderIsrUpdateLock, shrinkIsrThread);
+            } finally {
+                leaderIsrUpdateLock.writeLock().unlock();
+            }
+
+            makeLeaderFuture.get(10, TimeUnit.SECONDS);
+            advanceClockFuture.get(10, TimeUnit.SECONDS);
+            shrinkIsrFuture.get(10, TimeUnit.SECONDS);
+            assertThat(replica.getIsr()).containsExactly(1);
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test
@@ -243,6 +326,17 @@ public class AdjustIsrTest extends ReplicaTestBase {
                 result -> {});
     }
 
+    private static void waitUntilQueued(
+            ReentrantReadWriteLock lock, AtomicReference<Thread> threadReference) {
+        retry(
+                Duration.ofSeconds(10),
+                () -> {
+                    Thread thread = threadReference.get();
+                    assertThat(thread).isNotNull();
+                    assertThat(lock.hasQueuedThread(thread)).isTrue();
+                });
+    }
+
     private void notifyLeaderAndIsr(
             Replica replica, List<Integer> replicas, int leaderEpoch, int bucketEpoch) {
         makeLeaderAndFollower(
@@ -257,6 +351,8 @@ public class AdjustIsrTest extends ReplicaTestBase {
                                         replicas,
                                         Collections.emptyList(),
                                         replica.getCoordinatorEpoch(),
-                                        bucketEpoch))));
+                                        bucketEpoch),
+                                3,
+                                0L)));
     }
 }

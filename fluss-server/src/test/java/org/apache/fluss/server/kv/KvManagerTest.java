@@ -19,6 +19,7 @@ package org.apache.fluss.server.kv;
 
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.config.MemorySize;
 import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.exception.FlussRuntimeException;
 import org.apache.fluss.metadata.KvFormat;
@@ -27,7 +28,11 @@ import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.SchemaGetter;
 import org.apache.fluss.metadata.SchemaInfo;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
+import org.apache.fluss.metrics.Gauge;
+import org.apache.fluss.metrics.MetricNames;
+import org.apache.fluss.metrics.registry.NOPMetricRegistry;
 import org.apache.fluss.record.KvRecord;
 import org.apache.fluss.record.KvRecordBatch;
 import org.apache.fluss.record.KvRecordTestUtils;
@@ -36,14 +41,17 @@ import org.apache.fluss.record.TestingSchemaGetter;
 import org.apache.fluss.row.encode.ValueEncoder;
 import org.apache.fluss.server.log.LogManager;
 import org.apache.fluss.server.log.LogTablet;
+import org.apache.fluss.server.metrics.group.TabletServerMetricGroup;
 import org.apache.fluss.server.metrics.group.TestingMetricGroups;
 import org.apache.fluss.server.storage.LocalDiskManager;
 import org.apache.fluss.server.utils.ResourceGuard;
 import org.apache.fluss.server.zk.NOPErrorHandler;
 import org.apache.fluss.server.zk.ZooKeeperClient;
 import org.apache.fluss.server.zk.ZooKeeperExtension;
+import org.apache.fluss.server.zk.data.TableRegistration;
 import org.apache.fluss.testutils.common.AllCallbackWrapper;
 import org.apache.fluss.types.RowType;
+import org.apache.fluss.utils.ByteArraySlice;
 import org.apache.fluss.utils.clock.SystemClock;
 import org.apache.fluss.utils.concurrent.FlussScheduler;
 
@@ -163,6 +171,117 @@ final class KvManagerTest {
         return Arrays.asList(null, "2024");
     }
 
+    @Test
+    void testPositiveSharedBlockCacheSizeEnablesSharedCache() throws Exception {
+        kvManager.shutdown();
+        kvManager = null;
+        conf.set(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE, MemorySize.parse("64mb"));
+        kvManager =
+                KvManager.create(
+                        conf,
+                        zkClient,
+                        logManager,
+                        TestingMetricGroups.TABLET_SERVER_METRICS,
+                        localDiskManager);
+        kvManager.startup();
+
+        initTableBuckets(null);
+        KvTablet firstKv = getOrCreateKv(tablePath1, null, tableBucket1);
+        KvTablet secondKv = getOrCreateKv(tablePath2, null, tableBucket2);
+
+        assertThat(firstKv.getRocksDBKv().getBlockCache())
+                .isSameAs(secondKv.getRocksDBKv().getBlockCache());
+    }
+
+    @Test
+    void testSharedWriteBufferConfiguredThroughKvManagerCreateAndLoad() throws Exception {
+        assertThat(
+                        gaugeValue(
+                                TestingMetricGroups.TABLET_SERVER_METRICS,
+                                MetricNames.ROCKSDB_SHARED_WRITE_BUFFER_USAGE))
+                .isEqualTo(0L);
+        assertThat(
+                        gaugeValue(
+                                TestingMetricGroups.TABLET_SERVER_METRICS,
+                                MetricNames.ROCKSDB_SHARED_WRITE_BUFFER_CAPACITY))
+                .isEqualTo(0L);
+
+        kvManager.shutdown();
+        kvManager = null;
+        MemorySize capacity = MemorySize.ofMebiBytes(64);
+        conf.set(ConfigOptions.KV_SHARED_WRITE_BUFFER_SIZE, capacity);
+        TabletServerMetricGroup metricGroup =
+                new TabletServerMetricGroup(
+                        NOPMetricRegistry.INSTANCE, "cluster", "rack", "host", 1);
+        kvManager = KvManager.create(conf, zkClient, logManager, metricGroup, localDiskManager);
+        kvManager.startup();
+
+        initTableBuckets(null);
+        KvTablet firstKv = getOrCreateKv(tablePath1, null, tableBucket1);
+        byte[] value = new byte[512 * 1024];
+        firstKv.getRocksDBKv().put("first-key".getBytes(), value);
+        long firstUsage = gaugeValue(metricGroup, MetricNames.ROCKSDB_SHARED_WRITE_BUFFER_USAGE);
+
+        KvTablet secondKv = getOrCreateKv(tablePath2, null, tableBucket2);
+        byte[] secondKey = "second-key".getBytes();
+        secondKv.getRocksDBKv().put(secondKey, value);
+        long secondUsage = gaugeValue(metricGroup, MetricNames.ROCKSDB_SHARED_WRITE_BUFFER_USAGE);
+
+        assertThat(firstUsage).isPositive();
+        assertThat(secondUsage).isGreaterThan(firstUsage);
+        assertThat(gaugeValue(metricGroup, MetricNames.ROCKSDB_SHARED_WRITE_BUFFER_CAPACITY))
+                .isEqualTo(capacity.getBytes());
+
+        kvManager.dropKv(tableBucket1);
+        KvRecord remainingRecord =
+                kvRecordFactory.ofRecord("remaining-key".getBytes(), new Object[] {3, "remaining"});
+        put(secondKv, remainingRecord);
+        assertThat(secondKv.getRocksDBKv().get(secondKey)).isEqualTo(value);
+        verifyMultiGet(secondKv, "remaining-key".getBytes(), valueOf(remainingRecord));
+
+        File secondKvDir = secondKv.getKvTabletDir();
+        zkClient.registerSchema(tablePath2, DATA1_SCHEMA_PK, schemaId);
+        long currentTime = System.currentTimeMillis();
+        zkClient.registerTable(
+                tablePath2,
+                new TableRegistration(
+                        tableBucket2.getTableId(),
+                        null,
+                        Collections.emptyList(),
+                        new TableDescriptor.TableDistribution(1, Collections.emptyList()),
+                        Collections.emptyMap(),
+                        Collections.emptyMap(),
+                        null,
+                        currentTime,
+                        currentTime),
+                false);
+
+        metricGroup.close();
+        kvManager.shutdown();
+        kvManager = null;
+        TabletServerMetricGroup recoveredMetricGroup =
+                new TabletServerMetricGroup(
+                        NOPMetricRegistry.INSTANCE, "cluster", "rack", "host", 1);
+        kvManager =
+                KvManager.create(
+                        conf, zkClient, logManager, recoveredMetricGroup, localDiskManager);
+        kvManager.startup();
+        KvTablet loadedKv =
+                kvManager.loadKv(
+                        secondKvDir,
+                        new TestingSchemaGetter(new SchemaInfo(DATA1_SCHEMA_PK, schemaId)),
+                        null);
+        loadedKv.getRocksDBKv().put("loaded-key".getBytes(), value);
+
+        assertThat(gaugeValue(recoveredMetricGroup, MetricNames.ROCKSDB_SHARED_WRITE_BUFFER_USAGE))
+                .isPositive();
+        assertThat(
+                        gaugeValue(
+                                recoveredMetricGroup,
+                                MetricNames.ROCKSDB_SHARED_WRITE_BUFFER_CAPACITY))
+                .isEqualTo(capacity.getBytes());
+    }
+
     @ParameterizedTest
     @MethodSource("partitionProvider")
     void testCreateKv(String partitionName) throws Exception {
@@ -229,9 +348,9 @@ final class KvManagerTest {
         }
 
         // check kv1
-        assertThat(kv1.multiGet(kv1Keys)).containsExactlyElementsOf(kv1Values);
+        assertThat(toByteArrays(kv1.multiGet(kv1Keys))).containsExactlyElementsOf(kv1Values);
         // check kv2
-        assertThat(kv2.multiGet(kv2Keys)).containsExactlyElementsOf(kv2Values);
+        assertThat(toByteArrays(kv2.multiGet(kv2Keys))).containsExactlyElementsOf(kv2Values);
     }
 
     @ParameterizedTest
@@ -253,7 +372,7 @@ final class KvManagerTest {
         kvManager.startup();
 
         KvTablet reopened = getOrCreateKv(tablePath1, partitionName, tableBucket1);
-        assertThat(reopened.multiGet(Collections.singletonList(key)))
+        assertThat(toByteArrays(reopened.multiGet(Collections.singletonList(key))))
                 .containsExactly((byte[]) null);
     }
 
@@ -313,7 +432,7 @@ final class KvManagerTest {
         }
 
         // check kv1
-        assertThat(kv1.multiGet(kvKeys)).containsExactlyElementsOf(kvValues);
+        assertThat(toByteArrays(kv1.multiGet(kvKeys))).containsExactlyElementsOf(kvValues);
     }
 
     @ParameterizedTest
@@ -351,7 +470,8 @@ final class KvManagerTest {
 
         kv1 = getOrCreateKv(tablePath1, partitionName, tableBucket1);
         assertThat(kv1.getKvTabletDir()).exists();
-        assertThat(kv1.multiGet(Collections.singletonList(key))).containsExactly((byte[]) null);
+        assertThat(toByteArrays(kv1.multiGet(Collections.singletonList(key))))
+                .containsExactly((byte[]) null);
         assertThat(kvManager.getKv(tableBucket1)).isPresent();
     }
 
@@ -542,7 +662,20 @@ final class KvManagerTest {
 
     private void verifyMultiGet(KvTablet kvTablet, byte[] key, byte[] expectedValue)
             throws IOException {
-        List<byte[]> gotValues = kvTablet.multiGet(Collections.singletonList(key));
+        List<byte[]> gotValues = toByteArrays(kvTablet.multiGet(Collections.singletonList(key)));
         assertThat(gotValues).containsExactly(expectedValue);
+    }
+
+    private static List<byte[]> toByteArrays(List<ByteArraySlice> slices) {
+        List<byte[]> values = new ArrayList<>(slices.size());
+        for (ByteArraySlice slice : slices) {
+            values.add(slice == null ? null : slice.toByteArray());
+        }
+        return values;
+    }
+
+    private static long gaugeValue(TabletServerMetricGroup metricGroup, String metricName) {
+        return ((Number) ((Gauge<?>) metricGroup.getMetrics().get(metricName)).getValue())
+                .longValue();
     }
 }

@@ -19,6 +19,7 @@ package org.apache.fluss.server.replica;
 
 import org.apache.fluss.cluster.Endpoint;
 import org.apache.fluss.cluster.ServerType;
+import org.apache.fluss.config.ConfigOption;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.MemorySize;
@@ -27,6 +28,7 @@ import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableDescriptor;
+import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.record.MemoryLogRecords;
 import org.apache.fluss.rpc.RpcClient;
@@ -85,6 +87,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -190,6 +193,8 @@ public class ReplicaTestBase {
     public void setup(TestInfo testInfo) throws Exception {
         conf = getServerConf();
         conf.set(ConfigOptions.TABLET_SERVER_ID, TABLET_SERVER_ID);
+        // Keep unrelated tests independent of the host machine's actual disk usage.
+        conf.set(ConfigOptions.SERVER_DATA_DISK_WRITE_LIMIT_RATIO, 1.0);
         if (testInfo != null && testInfo.getTags().contains(ServerTestTags.JBOD_MULTI_DIR_TAG)) {
             conf.set(
                     ConfigOptions.DATA_DIRS,
@@ -234,7 +239,8 @@ public class ReplicaTestBase {
                         logManager,
                         TestingMetricGroups.TABLET_SERVER_METRICS,
                         localDiskManager,
-                        createTestKvFlushScheduler(conf));
+                        createTestKvFlushScheduler(conf),
+                        manualClock);
         kvManager.startup();
 
         serverMetadataCache =
@@ -451,7 +457,10 @@ public class ReplicaTestBase {
                                         isr,
                                         Collections.emptyList(),
                                         INITIAL_COORDINATOR_EPOCH,
-                                        INITIAL_BUCKET_EPOCH))));
+                                        INITIAL_BUCKET_EPOCH),
+                                // all test tables are created distributedBy(3)
+                                TEST_ROUTING_BUCKET_COUNT,
+                                0L)));
     }
 
     // TODO this is only for single tablet server unit test.
@@ -494,11 +503,38 @@ public class ReplicaTestBase {
                                         Collections.emptyList(),
                                         INITIAL_COORDINATOR_EPOCH,
                                         // use leader epoch as bucket epoch
-                                        leaderEpoch))));
+                                        leaderEpoch),
+                                // all test tables are created distributedBy(3)
+                                TEST_ROUTING_BUCKET_COUNT,
+                                0L)));
     }
+
+    /** The routing bucket count carried by test notifications; test tables are distributedBy(3). */
+    protected static final Integer TEST_ROUTING_BUCKET_COUNT = 3;
 
     protected void makeLeaderAndFollower(List<NotifyLeaderAndIsrData> notifyLeaderAndIsrDataList) {
         replicaManager.becomeLeaderOrFollower(0, notifyLeaderAndIsrDataList, result -> {});
+    }
+
+    protected void updateTableConfig(
+            Replica replica, ConfigOption<?> configOption, String newConfigValue) {
+        updateTableConfig(replica, Collections.singletonMap(configOption.key(), newConfigValue));
+    }
+
+    protected void updateTableConfig(Replica replica, Map<String, String> configUpdates) {
+        TableInfo currentTableInfo = replica.getTableInfo();
+        Map<String, String> properties =
+                new HashMap<>(currentTableInfo.toTableDescriptor().getProperties());
+        properties.putAll(configUpdates);
+        replica.updateTableInfo(
+                TableInfo.of(
+                        currentTableInfo.getTablePath(),
+                        currentTableInfo.getTableId(),
+                        currentTableInfo.getSchemaId(),
+                        currentTableInfo.toTableDescriptor().withProperties(properties),
+                        currentTableInfo.getRemoteDataDir(),
+                        currentTableInfo.getCreatedTime(),
+                        currentTableInfo.getModifiedTime()));
     }
 
     protected Replica makeLogReplica(PhysicalTablePath physicalTablePath, TableBucket tableBucket)

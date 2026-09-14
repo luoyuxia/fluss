@@ -738,7 +738,11 @@ public final class FlussClusterExtension
             Map<String, PartitionRegistration> partitions =
                     zooKeeperClient.getPartitionRegistrations(tablePath);
             for (PartitionRegistration partition : partitions.values()) {
-                for (int bucketId = 0; bucketId < bucketCount; bucketId++) {
+                // partitions diverge from the table-level count after ALTER bucket.num
+                int partitionBucketCount =
+                        partition.getBucketCountOrDefault(
+                                bucketCount, tableRegistration.bucketCountEpoch);
+                for (int bucketId = 0; bucketId < partitionBucketCount; bucketId++) {
                     tableBuckets.add(
                             new TableBucket(tableId, partition.getPartitionId(), bucketId));
                 }
@@ -866,7 +870,9 @@ public final class FlussClusterExtension
                                 PhysicalTablePath.of(tablePath),
                                 tableBucket,
                                 replicas,
-                                leaderAndIsr));
+                                leaderAndIsr,
+                                3,
+                                0L));
         NotifyLeaderAndIsrRequest notifyLeaderAndIsrRequest =
                 ServerRpcMessageUtils.makeNotifyLeaderAndIsrRequest(
                         0, Collections.singletonList(reqForBucket));
@@ -943,8 +949,21 @@ public final class FlussClusterExtension
                 "Fail to wait partitions dropped");
     }
 
+    /** Wait until the assigned replica is ready as the local leader and return its server id. */
     public int waitAndGetLeader(TableBucket tb) {
-        return waitLeaderAndIsrReady(tb).leader();
+        ZooKeeperClient zkClient = getZooKeeperClient();
+        return waitValue(
+                () -> {
+                    Optional<LeaderAndIsr> leaderAndIsrOpt = zkClient.getLeaderAndIsr(tb);
+                    if (!leaderAndIsrOpt.isPresent()) {
+                        return Optional.empty();
+                    }
+
+                    int leader = leaderAndIsrOpt.get().leader();
+                    return getReplica(tb, leader, true).map(ignored -> leader);
+                },
+                Duration.ofMinutes(1),
+                "Fail to wait leader replica ready for " + tb);
     }
 
     public int waitAndGetStandby(TableBucket tb) {

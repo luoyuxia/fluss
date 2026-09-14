@@ -385,9 +385,21 @@ impl Sender {
                 }
             };
 
-            // Put batches back into records_by_bucket since response handling
-            // will use them.
-            for request_batch in request_batches {
+            // Snapshot after connection setup and request construction, immediately before
+            // dispatch. Refresh on every attempt, including retries, so an old out-of-order
+            // response can be distinguished from one with no subsequent ACK progress.
+            // Put batches back into records_by_bucket for response handling.
+            for mut request_batch in request_batches {
+                if self.idempotence_manager.is_enabled()
+                    && request_batch.write_batch.has_batch_sequence()
+                {
+                    let last_acked = self
+                        .idempotence_manager
+                        .last_acked_sequence(&request_batch.table_bucket);
+                    request_batch
+                        .write_batch
+                        .set_last_acked_sequence_at_send(last_acked);
+                }
                 records_by_bucket.insert(request_batch.table_bucket.clone(), request_batch);
             }
 
@@ -509,6 +521,7 @@ impl Sender {
     ) -> Result<()> {
         let mut invalid_metadata_tables: HashSet<TablePath> = HashSet::new();
         let mut invalid_physical_table_paths: HashSet<Arc<PhysicalTablePath>> = HashSet::new();
+        let mut deferred_unknown_table_batches: Vec<ReadyWriteBatch> = Vec::new();
         let mut pending_buckets: HashSet<TableBucket> = request_buckets.iter().cloned().collect();
 
         for bucket_resp in response.buckets_resp() {
@@ -517,6 +530,9 @@ impl Sender {
                 bucket_resp.partition_id(),
                 bucket_resp.bucket_id(),
             );
+            if let Some(pressure) = bucket_resp.pressure() {
+                self.accumulator.update_throttle(&tb, pressure);
+            }
             let Some(ready_batch) = records_by_bucket.remove(&tb) else {
                 panic!("Missing ready batch for table bucket {tb}");
             };
@@ -529,9 +545,12 @@ impl Sender {
                         .error_message()
                         .cloned()
                         .unwrap_or_else(|| error.message().to_string());
-                    if let Some(physical_table_path) =
-                        self.handle_write_batch_error(ready_batch, error, message)?
-                    {
+                    if let Some(physical_table_path) = self.handle_write_batch_error(
+                        ready_batch,
+                        error,
+                        message,
+                        &mut deferred_unknown_table_batches,
+                    )? {
                         invalid_metadata_tables
                             .insert(physical_table_path.get_table_path().clone());
                         invalid_physical_table_paths.insert(physical_table_path);
@@ -547,6 +566,7 @@ impl Sender {
                     ready_batch,
                     FlussError::UnknownServerError,
                     format!("Missing response for table bucket {bucket}"),
+                    &mut deferred_unknown_table_batches,
                 )? {
                     invalid_metadata_tables.insert(physical_table_path.get_table_path().clone());
                     invalid_physical_table_paths.insert(physical_table_path);
@@ -555,6 +575,8 @@ impl Sender {
         }
 
         self.update_metadata_if_needed(invalid_metadata_tables, invalid_physical_table_paths)
+            .await;
+        self.resolve_unknown_table_batches(deferred_unknown_table_batches)
             .await;
         Ok(())
     }
@@ -613,16 +635,22 @@ impl Sender {
     ) -> Result<()> {
         let mut invalid_metadata_tables: HashSet<TablePath> = HashSet::new();
         let mut invalid_physical_table_paths: HashSet<Arc<PhysicalTablePath>> = HashSet::new();
+        let mut deferred_unknown_table_batches: Vec<ReadyWriteBatch> = Vec::new();
 
         for batch in batches {
-            if let Some(physical_table_path) =
-                self.handle_write_batch_error(batch, error, message.clone())?
-            {
+            if let Some(physical_table_path) = self.handle_write_batch_error(
+                batch,
+                error,
+                message.clone(),
+                &mut deferred_unknown_table_batches,
+            )? {
                 invalid_metadata_tables.insert(physical_table_path.get_table_path().clone());
                 invalid_physical_table_paths.insert(physical_table_path);
             }
         }
         self.update_metadata_if_needed(invalid_metadata_tables, invalid_physical_table_paths)
+            .await;
+        self.resolve_unknown_table_batches(deferred_unknown_table_batches)
             .await;
         Ok(())
     }
@@ -652,8 +680,14 @@ impl Sender {
         ready_write_batch: ReadyWriteBatch,
         error: FlussError,
         message: String,
+        deferred_unknown_table_batches: &mut Vec<ReadyWriteBatch>,
     ) -> Result<Option<Arc<PhysicalTablePath>>> {
         let physical_table_path = Arc::clone(ready_write_batch.write_batch.physical_table_path());
+
+        if error == FlussError::StorageBackpressureException {
+            self.accumulator
+                .update_throttle(&ready_write_batch.table_bucket, 1.0);
+        }
 
         if error == FlussError::DuplicateSequenceException {
             warn!(
@@ -722,7 +756,12 @@ impl Sender {
                 }
             }
 
-            self.re_enqueue_batch(ready_write_batch);
+            if error == FlussError::UnknownTableOrBucketException {
+                // Table may be dropped, defer until the identity check runs.
+                deferred_unknown_table_batches.push(ready_write_batch);
+            } else {
+                self.re_enqueue_batch(ready_write_batch);
+            }
             return Ok(Self::is_invalid_metadata_error(error).then_some(physical_table_path));
         }
 
@@ -795,6 +834,7 @@ impl Sender {
                 &ready_write_batch.table_bucket,
                 seq,
                 ready_write_batch.write_batch.batch_id(),
+                ready_write_batch.write_batch.last_acked_sequence_at_send(),
                 error,
             );
         }
@@ -821,6 +861,110 @@ impl Sender {
         }
     }
 
+    /// Decides the fate of batches that failed with UnknownTableOrBucketException
+    /// by comparing the cluster's current table id with the id they were sent
+    /// under, so a dropped or recreated table stops retrying.
+    async fn resolve_unknown_table_batches(&self, deferred: Vec<ReadyWriteBatch>) {
+        if deferred.is_empty() {
+            return;
+        }
+
+        // Keyed by id too, so a recreated path resolves per table instance.
+        let mut batches_by_table: HashMap<(TablePath, TableId), Vec<ReadyWriteBatch>> =
+            HashMap::new();
+        for batch in deferred {
+            let table_path = batch
+                .write_batch
+                .physical_table_path()
+                .get_table_path()
+                .clone();
+            let table_id = batch.table_bucket.table_id();
+            batches_by_table
+                .entry((table_path, table_id))
+                .or_default()
+                .push(batch);
+        }
+
+        for ((table_path, expected_table_id), batches) in batches_by_table {
+            match self.check_table_gone(&table_path, expected_table_id).await {
+                Some(reason) => {
+                    warn!("Failing pending writes for {table_path}: {reason}");
+                    self.metadata.evict_table_metadata(&table_path);
+                    let error = broadcast::Error::WriteFailed {
+                        code: FlussError::TableNotExist.code(),
+                        message: reason,
+                    };
+                    for batch in batches {
+                        self.fail_batch(
+                            batch,
+                            error.clone(),
+                            Some(FlussError::TableNotExist),
+                            false,
+                        );
+                    }
+                    // Queued batches would otherwise await a leader forever.
+                    self.accumulator
+                        .fail_batches_for_table(&table_path, expected_table_id, error);
+                }
+                None => {
+                    for batch in batches {
+                        self.re_enqueue_checked_batch(batch);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Re-enqueues a deferred batch, re-checking the writer id first. The
+    /// identity check awaits, so the writer state can have been reset in the
+    /// meantime and the caller's earlier check no longer holds.
+    fn re_enqueue_checked_batch(&self, ready_write_batch: ReadyWriteBatch) {
+        if self.idempotence_manager.is_enabled() {
+            let batch_writer_id = ready_write_batch.write_batch.writer_id();
+            let current_writer_id = self.idempotence_manager.writer_id();
+            if batch_writer_id != NO_WRITER_ID && current_writer_id != batch_writer_id {
+                warn!(
+                    "Writer ID changed from {batch_writer_id} to {current_writer_id} while the table identity was checked, failing instead of retrying"
+                );
+                self.fail_batch(
+                    ready_write_batch,
+                    broadcast::Error::WriteFailed {
+                        code: FlussError::UnknownWriterIdException.code(),
+                        message: format!(
+                            "Attempted to retry sending a batch but the writer id has changed from {batch_writer_id} to {current_writer_id}. This batch will be dropped."
+                        ),
+                    },
+                    Some(FlussError::UnknownWriterIdException),
+                    false,
+                );
+                return;
+            }
+        }
+        self.re_enqueue_batch(ready_write_batch);
+    }
+
+    /// Returns Some(reason) when the table was dropped or recreated under a new
+    /// table id, None when the batches should be retried normally.
+    async fn check_table_gone(
+        &self,
+        table_path: &TablePath,
+        expected_table_id: TableId,
+    ) -> Option<String> {
+        match self.metadata.fetch_table_id(table_path).await {
+            Ok(None) => Some(format!(
+                "Table {table_path} (table_id={expected_table_id}) no longer exists."
+            )),
+            Ok(Some(table_id)) if table_id == expected_table_id => None,
+            Ok(Some(new_table_id)) => Some(format!(
+                "Table {table_path} (table_id={expected_table_id}) was dropped and recreated with table_id={new_table_id}."
+            )),
+            Err(e) => {
+                warn!("Table identity check for {table_path} failed, keeping normal retry: {e:?}");
+                None
+            }
+        }
+    }
+
     fn is_invalid_metadata_error(error: FlussError) -> bool {
         matches!(
             error,
@@ -841,6 +985,7 @@ impl Sender {
                 | FlussError::LogStorageException
                 | FlussError::KvStorageException
                 | FlussError::StorageException
+                | FlussError::StorageBackpressureException
                 | FlussError::RequestTimeOut
                 | FlussError::NotEnoughReplicasAfterAppendException
                 | FlussError::NotEnoughReplicasException
@@ -1012,6 +1157,11 @@ trait BucketResponse {
     fn error_message(&self) -> Option<&String>;
 
     fn partition_id(&self) -> Option<PartitionId>;
+
+    /// Backpressure signal carried by PutKv responses.
+    fn pressure(&self) -> Option<f32> {
+        None
+    }
 }
 
 impl BucketResponse for PbProduceLogRespForBucket {
@@ -1043,6 +1193,10 @@ impl BucketResponse for PbPutKvRespForBucket {
 
     fn partition_id(&self) -> Option<PartitionId> {
         self.partition_id
+    }
+
+    fn pressure(&self) -> Option<f32> {
+        self.pressure
     }
 }
 
@@ -1078,10 +1232,12 @@ mod tests {
     use crate::row::{Datum, GenericRow};
     use crate::rpc::FlussError;
     use crate::test_utils::{build_cluster_arc, build_cluster_arc_with_port, build_table_info};
+    use futures::FutureExt;
     use prost::Message;
     use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::AtomicUsize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
 
     fn disabled_idempotence() -> Arc<IdempotenceManager> {
         Arc::new(IdempotenceManager::new(false, 5))
@@ -1144,6 +1300,7 @@ mod tests {
             batch,
             FlussError::RequestTimeOut,
             "timeout".to_string(),
+            &mut Vec::new(),
         )?;
 
         let server = cluster.get_tablet_server(1).expect("server");
@@ -1151,6 +1308,80 @@ mod tests {
         let mut batches = accumulator.drain(cluster, &nodes, 1024 * 1024)?;
         let mut drained = batches.remove(&1).expect("drained batches");
         let batch = drained.pop().expect("batch");
+        assert_eq!(batch.write_batch.attempts(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn kv_backpressure_throttles_pressure_and_hard_rejection() -> Result<()> {
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc(table_path.as_ref(), 1, 1);
+        let metadata = Arc::new(Metadata::new_for_test(cluster.clone()));
+        let idempotence = disabled_idempotence();
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        let sender = Sender::new(
+            metadata,
+            accumulator.clone(),
+            1024 * 1024,
+            1000,
+            1,
+            1,
+            idempotence,
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        );
+
+        let (batch, _handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path.clone())?;
+        let tb = batch.table_bucket.clone();
+        let mut records_by_bucket = HashMap::new();
+        records_by_bucket.insert(tb.clone(), batch);
+        let request_buckets = vec![tb.clone()];
+
+        let response = PutKvResponse {
+            buckets_resp: vec![PbPutKvRespForBucket {
+                partition_id: None,
+                bucket_id: tb.bucket_id(),
+                error_code: None,
+                error_message: None,
+                log_end_offset: None,
+                pressure: Some(0.5),
+                original_partition_name: None,
+            }],
+        };
+        sender
+            .handle_write_response(
+                tb.table_id(),
+                &request_buckets,
+                &mut records_by_bucket,
+                response,
+            )
+            .await?;
+
+        assert!(accumulator.is_throttled(&tb));
+        accumulator.update_throttle(&tb, 0.0);
+
+        let (batch, _handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path)?;
+
+        sender.handle_write_batch_error(
+            batch,
+            FlussError::StorageBackpressureException,
+            "backpressure".to_string(),
+            &mut Vec::new(),
+        )?;
+
+        assert!(accumulator.is_throttled(&tb));
+        let server = cluster.get_tablet_server(1).expect("server");
+        let nodes = HashSet::from([server.clone()]);
+        let batches = accumulator.drain(cluster.clone(), &nodes, 1024 * 1024)?;
+        assert!(batches.is_empty());
+
+        accumulator.update_throttle(&tb, 0.0);
+        let mut batches = accumulator.drain(cluster, &nodes, 1024 * 1024)?;
+        let batch = batches.remove(&1).expect("drained").pop().expect("batch");
         assert_eq!(batch.write_batch.attempts(), 1);
         Ok(())
     }
@@ -1197,6 +1428,7 @@ mod tests {
                 batch,
                 FlussError::RequestTimeOut,
                 "timeout".to_string(),
+                &mut Vec::new(),
             )?;
             Ok(())
         });
@@ -1525,6 +1757,7 @@ mod tests {
             batch,
             FlussError::InvalidTableException,
             "invalid".to_string(),
+            &mut Vec::new(),
         )?;
 
         let batch_result = handle.wait().await?;
@@ -1611,6 +1844,7 @@ mod tests {
             batch,
             FlussError::UnknownWriterIdException,
             "unknown writer".to_string(),
+            &mut Vec::new(),
         )?;
 
         // Writer ID should be reset
@@ -1658,6 +1892,7 @@ mod tests {
             batch,
             FlussError::OutOfOrderSequenceException,
             "out of order".to_string(),
+            &mut Vec::new(),
         )?;
 
         // Writer ID should be reset (matching Java behavior)
@@ -1671,6 +1906,201 @@ mod tests {
                 if code == FlussError::OutOfOrderSequenceException.code()
         ));
         Ok(())
+    }
+
+    /// Handle the handshake, then let the test choose when to respond to each produce request.
+    async fn read_produce_request(stream: &mut TcpStream) -> i32 {
+        loop {
+            let len = stream.read_i32().await.expect("request length");
+            let mut payload = vec![0u8; len as usize];
+            stream.read_exact(&mut payload).await.expect("request");
+            let api_key = i16::from_be_bytes(payload[..2].try_into().unwrap());
+            let request_id = i32::from_be_bytes(payload[4..8].try_into().unwrap());
+            if api_key == 1014 {
+                return request_id;
+            }
+            assert_eq!(api_key, 1000, "expected ApiVersions or ProduceLog");
+            let response = ApiVersionsResponse {
+                api_versions: vec![
+                    PbApiVersion {
+                        api_key: 1000, // ApiVersions
+                        min_version: 0,
+                        max_version: 0,
+                    },
+                    PbApiVersion {
+                        api_key: 1014, // ProduceLog
+                        min_version: 0,
+                        max_version: 0,
+                    },
+                ],
+                server_type: Some(ServerType::TabletServer.to_type_id()),
+            };
+            write_controlled_response(stream, request_id, response).await;
+        }
+    }
+
+    async fn write_controlled_response(
+        stream: &mut TcpStream,
+        request_id: i32,
+        response: impl Message,
+    ) {
+        let body = response.encode_to_vec();
+        stream
+            .write_i32((5 + body.len()) as i32)
+            .await
+            .expect("response length");
+        stream.write_u8(0).await.expect("success response type");
+        stream.write_i32(request_id).await.expect("request id");
+        stream.write_all(&body).await.expect("response body");
+    }
+
+    async fn respond_produce(stream: &mut TcpStream, request_id: i32, error: FlussError) {
+        let response = ProduceLogResponse {
+            buckets_resp: vec![PbProduceLogRespForBucket {
+                bucket_id: 0,
+                error_code: Some(error.code()),
+                ..Default::default()
+            }],
+        };
+        write_controlled_response(stream, request_id, response).await;
+    }
+
+    fn send_controlled_batch(
+        sender: &Arc<Sender>,
+        batch: ReadyWriteBatch,
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        let mut batches = HashMap::from([(1, vec![batch])]);
+        sender.add_to_inflight_batches(&batches);
+        let batches = batches.remove(&1).unwrap();
+        let sender = Arc::clone(sender);
+        tokio::spawn(async move { sender.send_write_request(1, -1, batches).await })
+    }
+
+    #[derive(Clone, Copy)]
+    enum OutOfOrderScenario {
+        Stale,
+        Genuine,
+        Repeated,
+    }
+
+    async fn check_out_of_order_response(scenario: OutOfOrderScenario) -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("address").port();
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc_with_port(table_path.as_ref(), 1, 1, port as u32);
+        let idempotence = enabled_idempotence();
+        idempotence.set_writer_id(42);
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        let sender = Arc::new(Sender::new(
+            Arc::new(Metadata::new_for_test(cluster.clone())),
+            accumulator.clone(),
+            1024 * 1024,
+            10_000,
+            -1,
+            i32::MAX,
+            Arc::clone(&idempotence),
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        ));
+        let (batch0, handle0) =
+            build_ready_batch(&accumulator, cluster.clone(), table_path.clone())?;
+        let bucket = batch0.table_bucket.clone();
+        assert_eq!(batch0.write_batch.batch_sequence(), 0);
+        let send0 = send_controlled_batch(&sender, batch0);
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let request0 = read_produce_request(&mut stream).await;
+        let mut pending_first_send = Some(send0);
+
+        if matches!(scenario, OutOfOrderScenario::Genuine) {
+            // No predecessor is pending when seq1 is sent: an OOO must still reset.
+            let send = pending_first_send.take().unwrap();
+            respond_produce(&mut stream, request0, FlussError::None).await;
+            send.await.expect("send seq0")?;
+        }
+
+        let (batch1, handle1) = build_ready_batch(&accumulator, cluster.clone(), table_path)?;
+        assert_eq!(batch1.write_batch.batch_sequence(), 1);
+        let send1 = send_controlled_batch(&sender, batch1);
+        let request1 = read_produce_request(&mut stream).await;
+
+        if let Some(send) = pending_first_send {
+            // Both sends saw last_acked=-1. Process seq0's ACK before seq1's old error.
+            respond_produce(&mut stream, request0, FlussError::None).await;
+            send.await.expect("send seq0")?;
+        }
+        assert!(handle0.wait().await?.is_ok());
+        assert!(idempotence.is_next_sequence(&bucket, 1));
+        respond_produce(
+            &mut stream,
+            request1,
+            FlussError::OutOfOrderSequenceException,
+        )
+        .await;
+        send1.await.expect("send seq1")?;
+
+        if !matches!(scenario, OutOfOrderScenario::Genuine) {
+            assert_eq!(
+                idempotence.writer_id(),
+                42,
+                "stale error must not reset writer"
+            );
+            assert!(
+                handle1.wait().now_or_never().is_none(),
+                "batch must remain pending"
+            );
+            assert_eq!(idempotence.in_flight_count(&bucket), 1);
+
+            let node = cluster.get_tablet_server(1).expect("server").clone();
+            let mut batches =
+                accumulator.drain(cluster.clone(), &HashSet::from([node]), 1024 * 1024)?;
+            let retry = batches.remove(&1).expect("retry queued").pop().unwrap();
+            assert_eq!(retry.write_batch.batch_sequence(), 1);
+            assert_eq!(retry.write_batch.attempts(), 1);
+            let send_retry = send_controlled_batch(&sender, retry);
+            let retry_request = read_produce_request(&mut stream).await;
+            let error = if matches!(scenario, OutOfOrderScenario::Repeated) {
+                // No new ACK since the resend: the refreshed snapshot must prevent retry.
+                FlussError::OutOfOrderSequenceException
+            } else {
+                FlussError::None
+            };
+            respond_produce(&mut stream, retry_request, error).await;
+            send_retry.await.expect("send retry")?;
+        }
+
+        let result = handle1.wait().now_or_never().expect("batch completed")?;
+        if matches!(scenario, OutOfOrderScenario::Stale) {
+            assert!(result.is_ok());
+            assert_eq!(idempotence.writer_id(), 42);
+            assert!(idempotence.is_next_sequence(&bucket, 2));
+        } else {
+            assert!(!idempotence.has_writer_id());
+            assert!(matches!(
+                result,
+                Err(broadcast::Error::WriteFailed { code, .. })
+                    if code == FlussError::OutOfOrderSequenceException.code()
+            ));
+        }
+        assert_eq!(idempotence.in_flight_count(&bucket), 0);
+        assert!(sender.in_flight_batches.lock().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stale_out_of_order_response_retries_without_reset() -> Result<()> {
+        check_out_of_order_response(OutOfOrderScenario::Stale).await
+    }
+
+    #[tokio::test]
+    async fn test_genuine_out_of_order_response_resets_writer() -> Result<()> {
+        check_out_of_order_response(OutOfOrderScenario::Genuine).await
+    }
+
+    #[tokio::test]
+    async fn test_repeated_out_of_order_response_refreshes_snapshot() -> Result<()> {
+        check_out_of_order_response(OutOfOrderScenario::Repeated).await
     }
 
     #[tokio::test]
@@ -1712,6 +2142,7 @@ mod tests {
             batch,
             FlussError::NetworkException,
             "connection reset".to_string(),
+            &mut Vec::new(),
         )?;
 
         // Batch should be failed (not retried) because writer ID is stale
@@ -1797,6 +2228,575 @@ mod tests {
             idempotence.next_sequence_and_increment(&ready_batch.table_bucket),
             1
         );
+        Ok(())
+    }
+
+    /// How the mock server answers a GetTable request.
+    #[derive(Clone, Copy)]
+    enum GetTableReply {
+        /// The table is gone, answered as TableNotExist.
+        Dropped,
+        /// The path currently resolves to this table id.
+        Exists(TableId),
+        /// The request failed for an unrelated reason.
+        ServerError,
+    }
+
+    /// Mock tablet server answering ApiVersions and GetTable, the latter per
+    /// `reply`. The returned counter tracks how many GetTable requests it
+    /// served, so tests can assert the identity check actually ran.
+    fn spawn_get_table_server(
+        listener: TcpListener,
+        reply: GetTableReply,
+    ) -> (tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+        let get_table_requests = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&get_table_requests);
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    loop {
+                        let mut len_buf = [0u8; 4];
+                        if stream.read_exact(&mut len_buf).await.is_err() {
+                            return;
+                        }
+                        let len = i32::from_be_bytes(len_buf) as usize;
+                        let mut payload = vec![0u8; len];
+                        if stream.read_exact(&mut payload).await.is_err() {
+                            return;
+                        }
+
+                        // Header layout: api_key(2) + api_version(2) + request_id(4)
+                        let api_key = i16::from_be_bytes([payload[0], payload[1]]);
+                        let request_id =
+                            i32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                        if api_key == 1007 {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                        }
+
+                        let mut body = Vec::new();
+                        let response_type = match (api_key, reply) {
+                            // ApiVersions, advertising the keys the sender needs.
+                            (1000, _) => {
+                                ApiVersionsResponse {
+                                    api_versions: vec![
+                                        PbApiVersion {
+                                            api_key: 1000, // ApiVersion
+                                            min_version: 0,
+                                            max_version: 0,
+                                        },
+                                        PbApiVersion {
+                                            api_key: 1007, // GetTable
+                                            min_version: 0,
+                                            max_version: 0,
+                                        },
+                                        PbApiVersion {
+                                            api_key: 1012, // MetaData
+                                            min_version: 0,
+                                            max_version: 0,
+                                        },
+                                    ],
+                                    server_type: Some(ServerType::TabletServer.to_type_id()),
+                                }
+                                .encode(&mut body)
+                                .expect("encode ApiVersionsResponse");
+                                0u8
+                            }
+                            // GetTable for a table that still exists.
+                            (1007, GetTableReply::Exists(table_id)) => {
+                                crate::proto::GetTableInfoResponse {
+                                    table_id,
+                                    schema_id: 1,
+                                    table_json: Vec::new(),
+                                    created_time: 0,
+                                    modified_time: 0,
+                                    remote_data_dir: None,
+                                    bucket_count_epoch: None,
+                                }
+                                .encode(&mut body)
+                                .expect("encode GetTableInfoResponse");
+                                0u8
+                            }
+                            // GetTable for a dropped table.
+                            (1007, GetTableReply::Dropped) => {
+                                crate::proto::ErrorResponse {
+                                    error_code: FlussError::TableNotExist.code(),
+                                    error_message: Some("table does not exist".to_string()),
+                                }
+                                .encode(&mut body)
+                                .expect("encode ErrorResponse");
+                                1u8
+                            }
+                            _ => {
+                                crate::proto::ErrorResponse {
+                                    error_code: FlussError::UnknownServerError.code(),
+                                    error_message: Some("mock error".to_string()),
+                                }
+                                .encode(&mut body)
+                                .expect("encode ErrorResponse");
+                                1u8
+                            }
+                        };
+
+                        let mut resp = Vec::with_capacity(5 + body.len());
+                        resp.push(response_type);
+                        resp.extend_from_slice(&request_id.to_be_bytes());
+                        resp.extend_from_slice(&body);
+
+                        let resp_len = (resp.len() as i32).to_be_bytes();
+                        if stream.write_all(&resp_len).await.is_err()
+                            || stream.write_all(&resp).await.is_err()
+                            || stream.flush().await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (handle, get_table_requests)
+    }
+
+    #[tokio::test]
+    async fn unknown_table_error_fails_batch_when_table_dropped() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        // The identity check answers TableNotExist: the table was dropped.
+        let (server_task, get_table_requests) =
+            spawn_get_table_server(listener, GetTableReply::Dropped);
+
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc_with_port(table_path.as_ref(), 1, 1, port as u32);
+        let metadata = Arc::new(Metadata::new_for_test(cluster.clone()));
+        let idempotence = disabled_idempotence();
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        let sender = Sender::new(
+            metadata.clone(),
+            accumulator.clone(),
+            1024 * 1024,
+            1000,
+            1,
+            100,
+            idempotence,
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        );
+
+        let (batch, handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path.clone())?;
+
+        // A second record stays queued, so the sweep has something to fail.
+        let queued_row = GenericRow {
+            values: vec![Datum::Int32(2)],
+        };
+        let queued_record = WriteRecord::for_append(
+            Arc::new(build_table_info(table_path.as_ref().clone(), 1, 1)),
+            Arc::new(PhysicalTablePath::of(Arc::clone(&table_path))),
+            1,
+            &queued_row,
+        );
+        let queued_handle = accumulator
+            .append(&queued_record, 0, &cluster, false)?
+            .result_handle
+            .expect("queued handle");
+
+        let tb = batch.table_bucket.clone();
+        let mut records_by_bucket = HashMap::new();
+        records_by_bucket.insert(tb.clone(), batch);
+        let request_buckets = vec![tb.clone()];
+
+        let response = ProduceLogResponse {
+            buckets_resp: vec![PbProduceLogRespForBucket {
+                bucket_id: tb.bucket_id(),
+                error_code: Some(FlussError::UnknownTableOrBucketException.code()),
+                error_message: Some("unknown table or bucket".to_string()),
+                ..Default::default()
+            }],
+        };
+        sender
+            .handle_write_response(
+                tb.table_id(),
+                &request_buckets,
+                &mut records_by_bucket,
+                response,
+            )
+            .await?;
+
+        // The table identity was checked against the cluster.
+        assert_eq!(get_table_requests.load(Ordering::SeqCst), 1);
+        // The queued batch is failed by the sweep.
+        let queued_result = tokio::time::timeout(Duration::from_secs(10), queued_handle.wait())
+            .await
+            .expect("the queued write must be failed by the sweep")?;
+        assert!(matches!(
+            queued_result,
+            Err(broadcast::Error::WriteFailed { code, .. })
+                if code == FlussError::TableNotExist.code()
+        ));
+        // The stale table metadata is evicted.
+        assert!(
+            metadata
+                .get_cluster()
+                .get_table_id(table_path.as_ref())
+                .is_none()
+        );
+        // The pending write completes with TableNotExist instead of retrying.
+        let batch_result = tokio::time::timeout(Duration::from_secs(10), handle.wait())
+            .await
+            .expect("write must be completed, not left retrying")?;
+        assert!(matches!(
+            batch_result,
+            Err(broadcast::Error::WriteFailed { code, .. })
+                if code == FlussError::TableNotExist.code()
+        ));
+        // Nothing is left to retry.
+        assert!(!accumulator.has_incomplete());
+        let server = cluster.get_tablet_server(1).expect("server");
+        let nodes = HashSet::from([server.clone()]);
+        let batches = accumulator.drain(cluster, &nodes, 1024 * 1024)?;
+        assert!(batches.is_empty());
+
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_table_error_fails_batch_when_table_recreated() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        // The path resolves to a different id: dropped and recreated.
+        let (server_task, get_table_requests) =
+            spawn_get_table_server(listener, GetTableReply::Exists(2));
+
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc_with_port(table_path.as_ref(), 1, 1, port as u32);
+        let metadata = Arc::new(Metadata::new_for_test(cluster.clone()));
+        let idempotence = disabled_idempotence();
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        let sender = Sender::new(
+            metadata.clone(),
+            accumulator.clone(),
+            1024 * 1024,
+            1000,
+            1,
+            100,
+            idempotence,
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        );
+
+        let (batch, handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path.clone())?;
+        let tb = batch.table_bucket.clone();
+        let mut records_by_bucket = HashMap::new();
+        records_by_bucket.insert(tb.clone(), batch);
+        let request_buckets = vec![tb.clone()];
+
+        let response = ProduceLogResponse {
+            buckets_resp: vec![PbProduceLogRespForBucket {
+                bucket_id: tb.bucket_id(),
+                error_code: Some(FlussError::UnknownTableOrBucketException.code()),
+                error_message: Some("unknown table or bucket".to_string()),
+                ..Default::default()
+            }],
+        };
+        sender
+            .handle_write_response(
+                tb.table_id(),
+                &request_buckets,
+                &mut records_by_bucket,
+                response,
+            )
+            .await?;
+
+        assert_eq!(get_table_requests.load(Ordering::SeqCst), 1);
+        assert!(
+            metadata
+                .get_cluster()
+                .get_table_id(table_path.as_ref())
+                .is_none()
+        );
+        let batch_result = tokio::time::timeout(Duration::from_secs(10), handle.wait())
+            .await
+            .expect("write must be completed, not left retrying")?;
+        assert!(matches!(
+            batch_result,
+            Err(broadcast::Error::WriteFailed { code, .. })
+                if code == FlussError::TableNotExist.code()
+        ));
+
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_table_error_reenqueues_when_table_is_unchanged() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        // Same id, so the error is transient and the retry continues.
+        let (server_task, get_table_requests) =
+            spawn_get_table_server(listener, GetTableReply::Exists(1));
+
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc_with_port(table_path.as_ref(), 1, 1, port as u32);
+        let metadata = Arc::new(Metadata::new_for_test(cluster.clone()));
+        let idempotence = disabled_idempotence();
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        let sender = Sender::new(
+            metadata.clone(),
+            accumulator.clone(),
+            1024 * 1024,
+            1000,
+            1,
+            100,
+            idempotence,
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        );
+
+        let (batch, _handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path.clone())?;
+        let tb = batch.table_bucket.clone();
+        let mut records_by_bucket = HashMap::new();
+        records_by_bucket.insert(tb.clone(), batch);
+        let request_buckets = vec![tb.clone()];
+
+        let response = ProduceLogResponse {
+            buckets_resp: vec![PbProduceLogRespForBucket {
+                bucket_id: tb.bucket_id(),
+                error_code: Some(FlussError::UnknownTableOrBucketException.code()),
+                error_message: Some("unknown table or bucket".to_string()),
+                ..Default::default()
+            }],
+        };
+        sender
+            .handle_write_response(
+                tb.table_id(),
+                &request_buckets,
+                &mut records_by_bucket,
+                response,
+            )
+            .await?;
+
+        // Unchanged, so the metadata stays cached and the batch retries.
+        assert_eq!(get_table_requests.load(Ordering::SeqCst), 1);
+        assert!(
+            metadata
+                .get_cluster()
+                .get_table_id(table_path.as_ref())
+                .is_some()
+        );
+        let server = cluster.get_tablet_server(1).expect("server");
+        let nodes = HashSet::from([server.clone()]);
+        let mut batches = accumulator.drain(cluster, &nodes, 1024 * 1024)?;
+        let batch = batches
+            .remove(&1)
+            .expect("drained batches")
+            .pop()
+            .expect("batch");
+        assert_eq!(batch.write_batch.attempts(), 1);
+
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deferred_batch_is_not_reenqueued_with_a_stale_writer_id() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        // The table is unchanged, so the batch would normally be retried.
+        let (server_task, _) = spawn_get_table_server(listener, GetTableReply::Exists(1));
+
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc_with_port(table_path.as_ref(), 1, 1, port as u32);
+        let metadata = Arc::new(Metadata::new_for_test(cluster.clone()));
+        let idempotence = enabled_idempotence();
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        idempotence.set_writer_id(42);
+        let sender = Sender::new(
+            metadata,
+            accumulator.clone(),
+            1024 * 1024,
+            1000,
+            1,
+            100,
+            Arc::clone(&idempotence),
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        );
+
+        let (batch, handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path.clone())?;
+        assert_eq!(batch.write_batch.writer_id(), 42);
+
+        // The reset lands after the caller's own check, while the identity
+        // check is awaiting, so only a re-check at the point of use sees it.
+        idempotence.set_writer_id(99);
+        sender.resolve_unknown_table_batches(vec![batch]).await;
+
+        let batch_result = tokio::time::timeout(Duration::from_secs(10), handle.wait())
+            .await
+            .expect("the batch must be failed, not re-enqueued with stale state")?;
+        assert!(matches!(
+            batch_result,
+            Err(broadcast::Error::WriteFailed { code, .. })
+                if code == FlussError::UnknownWriterIdException.code()
+        ));
+
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_table_error_reenqueues_when_check_returns_server_error() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        // Only TableNotExist means gone, so this must retry.
+        let (server_task, get_table_requests) =
+            spawn_get_table_server(listener, GetTableReply::ServerError);
+
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc_with_port(table_path.as_ref(), 1, 1, port as u32);
+        let metadata = Arc::new(Metadata::new_for_test(cluster.clone()));
+        let idempotence = disabled_idempotence();
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        let sender = Sender::new(
+            metadata.clone(),
+            accumulator.clone(),
+            1024 * 1024,
+            1000,
+            1,
+            100,
+            idempotence,
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        );
+
+        let (batch, _handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path.clone())?;
+        let tb = batch.table_bucket.clone();
+        let mut records_by_bucket = HashMap::new();
+        records_by_bucket.insert(tb.clone(), batch);
+        let request_buckets = vec![tb.clone()];
+
+        let response = ProduceLogResponse {
+            buckets_resp: vec![PbProduceLogRespForBucket {
+                bucket_id: tb.bucket_id(),
+                error_code: Some(FlussError::UnknownTableOrBucketException.code()),
+                error_message: Some("unknown table or bucket".to_string()),
+                ..Default::default()
+            }],
+        };
+        sender
+            .handle_write_response(
+                tb.table_id(),
+                &request_buckets,
+                &mut records_by_bucket,
+                response,
+            )
+            .await?;
+
+        assert_eq!(get_table_requests.load(Ordering::SeqCst), 1);
+        // The metadata stays cached and the batch is retried.
+        assert!(
+            metadata
+                .get_cluster()
+                .get_table_id(table_path.as_ref())
+                .is_some()
+        );
+        let server = cluster.get_tablet_server(1).expect("server");
+        let nodes = HashSet::from([server.clone()]);
+        let mut batches = accumulator.drain(cluster, &nodes, 1024 * 1024)?;
+        let batch = batches
+            .remove(&1)
+            .expect("drained batches")
+            .pop()
+            .expect("batch");
+        assert_eq!(batch.write_batch.attempts(), 1);
+
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_table_error_reenqueues_when_check_fails_transiently() -> Result<()> {
+        // Nothing listening, so the check fails with a connection error.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+
+        let table_path = Arc::new(TablePath::new("db".to_string(), "tbl".to_string()));
+        let cluster = build_cluster_arc_with_port(table_path.as_ref(), 1, 1, port as u32);
+        let metadata = Arc::new(Metadata::new_for_test(cluster.clone()));
+        let idempotence = disabled_idempotence();
+        let accumulator = Arc::new(RecordAccumulator::new(
+            Config::default(),
+            Arc::clone(&idempotence),
+        ));
+        let sender = Sender::new(
+            metadata.clone(),
+            accumulator.clone(),
+            1024 * 1024,
+            1000,
+            1,
+            100,
+            idempotence,
+            Arc::new(crate::metrics::WriterMetrics::new()),
+        );
+
+        let (batch, _handle) =
+            build_ready_batch(accumulator.as_ref(), cluster.clone(), table_path.clone())?;
+        let tb = batch.table_bucket.clone();
+        let mut records_by_bucket = HashMap::new();
+        records_by_bucket.insert(tb.clone(), batch);
+        let request_buckets = vec![tb.clone()];
+
+        let response = ProduceLogResponse {
+            buckets_resp: vec![PbProduceLogRespForBucket {
+                bucket_id: tb.bucket_id(),
+                error_code: Some(FlussError::UnknownTableOrBucketException.code()),
+                error_message: Some("unknown table or bucket".to_string()),
+                ..Default::default()
+            }],
+        };
+        sender
+            .handle_write_response(
+                tb.table_id(),
+                &request_buckets,
+                &mut records_by_bucket,
+                response,
+            )
+            .await?;
+
+        // Unchecked, so the batch retries and the metadata stays cached.
+        assert!(
+            metadata
+                .get_cluster()
+                .get_table_id(table_path.as_ref())
+                .is_some()
+        );
+        let server = cluster.get_tablet_server(1).expect("server");
+        let nodes = HashSet::from([server.clone()]);
+        let mut batches = accumulator.drain(cluster, &nodes, 1024 * 1024)?;
+        let batch = batches
+            .remove(&1)
+            .expect("drained batches")
+            .pop()
+            .expect("batch");
+        assert_eq!(batch.write_batch.attempts(), 1);
         Ok(())
     }
 }

@@ -31,13 +31,11 @@ import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
-import org.apache.paimon.manifest.IndexManifestEntry;
 import org.apache.paimon.manifest.ManifestCommittable;
-import org.apache.paimon.manifest.ManifestEntry;
-import org.apache.paimon.manifest.SimpleFileEntry;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.TableSnapshot;
 import org.apache.paimon.table.sink.CommitCallback;
+import org.apache.paimon.table.sink.CommitMessage;
 import org.apache.paimon.table.sink.TableCommitImpl;
 import org.apache.paimon.utils.SnapshotManager;
 import org.slf4j.Logger;
@@ -64,6 +62,7 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     private final Catalog paimonCatalog;
     private final FileStoreTable fileStoreTable;
     private final TablePath tablePath;
+    private final TablePath lakeTablePath;
     private final long tableId;
     private final Configuration flussClientConfig;
     private TableCommitImpl tableCommit;
@@ -75,11 +74,12 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
             throws IOException {
         this.paimonCatalog = paimonCatalogProvider.get();
         this.tablePath = committerInitContext.tablePath();
+        this.lakeTablePath = committerInitContext.tableInfo().getLakeTablePath();
         this.tableId = committerInitContext.tableInfo().getTableId();
         this.flussClientConfig = committerInitContext.flussClientConfig();
         this.fileStoreTable =
                 getTable(
-                        committerInitContext.tablePath(),
+                        lakeTablePath,
                         committerInitContext
                                         .tableInfo()
                                         .getTableConfig()
@@ -94,7 +94,9 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
             throws IOException {
         ManifestCommittable committable = new ManifestCommittable(COMMIT_IDENTIFIER);
         for (PaimonWriteResult paimonWriteResult : paimonWriteResults) {
-            committable.addFileCommittable(paimonWriteResult.commitMessage());
+            for (CommitMessage commitMessage : paimonWriteResult.commitMessages()) {
+                committable.addFileCommittable(commitMessage);
+            }
         }
         return new PaimonCommittable(committable);
     }
@@ -137,15 +139,13 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
                     } else {
                         long earliestSnapshotIdToKeep =
                                 readableSnapshotResult.getEarliestSnapshotIdToKeep();
-                        LOG.info(
-                                "Computed DV readable snapshot for table {}: committed snapshot {}, "
-                                        + "readable snapshot {}, earliest snapshot to keep {}, "
-                                        + "readable bucket count {}.",
-                                tablePath,
-                                committedSnapshotId,
-                                readableSnapshotResult.getReadableSnapshotId(),
-                                earliestSnapshotIdToKeep,
-                                readableSnapshotResult.getReadableOffsets().size());
+                        if (earliestSnapshotIdToKeep >= 0) {
+                            LOG.info(
+                                    "earliest snapshot ID to keep for table {} is {}. "
+                                            + "Snapshots before this ID can be safely deleted from Fluss.",
+                                    tablePath,
+                                    earliestSnapshotIdToKeep);
+                        }
                         return LakeCommitResult.withReadableSnapshot(
                                 committedSnapshotId,
                                 readableSnapshotResult.getReadableSnapshotId(),
@@ -166,7 +166,7 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     @Nullable
     private TieringStats computeTableStats() {
         Identifier identifier =
-                new Identifier(tablePath.getDatabaseName(), tablePath.getTableName());
+                new Identifier(lakeTablePath.getDatabaseName(), lakeTablePath.getTableName());
         try {
             Optional<TableSnapshot> snapshot = paimonCatalog.loadSnapshot(identifier);
             if (!snapshot.isPresent()) {
@@ -292,12 +292,8 @@ public class PaimonLakeCommitter implements LakeCommitter<PaimonWriteResult, Pai
     public static class PaimonCommitCallback implements CommitCallback {
 
         @Override
-        public void call(
-                List<SimpleFileEntry> baseFiles,
-                List<ManifestEntry> deltaFiles,
-                List<IndexManifestEntry> indexFiles,
-                Snapshot snapshot) {
-            currentCommitSnapshotId.set(snapshot.id());
+        public void call(Context context) {
+            currentCommitSnapshotId.set(context.snapshot.id());
         }
 
         @Override

@@ -17,6 +17,7 @@
 
 package org.apache.fluss.server.log.remote;
 
+import org.apache.fluss.config.TableConfig;
 import org.apache.fluss.exception.RemoteStorageException;
 import org.apache.fluss.exception.RetriableException;
 import org.apache.fluss.fs.FsPath;
@@ -138,10 +139,14 @@ public class LogTieringTask implements Runnable {
             List<EnrichedLogSegment> candidateToCopySegments =
                     candidateToCopyLogSegments(logTablet);
             // Only delete segments that have been tiered to lake to ensure data safety
+            TableConfig tableConfig = replica.getTableInfo().getTableConfig();
             List<RemoteLogSegment> expiredRemoteLogSegments =
                     remoteLog.expiredRemoteLogSegments(
                             clock.milliseconds(),
-                            logTablet.isDataLakeEnabled() ? logTablet.getLakeLogEndOffset() : null);
+                            tableConfig.isDataLakeEnabled()
+                                    ? logTablet.getLakeLogEndOffset()
+                                    : null,
+                            tableConfig.getLogTTLMs());
 
             // 1. For these candidateToCopySegments, we will first copy segment files to
             // remote before commit the remote log manifest.
@@ -395,11 +400,11 @@ public class LogTieringTask implements Runnable {
                     // TODO: commit with version to avoid the manifest has been updated
                     remoteLogTablet.loadRemoteLogManifest(newRemoteLogManifest);
                     LogTablet logTablet = replica.getLogTablet();
-                    logTablet.updateRemoteLogStartOffset(newRemoteLogStartOffset);
-                    logTablet.updateHighestCopiedEndOffset(
+
+                    logTablet.updateRemoteLogOffsets(
+                            newRemoteLogStartOffset,
+                            newRemoteLogEndOffset,
                             newRemoteLogManifest.getHighestCopiedEndOffset());
-                    // make the local log cleaner clean log segments that are committed to remote.
-                    logTablet.updateRemoteLogEndOffset(newRemoteLogEndOffset);
                     logTablet.updateRemoteLogSize(newRemoteLogSize);
                     return true;
                 }

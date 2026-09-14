@@ -66,6 +66,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 import static org.apache.fluss.utils.Preconditions.checkNotNull;
@@ -105,11 +106,15 @@ public final class LogTablet {
     private final Scheduler scheduler;
     private final ScheduledFuture<?> writerExpireCheck;
     private final LogFormat logFormat;
+    // Mutable values derived from the latest table configuration.
     private volatile int tieredLogLocalSegments;
+    private volatile long effectiveLocalLogTtlMs;
+    private volatile boolean isDataLakeEnabled;
     private final Clock clock;
     private final boolean isChangeLog;
-    private final long logTtlMs;
+
     private final AtomicBoolean rollExpiredActiveSegmentEnabled;
+    private final boolean remoteLogEnabled;
 
     @GuardedBy("lock")
     private volatile LogOffsetMetadata highWatermarkMetadata;
@@ -119,7 +124,7 @@ public final class LogTablet {
 
     // The minimum offset that should be retained in the local log. This is used to ensure that,
     // the offset of kv snapshot should be retained, otherwise, kv recovery will fail.
-    private volatile long minRetainOffset;
+    private final AtomicLong minRetainOffset;
     // tracking the log start offset in remote storage
     private volatile long remoteLogStartOffset = Long.MAX_VALUE;
     // tracking the log end offset in remote storage
@@ -129,8 +134,6 @@ public final class LogTablet {
     // tracking the log size in remote storage
     private volatile long remoteLogSize = 0;
 
-    // tracking if the data lake enabled
-    private volatile boolean isDataLakeEnabled = false;
     // tracking the log start/end offset in lakehouse storage
     private volatile long lakeTableSnapshotId = -1;
     // note: currently, for primary key table, the log start offset nerve be updated
@@ -149,9 +152,7 @@ public final class LogTablet {
             AtomicBoolean rollExpiredActiveSegmentEnabled,
             Scheduler scheduler,
             WriterStateManager writerStateManager,
-            LogFormat logFormat,
-            int tieredLogLocalSegments,
-            long logTtlMs,
+            TableConfig tableConfig,
             boolean isChangelog,
             Clock clock) {
         this.dataDir = dataDir;
@@ -163,11 +164,14 @@ public final class LogTablet {
                 (int) conf.get(ConfigOptions.WRITER_ID_EXPIRATION_CHECK_INTERVAL).toMillis();
         this.writerStateManager = writerStateManager;
         this.highWatermarkMetadata = new LogOffsetMetadata(0L);
-        this.logTtlMs = logTtlMs;
         this.rollExpiredActiveSegmentEnabled =
                 checkNotNull(
                         rollExpiredActiveSegmentEnabled,
                         "rollExpiredActiveSegmentEnabled must not be null");
+        this.remoteLogEnabled =
+                conf.get(ConfigOptions.REMOTE_LOG_TASK_INTERVAL_DURATION).toMillis() > 0L;
+        applyTableConfig(tableConfig);
+        this.logFormat = tableConfig.getLogFormat();
 
         this.scheduler = scheduler;
         // scheduler the writer expiration interval check.
@@ -177,18 +181,12 @@ public final class LogTablet {
                         () -> removeExpiredWriter(System.currentTimeMillis()),
                         writerExpirationCheckIntervalMs,
                         writerExpirationCheckIntervalMs);
-        this.logFormat = logFormat;
-        checkArgument(
-                tieredLogLocalSegments > 0,
-                "log segments to retain in local must be greater than 0");
-        this.tieredLogLocalSegments = tieredLogLocalSegments;
-
         this.clock = clock;
         this.isChangeLog = isChangelog;
         // Default value to 0L for changelog to avoid cleaning up any segments in case of not
         // updating this value in time. Default value to Long.MAX_VALUE for normal log table,
         // as we don't need to retain logs for kv recovery.
-        this.minRetainOffset = isChangelog ? 0L : Long.MAX_VALUE;
+        this.minRetainOffset = new AtomicLong(isChangelog ? 0L : Long.MAX_VALUE);
     }
 
     public PhysicalTablePath getPhysicalTablePath() {
@@ -336,6 +334,22 @@ public final class LogTablet {
         return logFormat;
     }
 
+    /** Applies the mutable runtime configuration values used by this log tablet. */
+    public void applyTableConfig(TableConfig tableConfig) {
+        TableConfig newTableConfig = checkNotNull(tableConfig, "tableConfig");
+        int tieredLogLocalSegments = newTableConfig.getTieredLogLocalSegments();
+        checkArgument(
+                tieredLogLocalSegments > 0,
+                "log segments to retain in local must be greater than 0");
+        long effectiveLocalLogTtlMs =
+                remoteLogEnabled ? newTableConfig.getLocalLogTTLMs() : newTableConfig.getLogTTLMs();
+        boolean isDataLakeEnabled = newTableConfig.isDataLakeEnabled();
+
+        this.tieredLogLocalSegments = tieredLogLocalSegments;
+        this.effectiveLocalLogTtlMs = effectiveLocalLogTtlMs;
+        this.isDataLakeEnabled = isDataLakeEnabled;
+    }
+
     public long getLeaderEndOffsetSnapshot() {
         return leaderEndOffsetSnapshot;
     }
@@ -354,13 +368,14 @@ public final class LogTablet {
             TabletServerMetricGroup serverMetricGroup,
             long recoveryPoint,
             Scheduler scheduler,
-            LogFormat logFormat,
-            int tieredLogLocalSegments,
-            long logTtlMs,
+            TableConfig tableConfig,
             boolean isChangelog,
             Clock clock,
             boolean isCleanShutdown)
             throws Exception {
+        checkNotNull(tableConfig, "tableConfig");
+        LogFormat logFormat = tableConfig.getLogFormat();
+
         // create the log directory if it doesn't exist
         Files.createDirectories(tabletDir.toPath());
 
@@ -404,9 +419,7 @@ public final class LogTablet {
                 rollExpiredActiveSegmentEnabled,
                 scheduler,
                 writerStateManager,
-                logFormat,
-                tieredLogLocalSegments,
-                logTtlMs,
+                tableConfig,
                 isChangelog,
                 clock);
     }
@@ -427,7 +440,9 @@ public final class LogTablet {
             Clock clock,
             boolean isCleanShutdown)
             throws Exception {
-        TableConfig tableConfig = new TableConfig(new Configuration());
+        Configuration tableProperties = new Configuration();
+        tableProperties.set(ConfigOptions.TABLE_LOG_FORMAT, logFormat);
+        tableProperties.set(ConfigOptions.TABLE_TIERED_LOG_LOCAL_SEGMENTS, tieredLogLocalSegments);
         return create(
                 dataDir,
                 tablePath,
@@ -437,9 +452,7 @@ public final class LogTablet {
                 serverMetricGroup,
                 recoveryPoint,
                 scheduler,
-                logFormat,
-                tieredLogLocalSegments,
-                tableConfig.getLogTTLMs(),
+                new TableConfig(tableProperties),
                 isChangelog,
                 clock,
                 isCleanShutdown);
@@ -625,55 +638,78 @@ public final class LogTablet {
         return findOffset;
     }
 
-    public void updateRemoteLogStartOffset(long remoteLogStartOffset) {
+    private void updateRemoteLogStartOffset(long remoteLogStartOffset) {
         long prev = this.remoteLogStartOffset;
         if (prev == Long.MAX_VALUE || remoteLogStartOffset > prev) {
             this.remoteLogStartOffset = remoteLogStartOffset;
         }
     }
 
+    /** Updates the size of the log segments currently retained in remote storage. */
     public void updateRemoteLogSize(long remoteLogSize) {
         this.remoteLogSize = remoteLogSize;
     }
 
-    public void updateRemoteLogEndOffset(long remoteLogEndOffset) {
+    /**
+     * Updates the remote log offsets from one committed manifest.
+     *
+     * <p>The remote-readable start and end offsets are published before advancing the copied
+     * watermark and deleting local segments. This prevents fetches from observing locally deleted
+     * offsets before the corresponding remote range becomes readable. Local segments are cleaned up
+     * at most once.
+     */
+    public void updateRemoteLogOffsets(
+            long newRemoteLogStartOffset, long remoteLogEndOffset, long highestCopiedEndOffset) {
+        updateRemoteLogStartOffset(newRemoteLogStartOffset);
+
+        boolean shouldCleanup = false;
         if ((remoteLogEndOffset == -1L && this.remoteLogEndOffset != -1L)
                 || remoteLogEndOffset > this.remoteLogEndOffset) {
             this.remoteLogEndOffset = remoteLogEndOffset;
-            // Before highestCopiedEndOffset was introduced, remoteLogEndOffset was also the copy
-            // progress watermark. Preserve that behavior for existing callers.
-            if (remoteLogEndOffset >= 0L) {
-                this.highestCopiedEndOffset =
-                        Math.max(this.highestCopiedEndOffset, remoteLogEndOffset);
-            }
-
-            // try to delete these segments already exist in remote storage.
-            deleteSegmentsAlreadyExistsInRemote();
+            shouldCleanup = true;
         }
-    }
-
-    public void updateHighestCopiedEndOffset(long highestCopiedEndOffset) {
         if (highestCopiedEndOffset > this.highestCopiedEndOffset) {
             this.highestCopiedEndOffset = highestCopiedEndOffset;
+            shouldCleanup = true;
+        }
+        // The remote-readable end offset should never trail the copied watermark unless the
+        // manifest is empty (remoteLogEndOffset == -1). A non-empty manifest with a readable end
+        // behind the copied watermark means local segments could be cleaned up beyond the range
+        // that is actually readable from remote, which risks an unreadable offset gap.
+        if (this.remoteLogEndOffset != -1L
+                && this.remoteLogEndOffset < this.highestCopiedEndOffset) {
+            LOG.warn(
+                    "Remote readable end offset {} is behind copied watermark {} for bucket {}; "
+                            + "local cleanup will be bounded by the readable end offset.",
+                    this.remoteLogEndOffset,
+                    this.highestCopiedEndOffset,
+                    getTableBucket());
+        }
+        if (shouldCleanup) {
             deleteSegmentsAlreadyExistsInRemote();
         }
     }
 
+    /**
+     * Advances the minimum retain offset monotonically.
+     *
+     * <p>Updates may arrive concurrently from replica recovery, coordinator snapshot notifications,
+     * and follower fetch processing, while log cleanup reads the value from a different thread.
+     * {@link AtomicLong} provides cross-thread visibility and makes the check-and-update atomic.
+     * The CAS loop implements a monotonic maximum: if another updater changes the value after it
+     * was read, the loop reloads the latest value and retries only when this update is still
+     * larger. This prevents a delayed, smaller offset from overwriting a newer retention boundary.
+     */
     public void updateMinRetainOffset(long minRetainOffset) {
-        if (minRetainOffset > this.minRetainOffset) {
-            this.minRetainOffset = minRetainOffset;
-
-            // try to delete the old segments that are not needed.
-            deleteSegmentsAlreadyExistsInRemote();
+        long currentMinRetainOffset = this.minRetainOffset.get();
+        while (minRetainOffset > currentMinRetainOffset) {
+            if (this.minRetainOffset.compareAndSet(currentMinRetainOffset, minRetainOffset)) {
+                // try to delete the old segments that are not needed.
+                deleteSegmentsAlreadyExistsInRemote();
+                return;
+            }
+            currentMinRetainOffset = this.minRetainOffset.get();
         }
-    }
-
-    public void updateIsDataLakeEnabled(boolean isDataLakeEnabled) {
-        this.isDataLakeEnabled = isDataLakeEnabled;
-    }
-
-    public void updateTieredLogLocalSegments(int tieredLogLocalSegments) {
-        this.tieredLogLocalSegments = tieredLogLocalSegments;
     }
 
     @VisibleForTesting
@@ -683,6 +719,11 @@ public final class LogTablet {
 
     public int getTieredLogLocalSegments() {
         return tieredLogLocalSegments;
+    }
+
+    /** Returns the effective TTL used by local log segment cleanup, in milliseconds. */
+    public long getEffectiveLocalLogTtlMs() {
+        return effectiveLocalLogTtlMs;
     }
 
     public void updateLakeTableSnapshotId(long snapshotId) {
@@ -766,18 +807,29 @@ public final class LogTablet {
         }
     }
 
+    /**
+     * Deletes eligible local segments that have already been copied to remote storage.
+     *
+     * <p>For a non-empty manifest, cleanup never advances past the remote-readable end offset. An
+     * empty manifest keeps using the copied watermark so retention can continue after all remote
+     * segments have expired.
+     */
     public void deleteSegmentsAlreadyExistsInRemote() {
-        cleanupSegments(highestCopiedEndOffset, this::cleanupTieredSegments);
+        long cleanupToOffset =
+                remoteLogEndOffset == -1L
+                        ? highestCopiedEndOffset
+                        : Math.min(remoteLogEndOffset, highestCopiedEndOffset);
+        cleanupSegments(cleanupToOffset, this::cleanupTieredSegments);
     }
 
-    /** Deletes inactive local segments that have expired according to the table log TTL. */
+    /**
+     * Deletes inactive local segments that have expired according to the local log TTL.
+     *
+     * <p>When remote log tiering is enabled, cleanup is bounded by the highest offset copied to
+     * remote storage. Otherwise, cleanup is bounded by the high watermark.
+     */
     public void deleteExpiredSegments() {
-        // A missing remote end offset can mean either that no segment has been uploaded or that
-        // all remote segments have expired. In both cases, table.log.ttl remains authoritative for
-        // local retention, while the high watermark and minRetainOffset still protect data that
-        // cannot be deleted yet.
-        long cleanupToOffset =
-                highestCopiedEndOffset == -1L ? getHighWatermark() : highestCopiedEndOffset;
+        long cleanupToOffset = remoteLogEnabled ? highestCopiedEndOffset : getHighWatermark();
         cleanupSegments(cleanupToOffset, this::cleanupExpiredSegments);
     }
 
@@ -821,7 +873,8 @@ public final class LogTablet {
 
         try {
             // shouldn't clean up segments that will be used by kv recovery.
-            long effectiveCleanupToOffset = Math.min(minRetainOffset, requestedCleanupToOffset);
+            long effectiveCleanupToOffset =
+                    Math.min(minRetainOffset.get(), requestedCleanupToOffset);
             cleanupAction.cleanup(effectiveCleanupToOffset);
         } catch (IOException e) {
             LOG.error(
@@ -1292,7 +1345,12 @@ public final class LogTablet {
                 }
 
                 // update write append info.
-                updateWriterAppendInfo(writerStateManager, batch, updatedWriters, isAppendAsLeader);
+                updateWriterAppendInfo(
+                        writerStateManager,
+                        batch,
+                        updatedWriters,
+                        isAppendAsLeader,
+                        WriterAppendInfo.SequenceValidation.ENFORCE);
             }
         }
 
@@ -1344,12 +1402,14 @@ public final class LogTablet {
             }
 
             long now = clock.milliseconds();
+            // TTL can be hot-updated, we need a snapshot of the TTL to ensure consistent
+            long ttlMs = effectiveLocalLogTtlMs;
             List<LogSegment> deletableSegments =
-                    deletableExpiredSegments(endOffset, now, logSegments);
+                    deletableExpiredSegments(endOffset, now, logSegments, ttlMs);
 
             if (deletableSegments.size() == logSegments.size() - 1
                     && shouldRollExpiredActiveSegment(
-                            now, logSegments.get(logSegments.size() - 1))) {
+                            now, logSegments.get(logSegments.size() - 1), ttlMs)) {
                 roll(Optional.empty());
             }
 
@@ -1369,6 +1429,7 @@ public final class LogTablet {
         // readers is in progress.
         List<LogSegment> deletableSegments = new ArrayList<>();
         List<LogSegment> logSegments = localLog.getSegments().values();
+        int tieredLogLocalSegments = getTieredLogLocalSegments();
 
         // ignore the segments configured to be retained
         for (int i = 0; i < logSegments.size() - tieredLogLocalSegments; i++) {
@@ -1383,11 +1444,11 @@ public final class LogTablet {
 
     /** Returns the contiguous prefix of expired inactive segments eligible for deletion. */
     private List<LogSegment> deletableExpiredSegments(
-            long endOffset, long now, List<LogSegment> logSegments) throws IOException {
+            long endOffset, long now, List<LogSegment> logSegments, long ttlMs) throws IOException {
         List<LogSegment> deletableSegments = new ArrayList<>();
         for (int i = 0; i < logSegments.size() - 1; i++) {
             if (logSegments.get(i + 1).getBaseOffset() > endOffset
-                    || !isSegmentExpired(now, logSegments.get(i), logTtlMs)) {
+                    || !isSegmentExpired(now, logSegments.get(i), ttlMs)) {
                 break;
             }
             deletableSegments.add(logSegments.get(i));
@@ -1396,11 +1457,11 @@ public final class LogTablet {
     }
 
     /** Returns whether the active segment is non-empty, expired, and fully committed. */
-    private boolean shouldRollExpiredActiveSegment(long now, LogSegment activeSegment)
+    private boolean shouldRollExpiredActiveSegment(long now, LogSegment activeSegment, long ttlMs)
             throws IOException {
         return rollExpiredActiveSegmentEnabled.get()
                 && activeSegment.getSizeInBytes() > 0
-                && isSegmentExpired(now, activeSegment, logTtlMs)
+                && isSegmentExpired(now, activeSegment, ttlMs)
                 && getHighWatermark() >= localLogEndOffset();
     }
 
@@ -1409,12 +1470,11 @@ public final class LogTablet {
         void cleanup(long endOffset) throws IOException;
     }
 
-    private boolean isSegmentExpired(long now, LogSegment segment, long expirationTimeMs)
-            throws IOException {
-        if (expirationTimeMs <= 0L) {
+    private boolean isSegmentExpired(long now, LogSegment segment, long ttlMs) throws IOException {
+        if (ttlMs <= 0L) {
             return false;
         }
-        return now - segment.maxTimestampSoFar() > expirationTimeMs;
+        return now - segment.maxTimestampSoFar() > ttlMs;
     }
 
     private void deleteSegments(List<LogSegment> deletableSegments, SegmentDeletionReason reason)
@@ -1428,7 +1488,8 @@ public final class LogTablet {
             WriterStateManager writerStateManager,
             LogRecordBatch batch,
             Map<Long, WriterAppendInfo> writers,
-            boolean isAppendAsLeader) {
+            boolean isAppendAsLeader,
+            WriterAppendInfo.SequenceValidation sequenceValidation) {
         long writerId = batch.writerId();
         // update writers.
         WriterAppendInfo appendInfo =
@@ -1436,7 +1497,8 @@ public final class LogTablet {
         appendInfo.append(
                 batch,
                 writerStateManager.isWriterInBatchExpired(System.currentTimeMillis(), batch),
-                isAppendAsLeader);
+                isAppendAsLeader,
+                sequenceValidation);
     }
 
     static void rebuildWriterState(
@@ -1554,7 +1616,14 @@ public final class LogTablet {
         Map<Long, WriterAppendInfo> loadedWriters = new HashMap<>();
         for (LogRecordBatch batch : records.batches()) {
             if (batch.hasWriterId()) {
-                updateWriterAppendInfo(writerStateManager, batch, loadedWriters, false);
+                // The records have already been accepted and persisted. Recovery rebuilds writer
+                // state without applying online client sequence validation.
+                updateWriterAppendInfo(
+                        writerStateManager,
+                        batch,
+                        loadedWriters,
+                        false,
+                        WriterAppendInfo.SequenceValidation.WARN_AND_ACCEPT);
             }
         }
         loadedWriters.values().forEach(writerStateManager::update);
@@ -1586,6 +1655,6 @@ public final class LogTablet {
 
     @VisibleForTesting
     public long getMinRetainOffset() {
-        return minRetainOffset;
+        return minRetainOffset.get();
     }
 }

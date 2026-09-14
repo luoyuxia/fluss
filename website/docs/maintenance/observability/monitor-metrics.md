@@ -463,8 +463,8 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   </thead>
   <tbody>
     <tr>
-      <th rowspan="33"><strong>tabletserver</strong></th>
-      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="25">-</td>
+      <th rowspan="39"><strong>tabletserver</strong></th>
+      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="27">-</td>
       <td>messagesInPerSecond</td>
       <td>The number of messages written per second to this server.</td>
       <td>Meter</td>
@@ -590,6 +590,37 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>Meter</td>
     </tr>
     <tr>
+      <td>kvWalMemoryPoolUsage</td>
+      <td>Memory currently allocated from the server-wide WAL memory pool for primary key tables in this server (in bytes). The pool capacity is configured by <code>server.buffer.memory-size</code>.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>kvWalMemoryPoolCapacity</td>
+      <td>Total capacity of the server-wide WAL memory pool for primary key tables in this server (in bytes).</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td rowspan="4">historical</td>
+      <td>inflightRequests</td>
+      <td>The number of accepted historical requests that have not completed.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lookupCacheDiskSize</td>
+      <td>The current historical lookup cache footprint on local disk, in bytes.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lookupCacheTableCount</td>
+      <td>The number of table lookupers currently retained in the historical lookup cache.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>lookupCacheCapacityEvictions</td>
+      <td>The cumulative number of cached table lookupers evicted because the cache retains at most ten tables.</td>
+      <td>Counter</td>
+    </tr>
+    <tr>
       <td rowspan="2">logicalStorage</td>
       <td>logSize</td>
       <td>The logical storage size of log managed by this TabletServer.</td>
@@ -662,7 +693,7 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>Gauge</td>
     </tr>
     <tr>
-      <th rowspan="9">tabletserver</th>
+      <th rowspan="10">tabletserver</th>
       <td rowspan="1">request</td>
       <td>requestQueueSize</td>
       <td>The TabletServer node network waiting queue size.</td>
@@ -678,7 +709,9 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td rowspan="7">
           request_produceLog
           request_putKv
+          request_historicalPutKv
           request_lookup
+          request_historicalLookup
           request_prefixLookup
           request_metadata
           request_fetchLogClient
@@ -717,6 +750,12 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>responseSendTimeMs</td>
       <td>Time to send the response	for each request type.</td>
       <td>Histogram</td>
+    </tr>
+    <tr>
+      <td rowspan="1">request_error</td>
+      <td>errorsPerSecond</td>
+      <td>The number of failed RPC responses processed per second for each request type and <code>error</code> name. One event is recorded for each failed RPC response; <code>NONE</code> and errors in successful response buckets are excluded. A series appears only after its request/error first occurs.</td>
+      <td>Meter</td>
     </tr>
      <tr>
       <th rowspan="6">client</th>
@@ -767,7 +806,7 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
   </thead>
   <tbody>
     <tr>
-      <th rowspan="33"><strong>tabletserver</strong></th>
+      <th rowspan="39"><strong>tabletserver</strong></th>
       <td rowspan="20">table</td>
       <td>messagesInPerSecond</td>
       <td>The number of messages written per second to this table.</td>
@@ -868,6 +907,37 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
       <td>The number of failed delete remote log requests to delete remote log after log ttl per second.</td>
       <td>Meter</td>
     </tr>
+    <tr>
+      <td rowspan="6">table_historical</td>
+      <td>totalPutKvRequestsPerSecond</td>
+      <td>The number of historical put kv requests to this table per second.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
+      <td>failedPutKvRequestsPerSecond</td>
+      <td>The number of historical put kv requests that failed unexpectedly for this table per second.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
+      <td>totalLookupRequestsPerSecond</td>
+      <td>The number of historical lookup requests to this table per second.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
+      <td>failedLookupRequestsPerSecond</td>
+      <td>The number of historical lookup requests that failed unexpectedly for this table per second.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
+      <td>lakeLookupsPerSecond</td>
+      <td>The number of historical lake point lookups performed for this table per second, labeled with <code>lookup_file_downloaded</code>.</td>
+      <td>Meter</td>
+    </tr>
+    <tr>
+      <td>lakeLookupTimeMs</td>
+      <td>The time spent on a historical lake point lookup, in milliseconds, labeled with <code>lookup_file_downloaded</code>.</td>
+      <td>Histogram</td>
+    </tr>
      <tr>
       <td rowspan="3">table_bucket_log</td>
       <td>numSegments</td>
@@ -940,6 +1010,10 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
     </tr>
   </tbody>
 </table>
+
+For <code>lakeLookupsPerSecond</code> and <code>lakeLookupTimeMs</code>,
+<code>lookup_file_downloaded="true"</code> means that the lookup downloaded at least one local
+lookup file; <code>false</code> means that it did not download a local lookup file.
 
 ### RocksDB
 
@@ -1045,9 +1119,9 @@ These metrics use Sum aggregation to show the total value across all buckets of 
   </tbody>
 </table>
 
-#### Server-level RocksDB Metrics (Sum Aggregation)
+#### Server-level RocksDB Metrics
 
-These metrics use Sum aggregation to show the total value across all tables in a server, providing a server-wide view of RocksDB resource usage.
+These metrics provide a server-wide view of RocksDB resource usage. The total memory metric sums usage across tables, while the shared block cache metrics report the single cache owned by the server.
 
 <table class="table table-bordered">
   <thead>
@@ -1061,10 +1135,35 @@ These metrics use Sum aggregation to show the total value across all tables in a
   </thead>
   <tbody>
     <tr>
-      <th rowspan="1"><strong>tabletserver</strong></th>
-      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="1">-</td>
+      <th rowspan="6"><strong>tabletserver</strong></th>
+      <td style={{textAlign: 'center', verticalAlign: 'middle' }} rowspan="6">-</td>
       <td>rocksdbMemoryUsageTotal</td>
-      <td>Total memory usage across all RocksDB instances in this server (in bytes).</td>
+      <td>Total memory usage across all RocksDB instances in this server (in bytes). This includes memtables, table readers, and block cache. When <code>kv.rocksdb.shared-block-cache.size</code> is greater than 0, the shared block cache usage is counted once to avoid double-counting across tablets.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>rocksdbSharedBlockCacheUsage</td>
+      <td>Memory usage of the shared RocksDB block cache in this server (in bytes). Reports 0 when the shared block cache is disabled.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>rocksdbSharedBlockCacheCapacity</td>
+      <td>Configured soft capacity of the shared RocksDB block cache in this server (in bytes). Reports 0 when the shared block cache is disabled. This is not a hard limit on process memory.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>rocksdbSharedBlockCachePinnedUsage</td>
+      <td>Pinned memory usage of the shared RocksDB block cache in this server (in bytes). Reports 0 when the shared block cache is disabled.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>rocksdbSharedWriteBufferUsage</td>
+      <td>Approximate memory charged to the shared RocksDB write buffer manager in this server (in bytes). This is a logical accounting value, not process RSS or a hard memory bound. It is not added to <code>rocksdbMemoryUsageTotal</code>, whose memtable component already reports the same memory.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
+      <td>rocksdbSharedWriteBufferCapacity</td>
+      <td>Configured soft capacity of the shared RocksDB write buffer manager in this server (in bytes). Reports 0 when the shared write buffer manager is disabled.</td>
       <td>Gauge</td>
     </tr>
   </tbody>
@@ -1102,12 +1201,12 @@ These metrics use Sum aggregation to show the total value across all tables in a
     </tr>
     <tr>
       <td>rocksdbBlockCacheMemoryUsageTotal</td>
-      <td>Total block cache memory usage across all buckets of this table (in bytes).</td>
+      <td>Total block cache memory usage across all buckets of this table (in bytes). When <code>kv.rocksdb.shared-block-cache.size</code> is greater than 0, this metric reports 0 because shared cache usage is not attributable to an individual table; it is reported at the server level via <code>rocksdbSharedBlockCacheUsage</code>.</td>
       <td>Gauge</td>
     </tr>
     <tr>
       <td>rocksdbBlockCachePinnedUsageTotal</td>
-      <td>Total pinned memory in block cache across all buckets of this table (in bytes).</td>
+      <td>Total pinned memory in block cache across all buckets of this table (in bytes). When <code>kv.rocksdb.shared-block-cache.size</code> is greater than 0, this metric reports 0 because shared pinned usage is not attributable to an individual table; it is reported at the server level via <code>rocksdbSharedBlockCachePinnedUsage</code>.</td>
       <td>Gauge</td>
     </tr>
   </tbody>
@@ -1173,6 +1272,12 @@ How to Use Flink Metrics, you can see [Flink Metrics](https://nightlies.apache.o
             <td>currentFetchEventTimeLag</td>
             <td>Flink Source Operator</td>
             <td>Time difference between reading the data file and file creation.</td>
+            <td>Gauge</td>
+        </tr>
+        <tr>
+            <td>pendingRecords</td>
+            <td>Flink Source Operator</td>
+            <td>The number of log records that are available after the current source fetch offset. Only the streaming log part is counted, snapshot and lake records are excluded.</td>
             <td>Gauge</td>
         </tr>
     </tbody>

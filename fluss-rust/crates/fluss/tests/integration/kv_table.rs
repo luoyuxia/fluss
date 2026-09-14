@@ -59,6 +59,7 @@ mod kv_table_test {
                     .column("name", DataTypes::string())
                     .column("age", DataTypes::bigint())
                     .primary_key(vec!["id"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -198,6 +199,7 @@ mod kv_table_test {
                     .column("user_id", DataTypes::int())
                     .column("score", DataTypes::bigint())
                     .primary_key(vec!["region", "user_id"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -317,6 +319,7 @@ mod kv_table_test {
                     )
                     .column("tags", DataTypes::array(DataTypes::string()))
                     .primary_key(vec!["id"])
+                    .unwrap()
                     .build()
                     .expect("schema"),
             )
@@ -502,6 +505,7 @@ mod kv_table_test {
                     )
                     .column("tags", DataTypes::array(DataTypes::string()))
                     .primary_key(vec!["region", "user_id"])
+                    .unwrap()
                     .build()
                     .expect("schema"),
             )
@@ -685,6 +689,7 @@ mod kv_table_test {
                     .column("id", DataTypes::int())
                     .column("name", DataTypes::string())
                     .primary_key(vec!["region", "id"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -799,6 +804,7 @@ mod kv_table_test {
                     .column("c", DataTypes::bigint())
                     .column("d", DataTypes::string())
                     .primary_key(vec!["a", "b", "c"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -905,6 +911,7 @@ mod kv_table_test {
                     .column("c", DataTypes::bigint())
                     .column("d", DataTypes::string())
                     .primary_key(vec!["region", "a", "b", "c"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -1015,6 +1022,7 @@ mod kv_table_test {
                     .column("b", DataTypes::string())
                     .column("c", DataTypes::bigint())
                     .primary_key(vec!["a", "b", "c"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -1070,6 +1078,7 @@ mod kv_table_test {
                     .column("name", DataTypes::string())
                     .column("value", DataTypes::bigint())
                     .primary_key(vec!["id".to_string()])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -1202,6 +1211,7 @@ mod kv_table_test {
                     .column("b", DataTypes::string())
                     .column("c", DataTypes::string())
                     .primary_key(vec!["a", "b"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )
@@ -1258,6 +1268,84 @@ mod kv_table_test {
         assert_eq!(row.get_string(2).unwrap(), "value1");
     }
 
+    /// Verifies that Iceberg key encoding and bucketing are wired through KV
+    /// upsert, lookup, and delete operations.
+    #[tokio::test]
+    async fn upsert_delete_and_lookup_with_iceberg_format() {
+        let cluster = get_shared_cluster();
+        let connection = cluster.get_fluss_connection().await;
+        let admin = connection.get_admin().unwrap();
+        let table_path = TablePath::new("fluss", "test_kv_iceberg_format");
+
+        let table_descriptor = TableDescriptor::builder()
+            .schema(
+                Schema::builder()
+                    .column("id", DataTypes::int())
+                    .column("name", DataTypes::string())
+                    .primary_key(vec!["id"])
+                    .unwrap()
+                    .build()
+                    .expect("Failed to build schema"),
+            )
+            .distributed_by(Some(3), vec!["id".to_string()])
+            .property("table.datalake.format", "iceberg")
+            .build()
+            .expect("Failed to build table");
+
+        create_table(&admin, &table_path, &table_descriptor).await;
+
+        let table = connection.get_table(&table_path).await.unwrap();
+        let upsert_writer = table
+            .new_upsert()
+            .expect("Failed to create upsert")
+            .create_writer()
+            .expect("Failed to create Iceberg writer");
+
+        for (id, name) in [(1, "Frost"), (2, "Ember")] {
+            let mut row = GenericRow::new(2);
+            row.set_field(0, id);
+            row.set_field(1, name);
+            upsert_writer
+                .upsert(&row)
+                .expect("Failed to upsert Iceberg row");
+        }
+        upsert_writer.flush().await.expect("Failed to flush");
+
+        let mut lookuper = table
+            .new_lookup()
+            .expect("Failed to create lookup")
+            .create_lookuper()
+            .expect("Failed to create Iceberg lookuper");
+
+        for (id, expected_name) in [(1, "Frost"), (2, "Ember")] {
+            let result = lookuper
+                .lookup(&make_key_with_field_count(id, 1))
+                .await
+                .expect("Failed to lookup Iceberg row");
+            let row = result.get_single_row().unwrap().expect("Row should exist");
+            assert_eq!(row.get_string(1).unwrap(), expected_name);
+        }
+
+        let mut delete_row = GenericRow::new(2);
+        delete_row.set_field(0, 1);
+        upsert_writer
+            .delete(&delete_row)
+            .expect("Failed to delete Iceberg row")
+            .await
+            .expect("Failed to wait for delete acknowledgment");
+
+        let result = lookuper
+            .lookup(&make_key_with_field_count(1, 1))
+            .await
+            .expect("Failed to lookup deleted Iceberg row");
+        assert!(result.get_single_row().unwrap().is_none());
+
+        admin
+            .drop_table(&table_path, false)
+            .await
+            .expect("Failed to drop table");
+    }
+
     /// Verifies upsert/lookup/update/delete on a KV table whose data lake format
     /// is `paimon`, exercising every scalar `DataType` supported by Paimon's
     /// BinaryRow encoder. With the default `kv_format_version=1`, the client
@@ -1303,6 +1391,7 @@ mod kv_table_test {
                     .column("col_bytes", DataTypes::bytes())
                     .column("col_binary", DataTypes::binary(4))
                     .primary_key(vec!["id"])
+                    .unwrap()
                     .build()
                     .expect("Failed to build schema"),
             )

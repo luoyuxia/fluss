@@ -29,7 +29,6 @@ import org.apache.fluss.exception.KvStorageException;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.memory.LazyMemorySegmentPool;
-import org.apache.fluss.memory.MemorySegmentPool;
 import org.apache.fluss.metadata.KvFormat;
 import org.apache.fluss.metadata.PhysicalTablePath;
 import org.apache.fluss.metadata.SchemaGetter;
@@ -49,11 +48,17 @@ import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocator;
 import org.apache.fluss.shaded.arrow.org.apache.arrow.memory.BufferAllocatorUtil;
 import org.apache.fluss.utils.FileUtils;
 import org.apache.fluss.utils.FlussPaths;
+import org.apache.fluss.utils.IOUtils;
+import org.apache.fluss.utils.clock.Clock;
+import org.apache.fluss.utils.clock.SystemClock;
 import org.apache.fluss.utils.types.Tuple2;
 
+import org.rocksdb.Cache;
+import org.rocksdb.LRUCache;
 import org.rocksdb.RateLimiter;
 import org.rocksdb.RateLimiterMode;
 import org.rocksdb.RocksDB;
+import org.rocksdb.WriteBufferManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -120,6 +125,8 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
 
     private final ZooKeeperClient zkClient;
 
+    private final Clock clock;
+
     private final Map<TableBucket, KvTablet> currentKvs = new ConcurrentHashMap<>();
 
     /**
@@ -129,7 +136,7 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
     private final BufferAllocator arrowBufferAllocator;
 
     /** The memory segment pool to allocate memorySegment. */
-    private final MemorySegmentPool memorySegmentPool;
+    private final LazyMemorySegmentPool memorySegmentPool;
 
     private final FsPath remoteKvDir;
 
@@ -140,8 +147,17 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
      */
     private final RateLimiter sharedRocksDBRateLimiter;
 
+    /** The shared block cache for all RocksDB instances, null if disabled. */
+    @Nullable private final Cache sharedBlockCache;
+
     /** Current shared rate limiter configuration in bytes per second. */
     private volatile long currentSharedRateLimitBytesPerSec;
+
+    /** The optional write buffer manager shared by all RocksDB instances. */
+    @Nullable private final WriteBufferManager sharedWriteBufferManager;
+
+    /** The cache used only for shared write buffer accounting. */
+    @Nullable private final Cache sharedWriteBufferAccountingCache;
 
     private final KvFlushScheduler kvFlushScheduler;
 
@@ -154,7 +170,8 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
             int recoveryThreadsPerDataDir,
             LogManager logManager,
             TabletServerMetricGroup tabletServerMetricGroup,
-            @Nullable KvFlushScheduler kvFlushScheduler)
+            @Nullable KvFlushScheduler kvFlushScheduler,
+            Clock clock)
             throws IOException {
         super(TabletType.KV, localDiskManager.dataDirs(), conf, recoveryThreadsPerDataDir);
         this.localDiskManager = localDiskManager;
@@ -162,14 +179,58 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
         this.arrowBufferAllocator = BufferAllocatorUtil.createBufferAllocator(null);
         this.memorySegmentPool = LazyMemorySegmentPool.createServerBufferPool(conf);
         this.zkClient = zkClient;
+        this.clock = clock;
         this.remoteKvDir = FlussPaths.remoteKvDir(conf);
         this.remoteFileSystem = remoteKvDir.getFileSystem();
         this.serverMetricGroup = tabletServerMetricGroup;
         this.sharedRocksDBRateLimiter = createSharedRateLimiter(conf);
+        this.sharedBlockCache = createSharedBlockCache(conf);
         this.currentSharedRateLimitBytesPerSec =
                 conf.get(ConfigOptions.KV_SHARED_RATE_LIMITER_BYTES_PER_SEC).getBytes();
-        this.kvFlushScheduler =
+        KvFlushScheduler createdFlushScheduler =
                 kvFlushScheduler != null ? kvFlushScheduler : new KvFlushScheduler(conf);
+        @Nullable Cache createdWriteBufferAccountingCache = null;
+        @Nullable WriteBufferManager createdWriteBufferManager = null;
+        try {
+            long sharedWriteBufferCapacity =
+                    conf.get(ConfigOptions.KV_SHARED_WRITE_BUFFER_SIZE).getBytes();
+            if (sharedWriteBufferCapacity > 0) {
+                RocksDB.loadLibrary();
+                createdWriteBufferAccountingCache = new LRUCache(sharedWriteBufferCapacity);
+                createdWriteBufferManager =
+                        new WriteBufferManager(
+                                sharedWriteBufferCapacity, createdWriteBufferAccountingCache);
+            }
+            this.sharedWriteBufferAccountingCache = createdWriteBufferAccountingCache;
+            this.sharedWriteBufferManager = createdWriteBufferManager;
+            tabletServerMetricGroup.setSharedWriteBufferMetrics(
+                    this::getSharedWriteBufferUsage, sharedWriteBufferCapacity);
+            // bind the pool as the data source locally so the supplier does not capture the
+            // whole KvManager, and convert pages to bytes here rather than in the metric group
+            LazyMemorySegmentPool walPool = memorySegmentPool;
+            tabletServerMetricGroup.registerKvWalMemoryPoolMetrics(
+                    () -> (long) walPool.usedPages() * walPool.pageSize(), walPool.totalSize());
+        } catch (RuntimeException | Error e) {
+            IOUtils.closeQuietly(createdWriteBufferManager);
+            IOUtils.closeQuietly(createdWriteBufferAccountingCache);
+            IOUtils.closeQuietly(createdFlushScheduler);
+            IOUtils.closeQuietly(arrowBufferAllocator);
+            try {
+                memorySegmentPool.close();
+            } catch (RuntimeException cleanupFailure) {
+                e.addSuppressed(cleanupFailure);
+            }
+            IOUtils.closeQuietly(sharedRocksDBRateLimiter);
+            IOUtils.closeQuietly(sharedBlockCache);
+            throw e;
+        }
+        this.kvFlushScheduler = createdFlushScheduler;
+        if (sharedBlockCache != null) {
+            tabletServerMetricGroup.setSharedBlockCacheMetrics(
+                    this::getSharedBlockCacheUsage,
+                    this::getSharedBlockCachePinnedUsage,
+                    conf.get(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE).getBytes());
+        }
     }
 
     private static RateLimiter createSharedRateLimiter(Configuration conf) {
@@ -190,6 +251,15 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                 false);
     }
 
+    private static @Nullable Cache createSharedBlockCache(Configuration conf) {
+        long sharedBlockCacheSize = conf.get(ConfigOptions.KV_SHARED_BLOCK_CACHE_SIZE).getBytes();
+        if (sharedBlockCacheSize == 0) {
+            return null;
+        }
+        RocksDB.loadLibrary();
+        return new LRUCache(sharedBlockCacheSize);
+    }
+
     public static KvManager create(
             Configuration conf,
             ZooKeeperClient zkClient,
@@ -197,7 +267,14 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
             TabletServerMetricGroup tabletServerMetricGroup,
             LocalDiskManager localDiskManager)
             throws IOException {
-        return create(conf, zkClient, logManager, tabletServerMetricGroup, localDiskManager, null);
+        return create(
+                conf,
+                zkClient,
+                logManager,
+                tabletServerMetricGroup,
+                localDiskManager,
+                null,
+                SystemClock.getInstance());
     }
 
     /**
@@ -214,6 +291,38 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
             LocalDiskManager localDiskManager,
             @Nullable KvFlushScheduler kvFlushScheduler)
             throws IOException {
+        return create(
+                conf,
+                zkClient,
+                logManager,
+                tabletServerMetricGroup,
+                localDiskManager,
+                kvFlushScheduler,
+                SystemClock.getInstance());
+    }
+
+    public static KvManager create(
+            Configuration conf,
+            ZooKeeperClient zkClient,
+            LogManager logManager,
+            TabletServerMetricGroup tabletServerMetricGroup,
+            LocalDiskManager localDiskManager,
+            Clock clock)
+            throws IOException {
+        return create(
+                conf, zkClient, logManager, tabletServerMetricGroup, localDiskManager, null, clock);
+    }
+
+    @VisibleForTesting
+    public static KvManager create(
+            Configuration conf,
+            ZooKeeperClient zkClient,
+            LogManager logManager,
+            TabletServerMetricGroup tabletServerMetricGroup,
+            LocalDiskManager localDiskManager,
+            @Nullable KvFlushScheduler kvFlushScheduler,
+            Clock clock)
+            throws IOException {
         return new KvManager(
                 localDiskManager,
                 conf,
@@ -221,7 +330,32 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                 conf.getInt(ConfigOptions.NETTY_SERVER_NUM_WORKER_THREADS),
                 logManager,
                 tabletServerMetricGroup,
-                kvFlushScheduler);
+                kvFlushScheduler,
+                clock);
+    }
+
+    /**
+     * Returns the shared block cache usage in bytes, or 0 if shared cache is disabled.
+     *
+     * @return shared block cache usage in bytes
+     */
+    private long getSharedBlockCacheUsage() {
+        return sharedBlockCache != null ? sharedBlockCache.getUsage() : 0L;
+    }
+
+    /**
+     * Returns the shared block cache pinned usage in bytes, or 0 if shared cache is disabled.
+     *
+     * @return shared block cache pinned usage in bytes
+     */
+    private long getSharedBlockCachePinnedUsage() {
+        return sharedBlockCache != null ? sharedBlockCache.getPinnedUsage() : 0L;
+    }
+
+    private long getSharedWriteBufferUsage() {
+        return sharedWriteBufferAccountingCache != null
+                ? sharedWriteBufferAccountingCache.getUsage()
+                : 0L;
     }
 
     public void startup() {
@@ -241,10 +375,15 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
         closeTabletsConcurrently(
                         kvs, "kv-tablet-closing", kvTablet -> closeKvTablet(kvTablet, closeMode))
                 .join();
+        IOUtils.closeQuietly(sharedWriteBufferManager);
+        IOUtils.closeQuietly(sharedWriteBufferAccountingCache);
         arrowBufferAllocator.close();
         memorySegmentPool.close();
         if (sharedRocksDBRateLimiter != null) {
             sharedRocksDBRateLimiter.close();
+        }
+        if (sharedBlockCache != null) {
+            sharedBlockCache.close();
         }
         LOG.info("Shut down KvManager complete.");
     }
@@ -318,9 +457,13 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                                     schemaGetter,
                                     tableConfig.getChangelogImage(),
                                     sharedRocksDBRateLimiter,
+                                    sharedBlockCache,
+                                    sharedWriteBufferManager,
                                     kvFlushScheduler,
                                     flushCompleteListener,
-                                    autoIncrementManager);
+                                    autoIncrementManager,
+                                    clock,
+                                    tableConfig);
                     currentKvs.put(tableBucket, tablet);
 
                     LOG.info(
@@ -386,8 +529,6 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                                 dropKvTablet.getKvTabletDir().getAbsolutePath()),
                         e);
             }
-        } else {
-            LOG.warn("Fail to delete kv bucket {}.", tableBucket.getBucket());
         }
     }
 
@@ -414,7 +555,6 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
         // TODO: we should support recover schema from disk to decouple put and schema.
         TablePath tablePath = physicalTablePath.getTablePath();
         TableInfo tableInfo = getTableInfo(zkClient, tablePath);
-
         TableConfig tableConfig = tableInfo.getTableConfig();
         RowMerger rowMerger =
                 RowMerger.create(tableConfig, tableConfig.getKvFormat(), schemaGetter);
@@ -440,9 +580,13 @@ public final class KvManager extends TabletManagerBase implements ServerReconfig
                         schemaGetter,
                         tableConfig.getChangelogImage(),
                         sharedRocksDBRateLimiter,
+                        sharedBlockCache,
+                        sharedWriteBufferManager,
                         kvFlushScheduler,
                         flushCompleteListener,
-                        autoIncrementManager);
+                        autoIncrementManager,
+                        clock,
+                        tableConfig);
         if (this.currentKvs.containsKey(tableBucket)) {
             throw new IllegalStateException(
                     String.format(
