@@ -407,6 +407,11 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
     </tr>
     <tr>
       <td rowspan="8">lakeTiering_table</td>
+      <td>freshness</td>
+      <td>The user-configured data freshness interval (in milliseconds) for this table.</td>
+      <td>Gauge</td>
+    </tr>
+    <tr>
       <td>tierLag</td>
       <td>Time in milliseconds since the last successful tiering operation for this table. For newly registered tables that have never completed a tiering round, the lag is measured from the time the table was registered.</td>
       <td>Gauge</td>
@@ -439,11 +444,6 @@ Some metrics might not be exposed when using other JVM implementations (e.g. IBM
     <tr>
       <td>pendingTime</td>
       <td>How long (in milliseconds) the table has been waiting in the pending queue for tiering. Returns 0 when the table is not currently pending.</td>
-      <td>Gauge</td>
-    </tr>
-    <tr>
-      <td>freshness</td>
-      <td>The user-configured data freshness interval (in milliseconds) for this table.</td>
       <td>Gauge</td>
     </tr>
   </tbody>
