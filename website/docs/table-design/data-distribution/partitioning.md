@@ -71,6 +71,12 @@ In this case, when automatic partitioning occurs (Fluss will periodically operat
 
 ### Historical Partition Access
 
+:::warning
+**After changing `table.datalake.historical-partition.enabled`, restart existing writer and lookup
+jobs that need historical partition access so that their clients load the updated table
+configuration.**
+:::
+
 Auto partitioning eventually removes partitions that fall outside the configured retention window.
 After an original Fluss partition is removed, late records cannot be written to it and primary-key
 lookups cannot find its rows in Fluss, even when the existing data has already been tiered to
@@ -92,8 +98,7 @@ When enabled, the Coordinator creates and retains an internal `__historical__` s
   system partition while preserving each record's original partition name. The tiering service
   writes the records back to their original Paimon partitions.
 - **Reads:** Primary-key point lookups continue to resolve rows after the original Fluss partition
-  no longer exists. Historical reads currently support only primary-key point lookups; this
-  mechanism does not add scan access for expired partitions.
+  no longer exists. Historical reads currently support only primary-key point lookups.
 
 The option is disabled by default and currently has the following requirements and limitations:
 
@@ -102,8 +107,6 @@ The option is disabled by default and currently has the following requirements a
 - The table must have exactly one partition key.
 - The bucket count cannot be rescaled while historical partition access is enabled, and the option
   cannot be enabled after the table's bucket count has been rescaled.
-- After changing the option, restart existing writer and lookup jobs that need historical partition
-  access so that their clients load the updated table configuration.
 
 Disabling the option removes the internal system partition.
 
