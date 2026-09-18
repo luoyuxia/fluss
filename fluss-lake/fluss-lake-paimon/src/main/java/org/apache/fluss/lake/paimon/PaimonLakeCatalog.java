@@ -21,6 +21,7 @@ import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidAlterTableException;
+import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.lake.lakestorage.LakeCatalog;
@@ -94,6 +95,20 @@ public class PaimonLakeCatalog implements LakeCatalog {
     @VisibleForTesting
     protected Catalog getPaimonCatalog() {
         return paimonCatalog;
+    }
+
+    @Override
+    public TableDescriptor getTableDescriptor(TablePath tablePath) throws TableNotExistException {
+        try {
+            Table table = paimonCatalog.getTable(toPaimon(tablePath));
+            if (!(table instanceof FileStoreTable)) {
+                throw new InvalidTableException(
+                        String.format("Paimon table %s is not a file store table.", tablePath));
+            }
+            return PaimonToFlussTableDescriptorConverter.convert(tablePath, (FileStoreTable) table);
+        } catch (Catalog.TableNotExistException e) {
+            throw new TableNotExistException("Table " + tablePath + " does not exist in Paimon.");
+        }
     }
 
     @Override

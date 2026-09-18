@@ -201,12 +201,10 @@ enabling datalake.
 
 The Coordinator models a Paimon table as auto-partitioned when its partition definition identifies
 one time partition key and its timestamp pattern or formatter can be mapped unambiguously to Fluss.
-It derives `table.auto-partition.enabled`, the time key, format, unit, and time zone. A compatible
-Paimon value-time expiration policy is also mapped to the Fluss retention setting. An `update-time`
-expiration policy does not prevent auto-partition modeling, but its `partition.expiration-time` is
-not mapped because Fluss retention is based on partition time rather than the partition's last
-update time. In that case, the caller configures Fluss retention independently through `properties`,
-or the Fluss default applies.
+It derives `table.auto-partition.enabled`, the time key, format, unit, and time zone. Paimon
+partition expiration is not mapped to Fluss retention because the lake table and Fluss real-time
+storage have independent lifecycle policies. The caller configures Fluss retention through
+`properties`, or the Fluss default applies.
 
 Callers do not need to set `table.auto-partition.enabled=true`. Explicit values for derived options
 must match the inferred values. A partition definition that cannot be mapped to one compatible time
@@ -448,11 +446,9 @@ Compatibility and supported Paimon table definitions are documented in
   append-only table. For an auto-partitioned table, also verify that current or future data
   omissions are rejected.
 - Verify that time partition definitions automatically derive the auto-partition key, format, unit,
-  time zone, and compatible retention settings. Verify that missing, ambiguous, and incompatible
-  time mappings fall back to regular partition modeling or are rejected when required by an
-  explicit property.
-- Verify that a Paimon table using `partition.expiration-strategy=update-time` can be modeled as
-  auto-partitioned, but its `partition.expiration-time` is not used to derive Fluss retention.
+  and time zone. Verify that Paimon partition expiration is not used to derive Fluss retention.
+  Verify that missing, ambiguous, and incompatible time mappings fall back to regular partition
+  modeling or are rejected when required by an explicit property.
 - Verify that historical partition access is enabled automatically for an auto-partitioned
   primary-key table. Verify that point lookups, upserts, and deletes for an unloaded past partition
   use Lake Storage and do not dynamically create an empty regular Fluss partition.

@@ -82,6 +82,31 @@ class PaimonLakeCatalogTest {
     }
 
     @Test
+    void testGetTableDescriptor() throws Exception {
+        TablePath tablePath = TablePath.of("get_table_descriptor_db", "get_table_descriptor_table");
+        createPaimonTable(
+                tablePath,
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT())
+                        .option(CoreOptions.BUCKET.key(), "-1")
+                        .build());
+
+        TableDescriptor descriptor = flussPaimonCatalog.getTableDescriptor(tablePath);
+        assertThat(descriptor.getSchema().getColumnNames()).containsExactly("id");
+        assertThat(descriptor.getTableDistribution()).isPresent();
+    }
+
+    @Test
+    void testGetTableDescriptorWithNonExistentTable() {
+        assertThatThrownBy(
+                        () ->
+                                flussPaimonCatalog.getTableDescriptor(
+                                        TablePath.of("missing_db", "missing_table")))
+                .isInstanceOf(TableNotExistException.class)
+                .hasMessage("Table missing_db.missing_table does not exist in Paimon.");
+    }
+
+    @Test
     void testAlterTableProperties() throws Exception {
         String database = "test_alter_table_properties_db";
         String tableName = "test_alter_table_properties_table";
@@ -634,6 +659,12 @@ class PaimonLakeCatalogTest {
         TablePath tablePath = TablePath.of(database, tableName);
 
         flussPaimonCatalog.createTable(tablePath, td, LAKE_CATALOG_CONTEXT);
+    }
+
+    private void createPaimonTable(
+            TablePath tablePath, org.apache.paimon.schema.Schema paimonSchema) throws Exception {
+        flussPaimonCatalog.getPaimonCatalog().createDatabase(tablePath.getDatabaseName(), true);
+        flussPaimonCatalog.getPaimonCatalog().createTable(toPaimon(tablePath), paimonSchema, false);
     }
 
     private TestingLakeCatalogContext getLakeCatalogContext(
