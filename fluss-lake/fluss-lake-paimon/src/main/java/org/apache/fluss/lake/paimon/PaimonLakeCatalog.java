@@ -115,11 +115,10 @@ public class PaimonLakeCatalog implements LakeCatalog {
     }
 
     @Override
-    public Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
-            throws TableNotExistException {
+    public Optional<Long> getLatestSnapshotId(TablePath tablePath) throws TableNotExistException {
         try {
             Table table = paimonCatalog.getTable(toPaimon(tablePath));
-            return getLatestDataChangeSnapshotId((FileStoreTable) table);
+            return getLatestSnapshotId((FileStoreTable) table);
         } catch (Catalog.TableNotExistException e) {
             throw new TableNotExistException("Table " + tablePath + " does not exist in Paimon.");
         }
@@ -326,7 +325,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
                 } else {
                     // An existing Paimon table can be enabled only from the snapshot already
                     // registered by Fluss.
-                    Optional<Long> paimonSnapshotId = getLatestDataChangeSnapshotId(fileStoreTable);
+                    Optional<Long> paimonSnapshotId = getLatestSnapshotId(fileStoreTable);
                     Optional<Long> flussSnapshotId = context.getLatestLakeSnapshotId();
                     if (!paimonSnapshotId.equals(flussSnapshotId)) {
                         throw new InvalidAlterTableException(
@@ -354,7 +353,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
         }
     }
 
-    private static Optional<Long> getLatestDataChangeSnapshotId(FileStoreTable table) {
+    private static Optional<Long> getLatestSnapshotId(FileStoreTable table) {
         SnapshotManager snapshotManager = table.snapshotManager();
         Snapshot snapshot =
                 snapshotManager.traversalSnapshotsFromLatestSafely(

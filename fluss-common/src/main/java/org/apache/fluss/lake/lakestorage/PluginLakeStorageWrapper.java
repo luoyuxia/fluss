@@ -86,10 +86,10 @@ public class PluginLakeStorageWrapper implements LakeStoragePlugin {
         }
 
         @Override
-        public Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
+        public Optional<Long> getLatestSnapshotId(TablePath tablePath)
                 throws TableNotExistException {
             try (TemporaryClassLoaderContext ignored = TemporaryClassLoaderContext.of(loader)) {
-                return inner.getLatestDataChangeSnapshotId(tablePath);
+                return inner.getLatestSnapshotId(tablePath);
             }
         }
 

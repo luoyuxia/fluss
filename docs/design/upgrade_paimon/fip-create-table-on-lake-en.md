@@ -72,10 +72,10 @@ partition selection supplied by the user.
 Register the `sys.enable_fluss_on_lake_table` procedure in the Fluss Catalog:
 
 ```sql
--- Use the default properties derived from the Paimon table
+-- Use the default options derived from the Paimon table
 CALL sys.enable_fluss_on_lake_table('my_db.my_table');
 
--- Override or supplement Fluss table properties
+-- Override or supplement Fluss table options
 CALL sys.enable_fluss_on_lake_table(
     'my_db.my_table',
     'bucket.num=16,table.log.format=compacted'
@@ -96,8 +96,8 @@ CALL sys.enable_fluss_on_lake_table('my_db.my_table');
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `table` | STRING | Yes | Fully qualified name of the existing Paimon table in `database.table` format. The Fluss table uses the same database and table name. |
-| `properties` | STRING | No | Comma-separated Fluss table properties in `key=value` format. These properties override or supplement properties derived from the Paimon table. |
+| `table` | STRING | Yes | Name of the existing Paimon table in `table` or `database.table` format. An unqualified name uses the Fluss Catalog's default database. The Fluss table uses the same database and table name. |
+| `options` | STRING | No | Comma-separated Fluss table options in `key=value` format. These options override or supplement options derived from the Paimon table. |
 | `partitions` | STRING | No | Comma-separated partition names to Bulk Load for a partitioned primary-key table. See [Bulk Load Partition Selection](#bulk-load-partition-selection) for the defaults and restrictions. |
 
 #### Result
@@ -188,7 +188,7 @@ data of a Paimon table:
  * @throws TableNotExistException if the lake table does not exist
  * @throws UnsupportedOperationException if reading snapshots is not supported
  */
-default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
+default Optional<Long> getLatestSnapshotId(TablePath tablePath)
         throws TableNotExistException {
     throw new UnsupportedOperationException(
             "Reading data-change snapshots is not supported by this lake catalog.");
@@ -210,11 +210,11 @@ one time partition key and its timestamp pattern or formatter can be mapped unam
 It derives `table.auto-partition.enabled`, the time key, format, unit, and time zone. Paimon
 partition expiration is not mapped to Fluss retention because the lake table and Fluss real-time
 storage have independent lifecycle policies. The caller configures Fluss retention through
-`properties`, or the Fluss default applies.
+`options`, or the Fluss default applies.
 
 Callers do not need to set `table.auto-partition.enabled=true`. Explicit values for derived options
-must match the inferred values. When no auto-partition properties can be derived, callers may supply
-a complete valid auto-partition configuration through `properties`; otherwise, the table remains a
+must match the inferred values. When no auto-partition options can be derived, callers may supply
+a complete valid auto-partition configuration through `options`; otherwise, the table remains a
 regular partitioned table. Regular partitioned tables may have multiple partition keys. Because
 historical partition access requires exactly one partition key, this FIP limits auto-partitioned
 primary-key tables to one time-based partition key.
@@ -280,7 +280,7 @@ The component boundaries are as follows:
 | --- | --- | --- |
 | Paimon schema, primary-key, partition, and bucket mapping | Coordinator/Paimon lake plugin | Read the Paimon table and perform authoritative compatibility validation. |
 | Create a lake-disabled Fluss table | `Admin.createTableOnLake()` | Attempt to create the Fluss metadata before job submission; return `TableAlreadyExistException` if a table with the same name already exists. |
-| Retrieve the latest Paimon data-change snapshot ID | `LakeCatalog.getLatestDataChangeSnapshotId()` | Fix the Bulk Load source snapshot, validate the requested load scope, and validate consistency before enabling datalake. |
+| Retrieve the latest Paimon data-change snapshot ID | `LakeCatalog.getLatestSnapshotId()` | Fix the Bulk Load source snapshot, validate the requested load scope, and validate consistency before enabling datalake. |
 | Register the initial snapshot for a log table | `FlussTableLakeSnapshotCommitter` | If a snapshot exists, register it in the `lakeTable` ZooKeeper node with empty offsets. |
 | Bulk Load data job | `load_lake_data_to_fluss` | Initialize a primary-key table over the selected load scope, register its initial snapshot, and enable datalake. |
 | Historical partition routing | Fluss lookup and write clients | Route a missing past auto partition to Lake Storage rather than dynamically creating an empty regular partition. |
@@ -322,7 +322,7 @@ table. If it already exists, the Coordinator performs the following validation:
 
 1. Read the Paimon table schema and verify that it is compatible with the current Fluss table.
 2. Read the latest Paimon data-change snapshot ID through
-   `LakeCatalog.getLatestDataChangeSnapshotId()`.
+   `LakeCatalog.getLatestSnapshotId()`.
 3. Read the registered snapshot ID from the Fluss lake table metadata.
 4. Allow the enablement if both data-change snapshot IDs are equal or neither side has a
    data-change snapshot. Reject it with `InvalidAlterTableException` if only one side has a

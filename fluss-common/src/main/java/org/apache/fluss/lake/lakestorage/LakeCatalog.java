@@ -60,8 +60,7 @@ public interface LakeCatalog extends AutoCloseable {
      * @throws TableNotExistException if the lake table does not exist
      * @throws UnsupportedOperationException if reading snapshots is not supported
      */
-    default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
-            throws TableNotExistException {
+    default Optional<Long> getLatestSnapshotId(TablePath tablePath) throws TableNotExistException {
         throw new UnsupportedOperationException(
                 "Reading data-change snapshots is not supported by this lake catalog.");
     }

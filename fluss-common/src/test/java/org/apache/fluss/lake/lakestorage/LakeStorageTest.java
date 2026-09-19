@@ -105,7 +105,7 @@ class LakeStorageTest {
                 .isInstanceOf(TestPaimonLakeCatalog.class);
         assertThat(lakeCatalog.getTableDescriptor(TablePath.of("test_db", "test_table")))
                 .isEqualTo(TEST_TABLE_DESCRIPTOR);
-        assertThat(lakeCatalog.getLatestDataChangeSnapshotId(TablePath.of("test_db", "test_table")))
+        assertThat(lakeCatalog.getLatestSnapshotId(TablePath.of("test_db", "test_table")))
                 .contains(42L);
     }
 
@@ -167,7 +167,7 @@ class LakeStorageTest {
         }
 
         @Override
-        public Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath) {
+        public Optional<Long> getLatestSnapshotId(TablePath tablePath) {
             return Optional.of(42L);
         }
 

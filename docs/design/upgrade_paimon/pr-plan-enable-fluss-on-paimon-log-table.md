@@ -40,7 +40,7 @@ append-only 表原地提升为启用 Datalake 的 Fluss 日志表。第一阶段
 - Paimon `HASH_FIXED` 和 `BUCKET_UNAWARE` Bucket Mode。
 - 不包含 Fluss legacy 系统列的 clean schema。
 - 空 Paimon 表和已经包含历史数据的 Paimon 表。
-- 用户通过 `properties` 补充或覆盖允许修改的 Fluss 表属性。
+- 用户通过 `options` 补充或覆盖允许修改的 Fluss 表选项。
 
 第一阶段不支持：
 
@@ -75,7 +75,7 @@ CALL sys.enable_fluss_on_lake_table(
 
 ```text
 enable_fluss_on_lake_table(table STRING)
-enable_fluss_on_lake_table(table STRING, properties STRING)
+enable_fluss_on_lake_table(table STRING, options STRING)
 ```
 
 后续主键表 PR 再增加包含 `partitions` 的签名。已有两个签名保持不变。
@@ -95,12 +95,12 @@ Successfully enabled Fluss on Paimon table 'my_db.my_log_table'.
 ## 3. 端到端流程
 
 ```text
-CALL sys.enable_fluss_on_lake_table(table, properties)
+CALL sys.enable_fluss_on_lake_table(table, options)
   │
   └─ EnableFlussOnLakeTableProcedure
        │
-       ├─ 解析 table 和 properties
-       ├─ Admin.createTableOnLake(tablePath, properties)
+       ├─ 解析 table 和 options
+       ├─ Admin.createTableOnLake(tablePath, options)
        │    │
        │    └─ Coordinator + PaimonLakeCatalog
        │         ├─ 读取并校验 Paimon 表定义
@@ -192,7 +192,7 @@ snapshot 保留或其他内部行为的 option；仅因为当前 Fluss 版本不
 如果新 option 改变了 Bucket Mode 等可观察语义，则由 typed API 的结果触发拒绝，而不是依赖
 Fluss 预先知道该 option 名称。
 
-Procedure 的 `properties` 按属性所有权校验，不再维护一份与 `ConfigOptions` 重复的固定白名单：
+Procedure 的 `options` 按属性所有权校验，不再维护一份与 `ConfigOptions` 重复的固定白名单：
 
 1. `bucket.num` 作为建表特殊参数，按 `HASH_FIXED`/`BUCKET_UNAWARE` 规则处理，不写入普通
    properties map。
@@ -208,7 +208,7 @@ Procedure 的 `properties` 按属性所有权校验，不再维护一份与 `Con
 6. `paimon.*` 和非 `table.*` 的 custom property 由现有 table property 白名单拒绝。这个参数只表示 Fluss table
    properties；如果以后需要 custom properties，应通过明确的 API 契约单独支持。
 
-Procedure 参数中的 Fluss properties 仍由当前 server 的 `FlussConfigUtils.TABLE_OPTIONS` 和
+Procedure 参数中的 Fluss options 仍由当前 server 的 `FlussConfigUtils.TABLE_OPTIONS` 和
 `TableDescriptorValidation` 校验。这一白名单只处理调用方提交的属性，不读取 Paimon source
 options。
 
@@ -289,7 +289,7 @@ creation 逻辑抽取为小范围私有方法，避免长期维护两份建表�
 在负责启用校验的 PR 3 中，给 `LakeCatalog` 增加 FIP 定义的：
 
 ```java
-default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
+default Optional<Long> getLatestSnapshotId(TablePath tablePath)
         throws TableNotExistException {
     throw new UnsupportedOperationException(
             "Reading data-change snapshots is not supported by this lake catalog.");
@@ -301,24 +301,18 @@ default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
 `ClassLoaderFixingLakeCatalog` 在插件 ClassLoader 上下文中转发该方法。这个 API 与 snapshot
 一致性校验放在同一个 PR，避免把它混入表定义映射 PR。
 
-Procedure 在新 Fluss 表创建成功后读取 Paimon 当前 data-change snapshot ID。存在 snapshot 时复用
-`FlussTableLakeSnapshotCommitter` 的 prepare/commit 协议：
+Procedure 在新 Fluss 表创建成功后读取 Paimon 当前 data-change snapshot ID。存在 snapshot 时，
+由 `FlussTableLakeSnapshotCommitter` 封装初始 snapshot 的 prepare/commit 协议：
 
 ```java
-Map<TableBucket, Long> emptyOffsets = Collections.emptyMap();
-
-String offsetsPath =
-        committer.prepareLakeSnapshot(
-                tableInfo.getTableId(), tableInfo.getTablePath(), emptyOffsets);
-
-committer.commit(
+committer.commitInitialSnapshot(
         tableInfo.getTableId(),
         tableInfo.getTablePath(),
-        LakeCommitResult.committedIsReadable(snapshotId),
-        offsetsPath,
-        emptyOffsets,
-        Collections.emptyMap());
+        snapshotId);
 ```
+
+`commitInitialSnapshot()` 内部使用空的 tiered offsets 和 max tiered timestamps，先持久化
+offsets 文件，再将该 lake snapshot 提交为 readable snapshot。
 
 初始 snapshot 的约束：
 
@@ -338,7 +332,7 @@ Procedure 注入以下上下文，而不再只注入 `Admin`：
 可以引入一个不可变的 `FlussProcedureContext`，由 `ProcedureManager` 统一注入。
 普通 Procedure 继续只使用其中的 `Admin`；新 Procedure 根据 `TableInfo` 中的 `PAIMON` format，
 通过 `LakeStoragePluginSetUp` 创建 `LakeStorage` 和 `LakeCatalog`，再调用
-`getLatestDataChangeSnapshotId()`。Procedure 负责关闭创建的 `LakeCatalog` 和 snapshot committer。上下文
+`getLatestSnapshotId()`。Procedure 负责关闭创建的 `LakeCatalog` 和 snapshot committer。上下文
 不得在日志或异常中输出认证信息。
 
 ### 4.6 服务端启用前校验
@@ -353,7 +347,7 @@ table.datalake.enabled=true
 
 1. 读取最新 Fluss `TableInfo` 和目标 Paimon `TableDescriptor`。
 2. 按建表映射规则验证 Schema、分区键和 Bucket 定义兼容。
-3. 通过 `LakeCatalog.getLatestDataChangeSnapshotId()` 读取最新 Paimon data-change snapshot。
+3. 通过 `LakeCatalog.getLatestSnapshotId()` 读取最新 Paimon data-change snapshot。
 4. 从 Fluss lake table metadata 读取已注册的最新 snapshot。
 5. 两边都有 data-change snapshot 且 ID 相等，或者两边都没有 data-change snapshot 时允许启用。
    已注册 snapshot 之后只有 `COMPACT` 或 `ANALYZE` snapshot 时也允许启用。
@@ -370,8 +364,9 @@ lake-disabled。对已经启用 datalake 的表再次设置 `true` 保持现有�
 
 Procedure 负责：
 
-1. 解析 `database.table`，拒绝缺少 database、空 identifier 和多余层级。
-2. 解析逗号分隔的 `key=value` properties：trim key/value，拒绝空 key、缺少 `=`、
+1. 解析 `table` 或 `database.table`；未指定 database 时使用 Fluss Catalog 的默认 database，
+   并拒绝空 identifier 和多余层级。
+2. 解析逗号分隔的 `key=value` options：trim key/value，拒绝空 key、缺少 `=`、
    重复 key 和空 value。第一阶段不支持在 key/value 中转义逗号。
 3. 调用 `Admin.createTableOnLake()`。
 4. 新建成功时读取 Paimon snapshot，并按 4.5 注册初始 snapshot。
@@ -439,11 +434,13 @@ Procedure 不自行判断主键表是否可支持。服务端必须在创建元�
 ### 6.3 Procedure
 
 - Procedure 列表、查找和两个签名。
-- `table` 和 `properties` 的合法与非法输入。
-- properties trim、重复 key、空 key/value、缺少 `=` 和不支持的逗号转义。
+- `table` 和 `options` 的合法与非法输入。
+- options trim、重复 key、空 key/value、缺少 `=` 和不支持的逗号转义。
 - 新表有 snapshot：注册相同 snapshot ID，两个 offsets map 为空，然后启用。
 - 新表无 snapshot：跳过注册，直接通过双方为空的校验启用。
 - 已有且已成功提升的表：重复调用成功，不重复提交 snapshot。
+- 提升后继续写入 Fluss，验证数据能够 tiering 到 Paimon；停止 tiering 后再写入 log tail，
+  验证 union read 同时返回原有 Paimon 数据、已 tiering 数据和 Fluss log 数据。
 - 主键表和 `partitions` 使用给出明确的不支持信息。
 - snapshot prepare/commit、Admin API 和 alterTable 异常正确传播。
 - Fluss/Paimon Catalog 凭证不会出现在日志和错误消息中。
@@ -508,7 +505,7 @@ Procedure 不自行判断主键表是否可支持。服务端必须在创建元�
 
 范围：
 
-- 增加 `LakeCatalog.getLatestDataChangeSnapshotId()`、Paimon 实现和 ClassLoader wrapper。
+- 增加 `LakeCatalog.getLatestSnapshotId()`、Paimon 实现和 ClassLoader wrapper。
 - 在 `false -> true` 的 `alterTable` 路径中复用 PR 1 的 descriptor 映射，逐项校验 Schema、
   分区和 Bucket 定义。
 - 比较 Paimon latest data-change snapshot 与 Fluss 已注册 snapshot，忽略后续 compaction
@@ -524,7 +521,7 @@ Procedure 不自行判断主键表是否可支持。服务端必须在创建元�
 范围：
 
 - 扩展 Procedure context，提供 Fluss configuration 和当前 Paimon Catalog 配置。
-- 注册只有 `table` 和 `table, properties` 两个签名的
+- 注册只有 `table` 和 `table, options` 两个签名的
   `sys.enable_fluss_on_lake_table`。
 - 串联建表、日志表初始 snapshot 注册和 `alterTable(true)`。
 - 主键表、`partitions` 和 Bulk Load 均返回明确的不支持错误。

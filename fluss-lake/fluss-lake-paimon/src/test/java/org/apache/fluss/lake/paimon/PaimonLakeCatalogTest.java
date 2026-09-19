@@ -114,9 +114,9 @@ class PaimonLakeCatalogTest {
     }
 
     @Test
-    void testGetLatestDataChangeSnapshotId() throws Exception {
+    void testGetLatestSnapshotId() throws Exception {
         TablePath tablePath = TablePath.of("get_snapshot_db", "get_snapshot_table");
-        assertThatThrownBy(() -> flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
+        assertThatThrownBy(() -> flussPaimonCatalog.getLatestSnapshotId(tablePath))
                 .isInstanceOf(TableNotExistException.class)
                 .hasMessage("Table get_snapshot_db.get_snapshot_table does not exist in Paimon.");
 
@@ -127,12 +127,11 @@ class PaimonLakeCatalogTest {
                         .option(CoreOptions.BUCKET.key(), "-1")
                         .build());
 
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath)).isEmpty();
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath)).isEmpty();
 
         long snapshotId = writeSingleRow(tablePath);
 
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
-                .contains(snapshotId);
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath)).contains(snapshotId);
     }
 
     @Test
@@ -163,7 +162,7 @@ class PaimonLakeCatalogTest {
                 .commit();
         assertThat(table.latestSnapshot().get().commitKind())
                 .isEqualTo(Snapshot.CommitKind.COMPACT);
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath))
                 .contains(expectedRegisteredSnapshotId);
 
         TestingLakeCatalogContext context =
@@ -176,7 +175,7 @@ class PaimonLakeCatalogTest {
         flussPaimonCatalog.createTable(tablePath, tableDescriptor, context);
 
         long unregisteredSnapshotId = writeSingleRow(tablePath);
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath))
                 .contains(unregisteredSnapshotId);
         assertThatThrownBy(
                         () -> flussPaimonCatalog.createTable(tablePath, tableDescriptor, context))
