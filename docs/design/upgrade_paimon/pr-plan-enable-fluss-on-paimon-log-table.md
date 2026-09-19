@@ -198,12 +198,14 @@ Procedure 的 `properties` 按属性所有权校验，不再维护一份与 `Con
    properties map。
 2. 当前 server 版本能够识别的 `table.*` 属性进入现有 `TableDescriptorValidation`，复用其类型、
    取值和表类型校验。未知 `table.*` 沿用现有错误，提示当前集群版本不支持。
-3. `table.datalake.enabled` 和 `table.datalake.historical-partition.enabled` 由 promotion 流程管理，
-   无条件拒绝。
-4. 从 Paimon 推导的 auto-partition 属性只允许省略或显式提供相同值；冲突值拒绝。Schema、
-   分区键和 Bucket Key 不属于该参数，不能覆盖。lake format 由当前集群配置自动设置。
-5. 仅适用于主键表的 `table.kv.*`、merge engine、delete behavior 和 changelog image 在本阶段拒绝。
-6. `paimon.*` 和非 `table.*` 的 custom property 在本阶段拒绝。这个参数只表示 Fluss table
+3. `table.datalake.enabled` 和自定义 lake database/table 映射由 promotion 流程管理，无条件拒绝。
+   `table.datalake.format` 和 `table.datalake.historical-partition.enabled` 使用现有 table
+   validation。
+4. 从 Paimon 推导出的 auto-partition 属性只允许省略或显式提供相同值；冲突值拒绝。Paimon
+   无法推导 auto-partition 属性时，调用方可以提供完整配置，并由 `TableDescriptorValidation`
+   校验。Schema、分区键和 Bucket Key 不属于该参数，不能覆盖。lake format 由当前集群配置自动设置。
+5. 仅适用于特定表类型的 Fluss 属性交给 `TableDescriptorValidation` 统一校验。
+6. `paimon.*` 和非 `table.*` 的 custom property 由现有 table property 白名单拒绝。这个参数只表示 Fluss table
    properties；如果以后需要 custom properties，应通过明确的 API 契约单独支持。
 
 Procedure 参数中的 Fluss properties 仍由当前 server 的 `FlussConfigUtils.TABLE_OPTIONS` 和
@@ -223,7 +225,7 @@ CompletableFuture<TableInfo> createTableOnLake(
         TablePath tablePath, Map<String, String> properties);
 ```
 
-增加 FIP 定义的 `CREATE_TABLE_ON_LAKE` RPC，API key 为 `1065`，协议版本为 `0`：
+增加 FIP 定义的 `CREATE_TABLE_ON_LAKE` RPC，API key 为 `1068`，协议版本为 `0`：
 
 ```protobuf
 message CreateTableOnLakeRequest {
@@ -255,20 +257,24 @@ message CreateTableOnLakeResponse {
 `CoordinatorService.createTableOnLake()` 在现有 Coordinator write lock/event 语义内按以下
 顺序处理：
 
-1. 校验 `TablePath`，并鉴权目标 Fluss database 的 `CREATE` 操作。
-2. 确认 Fluss database 存在、集群已配置 Paimon Lake Storage，并且同名 Fluss 表不存在。
-3. 调用 `LakeCatalog.getTableDescriptor()` 读取 Paimon 表定义。
-4. 再次确认表没有主键。Procedure 不能代替服务端的权威校验。
-5. 解析并合并用户属性：
-   - 拒绝 `table.datalake.enabled` 和
-     `table.datalake.historical-partition.enabled`。
+1. 校验 `TablePath`。目标 Fluss database 已存在时鉴权 database 的 `CREATE` 操作；不存在时
+   改为鉴权集群的 `CREATE` 操作。
+2. 确认集群已配置 Paimon Lake Storage，并且同名 Fluss 表不存在。
+3. 调用 `LakeCatalog.getTableDescriptor()` 读取 Paimon 表定义；Paimon lake catalog 在转换
+   阶段拒绝当前不支持的主键表。
+4. 解析并合并用户属性：
+   - 拒绝 `table.datalake.enabled` 和自定义 lake database/table 映射。
+   - `table.datalake.format` 和 `table.datalake.historical-partition.enabled` 使用现有 table
+     validation。
    - Schema、主键、分区键和 Bucket Key 只能由 Paimon 表推导；lake format 使用当前集群配置。
    - 显式设置的推导属性必须与 Paimon 定义一致。
-6. 处理 Bucket 数：
+5. 处理 Bucket 数：
    - `HASH_FIXED`：未指定时复用 Paimon Bucket 数；指定值不相等时拒绝。
    - `BUCKET_UNAWARE`：未指定时使用 `default.bucket.number`；指定值必须大于 0。
-7. 设置 `table.datalake.enabled=false`，并通过现有系统默认逻辑应用 lake format、replication
-   factor 等配置。
+6. 不写入 `table.datalake.enabled`，使用其默认值 `false`，并通过现有系统默认逻辑应用 lake
+   format、replication factor 等配置。
+7. 如果目标 Fluss database 不存在，使用默认 `DatabaseDescriptor` 自动创建；通过
+   `ignoreIfExists=true` 处理并发建库。
 8. 复用普通建表路径的 descriptor 校验、replica capacity 检查、assignment 和
    `MetadataManager.createTable()`。
 9. 跳过 `LakeCatalog.createTable()`，避免创建或覆盖原 Paimon 表。
@@ -416,7 +422,8 @@ Procedure 不自行判断主键表是否可支持。服务端必须在创建元�
 - request 支持空 properties 和多个 properties。
 - response 的全部字段能够还原完整 `TableInfo`。
 - RPC 序列化、API key 注册、权限和旧 server 不支持新 API 的行为。
-- database 不存在、同名 Fluss 表已存在、Paimon 表不存在和未配置 Paimon Lake Storage。
+- database 不存在时自动创建、同名 Fluss 表已存在、Paimon 表不存在和未配置 Paimon Lake
+  Storage。
 - 主键表、不支持的 Bucket Mode 和 legacy system columns 在 Fluss 元数据创建前失败。
 - `HASH_FIXED` Bucket 一致性；`BUCKET_UNAWARE` 默认值和用户覆盖。
 - 验证 `createTableOnLake()` 没有调用 `LakeCatalog.createTable()`。
@@ -483,7 +490,7 @@ Procedure 不自行判断主键表是否可支持。服务端必须在创建元�
 
 范围：
 
-- 增加 API key `1065` 的 RPC、`Admin.createTableOnLake()` 和 `FlussAdmin` 实现。
+- 增加 API key `1068` 的 RPC、`Admin.createTableOnLake()` 和 `FlussAdmin` 实现。
 - Coordinator 按属性所有权合并用户 `properties`，并复用当前 server 的
   `FlussConfigUtils.TABLE_OPTIONS` 和 `TableDescriptorValidation`。
 - 复用普通建表的 defaults、validation、assignment 和 metadata creation。

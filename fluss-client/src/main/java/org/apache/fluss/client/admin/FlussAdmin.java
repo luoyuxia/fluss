@@ -67,6 +67,8 @@ import org.apache.fluss.rpc.messages.AlterTableRequest;
 import org.apache.fluss.rpc.messages.CancelRebalanceRequest;
 import org.apache.fluss.rpc.messages.CreateAclsRequest;
 import org.apache.fluss.rpc.messages.CreateDatabaseRequest;
+import org.apache.fluss.rpc.messages.CreateTableOnLakeRequest;
+import org.apache.fluss.rpc.messages.CreateTableOnLakeResponse;
 import org.apache.fluss.rpc.messages.CreateTableRequest;
 import org.apache.fluss.rpc.messages.DatabaseExistsRequest;
 import org.apache.fluss.rpc.messages.DatabaseExistsResponse;
@@ -99,6 +101,7 @@ import org.apache.fluss.rpc.messages.ListRemoteLogManifestsRequest;
 import org.apache.fluss.rpc.messages.ListTablesRequest;
 import org.apache.fluss.rpc.messages.ListTablesResponse;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
+import org.apache.fluss.rpc.messages.PbKeyValue;
 import org.apache.fluss.rpc.messages.PbListOffsetsRespForBucket;
 import org.apache.fluss.rpc.messages.PbPartitionInfo;
 import org.apache.fluss.rpc.messages.PbTablePath;
@@ -320,6 +323,34 @@ public class FlussAdmin implements Admin {
     }
 
     @Override
+    public CompletableFuture<TableInfo> createTableOnLake(
+            TablePath tablePath, Map<String, String> properties) {
+        tablePath.validate();
+        checkNotNull(properties, "properties must not be null");
+
+        List<PbKeyValue> propertyList = new ArrayList<>(properties.size());
+        for (Map.Entry<String, String> property : properties.entrySet()) {
+            propertyList.add(
+                    new PbKeyValue()
+                            .setKey(
+                                    checkNotNull(
+                                            property.getKey(), "property key must not be null"))
+                            .setValue(
+                                    checkNotNull(
+                                            property.getValue(),
+                                            "property value must not be null")));
+        }
+
+        CreateTableOnLakeRequest request = new CreateTableOnLakeRequest();
+        request.addAllProperties(propertyList)
+                .setTablePath()
+                .setDatabaseName(tablePath.getDatabaseName())
+                .setTableName(tablePath.getTableName());
+        return gateway.createTableOnLake(request)
+                .thenApply(response -> toTableInfo(tablePath, response));
+    }
+
+    @Override
     public CompletableFuture<Void> alterTable(
             TablePath tablePath, List<TableChange> tableChanges, boolean ignoreIfNotExists) {
         tablePath.validate();
@@ -347,11 +378,11 @@ public class FlussAdmin implements Admin {
                 .getTableInfo(request)
                 .thenApply(
                         r ->
-                                TableInfo.of(
+                                toTableInfo(
                                         tablePath,
                                         r.getTableId(),
                                         r.getSchemaId(),
-                                        TableDescriptor.fromJsonBytes(r.getTableJson()),
+                                        r.getTableJson(),
                                         // For backward compatibility, results returned by old
                                         // clusters do not include the remote data dir
                                         r.hasRemoteDataDir() ? r.getRemoteDataDir() : null,
@@ -1114,6 +1145,38 @@ public class FlussAdmin implements Admin {
                 bucketToOffsetMap.get(resp.getBucketId()).complete(resp.getOffset());
             }
         }
+    }
+
+    private static TableInfo toTableInfo(TablePath tablePath, CreateTableOnLakeResponse response) {
+        return toTableInfo(
+                tablePath,
+                response.getTableId(),
+                response.getSchemaId(),
+                response.getTableJson(),
+                response.hasRemoteDataDir() ? response.getRemoteDataDir() : null,
+                response.getCreatedTime(),
+                response.getModifiedTime(),
+                0L);
+    }
+
+    private static TableInfo toTableInfo(
+            TablePath tablePath,
+            long tableId,
+            int schemaId,
+            byte[] tableJson,
+            @Nullable String remoteDataDir,
+            long createdTime,
+            long modifiedTime,
+            long bucketCountEpoch) {
+        return TableInfo.of(
+                tablePath,
+                tableId,
+                schemaId,
+                TableDescriptor.fromJsonBytes(tableJson),
+                remoteDataDir,
+                createdTime,
+                modifiedTime,
+                bucketCountEpoch);
     }
 
     @Override

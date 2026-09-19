@@ -134,11 +134,12 @@ Paimon table, merges `properties`, and creates a lake-disabled Fluss table. When
 partition definition can be mapped to Fluss auto partitioning, it also derives the Fluss
 auto-partition configuration.
 The returned future completes with the actual `TableInfo` after the Fluss table metadata has been
-created. If a Fluss table with the same name already exists, the future fails with
+created. If the target Fluss database does not exist, the Coordinator creates it with the default
+database descriptor. If a Fluss table with the same name already exists, the future fails with
 `TableAlreadyExistException`.
-`createTableOnLake()` rejects `table.datalake.enabled` and
-`table.datalake.historical-partition.enabled` in `properties` because the promotion flow manages
-these options.
+`createTableOnLake()` rejects `table.datalake.enabled` and custom lake database or table mappings
+in `properties` because the promotion flow manages these options. Other lake properties use the
+normal Fluss table validation rules.
 
 Completion of this future does not mean that the initial lake snapshot has been registered,
 historical data has been loaded, or datalake has been enabled. The caller is responsible for these
@@ -146,7 +147,7 @@ steps.
 
 ### RPC Protocol
 
-Add the public `CREATE_TABLE_ON_LAKE` RPC with API key `1065`. Its minimum and maximum protocol
+Add the public `CREATE_TABLE_ON_LAKE` RPC with API key `1068`. Its minimum and maximum protocol
 versions are both `0`:
 
 ```protobuf
@@ -207,10 +208,11 @@ storage have independent lifecycle policies. The caller configures Fluss retenti
 `properties`, or the Fluss default applies.
 
 Callers do not need to set `table.auto-partition.enabled=true`. Explicit values for derived options
-must match the inferred values. A partition definition that cannot be mapped to one compatible time
-key remains a regular partition definition. Regular partitioned tables may have multiple partition
-keys. Because historical partition access requires exactly one partition key, this FIP limits
-auto-partitioned primary-key tables to one time-based partition key.
+must match the inferred values. When no auto-partition properties can be derived, callers may supply
+a complete valid auto-partition configuration through `properties`; otherwise, the table remains a
+regular partitioned table. Regular partitioned tables may have multiple partition keys. Because
+historical partition access requires exactly one partition key, this FIP limits auto-partitioned
+primary-key tables to one time-based partition key.
 
 A regular partitioned table is appropriate when Fluss should not automatically manage the
 partition lifecycle. An auto-partitioned table is appropriate when Fluss should maintain a rolling

@@ -92,6 +92,8 @@ import org.apache.fluss.rpc.messages.CreateDatabaseRequest;
 import org.apache.fluss.rpc.messages.CreateDatabaseResponse;
 import org.apache.fluss.rpc.messages.CreatePartitionRequest;
 import org.apache.fluss.rpc.messages.CreatePartitionResponse;
+import org.apache.fluss.rpc.messages.CreateTableOnLakeRequest;
+import org.apache.fluss.rpc.messages.CreateTableOnLakeResponse;
 import org.apache.fluss.rpc.messages.CreateTableRequest;
 import org.apache.fluss.rpc.messages.CreateTableResponse;
 import org.apache.fluss.rpc.messages.DeleteProducerOffsetsRequest;
@@ -123,6 +125,7 @@ import org.apache.fluss.rpc.messages.MetadataResponse;
 import org.apache.fluss.rpc.messages.PbAlterConfig;
 import org.apache.fluss.rpc.messages.PbHeartbeatReqForTable;
 import org.apache.fluss.rpc.messages.PbHeartbeatRespForTable;
+import org.apache.fluss.rpc.messages.PbKeyValue;
 import org.apache.fluss.rpc.messages.PbKvSnapshotLeaseForTable;
 import org.apache.fluss.rpc.messages.PbLakeTieringStats;
 import org.apache.fluss.rpc.messages.PbPrepareLakeTableRespForTable;
@@ -252,7 +255,16 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
     private static final Logger LOG = LoggerFactory.getLogger(CoordinatorService.class);
     private static final String SECURITY_CONFIG_KEY_PREFIX = "security.";
-
+    private static final String BUCKET_NUM_PROPERTY = "bucket.num";
+    // The promotion flow controls when datalake is enabled and must keep the Fluss table mapped to
+    // the Paimon table identified by the request.
+    private static final Set<String> CREATE_TABLE_ON_LAKE_RESERVED_PROPERTIES =
+            Collections.unmodifiableSet(
+                    new HashSet<>(
+                            Arrays.asList(
+                                    ConfigOptions.TABLE_DATALAKE_ENABLED.key(),
+                                    ConfigOptions.TABLE_DATALAKE_DATABASE_NAME.key(),
+                                    ConfigOptions.TABLE_DATALAKE_TABLE_NAME.key())));
     private final int defaultBucketNumber;
     private final int defaultReplicationFactor;
     private final boolean logTableAllowCreation;
@@ -498,6 +510,72 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         LakeCatalogDynamicLoader.LakeCatalogContainer lakeCatalogContainer =
                 lakeCatalogDynamicLoader.getLakeCatalogContainer();
 
+        createTableInternal(
+                tablePath, tableDescriptor, request.isIgnoreIfExists(), true, lakeCatalogContainer);
+
+        return CompletableFuture.completedFuture(new CreateTableResponse());
+    }
+
+    @Override
+    public CompletableFuture<CreateTableOnLakeResponse> createTableOnLake(
+            CreateTableOnLakeRequest request) {
+        TablePath tablePath = toTablePath(request.getTablePath());
+        tablePath.validate();
+        String databaseName = tablePath.getDatabaseName();
+
+        boolean databaseExists = metadataManager.databaseExists(databaseName);
+        if (databaseExists) {
+            authorizeDatabase(OperationType.CREATE, databaseName);
+        } else if (authorizer != null) {
+            authorizer.authorize(currentSession(), OperationType.CREATE, Resource.cluster());
+        }
+        if (databaseExists && metadataManager.tableExists(tablePath)) {
+            throw new TableAlreadyExistException("Table " + tablePath + " already exists.");
+        }
+
+        LakeCatalogDynamicLoader.LakeCatalogContainer lakeCatalogContainer =
+                lakeCatalogDynamicLoader.getLakeCatalogContainer();
+        if (!lakeCatalogContainer.isClusterDataLakeTableEnabled()
+                || lakeCatalogContainer.getDataLakeFormat() != DataLakeFormat.PAIMON
+                || lakeCatalogContainer.getLakeCatalog() == null) {
+            throw new InvalidTableException(
+                    "Creating a Fluss table on an existing lake table requires the cluster to "
+                            + "enable Paimon Lake Storage.");
+        }
+
+        TableDescriptor tableDescriptor =
+                lakeCatalogContainer.getLakeCatalog().getTableDescriptor(tablePath);
+        tableDescriptor =
+                mergeCreateTableOnLakeProperties(
+                        tablePath, tableDescriptor, request.getPropertiesList());
+
+        if (!databaseExists) {
+            metadataManager.createDatabase(
+                    databaseName, DatabaseDescriptor.builder().build(), true);
+        }
+        createTableInternal(tablePath, tableDescriptor, false, false, lakeCatalogContainer);
+
+        TableInfo tableInfo = metadataManager.getTable(tablePath);
+        CreateTableOnLakeResponse response =
+                new CreateTableOnLakeResponse()
+                        .setTableId(tableInfo.getTableId())
+                        .setSchemaId(tableInfo.getSchemaId())
+                        .setTableJson(tableInfo.toTableDescriptor().toJsonBytes())
+                        .setCreatedTime(tableInfo.getCreatedTime())
+                        .setModifiedTime(tableInfo.getModifiedTime());
+        if (tableInfo.getRemoteDataDir() != null) {
+            response.setRemoteDataDir(tableInfo.getRemoteDataDir());
+        }
+        return CompletableFuture.completedFuture(response);
+    }
+
+    private void createTableInternal(
+            TablePath tablePath,
+            TableDescriptor tableDescriptor,
+            boolean ignoreIfExists,
+            boolean createLakeTable,
+            LakeCatalogDynamicLoader.LakeCatalogContainer lakeCatalogContainer) {
+
         // Check table creation permissions based on table type
         validateTableCreationPermission(tableDescriptor, tablePath);
 
@@ -523,14 +601,14 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             tableAssignment = generateAssignment(bucketCount, replicaFactor, servers);
         }
 
-        if (request.isIgnoreIfExists() && metadataManager.tableExists(tablePath)) {
-            return CompletableFuture.completedFuture(new CreateTableResponse());
+        if (ignoreIfExists && metadataManager.tableExists(tablePath)) {
+            return;
         }
 
         replicaCapacityController.checkCanCreateKvLeaderReplicas(newKvLeaderReplicaCount);
 
         // before create table in fluss, we may create in lake
-        if (isDataLakeEnabled(tableDescriptor)) {
+        if (createLakeTable && isDataLakeEnabled(tableDescriptor)) {
             TablePath lakeTablePath =
                     LakeTableUtil.resolveLakeTablePath(
                             tablePath, Configuration.fromMap(tableDescriptor.getProperties()));
@@ -558,11 +636,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         // then create table;
         long tableId =
                 metadataManager.createTable(
-                        tablePath,
-                        remoteDataDir,
-                        tableDescriptor,
-                        tableAssignment,
-                        request.isIgnoreIfExists());
+                        tablePath, remoteDataDir, tableDescriptor, tableAssignment, ignoreIfExists);
         if (tableId >= 0 && isHistoricalPartitionEnabled(tableDescriptor)) {
             try {
                 createHistoricalPartition(tablePath, tableId, tableDescriptor);
@@ -570,8 +644,77 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 throw historicalPartitionCreateTableException(tablePath, e);
             }
         }
+    }
 
-        return CompletableFuture.completedFuture(new CreateTableResponse());
+    private TableDescriptor mergeCreateTableOnLakeProperties(
+            TablePath tablePath,
+            TableDescriptor tableDescriptor,
+            List<PbKeyValue> requestedProperties) {
+        Map<String, String> properties = new HashMap<>(tableDescriptor.getProperties());
+        Integer requestedBucketCount = null;
+
+        for (PbKeyValue property : requestedProperties) {
+            String key = property.getKey();
+            String value = property.getValue();
+            if (BUCKET_NUM_PROPERTY.equals(key)) {
+                requestedBucketCount = parseBucketCount(tablePath, value);
+                continue;
+            }
+            if (CREATE_TABLE_ON_LAKE_RESERVED_PROPERTIES.contains(key)) {
+                throw new InvalidTableException(
+                        String.format(
+                                "Property '%s' is managed by the Paimon table promotion flow and "
+                                        + "cannot be specified for table %s.",
+                                key, tablePath));
+            }
+            if (tableDescriptor.getProperties().containsKey(key)) {
+                String derivedValue = tableDescriptor.getProperties().get(key);
+                if (!value.equals(derivedValue)) {
+                    throw new InvalidTableException(
+                            String.format(
+                                    "Property '%s' for Paimon table %s is derived as '%s' and "
+                                            + "cannot be set to '%s'.",
+                                    key, tablePath, derivedValue, value));
+                }
+                continue;
+            }
+            properties.put(key, value);
+        }
+
+        TableDescriptor mergedDescriptor = tableDescriptor.withProperties(properties);
+        Optional<Integer> sourceBucketCount =
+                tableDescriptor
+                        .getTableDistribution()
+                        .flatMap(TableDescriptor.TableDistribution::getBucketCount);
+        if (sourceBucketCount.isPresent()) {
+            if (requestedBucketCount != null
+                    && requestedBucketCount.intValue() != sourceBucketCount.get()) {
+                throw new InvalidTableException(
+                        String.format(
+                                "Paimon table %s uses %d buckets, but '%s' is set to %d.",
+                                tablePath,
+                                sourceBucketCount.get(),
+                                BUCKET_NUM_PROPERTY,
+                                requestedBucketCount));
+            }
+        } else if (requestedBucketCount != null) {
+            mergedDescriptor = mergedDescriptor.withBucketCount(requestedBucketCount);
+        }
+        return mergedDescriptor;
+    }
+
+    private static int parseBucketCount(TablePath tablePath, String value) {
+        final int bucketCount;
+        try {
+            bucketCount = Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new InvalidTableException(
+                    String.format(
+                            "Invalid '%s' value '%s' for table %s. The value must be an integer.",
+                            BUCKET_NUM_PROPERTY, value, tablePath),
+                    e);
+        }
+        return bucketCount;
     }
 
     private long getNewKvLeaderReplicaCount(TableDescriptor tableDescriptor) {
