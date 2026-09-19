@@ -1925,6 +1925,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
 
         private final boolean isCreatingFlussTable;
         @Nullable private final TablePath currentLakeTablePath;
+        @Nullable private final Long latestLakeSnapshotId;
         private final FlussPrincipal flussPrincipal;
         @Nullable private final TableDescriptor currentTable;
         private final TableDescriptor expectedTable;
@@ -1935,8 +1936,25 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                 FlussPrincipal flussPrincipal,
                 @Nullable TableDescriptor currentTable,
                 TableDescriptor expectedTable) {
+            this(
+                    isCreatingFlussTable,
+                    currentLakeTablePath,
+                    null,
+                    flussPrincipal,
+                    currentTable,
+                    expectedTable);
+        }
+
+        public DefaultLakeCatalogContext(
+                boolean isCreatingFlussTable,
+                @Nullable TablePath currentLakeTablePath,
+                @Nullable Long latestLakeSnapshotId,
+                FlussPrincipal flussPrincipal,
+                @Nullable TableDescriptor currentTable,
+                TableDescriptor expectedTable) {
             this.isCreatingFlussTable = isCreatingFlussTable;
             this.currentLakeTablePath = currentLakeTablePath;
+            this.latestLakeSnapshotId = latestLakeSnapshotId;
             this.flussPrincipal = flussPrincipal;
             if (!isCreatingFlussTable) {
                 checkNotNull(
@@ -1966,6 +1984,11 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         @Override
         public TablePath getCurrentLakeTablePath() {
             return currentLakeTablePath;
+        }
+
+        @Override
+        public Optional<Long> getLatestLakeSnapshotId() {
+            return Optional.ofNullable(latestLakeSnapshotId);
         }
 
         @Override

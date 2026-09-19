@@ -289,18 +289,19 @@ creation 逻辑抽取为小范围私有方法，避免长期维护两份建表�
 在负责启用校验的 PR 3 中，给 `LakeCatalog` 增加 FIP 定义的：
 
 ```java
-default Optional<Long> getLatestSnapshotId(TablePath tablePath)
+default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
         throws TableNotExistException {
     throw new UnsupportedOperationException(
-            "Reading snapshots is not supported by this lake catalog.");
+            "Reading data-change snapshots is not supported by this lake catalog.");
 }
 ```
 
-`PaimonLakeCatalog` 返回 `latestSnapshot().id()`，空表返回 `Optional.empty()`；
+`PaimonLakeCatalog` 返回最新 `APPEND` 或 `OVERWRITE` snapshot 的 ID，并跳过不改变逻辑数据的
+`COMPACT` 和 `ANALYZE` snapshot；没有 data-change snapshot 时返回 `Optional.empty()`。
 `ClassLoaderFixingLakeCatalog` 在插件 ClassLoader 上下文中转发该方法。这个 API 与 snapshot
 一致性校验放在同一个 PR，避免把它混入表定义映射 PR。
 
-Procedure 在新 Fluss 表创建成功后读取 Paimon 当前 snapshot ID。存在 snapshot 时复用
+Procedure 在新 Fluss 表创建成功后读取 Paimon 当前 data-change snapshot ID。存在 snapshot 时复用
 `FlussTableLakeSnapshotCommitter` 的 prepare/commit 协议：
 
 ```java
@@ -321,7 +322,7 @@ committer.commit(
 
 初始 snapshot 的约束：
 
-- snapshot ID 是 Procedure 在 Fluss 表创建完成后观察到的 Paimon snapshot。
+- snapshot ID 是 Procedure 在 Fluss 表创建完成后观察到的 Paimon data-change snapshot。
 - tiered offsets 和 max tiered timestamps 都为空。
 - 不为每个 Fluss Bucket 填写 `0`、`-1` 或 Paimon Bucket offset。
 - 空 Paimon 表没有 snapshot，直接跳过该步骤。
@@ -337,7 +338,7 @@ Procedure 注入以下上下文，而不再只注入 `Admin`：
 可以引入一个不可变的 `FlussProcedureContext`，由 `ProcedureManager` 统一注入。
 普通 Procedure 继续只使用其中的 `Admin`；新 Procedure 根据 `TableInfo` 中的 `PAIMON` format，
 通过 `LakeStoragePluginSetUp` 创建 `LakeStorage` 和 `LakeCatalog`，再调用
-`getLatestSnapshotId()`。Procedure 负责关闭创建的 `LakeCatalog` 和 snapshot committer。上下文
+`getLatestDataChangeSnapshotId()`。Procedure 负责关闭创建的 `LakeCatalog` 和 snapshot committer。上下文
 不得在日志或异常中输出认证信息。
 
 ### 4.6 服务端启用前校验
@@ -352,10 +353,12 @@ table.datalake.enabled=true
 
 1. 读取最新 Fluss `TableInfo` 和目标 Paimon `TableDescriptor`。
 2. 按建表映射规则验证 Schema、分区键和 Bucket 定义兼容。
-3. 通过 `LakeCatalog.getLatestSnapshotId()` 读取当前 Paimon snapshot。
+3. 通过 `LakeCatalog.getLatestDataChangeSnapshotId()` 读取最新 Paimon data-change snapshot。
 4. 从 Fluss lake table metadata 读取已注册的最新 snapshot。
-5. 两边都有 snapshot 且 ID 相等，或者两边都没有 snapshot 时允许启用。
-6. 只有一边存在 snapshot，或者 ID 不相等时抛出 `InvalidAlterTableException`。
+5. 两边都有 data-change snapshot 且 ID 相等，或者两边都没有 data-change snapshot 时允许启用。
+   已注册 snapshot 之后只有 `COMPACT` 或 `ANALYZE` snapshot 时也允许启用。
+6. 只有一边存在 data-change snapshot，或者 ID 不相等时抛出
+   `InvalidAlterTableException`。
 
 校验必须发生在 Paimon Catalog 变更和 Fluss 属性持久化之前。校验失败时，Fluss 表保持
 lake-disabled。对已经启用 datalake 的表再次设置 `true` 保持现有幂等行为。
@@ -429,7 +432,8 @@ Procedure 不自行判断主键表是否可支持。服务端必须在创建元�
 - 验证 `createTableOnLake()` 没有调用 `LakeCatalog.createTable()`。
 - 并发创建最多一个成功。
 - 返回的 `TableInfo` 与 `MetadataManager` 中保存的内容一致。
-- 启用时 Schema 和 snapshot 的四种组合：双方相等、双方为空、仅一方存在、ID 不同。
+- 启用时 data-change snapshot 的相等、双方为空、仅一方存在、ID 不同，以及只有后续
+  compaction snapshot 的场景。
 - 校验失败时 `table.datalake.enabled` 仍为 `false`。
 
 ### 6.3 Procedure
@@ -504,14 +508,16 @@ Procedure 不自行判断主键表是否可支持。服务端必须在创建元�
 
 范围：
 
-- 增加 `LakeCatalog.getLatestSnapshotId()`、Paimon 实现和 ClassLoader wrapper。
+- 增加 `LakeCatalog.getLatestDataChangeSnapshotId()`、Paimon 实现和 ClassLoader wrapper。
 - 在 `false -> true` 的 `alterTable` 路径中复用 PR 1 的 descriptor 映射，逐项校验 Schema、
   分区和 Bucket 定义。
-- 比较 Paimon latest snapshot 与 Fluss 已注册 snapshot。
+- 比较 Paimon latest data-change snapshot 与 Fluss 已注册 snapshot，忽略后续 compaction
+  和 statistics snapshot。
 - 校验通过前不修改 Paimon Catalog，也不持久化 Fluss 属性。
 - 保留普通新表启用 datalake 时创建 Paimon 表的原有分支。
 
-这个 PR 单独测试 snapshot 的四种组合和属性未被修改的失败路径。
+这个 PR 测试 data-change snapshot 不匹配和只新增 compaction snapshot 的场景，以及校验失败
+时属性未被修改。
 
 ### PR 4：`[flink] Add log-only enable-fluss-on-lake-table procedure`
 
@@ -569,7 +575,7 @@ protogen 流程，再运行上述 reactor。
 - Fluss 创建结果与 Paimon Schema、分区和 Bucket 定义兼容。
 - 有历史 snapshot 时注册相同 snapshot ID，初始 Bucket offsets 为空。
 - 空表不创建虚假的 snapshot 或 offsets。
-- 服务端只在 Schema 和 snapshot 一致时启用 datalake。
+- 服务端只在 Schema 和 data-change snapshot 一致时启用 datalake。
 - Procedure 成功返回时表已经可用，不存在后台初始化任务。
 - 完整成功后的重复调用保持幂等。
 - 首次正常 tiering 能从已注册的 snapshot 边界继续推进，并写入真实 Fluss offsets。

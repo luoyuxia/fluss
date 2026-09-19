@@ -31,6 +31,7 @@ import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.IOUtils;
 
 import org.apache.paimon.CoreOptions;
+import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
@@ -43,6 +44,7 @@ import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.utils.SnapshotManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,6 +52,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
@@ -112,18 +115,29 @@ public class PaimonLakeCatalog implements LakeCatalog {
     }
 
     @Override
+    public Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
+            throws TableNotExistException {
+        try {
+            Table table = paimonCatalog.getTable(toPaimon(tablePath));
+            return getLatestDataChangeSnapshotId((FileStoreTable) table);
+        } catch (Catalog.TableNotExistException e) {
+            throw new TableNotExistException("Table " + tablePath + " does not exist in Paimon.");
+        }
+    }
+
+    @Override
     public void createTable(TablePath tablePath, TableDescriptor tableDescriptor, Context context)
             throws TableAlreadyExistException {
         validateLakeTablePath(tablePath, context);
         // then, create the table
         Schema paimonSchema = toPaimonSchema(tableDescriptor);
         try {
-            createTable(tablePath, paimonSchema, context.isCreatingFlussTable());
+            createTable(tablePath, paimonSchema, context);
         } catch (Catalog.DatabaseNotExistException e) {
             // create database
             createDatabase(tablePath.getDatabaseName());
             try {
-                createTable(tablePath, paimonSchema, context.isCreatingFlussTable());
+                createTable(tablePath, paimonSchema, context);
             } catch (Catalog.DatabaseNotExistException t) {
                 // shouldn't happen in normal cases
                 throw new RuntimeException(
@@ -287,7 +301,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
                         "'%s' can only be altered before the Paimon table is created.", optionKey));
     }
 
-    private void createTable(TablePath tablePath, Schema schema, boolean isCreatingFlussTable)
+    private void createTable(TablePath tablePath, Schema schema, Context context)
             throws Catalog.DatabaseNotExistException {
         Identifier paimonPath = toPaimon(tablePath);
         try {
@@ -307,8 +321,25 @@ public class PaimonLakeCatalog implements LakeCatalog {
                                     paimonPath.getEscapedFullName(), existingSchema, schema));
                 }
                 // if creating a new fluss table, we should ensure the lake table is empty
-                if (isCreatingFlussTable) {
+                if (context.isCreatingFlussTable()) {
                     checkTableIsEmpty(tablePath, fileStoreTable);
+                } else {
+                    // An existing Paimon table can be enabled only from the snapshot already
+                    // registered by Fluss.
+                    Optional<Long> paimonSnapshotId = getLatestDataChangeSnapshotId(fileStoreTable);
+                    Optional<Long> flussSnapshotId = context.getLatestLakeSnapshotId();
+                    if (!paimonSnapshotId.equals(flussSnapshotId)) {
+                        throw new InvalidAlterTableException(
+                                String.format(
+                                        "Cannot enable datalake on existing Paimon table %s "
+                                                + "because the snapshot registered by Fluss does "
+                                                + "not match the latest Paimon data-change "
+                                                + "snapshot. Fluss snapshot: %s, Paimon "
+                                                + "data-change snapshot: %s.",
+                                        tablePath,
+                                        flussSnapshotId.map(String::valueOf).orElse("none"),
+                                        paimonSnapshotId.map(String::valueOf).orElse("none")));
+                    }
                 }
             } catch (Catalog.TableNotExistException tableNotExistException) {
                 // shouldn't happen in normal cases
@@ -321,6 +352,19 @@ public class PaimonLakeCatalog implements LakeCatalog {
                                 tablePath));
             }
         }
+    }
+
+    private static Optional<Long> getLatestDataChangeSnapshotId(FileStoreTable table) {
+        SnapshotManager snapshotManager = table.snapshotManager();
+        Snapshot snapshot =
+                snapshotManager.traversalSnapshotsFromLatestSafely(
+                        PaimonLakeCatalog::isDataChangeSnapshot);
+        return Optional.ofNullable(snapshot).map(Snapshot::id);
+    }
+
+    private static boolean isDataChangeSnapshot(Snapshot snapshot) {
+        return snapshot.commitKind() == Snapshot.CommitKind.APPEND
+                || snapshot.commitKind() == Snapshot.CommitKind.OVERWRITE;
     }
 
     private void createDatabase(String databaseName) {

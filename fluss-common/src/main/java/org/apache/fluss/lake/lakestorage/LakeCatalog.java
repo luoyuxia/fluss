@@ -28,6 +28,7 @@ import org.apache.fluss.security.acl.FlussPrincipal;
 import javax.annotation.Nullable;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * A catalog interface to modify metadata in external datalake.
@@ -47,6 +48,22 @@ public interface LakeCatalog extends AutoCloseable {
     default TableDescriptor getTableDescriptor(TablePath tablePath) throws TableNotExistException {
         throw new UnsupportedOperationException(
                 "This lake catalog does not support mapping lake table metadata to a Fluss table descriptor.");
+    }
+
+    /**
+     * Gets the latest snapshot ID that changed the logical data of a lake table.
+     *
+     * <p>Snapshots that only rewrite physical files or update statistics are ignored.
+     *
+     * @param tablePath path of the lake table
+     * @return the latest data-change snapshot ID, or empty if the table has no data-change snapshot
+     * @throws TableNotExistException if the lake table does not exist
+     * @throws UnsupportedOperationException if reading snapshots is not supported
+     */
+    default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
+            throws TableNotExistException {
+        throw new UnsupportedOperationException(
+                "Reading data-change snapshots is not supported by this lake catalog.");
     }
 
     /**
@@ -122,6 +139,15 @@ public interface LakeCatalog extends AutoCloseable {
         @Nullable
         default TablePath getCurrentLakeTablePath() {
             return null;
+        }
+
+        /**
+         * Gets the latest lake snapshot ID registered by Fluss for the current table.
+         *
+         * @return the registered snapshot ID, or empty if Fluss has not registered a snapshot
+         */
+        default Optional<Long> getLatestLakeSnapshotId() {
+            return Optional.empty();
         }
 
         /** Get the expected table info of fluss. */

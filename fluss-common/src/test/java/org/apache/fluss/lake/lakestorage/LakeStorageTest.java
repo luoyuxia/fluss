@@ -36,6 +36,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -104,6 +105,8 @@ class LakeStorageTest {
                 .isInstanceOf(TestPaimonLakeCatalog.class);
         assertThat(lakeCatalog.getTableDescriptor(TablePath.of("test_db", "test_table")))
                 .isEqualTo(TEST_TABLE_DESCRIPTOR);
+        assertThat(lakeCatalog.getLatestDataChangeSnapshotId(TablePath.of("test_db", "test_table")))
+                .contains(42L);
     }
 
     private static class TestingPluginManager implements PluginManager {
@@ -161,6 +164,11 @@ class LakeStorageTest {
         @Override
         public TableDescriptor getTableDescriptor(TablePath tablePath) {
             return TEST_TABLE_DESCRIPTOR;
+        }
+
+        @Override
+        public Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath) {
+            return Optional.of(42L);
         }
 
         @Override

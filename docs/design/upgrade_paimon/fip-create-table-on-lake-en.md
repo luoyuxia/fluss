@@ -174,27 +174,32 @@ include Bulk Load, initial snapshot registration, or datalake enablement.
 
 ### LakeCatalog API
 
-Add the following method to `LakeCatalog` to retrieve the current snapshot ID of a Paimon table:
+Add the following method to `LakeCatalog` to retrieve the latest snapshot that changed the logical
+data of a Paimon table:
 
 ```java
 /**
- * Get the latest snapshot ID of a lake table.
+ * Get the latest snapshot ID that changed the logical data of a lake table.
+ *
+ * <p>Snapshots that only rewrite physical files or update statistics are ignored.
  *
  * @param tablePath path of the lake table
- * @return the latest snapshot ID, or empty if the table has no snapshot
+ * @return the latest data-change snapshot ID, or empty if the table has no data-change snapshot
  * @throws TableNotExistException if the lake table does not exist
  * @throws UnsupportedOperationException if reading snapshots is not supported
  */
-default Optional<Long> getLatestSnapshotId(TablePath tablePath) throws TableNotExistException {
+default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
+        throws TableNotExistException {
     throw new UnsupportedOperationException(
-            "Reading snapshots is not supported by this lake catalog.");
+            "Reading data-change snapshots is not supported by this lake catalog.");
 }
 ```
 
-`PaimonLakeCatalog` implements this method. The procedure uses it to fix the Bulk Load source
-snapshot. The job verifies that the source snapshot has not changed before registering the initial
-lake snapshot. The Coordinator uses this method to retrieve the current Paimon snapshot before
-enabling datalake.
+`PaimonLakeCatalog` implements this method by returning the latest `APPEND` or `OVERWRITE`
+snapshot and ignoring `COMPACT` and `ANALYZE` snapshots. The procedure uses it to fix the Bulk Load
+source snapshot. The job verifies that the source data-change snapshot has not changed before
+registering the initial lake snapshot. The Coordinator uses the same definition when validating
+the snapshot registered by Fluss before enabling datalake.
 
 ## Proposed Changes
 
@@ -275,7 +280,7 @@ The component boundaries are as follows:
 | --- | --- | --- |
 | Paimon schema, primary-key, partition, and bucket mapping | Coordinator/Paimon lake plugin | Read the Paimon table and perform authoritative compatibility validation. |
 | Create a lake-disabled Fluss table | `Admin.createTableOnLake()` | Attempt to create the Fluss metadata before job submission; return `TableAlreadyExistException` if a table with the same name already exists. |
-| Retrieve the latest Paimon snapshot ID | `LakeCatalog.getLatestSnapshotId()` | Fix the Bulk Load source snapshot, validate the requested load scope, and validate consistency before enabling datalake. |
+| Retrieve the latest Paimon data-change snapshot ID | `LakeCatalog.getLatestDataChangeSnapshotId()` | Fix the Bulk Load source snapshot, validate the requested load scope, and validate consistency before enabling datalake. |
 | Register the initial snapshot for a log table | `FlussTableLakeSnapshotCommitter` | If a snapshot exists, register it in the `lakeTable` ZooKeeper node with empty offsets. |
 | Bulk Load data job | `load_lake_data_to_fluss` | Initialize a primary-key table over the selected load scope, register its initial snapshot, and enable datalake. |
 | Historical partition routing | Fluss lookup and write clients | Route a missing past auto partition to Lake Storage rather than dynamically creating an empty regular partition. |
@@ -292,8 +297,8 @@ The procedure executes the following steps:
    and creates a lake-disabled Fluss table.
 3. If the server returns `TableAlreadyExistException`, skip table creation and Bulk Load and
    continue with step 6. Other exceptions are propagated to the caller.
-4. After creating the table, fix the latest Paimon snapshot as the source snapshot and validate the
-   requested Bulk Load scope, including every explicitly selected partition.
+4. After creating the table, fix the latest Paimon data-change snapshot as the source snapshot and
+   validate the requested Bulk Load scope, including every explicitly selected partition.
 5. Select the following initialization path:
    - For a log table, if a snapshot exists, use `FlussTableLakeSnapshotCommitter` to register the
      snapshot directly in the `lakeTable` ZooKeeper node with empty offsets.
@@ -316,10 +321,13 @@ Paimon table with the same name exists. If it does not exist, the existing flow 
 table. If it already exists, the Coordinator performs the following validation:
 
 1. Read the Paimon table schema and verify that it is compatible with the current Fluss table.
-2. Read the current Paimon snapshot ID through `LakeCatalog.getLatestSnapshotId()`.
+2. Read the latest Paimon data-change snapshot ID through
+   `LakeCatalog.getLatestDataChangeSnapshotId()`.
 3. Read the registered snapshot ID from the Fluss lake table metadata.
-4. Allow the enablement if both snapshot IDs are equal or neither side has a snapshot. Reject it
-   with `InvalidAlterTableException` if only one side has a snapshot or the two IDs differ.
+4. Allow the enablement if both data-change snapshot IDs are equal or neither side has a
+   data-change snapshot. Reject it with `InvalidAlterTableException` if only one side has a
+   data-change snapshot or the two IDs differ. Paimon `COMPACT` and `ANALYZE` snapshots created
+   after the registered snapshot do not prevent enablement because they do not change logical data.
 
 This validation applies to `Admin.alterTable()` invoked by the job or procedure and to an
 `ALTER TABLE` statement issued directly by a user. Setting the property to `true` again on a table
@@ -327,7 +335,7 @@ that already has datalake enabled does not change the property and is handled as
 operation.
 
 Users must not write directly to Paimon while datalake is disabled. Such data does not enter the
-Fluss real-time serving layer, and any change to the Paimon snapshot causes validation to fail when
+Fluss real-time serving layer, and any new data-change snapshot causes validation to fail when
 datalake is enabled again. Validation cannot prevent a Paimon write that commits concurrently with
 the check, so stopping native Paimon writers remains a prerequisite for re-enablement.
 
@@ -343,9 +351,9 @@ into its KV storage as the initial primary-key state.
 The `load_lake_data_to_fluss` batch job submitted by the procedure completes initialization and
 datalake enablement:
 
-1. The procedure fixes the latest Paimon snapshot observed after table creation as the source
-   snapshot. Subsequent reads and initial lake snapshot registration use the same ID and do not
-   select a new latest snapshot while the job is running.
+1. The procedure fixes the latest Paimon data-change snapshot observed after table creation as the
+   source snapshot. Subsequent reads and initial lake snapshot registration use the same ID and do
+   not select a new source snapshot while the job is running.
 2. The job starts a transaction through Bulk Load Begin and verifies that the target Fluss table or
    partition does not contain user data.
 3. The Bulk Load job applies the scope defined in
@@ -358,9 +366,9 @@ datalake enablement:
 5. After all buckets have been built, Bulk Load Commit publishes the KV snapshot and Remote Log
    metadata together through a server-side transaction. Once replicas load the published snapshot,
    the historical primary-key state becomes readable in Fluss.
-6. Within the job's commit hook, read the latest Paimon snapshot ID again. Register the source
-   snapshot and the per-bucket log end offsets produced by Bulk Load only if the ID still equals
-   the source snapshot ID.
+6. Within the job's commit hook, read the latest Paimon data-change snapshot ID again. Register the
+   source snapshot and the per-bucket log end offsets produced by Bulk Load only if the ID still
+   equals the source snapshot ID.
 7. After registration succeeds, the job calls `Admin.alterTable()` to enable datalake. For an
    auto-partitioned primary-key table, it also enables historical partition access in the same
    alteration. The job completes successfully only after datalake is enabled.
@@ -435,8 +443,8 @@ Compatibility and supported Paimon table definitions are documented in
 - Verify that Paimon append-only tables and empty tables complete table creation, snapshot
   registration, and datalake enablement without executing Bulk Load.
 - Verify that a Paimon primary-key table with historical data uses a fixed snapshot for Bulk Load.
-  When the snapshot ID remains unchanged before and after the job, verify that the result is
-  registered and datalake is enabled; when it changes, verify that the process fails.
+  When the data-change snapshot ID remains unchanged before and after the job, verify that the
+  result is registered and datalake is enabled; when it changes, verify that the process fails.
 - Verify that a regular partitioned primary-key table loads every existing Paimon partition by
   default and loads only the requested partitions when `partitions` is specified. Verify that an
   unloaded partition is not initialized in Fluss.
@@ -459,8 +467,9 @@ Compatibility and supported Paimon table definitions are documented in
 - Verify that repeated procedure calls with only `table` specified are idempotent.
 - Verify that enabling datalake through `ALTER TABLE` creates the Paimon table through the existing
   flow when a table with the same name does not exist. When one already exists, verify that
-  enablement succeeds when the snapshot IDs match or neither side has a snapshot, and is rejected
-  when only one side has a snapshot or the snapshot IDs differ.
+  enablement succeeds when the data-change snapshot IDs match or neither side has a data-change
+  snapshot, including when only compaction or statistics snapshots were added afterward. Verify
+  that it is rejected when only one side has a data-change snapshot or the IDs differ.
 - Verify that incompatible schemas for a table with the same name, process failures, bucket modes,
   time-based partition validation, and user property validation produce the expected results.
 
