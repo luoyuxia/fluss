@@ -51,9 +51,6 @@ public class TestingLakeTieringFactory
 
     private final List<TestingLakeWriter> createdLakeWriters = new ArrayList<>();
 
-    // whether partition mark-done is enabled for all tables of this factory
-    private boolean partitionMarkDoneEnabled;
-
     public TestingLakeTieringFactory(@Nullable TestingLakeCommitter testingLakeCommitter) {
         this(testingLakeCommitter, null);
     }
@@ -102,15 +99,6 @@ public class TestingLakeTieringFactory
     public SimpleVersionedSerializer<TestingCommittable> getCommittableSerializer() {
         throw new UnsupportedOperationException(
                 "method getCommittableSerializer is not supported.");
-    }
-
-    public void enablePartitionMarkDone() {
-        this.partitionMarkDoneEnabled = true;
-    }
-
-    @Override
-    public boolean isPartitionMarkDoneEnabled(TableInfo tableInfo) {
-        return partitionMarkDoneEnabled;
     }
 
     /** A lake writer for testing purpose which tracks the closed state. */
@@ -163,6 +151,8 @@ public class TestingLakeTieringFactory
 
         private int maintenanceInvocations;
 
+        private boolean partitionMarkDoneEnabled;
+
         @Nullable private LakeCommitResult maintenanceCommitResult;
 
         public TestingLakeCommitter() {
@@ -171,6 +161,15 @@ public class TestingLakeTieringFactory
 
         public TestingLakeCommitter(CommittedLakeSnapshot mockMissingCommittedLakeSnapshot) {
             this.mockMissingCommittedLakeSnapshot = mockMissingCommittedLakeSnapshot;
+        }
+
+        public void enablePartitionMarkDone() {
+            this.partitionMarkDoneEnabled = true;
+        }
+
+        @Override
+        public boolean isPartitionMarkDoneEnabled() {
+            return partitionMarkDoneEnabled;
         }
 
         @Nullable

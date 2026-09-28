@@ -199,7 +199,10 @@ class PaimonPartitionMarkDoneTest {
         createPaimonTable(tablePath, markDoneOptions());
         TableInfo tableInfo = tableInfo(tablePath);
 
-        assertThat(paimonLakeTieringFactory.isPartitionMarkDoneEnabled(tableInfo)).isTrue();
+        try (Committer<PaimonWriteResult, PaimonCommittable> committer =
+                createLakeCommitter(tablePath, tableInfo)) {
+            assertThat(committer.isPartitionMarkDoneEnabled()).isTrue();
+        }
         long snapshot = writeAndCommit(tablePath, tableInfo, "2024-01-01");
         assertThat(getMarkDoneState(tablePath, snapshot).getTrackedPartitionLastUpdateTimes())
                 .containsOnlyKeys("2024-01-01");
@@ -221,7 +224,11 @@ class PaimonPartitionMarkDoneTest {
                 toPaimon(tablePath),
                 Collections.singletonList(SchemaChange.removeOption(IDLE_TIME_KEY)),
                 false);
-        assertThat(paimonLakeTieringFactory.isPartitionMarkDoneEnabled(staleTableInfo)).isFalse();
+        try (Committer<PaimonWriteResult, PaimonCommittable> committer =
+                createLakeCommitter(tablePath, staleTableInfo)) {
+            assertThat(committer.isPartitionMarkDoneEnabled()).isFalse();
+            assertThat(committer.markPartitionsDone()).isNull();
+        }
     }
 
     @Test
@@ -403,6 +410,7 @@ class PaimonPartitionMarkDoneTest {
         Thread.sleep(50);
         try (Committer<PaimonWriteResult, PaimonCommittable> lakeCommitter =
                 createLakeCommitter(tablePath, tableInfo, new Configuration())) {
+            assertThat(lakeCommitter.isPartitionMarkDoneEnabled()).isFalse();
             assertThat(commitMarkDoneMaintenance(lakeCommitter, "offsets-2")).isNull();
         }
         assertThat(successFile(tablePath, "2024-01-01")).doesNotExist();
@@ -523,12 +531,12 @@ class PaimonPartitionMarkDoneTest {
         }
         createPaimonTable(tablePath, options);
         TableInfo tableInfo = tableInfo(tablePath);
-        assertThat(paimonLakeTieringFactory.isPartitionMarkDoneEnabled(tableInfo)).isFalse();
         long snapshot = writeAndCommit(tablePath, tableInfo, "2024-01-01");
         assertThat(getSnapshotProperties(tablePath, snapshot))
                 .doesNotContainKey(MARK_DONE_STATE_PROPERTY);
         try (Committer<PaimonWriteResult, PaimonCommittable> committer =
                 createLakeCommitter(tablePath, tableInfo)) {
+            assertThat(committer.isPartitionMarkDoneEnabled()).isFalse();
             assertThat(commitMarkDoneMaintenance(committer, "offsets-2")).isNull();
         }
     }

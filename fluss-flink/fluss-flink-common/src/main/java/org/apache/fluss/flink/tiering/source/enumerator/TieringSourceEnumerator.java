@@ -515,10 +515,8 @@ public class TieringSourceEnumerator
             if (tieringSplits.isEmpty()
                     && lakeTieringConfig.get(ConfigOptions.LAKE_TIERING_PARTITION_MARK_DONE_ENABLED)
                     && lakeTieringFactory instanceof SupportsPartitionMarkDone
-                    && ((SupportsPartitionMarkDone<?, ?>) lakeTieringFactory)
-                            .isPartitionMarkDoneEnabled(tableInfo)) {
-                // fully caught up but mark-done enabled: emit one skip-round split so the
-                // commit operator can run mark-done maintenance for the empty round
+                    && tableInfo.isPartitioned()) {
+                // Let the committer check the lake table options without lake I/O here.
                 tieringSplits = new ArrayList<>();
                 tieringSplits.add(
                         new TieringLogSplit(

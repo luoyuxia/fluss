@@ -630,13 +630,13 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                         mockMissingCommittedLakeSnapshot);
         TestingLakeTieringFactory lakeTieringFactory =
                 new TestingLakeTieringFactory(testingLakeCommitter);
-        lakeTieringFactory.enablePartitionMarkDone();
         // mark-done must also be enabled at the job level (disabled by default)
         org.apache.fluss.config.Configuration lakeTieringConfig =
                 new org.apache.fluss.config.Configuration();
         lakeTieringConfig.set(
                 org.apache.fluss.config.ConfigOptions.LAKE_TIERING_PARTITION_MARK_DONE_ENABLED,
                 true);
+        committerOperator.close();
         committerOperator =
                 new TieringCommitOperator<>(
                         parameters,
@@ -645,8 +645,13 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                         lakeTieringFactory);
         committerOperator.open();
 
-        // an empty round runs mark-done maintenance and first brings Fluss up to date with
-        // the missing lake snapshot
+        committerOperator.processElement(
+                createTableBucketWriteResultStreamRecord(
+                        tablePath, new TableBucket(tableId, 0), null, null, -1, -1, 1));
+        assertThat(testingLakeCommitter.getMaintenanceInvocations()).isZero();
+        verifyNoLakeSnapshot(tablePath);
+
+        testingLakeCommitter.enablePartitionMarkDone();
         committerOperator.processElement(
                 createTableBucketWriteResultStreamRecord(
                         tablePath, new TableBucket(tableId, 0), null, null, -1, -1, 1));
@@ -654,6 +659,12 @@ class TieringCommitOperatorTest extends FlinkTestBase {
         LakeSnapshot lakeSnapshot = admin.getLatestLakeSnapshot(tablePath).get();
         assertThat(lakeSnapshot.getSnapshotId()).isEqualTo(5);
         assertThat(lakeSnapshot.getTableBucketsOffset()).isEqualTo(expectedLogEndOffsets);
+        assertThat(mockOperatorEventGateway.getEventsSent())
+                .hasSize(2)
+                .allSatisfy(
+                        event ->
+                                assertThat(((SourceEventWrapper) event).getSourceEvent())
+                                        .isInstanceOf(FinishedTieringEvent.class));
     }
 
     @Test
@@ -665,7 +676,7 @@ class TieringCommitOperatorTest extends FlinkTestBase {
         TestingLakeTieringFactory.TestingLakeCommitter lakeCommitter =
                 new TestingLakeTieringFactory.TestingLakeCommitter();
         TestingLakeTieringFactory factory = new TestingLakeTieringFactory(lakeCommitter);
-        factory.enablePartitionMarkDone();
+        lakeCommitter.enablePartitionMarkDone();
         org.apache.fluss.config.Configuration tieringConfig =
                 new org.apache.fluss.config.Configuration();
         tieringConfig.set(ConfigOptions.LAKE_TIERING_PARTITION_MARK_DONE_ENABLED, true);

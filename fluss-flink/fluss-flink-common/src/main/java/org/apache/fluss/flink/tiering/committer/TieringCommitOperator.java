@@ -296,7 +296,7 @@ public class TieringCommitOperator<WriteResult, Committable>
         SupportsPartitionMarkDone<WriteResult, Committable> markDone =
                 (SupportsPartitionMarkDone<WriteResult, Committable>) lakeTieringFactory;
         TableInfo tableInfo = admin.getTableInfo(tablePath).get();
-        if (tableInfo.getTableId() != tableId || !markDone.isPartitionMarkDoneEnabled(tableInfo)) {
+        if (tableInfo.getTableId() != tableId || !tableInfo.isPartitioned()) {
             return;
         }
         TieringCommitterInitContext context =
@@ -304,6 +304,9 @@ public class TieringCommitOperator<WriteResult, Committable>
                         tablePath, tableInfo, lakeTieringConfig, flussConfig);
         try (SupportsPartitionMarkDone.Committer<WriteResult, Committable> lakeCommitter =
                 markDone.createLakeCommitter(context)) {
+            if (!lakeCommitter.isPartitionMarkDoneEnabled()) {
+                return;
+            }
             // Recover before preparing maintenance: unchanged state may need no new commit.
             LakeSnapshot flussCurrentLakeSnapshot = getLatestLakeSnapshot(tablePath);
             CommittedLakeSnapshot missingCommittedSnapshot =

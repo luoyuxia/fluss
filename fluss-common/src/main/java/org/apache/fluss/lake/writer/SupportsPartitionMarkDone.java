@@ -20,7 +20,6 @@ package org.apache.fluss.lake.writer;
 import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.lake.committer.CommitterInitContext;
 import org.apache.fluss.lake.committer.LakeCommitter;
-import org.apache.fluss.metadata.TableInfo;
 
 import javax.annotation.Nullable;
 
@@ -36,9 +35,6 @@ import java.io.IOException;
 public interface SupportsPartitionMarkDone<WriteResult, CommittableT>
         extends LakeTieringFactory<WriteResult, CommittableT> {
 
-    /** Checks table enablement without creating writers or mark-done actions. */
-    boolean isPartitionMarkDoneEnabled(TableInfo tableInfo);
-
     /** Creates a lake committer that also prepares partition mark-done maintenance. */
     @Override
     Committer<WriteResult, CommittableT> createLakeCommitter(CommitterInitContext context)
@@ -53,6 +49,9 @@ public interface SupportsPartitionMarkDone<WriteResult, CommittableT>
     @Internal
     interface Committer<WriteResult, CommittableT>
             extends LakeCommitter<WriteResult, CommittableT> {
+
+        /** Returns whether mark-done is enabled for this committer, without additional I/O. */
+        boolean isPartitionMarkDoneEnabled();
 
         /**
          * Runs idempotent mark-done actions and prepares the state to persist for an empty round.

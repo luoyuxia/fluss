@@ -213,6 +213,11 @@ public class PaimonLakeCommitter
         }
     }
 
+    @Override
+    public boolean isPartitionMarkDoneEnabled() {
+        return markDoneTableInfo != null;
+    }
+
     @Nullable
     @Override
     public PaimonCommittable markPartitionsDone() {
