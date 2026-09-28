@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.lake.paimon.tiering;
+package org.apache.fluss.lake.paimon.tiering.markdone;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -29,28 +29,34 @@ import java.util.Objects;
  * done partitions are removed (done-is-delete), it lives in the lake via the idempotent mark-done
  * actions.
  */
-public class MarkDoneState {
+public class PartitionMarkDoneState {
 
+    // True once historical lake partitions have been backfilled; false retries the backfill.
+    // This does not indicate that all tracked partitions are done.
     private final boolean initialized;
-    // partition name -> last time the tiering service wrote data into the partition
-    private final Map<String, Long> pendingPartitions;
+    // Partition name -> last update time in epoch milliseconds.
+    private final Map<String, Long> trackedPartitionLastUpdateTimes;
 
-    public MarkDoneState(boolean initialized, Map<String, Long> pendingPartitions) {
+    /** Creates a state with a defensive copy of the tracked partition timestamps. */
+    public PartitionMarkDoneState(
+            boolean initialized, Map<String, Long> trackedPartitionLastUpdateTimes) {
         this.initialized = initialized;
-        this.pendingPartitions = new HashMap<>(pendingPartitions);
+        this.trackedPartitionLastUpdateTimes = new HashMap<>(trackedPartitionLastUpdateTimes);
     }
 
     /** Creates an empty state: not initialized, no pending partitions. */
-    public static MarkDoneState empty() {
-        return new MarkDoneState(false, new HashMap<>());
+    public static PartitionMarkDoneState empty() {
+        return new PartitionMarkDoneState(false, new HashMap<>());
     }
 
+    /** Whether historical lake partition backfill has completed. */
     public boolean isInitialized() {
         return initialized;
     }
 
-    public Map<String, Long> getPendingPartitions() {
-        return Collections.unmodifiableMap(pendingPartitions);
+    /** Returns tracked partitions and their last update times in epoch milliseconds. */
+    public Map<String, Long> getTrackedPartitionLastUpdateTimes() {
+        return Collections.unmodifiableMap(trackedPartitionLastUpdateTimes);
     }
 
     @Override
@@ -61,23 +67,24 @@ public class MarkDoneState {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        MarkDoneState that = (MarkDoneState) o;
+        PartitionMarkDoneState that = (PartitionMarkDoneState) o;
         return initialized == that.initialized
-                && Objects.equals(pendingPartitions, that.pendingPartitions);
+                && Objects.equals(
+                        trackedPartitionLastUpdateTimes, that.trackedPartitionLastUpdateTimes);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(initialized, pendingPartitions);
+        return Objects.hash(initialized, trackedPartitionLastUpdateTimes);
     }
 
     @Override
     public String toString() {
-        return "MarkDoneState{"
+        return "PartitionMarkDoneState{"
                 + "initialized="
                 + initialized
-                + ", pendingPartitions="
-                + pendingPartitions
+                + ", trackedPartitionLastUpdateTimes="
+                + trackedPartitionLastUpdateTimes
                 + '}';
     }
 }

@@ -23,6 +23,8 @@ import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.paimon.testutils.FlinkPaimonTieringTestBase;
+import org.apache.fluss.lake.paimon.tiering.markdone.PartitionMarkDoneState;
+import org.apache.fluss.lake.paimon.tiering.markdone.PartitionMarkDoneStateJsonSerde;
 import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.Schema;
@@ -76,7 +78,7 @@ import java.util.stream.Stream;
 import static org.apache.fluss.flink.source.testutils.FlinkRowAssertionsUtils.collectRowsUntilEndWithTimeout;
 import static org.apache.fluss.lake.committer.LakeCommitter.FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY;
 import static org.apache.fluss.lake.paimon.testutils.PaimonTestUtils.adjustToLegacyV1Table;
-import static org.apache.fluss.lake.paimon.tiering.PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY;
+import static org.apache.fluss.lake.paimon.tiering.markdone.PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -758,11 +760,11 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
                         assertThat(properties)
                                 .containsKey(FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY)
                                 .containsKey(MARK_DONE_STATE_PROPERTY);
-                        MarkDoneState state =
-                                MarkDoneStateJsonSerde.fromJson(
+                        PartitionMarkDoneState state =
+                                PartitionMarkDoneStateJsonSerde.fromJson(
                                         properties.get(MARK_DONE_STATE_PROPERTY));
                         assertThat(state.isInitialized()).isTrue();
-                        assertThat(state.getPendingPartitions()).isEmpty();
+                        assertThat(state.getTrackedPartitionLastUpdateTimes()).isEmpty();
                         // the properties-only snapshot is committed back to Fluss
                         assertThat(admin.getLatestLakeSnapshot(tablePath).get().getSnapshotId())
                                 .isEqualTo(snapshot.id());
@@ -791,10 +793,10 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
                         assertThat(snapshot).isNotNull();
                         assertThat(snapshot.id()).isGreaterThan(snapshotBeforeLateData);
                         assertThat(snapshot.properties()).containsKey(MARK_DONE_STATE_PROPERTY);
-                        MarkDoneState state =
-                                MarkDoneStateJsonSerde.fromJson(
+                        PartitionMarkDoneState state =
+                                PartitionMarkDoneStateJsonSerde.fromJson(
                                         snapshot.properties().get(MARK_DONE_STATE_PROPERTY));
-                        assertThat(state.getPendingPartitions()).isEmpty();
+                        assertThat(state.getTrackedPartitionLastUpdateTimes()).isEmpty();
                         assertThat(successFile).exists();
                         assertThat(admin.getLatestLakeSnapshot(tablePath).get().getSnapshotId())
                                 .isEqualTo(snapshot.id());

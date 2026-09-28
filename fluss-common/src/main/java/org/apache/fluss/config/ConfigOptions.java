@@ -2672,8 +2672,8 @@ public class ConfigOptions {
                     .defaultValue(false)
                     .withDescription(
                             "Whether the tiering service marks idle partitions of tiered partitioned tables as done. "
-                                    + "Disabled by default. When enabled, a table opts in via its lake-format prefixed "
-                                    + "mark-done custom properties (e.g. 'paimon.partition.idle-time-to-done' for Paimon).");
+                                    + "Disabled by default. When enabled, mark-done uses the actual lake table's options "
+                                    + "(e.g. 'partition.idle-time-to-done' on the Paimon table).");
 
     public static final ConfigOption<String> LAKE_TIERING_IO_TMP_DIRS =
             key("lake.tiering.io.tmp.dirs")

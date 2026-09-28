@@ -34,7 +34,7 @@ import org.apache.fluss.flink.tiering.source.split.TieringSplitGenerator;
 import org.apache.fluss.flink.tiering.source.state.TieringSourceEnumeratorState;
 import org.apache.fluss.lake.committer.TieringStats;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
-import org.apache.fluss.lake.writer.PartitionMarkDoneEnabler;
+import org.apache.fluss.lake.writer.SupportsPartitionMarkDone;
 import org.apache.fluss.lake.writer.TieringTableValidator;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
@@ -514,8 +514,8 @@ public class TieringSourceEnumerator
             List<TieringSplit> tieringSplits = splitGenerator.generateTableSplits(tableInfo);
             if (tieringSplits.isEmpty()
                     && lakeTieringConfig.get(ConfigOptions.LAKE_TIERING_PARTITION_MARK_DONE_ENABLED)
-                    && lakeTieringFactory instanceof PartitionMarkDoneEnabler
-                    && ((PartitionMarkDoneEnabler) lakeTieringFactory)
+                    && lakeTieringFactory instanceof SupportsPartitionMarkDone
+                    && ((SupportsPartitionMarkDone<?, ?>) lakeTieringFactory)
                             .isPartitionMarkDoneEnabled(tableInfo)) {
                 // fully caught up but mark-done enabled: emit one skip-round split so the
                 // commit operator can run mark-done maintenance for the empty round

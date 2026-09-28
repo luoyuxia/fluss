@@ -15,11 +15,9 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.lake.paimon.tiering;
+package org.apache.fluss.lake.paimon.tiering.markdone;
 
 import org.apache.paimon.utils.StringUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -47,32 +45,31 @@ import java.util.Map;
  *   <li>Flink operator state, end-input and watermark related code is removed.
  * </ul>
  */
-public class PartitionMarkDoneTrigger {
-
-    private static final Logger LOG = LoggerFactory.getLogger(PartitionMarkDoneTrigger.class);
+class PartitionMarkDoneTrigger {
 
     private final PartitionEndTimeExtractor endTimeExtractor;
     private final long idleTime;
-    private final Map<String, Long> pendingPartitions;
+    private final Map<String, Long> trackedPartitionLastUpdateTimes;
 
     public PartitionMarkDoneTrigger(
             Map<String, Long> restoredPendingPartitions,
             PartitionEndTimeExtractor endTimeExtractor,
             long idleTime) {
-        this.pendingPartitions = new HashMap<>(restoredPendingPartitions);
+        this.trackedPartitionLastUpdateTimes = new HashMap<>(restoredPendingPartitions);
         this.endTimeExtractor = endTimeExtractor;
         this.idleTime = idleTime;
     }
 
     public void notifyPartition(String partition, long currentTimeMillis) {
         if (!StringUtils.isNullOrWhitespaceOnly(partition)) {
-            this.pendingPartitions.put(partition, currentTimeMillis);
+            this.trackedPartitionLastUpdateTimes.put(partition, currentTimeMillis);
         }
     }
 
     public List<String> donePartitions(long currentTimeMillis) {
         List<String> needDone = new ArrayList<>();
-        Iterator<Map.Entry<String, Long>> iter = pendingPartitions.entrySet().iterator();
+        Iterator<Map.Entry<String, Long>> iter =
+                trackedPartitionLastUpdateTimes.entrySet().iterator();
         while (iter.hasNext()) {
             Map.Entry<String, Long> entry = iter.next();
             String partition = entry.getKey();
@@ -81,7 +78,6 @@ public class PartitionMarkDoneTrigger {
             Long partitionEndTime = endTimeExtractor.extract(partition);
             // skip illegal partition
             if (partitionEndTime == null) {
-                LOG.warn("Can't extract partition end time from partition {}, skip it.", partition);
                 iter.remove();
                 continue;
             }
@@ -96,8 +92,8 @@ public class PartitionMarkDoneTrigger {
     }
 
     /** Returns the pending (not yet done) partitions to be persisted as state. */
-    public Map<String, Long> pendingPartitions() {
-        return pendingPartitions;
+    public Map<String, Long> trackedPartitionLastUpdateTimes() {
+        return trackedPartitionLastUpdateTimes;
     }
 
     /** Extracts the partition end time in epoch millis, null if it cannot be derived. */

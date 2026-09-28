@@ -81,7 +81,7 @@ The following `--lake.tiering.*` options are set when starting the tiering job:
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `lake.tiering.auto-expire-snapshot` | Boolean | false | Auto-trigger snapshot expiration on commit |
-| `lake.tiering.partition.mark-done.enabled` | Boolean | false | Whether the tiering service marks idle partitions of tiered partitioned tables as done. When enabled, a table opts in via its lake-format prefixed mark-done custom properties (e.g. `paimon.partition.idle-time-to-done` for Paimon) |
+| `lake.tiering.partition.mark-done.enabled` | Boolean | false | Enable [partition mark-done](#partition-mark-done) using the actual lake table's options |
 | `lake.tiering.io.tmp.dirs` | String | Flink temporary directories | Local directories used for temporary I/O files. If not configured, a `fluss` child directory under each Flink temporary directory is used. Separate multiple directories with commas or the system path separator |
 
 ### Table-Level Options
@@ -94,6 +94,43 @@ The following `table.datalake.*` options are configured per table when creating 
 | `table.datalake.freshness` | Duration | 3min | Maximum lag between Fluss and lake data |
 | `table.datalake.auto-compaction` | Boolean | false | Auto-trigger compaction in the data lake |
 | `table.datalake.auto-expire-snapshot` | Boolean | false | Auto-expire snapshots in the data lake |
+
+## Partition Mark-Done
+
+The Tiering Service supports marking idle partitions of Paimon tables done. Enable the job-level option `--lake.tiering.partition.mark-done.enabled true` and configure `partition.idle-time-to-done` on the Paimon table. Runtime checks and actions use the **actual Paimon table options**. Fluss `paimon.*` properties can pass these options to Paimon when creating a table; retained Fluss properties do not override the lake table at runtime.
+
+Only `partition.mark-done-action.mode=process-time` is supported. Other modes, including `watermark`, log a warning and disable mark-done for the table. A partition becomes eligible when both its last update and its end time are older than the configured idle duration. The default action creates a `_SUCCESS` file. Actions can be retried after failures, so custom actions must be idempotent. Late data starts tracking the partition again.
+
+Partition end times are selected as follows:
+
+- A timestamp pattern or formatter together with `partition.time-interval` selects the explicit Paimon rule. It uses the JVM time zone, as Paimon does.
+- Otherwise, an auto-partitioned Fluss table uses its auto-partition key, format, calendar unit, and time zone. This supports existing yearly, quarterly, and monthly partitions whose boundaries cannot be expressed as one fixed duration. If other keys represent finer time units, such as `(day, hour)`, this fallback may delay mark-done until the larger interval ends.
+- Without Fluss auto-partitioning, `partition.time-interval` is required and can use Paimon's default timestamp extraction. Without either auto-partitioning or an interval, mark-done is disabled.
+
+For a Paimon table partitioned by `day` and `hour`, configure an explicit hourly rule in the Paimon catalog:
+
+```sql
+ALTER TABLE events SET (
+  'partition.idle-time-to-done' = '10 min',
+  'partition.timestamp-pattern' = '$day $hour',
+  'partition.timestamp-formatter' = 'yyyyMMdd HH',
+  'partition.time-interval' = '1 h'
+);
+```
+
+For the Fluss auto-partition fallback, the following Fluss table uses month boundaries in `Asia/Shanghai`. No Paimon timestamp rule or interval is needed:
+
+```sql
+CREATE TABLE monthly_events (id BIGINT, `month` STRING)
+PARTITIONED BY (`month`)
+WITH (
+  'table.datalake.enabled' = 'true',
+  'table.auto-partition.enabled' = 'true',
+  'table.auto-partition.time-unit' = 'MONTH',
+  'table.auto-partition.time-zone' = 'Asia/Shanghai',
+  'paimon.partition.idle-time-to-done' = '10 min'
+);
+```
 
 ## Scaling
 

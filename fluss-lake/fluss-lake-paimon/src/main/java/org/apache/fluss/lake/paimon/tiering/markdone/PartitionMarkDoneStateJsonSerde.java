@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.fluss.lake.paimon.tiering;
+package org.apache.fluss.lake.paimon.tiering.markdone;
 
 import org.apache.fluss.exception.UnsupportedVersionException;
 import org.apache.fluss.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
@@ -33,26 +33,31 @@ import java.util.Map;
 import static org.apache.fluss.utils.Preconditions.checkArgument;
 
 /**
- * JSON serde for {@link MarkDoneState}. Unversioned states are read as version 1. Incompatible
- * state changes must increment the version so older readers reject the format without rewriting it.
+ * JSON serde for {@link PartitionMarkDoneState}. Incompatible state changes must increment the
+ * version so older readers reject the format without rewriting it.
  */
-public class MarkDoneStateJsonSerde
-        implements JsonSerializer<MarkDoneState>, JsonDeserializer<MarkDoneState> {
+public class PartitionMarkDoneStateJsonSerde
+        implements JsonSerializer<PartitionMarkDoneState>,
+                JsonDeserializer<PartitionMarkDoneState> {
 
-    public static final MarkDoneStateJsonSerde INSTANCE = new MarkDoneStateJsonSerde();
+    public static final PartitionMarkDoneStateJsonSerde INSTANCE =
+            new PartitionMarkDoneStateJsonSerde();
 
     private static final int VERSION = 1;
     private static final String VERSION_FIELD = "version";
     private static final String INITIALIZED_FIELD = "initialized";
-    private static final String PENDING_FIELD = "pending";
+    private static final String TRACKED_PARTITION_LAST_UPDATE_TIMES_FIELD =
+            "trackedPartitionLastUpdateTimes";
 
     @Override
-    public void serialize(MarkDoneState state, JsonGenerator generator) throws IOException {
+    public void serialize(PartitionMarkDoneState state, JsonGenerator generator)
+            throws IOException {
         generator.writeStartObject();
         generator.writeNumberField(VERSION_FIELD, VERSION);
         generator.writeBooleanField(INITIALIZED_FIELD, state.isInitialized());
-        generator.writeObjectFieldStart(PENDING_FIELD);
-        for (Map.Entry<String, Long> entry : state.getPendingPartitions().entrySet()) {
+        generator.writeObjectFieldStart(TRACKED_PARTITION_LAST_UPDATE_TIMES_FIELD);
+        for (Map.Entry<String, Long> entry :
+                state.getTrackedPartitionLastUpdateTimes().entrySet()) {
             generator.writeNumberField(entry.getKey(), entry.getValue());
         }
         generator.writeEndObject();
@@ -60,47 +65,51 @@ public class MarkDoneStateJsonSerde
     }
 
     @Override
-    public MarkDoneState deserialize(JsonNode node) {
+    public PartitionMarkDoneState deserialize(JsonNode node) {
         JsonNode versionNode = node.get(VERSION_FIELD);
-        if (versionNode != null && (!versionNode.isInt() || versionNode.intValue() != VERSION)) {
+        checkArgument(
+                versionNode != null && versionNode.isInt(),
+                "Field %s must be an integer.",
+                VERSION_FIELD);
+        if (versionNode.intValue() != VERSION) {
             throw new UnsupportedVersionException(
                     "Unsupported mark-done state version: "
                             + versionNode
                             + "; supported version: "
                             + VERSION);
         }
-        boolean initialized = false;
         JsonNode initializedNode = node.get(INITIALIZED_FIELD);
-        if (initializedNode != null) {
+        checkArgument(
+                initializedNode != null && initializedNode.isBoolean(),
+                "Field %s must be a boolean.",
+                INITIALIZED_FIELD);
+        JsonNode trackedPartitionsNode = node.get(TRACKED_PARTITION_LAST_UPDATE_TIMES_FIELD);
+        checkArgument(
+                trackedPartitionsNode != null && trackedPartitionsNode.isObject(),
+                "Field %s must be an object.",
+                TRACKED_PARTITION_LAST_UPDATE_TIMES_FIELD);
+        Map<String, Long> trackedPartitionLastUpdateTimes = new HashMap<>();
+        Iterator<Map.Entry<String, JsonNode>> fields = trackedPartitionsNode.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> field = fields.next();
             checkArgument(
-                    initializedNode.isBoolean(), "Field %s must be a boolean.", INITIALIZED_FIELD);
-            initialized = initializedNode.asBoolean();
+                    field.getValue().canConvertToLong(),
+                    "Last update time of partition %s must be a long.",
+                    field.getKey());
+            trackedPartitionLastUpdateTimes.put(field.getKey(), field.getValue().asLong());
         }
-        Map<String, Long> pendingPartitions = new HashMap<>();
-        JsonNode pendingNode = node.get(PENDING_FIELD);
-        if (pendingNode != null) {
-            checkArgument(pendingNode.isObject(), "Field %s must be an object.", PENDING_FIELD);
-            Iterator<Map.Entry<String, JsonNode>> fields = pendingNode.fields();
-            while (fields.hasNext()) {
-                Map.Entry<String, JsonNode> field = fields.next();
-                checkArgument(
-                        field.getValue().canConvertToLong(),
-                        "Time of pending partition %s must be a long.",
-                        field.getKey());
-                pendingPartitions.put(field.getKey(), field.getValue().asLong());
-            }
-        }
-        return new MarkDoneState(initialized, pendingPartitions);
+        return new PartitionMarkDoneState(
+                initializedNode.asBoolean(), trackedPartitionLastUpdateTimes);
     }
 
     /** Serializes the given state to a JSON string. */
-    public static String toJson(MarkDoneState state) {
+    public static String toJson(PartitionMarkDoneState state) {
         return new String(
                 JsonSerdeUtils.writeValueAsBytes(state, INSTANCE), StandardCharsets.UTF_8);
     }
 
     /** Deserializes the state from a JSON string. */
-    public static MarkDoneState fromJson(String json) {
+    public static PartitionMarkDoneState fromJson(String json) {
         return JsonSerdeUtils.readValue(json.getBytes(StandardCharsets.UTF_8), INSTANCE);
     }
 }

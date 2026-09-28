@@ -19,20 +19,28 @@ package org.apache.fluss.lake.paimon.tiering;
 
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.committer.CommitterInitContext;
-import org.apache.fluss.lake.committer.LakeCommitter;
+import org.apache.fluss.lake.paimon.tiering.markdone.PaimonPartitionMarkDone;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
-import org.apache.fluss.lake.writer.PartitionMarkDoneEnabler;
+import org.apache.fluss.lake.writer.SupportsPartitionMarkDone;
 import org.apache.fluss.lake.writer.WriterInitContext;
 import org.apache.fluss.metadata.TableInfo;
 
+import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.table.FileStoreTable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
+
+import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 
 /** Implementation of {@link LakeTieringFactory} for Paimon . */
 public class PaimonLakeTieringFactory
-        implements LakeTieringFactory<PaimonWriteResult, PaimonCommittable>,
-                PartitionMarkDoneEnabler {
+        implements SupportsPartitionMarkDone<PaimonWriteResult, PaimonCommittable> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(PaimonLakeTieringFactory.class);
 
     private static final long serialVersionUID = 1L;
 
@@ -54,8 +62,8 @@ public class PaimonLakeTieringFactory
     }
 
     @Override
-    public LakeCommitter<PaimonWriteResult, PaimonCommittable> createLakeCommitter(
-            CommitterInitContext committerInitContext) throws IOException {
+    public SupportsPartitionMarkDone.Committer<PaimonWriteResult, PaimonCommittable>
+            createLakeCommitter(CommitterInitContext committerInitContext) throws IOException {
         return new PaimonLakeCommitter(paimonCatalogProvider, committerInitContext);
     }
 
@@ -66,6 +74,19 @@ public class PaimonLakeTieringFactory
 
     @Override
     public boolean isPartitionMarkDoneEnabled(TableInfo tableInfo) {
-        return PaimonPartitionMarkDone.isEnabled(tableInfo);
+        if (!tableInfo.isPartitioned()) {
+            return false;
+        }
+        try (Catalog catalog = paimonCatalogProvider.get()) {
+            FileStoreTable table =
+                    (FileStoreTable) catalog.getTable(toPaimon(tableInfo.getLakeTablePath()));
+            return PaimonPartitionMarkDone.isEnabled(table, tableInfo);
+        } catch (Exception e) {
+            LOG.warn(
+                    "Failed to check partition mark-done for table {}, skipping this round.",
+                    tableInfo.getTablePath(),
+                    e);
+            return false;
+        }
     }
 }

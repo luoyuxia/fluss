@@ -31,16 +31,14 @@ import org.apache.fluss.flink.tiering.source.TieringSource;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.lake.committer.LakeCommitter;
-import org.apache.fluss.lake.committer.PartitionMarkDoneMaintainer;
 import org.apache.fluss.lake.committer.TieringStats;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
-import org.apache.fluss.lake.writer.PartitionMarkDoneEnabler;
+import org.apache.fluss.lake.writer.SupportsPartitionMarkDone;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.utils.ExceptionUtils;
-import org.apache.fluss.utils.types.Tuple2;
 
 import org.apache.flink.runtime.operators.coordination.OperatorEventGateway;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
@@ -224,7 +222,6 @@ public class TieringCommitOperator<WriteResult, Committable>
                     "Commit tiering write results is empty for table {}, table path {}",
                     tableId,
                     tablePath);
-            // still run partition mark-done maintenance for the empty round
             maybeCommitMarkDoneMaintenance(tableId, tablePath);
             return new CommitResult(null, null);
         }
@@ -274,25 +271,14 @@ public class TieringCommitOperator<WriteResult, Committable>
                             ? null
                             : flussCurrentLakeSnapshot.getSnapshotId());
 
-            // get the lake bucket offsets file storing the log end offsets
-            String lakeBucketTieredOffsetsFile =
-                    flussTableLakeSnapshotCommitter.prepareLakeSnapshot(
-                            tableId, tablePath, logEndOffsets);
-
-            // record the lake snapshot bucket offsets file to snapshot property
-            Map<String, String> snapshotProperties =
-                    Collections.singletonMap(
-                            FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, lakeBucketTieredOffsetsFile);
             LakeCommitResult lakeCommitResult =
-                    lakeCommitter.commit(committable, snapshotProperties);
-            // commit to fluss
-            flussTableLakeSnapshotCommitter.commit(
-                    tableId,
-                    tablePath,
-                    lakeCommitResult,
-                    lakeBucketTieredOffsetsFile,
-                    logEndOffsets,
-                    logMaxTieredTimestamps);
+                    commitToLakeAndFluss(
+                            tableId,
+                            tablePath,
+                            lakeCommitter,
+                            committable,
+                            logEndOffsets,
+                            logMaxTieredTimestamps);
             return new CommitResult(committable, lakeCommitResult.getTieringStats());
         }
     }
@@ -304,25 +290,21 @@ public class TieringCommitOperator<WriteResult, Committable>
     private void maybeCommitMarkDoneMaintenance(long tableId, TablePath tablePath)
             throws Exception {
         if (!lakeTieringConfig.get(ConfigOptions.LAKE_TIERING_PARTITION_MARK_DONE_ENABLED)
-                || !(lakeTieringFactory instanceof PartitionMarkDoneEnabler)) {
+                || !(lakeTieringFactory instanceof SupportsPartitionMarkDone)) {
             return;
         }
+        SupportsPartitionMarkDone<WriteResult, Committable> markDone =
+                (SupportsPartitionMarkDone<WriteResult, Committable>) lakeTieringFactory;
         TableInfo tableInfo = admin.getTableInfo(tablePath).get();
-        if (tableInfo.getTableId() != tableId
-                || !((PartitionMarkDoneEnabler) lakeTieringFactory)
-                        .isPartitionMarkDoneEnabled(tableInfo)) {
+        if (tableInfo.getTableId() != tableId || !markDone.isPartitionMarkDoneEnabled(tableInfo)) {
             return;
         }
-        try (LakeCommitter<WriteResult, Committable> lakeCommitter =
-                lakeTieringFactory.createLakeCommitter(
-                        new TieringCommitterInitContext(
-                                tablePath, tableInfo, lakeTieringConfig, flussConfig))) {
-            if (!(lakeCommitter instanceof PartitionMarkDoneMaintainer)) {
-                return;
-            }
-            // first bring Fluss up to date in case a previous round committed to the lake but
-            // failed to commit to Fluss; otherwise the maintenance would see an unchanged
-            // state, keep returning null and Fluss would stay on the old snapshot forever
+        TieringCommitterInitContext context =
+                new TieringCommitterInitContext(
+                        tablePath, tableInfo, lakeTieringConfig, flussConfig);
+        try (SupportsPartitionMarkDone.Committer<WriteResult, Committable> lakeCommitter =
+                markDone.createLakeCommitter(context)) {
+            // Recover before preparing maintenance: unchanged state may need no new commit.
             LakeSnapshot flussCurrentLakeSnapshot = getLatestLakeSnapshot(tablePath);
             CommittedLakeSnapshot missingCommittedSnapshot =
                     lakeCommitter.getMissingLakeSnapshot(
@@ -332,23 +314,39 @@ public class TieringCommitOperator<WriteResult, Committable>
             if (missingCommittedSnapshot != null) {
                 commitMissingLakeSnapshotToFluss(tablePath, tableId, missingCommittedSnapshot);
             }
-            Tuple2<LakeCommitResult, String> maintenanceCommit =
-                    ((PartitionMarkDoneMaintainer) lakeCommitter)
-                            .commitMarkDoneMaintenance(
-                                    () ->
-                                            flussTableLakeSnapshotCommitter.prepareLakeSnapshot(
-                                                    tableId, tablePath, Collections.emptyMap()));
-            if (maintenanceCommit != null) {
-                flussTableLakeSnapshotCommitter.commit(
+            Committable committable = lakeCommitter.markPartitionsDone();
+            if (committable != null) {
+                commitToLakeAndFluss(
                         tableId,
                         tablePath,
-                        maintenanceCommit.f0,
-                        maintenanceCommit.f1,
-                        // no data was written in this round
+                        lakeCommitter,
+                        committable,
                         Collections.emptyMap(),
                         Collections.emptyMap());
             }
         }
+    }
+
+    private LakeCommitResult commitToLakeAndFluss(
+            long tableId,
+            TablePath tablePath,
+            LakeCommitter<WriteResult, Committable> lakeCommitter,
+            Committable committable,
+            Map<TableBucket, Long> logEndOffsets,
+            Map<TableBucket, Long> logMaxTieredTimestamps)
+            throws Exception {
+        // Each snapshot needs its own offsets file; Fluss expires it together with that snapshot.
+        String offsetsFile =
+                flussTableLakeSnapshotCommitter.prepareLakeSnapshot(
+                        tableId, tablePath, logEndOffsets);
+        LakeCommitResult result =
+                lakeCommitter.commit(
+                        committable,
+                        Collections.singletonMap(
+                                FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, offsetsFile));
+        flussTableLakeSnapshotCommitter.commit(
+                tableId, tablePath, result, offsetsFile, logEndOffsets, logMaxTieredTimestamps);
+        return result;
     }
 
     @Nullable
@@ -401,7 +399,7 @@ public class TieringCommitOperator<WriteResult, Committable>
         }
     }
 
-    /** Commits a lake snapshot committed by Fluss but unknown to Fluss back to Fluss. */
+    /** Registers a lake commit that has not yet been recorded in Fluss. */
     private void commitMissingLakeSnapshotToFluss(
             TablePath tablePath, long tableId, CommittedLakeSnapshot missingCommittedSnapshot)
             throws Exception {

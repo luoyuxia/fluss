@@ -22,31 +22,27 @@ import org.apache.fluss.flink.tiering.source.TestingWriteResultSerializer;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.CommitterInitContext;
 import org.apache.fluss.lake.committer.LakeCommitResult;
-import org.apache.fluss.lake.committer.LakeCommitter;
-import org.apache.fluss.lake.committer.PartitionMarkDoneMaintainer;
 import org.apache.fluss.lake.serializer.SimpleVersionedSerializer;
 import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.lake.writer.LakeWriter;
-import org.apache.fluss.lake.writer.PartitionMarkDoneEnabler;
+import org.apache.fluss.lake.writer.SupportsPartitionMarkDone;
 import org.apache.fluss.lake.writer.TieringTableValidator;
 import org.apache.fluss.lake.writer.WriterInitContext;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.record.LogRecord;
-import org.apache.fluss.utils.function.SupplierWithException;
-import org.apache.fluss.utils.types.Tuple2;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 /** An implementation of {@link LakeTieringFactory} for testing purpose. */
 public class TestingLakeTieringFactory
-        implements LakeTieringFactory<TestingWriteResult, TestingCommittable>,
-                TieringTableValidator,
-                PartitionMarkDoneEnabler {
+        implements SupportsPartitionMarkDone<TestingWriteResult, TestingCommittable>,
+                TieringTableValidator {
 
     @Nullable private TestingLakeCommitter testingLakeCommitter;
 
@@ -94,8 +90,8 @@ public class TestingLakeTieringFactory
     }
 
     @Override
-    public LakeCommitter<TestingWriteResult, TestingCommittable> createLakeCommitter(
-            CommitterInitContext committerInitContext) throws IOException {
+    public SupportsPartitionMarkDone.Committer<TestingWriteResult, TestingCommittable>
+            createLakeCommitter(CommitterInitContext committerInitContext) throws IOException {
         if (testingLakeCommitter == null) {
             this.testingLakeCommitter = new TestingLakeCommitter();
         }
@@ -159,8 +155,7 @@ public class TestingLakeTieringFactory
 
     /** A lake committer for testing purpose. */
     public static final class TestingLakeCommitter
-            implements LakeCommitter<TestingWriteResult, TestingCommittable>,
-                    PartitionMarkDoneMaintainer {
+            implements SupportsPartitionMarkDone.Committer<TestingWriteResult, TestingCommittable> {
 
         private long currentSnapshot;
 
@@ -178,6 +173,15 @@ public class TestingLakeTieringFactory
             this.mockMissingCommittedLakeSnapshot = mockMissingCommittedLakeSnapshot;
         }
 
+        @Nullable
+        @Override
+        public TestingCommittable markPartitionsDone() {
+            maintenanceInvocations++;
+            return maintenanceCommitResult == null
+                    ? null
+                    : new TestingCommittable(Collections.emptyList());
+        }
+
         @Override
         public TestingCommittable toCommittable(List<TestingWriteResult> testingWriteResults)
                 throws IOException {
@@ -192,7 +196,9 @@ public class TestingLakeTieringFactory
         public LakeCommitResult commit(
                 TestingCommittable committable, Map<String, String> snapshotProperties)
                 throws IOException {
-            return LakeCommitResult.committedIsReadable(++currentSnapshot);
+            return maintenanceCommitResult != null
+                    ? maintenanceCommitResult
+                    : LakeCommitResult.committedIsReadable(++currentSnapshot);
         }
 
         @Override
@@ -207,16 +213,6 @@ public class TestingLakeTieringFactory
                 return mockMissingCommittedLakeSnapshot;
             }
             return null;
-        }
-
-        @Nullable
-        @Override
-        public Tuple2<LakeCommitResult, String> commitMarkDoneMaintenance(
-                SupplierWithException<String, IOException> offsetsFileProvider) throws IOException {
-            maintenanceInvocations++;
-            return maintenanceCommitResult == null
-                    ? null
-                    : Tuple2.of(maintenanceCommitResult, offsetsFileProvider.get());
         }
 
         public void setMaintenanceCommitResult(@Nullable LakeCommitResult maintenanceCommitResult) {
