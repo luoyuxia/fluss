@@ -75,8 +75,8 @@ public class PaimonLakeCommitter
     private final TablePath lakeTablePath;
     private final long tableId;
     private final Configuration flussClientConfig;
-    // Null when the job switch or lake table options disable mark-done.
-    @Nullable private final TableInfo markDoneTableInfo;
+    private final TableInfo tableInfo;
+    private final boolean markDoneEnabled;
     private TableCommitImpl tableCommit;
 
     private static final ThreadLocal<Long> currentCommitSnapshotId = new ThreadLocal<>();
@@ -85,6 +85,7 @@ public class PaimonLakeCommitter
             PaimonCatalogProvider paimonCatalogProvider, CommitterInitContext committerInitContext)
             throws IOException {
         this.paimonCatalog = paimonCatalogProvider.get();
+        this.tableInfo = committerInitContext.tableInfo();
         this.tablePath = committerInitContext.tablePath();
         this.lakeTablePath = committerInitContext.tableInfo().getLakeTablePath();
         this.tableId = committerInitContext.tableInfo().getTableId();
@@ -100,14 +101,11 @@ public class PaimonLakeCommitter
                                         .lakeTieringConfig()
                                         .get(ConfigOptions.LAKE_TIERING_AUTO_EXPIRE_SNAPSHOT));
         this.commitUser = fileStoreTable.coreOptions().createCommitUser();
-        this.markDoneTableInfo =
+        this.markDoneEnabled =
                 committerInitContext
-                                        .lakeTieringConfig()
-                                        .get(ConfigOptions.LAKE_TIERING_PARTITION_MARK_DONE_ENABLED)
-                                && PaimonPartitionMarkDone.isEnabled(
-                                        fileStoreTable, committerInitContext.tableInfo())
-                        ? committerInitContext.tableInfo()
-                        : null;
+                                .lakeTieringConfig()
+                                .get(ConfigOptions.LAKE_TIERING_PARTITION_MARK_DONE_ENABLED)
+                        && PaimonPartitionMarkDone.isEnabled(fileStoreTable, tableInfo);
     }
 
     @Override
@@ -130,14 +128,7 @@ public class PaimonLakeCommitter
         snapshotProperties.forEach(manifestCommittable::addProperty);
 
         try {
-            // Mark-done actions have already run for a prepared maintenance committable.
-            if (!manifestCommittable
-                    .properties()
-                    .containsKey(PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY)) {
-                runPartitionMarkDone(manifestCommittable);
-            }
-
-            long committedSnapshotId = commitManifest(manifestCommittable);
+            long committedSnapshotId = commit(manifestCommittable);
 
             // Collect cumulative table stats from the exact snapshot that was just committed.
             TieringStats stats = computeTableStats();
@@ -183,13 +174,17 @@ public class PaimonLakeCommitter
         }
     }
 
-    /** Attaches the full state to each data commit, preserving unsupported versions unchanged. */
-    private void runPartitionMarkDone(ManifestCommittable committable) {
+    @Override
+    public boolean preparePartitionMarkDone(PaimonCommittable committable) {
+        if (!markDoneEnabled) {
+            return false;
+        }
+
+        ManifestCommittable manifestCommittable = committable.manifestCommittable();
         String stateJson = null;
-        try (PaimonPartitionMarkDone partitionMarkDone = createPartitionMarkDone()) {
-            if (partitionMarkDone == null) {
-                return;
-            }
+        boolean stateChanged = false;
+        try (PaimonPartitionMarkDone partitionMarkDone =
+                new PaimonPartitionMarkDone(fileStoreTable, tableInfo)) {
             CommittedLakeSnapshot latestCommit = loadLatestFlussCommit(null);
             stateJson =
                     latestCommit == null
@@ -197,67 +192,26 @@ public class PaimonLakeCommitter
                             : latestCommit
                                     .getSnapshotProperties()
                                     .get(PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY);
-            PartitionMarkDoneState state =
+            PartitionMarkDoneState previousState = parseMarkDoneState(stateJson);
+            PartitionMarkDoneState updatedState =
                     partitionMarkDone.markIdlePartitionsDone(
-                            parseMarkDoneState(stateJson),
-                            partitionMarkDone.extractTieredPartitions(committable));
-            stateJson = PartitionMarkDoneStateJsonSerde.toJson(state);
+                            previousState,
+                            partitionMarkDone.extractTieredPartitions(manifestCommittable));
+            stateJson = PartitionMarkDoneStateJsonSerde.toJson(updatedState);
+            stateChanged = !updatedState.equals(previousState);
         } catch (Exception e) {
+            // Preserve the loaded JSON, including unsupported versions, for any data/offset commit.
             LOG.warn(
-                    "Failed to run partition mark-done for table {}, the data commit continues without it.",
+                    "Failed to prepare partition mark-done for table {}, skipping the state update.",
                     tablePath,
                     e);
         }
+
         if (stateJson != null) {
-            committable.addProperty(PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY, stateJson);
+            manifestCommittable.addProperty(
+                    PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY, stateJson);
         }
-    }
-
-    @Override
-    public boolean isPartitionMarkDoneEnabled() {
-        return markDoneTableInfo != null;
-    }
-
-    @Nullable
-    @Override
-    public PaimonCommittable markPartitionsDone() {
-        try (PaimonPartitionMarkDone partitionMarkDone = createPartitionMarkDone()) {
-            if (partitionMarkDone == null) {
-                return null;
-            }
-            CommittedLakeSnapshot latestCommit = loadLatestFlussCommit(null);
-            if (latestCommit == null) {
-                return null;
-            }
-            PartitionMarkDoneState previousState =
-                    parseMarkDoneState(
-                            latestCommit
-                                    .getSnapshotProperties()
-                                    .get(PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY));
-            PartitionMarkDoneState newState =
-                    partitionMarkDone.markIdlePartitionsDone(previousState, Collections.emptySet());
-            if (newState.equals(previousState)) {
-                return null;
-            }
-            ManifestCommittable committable = new ManifestCommittable(COMMIT_IDENTIFIER);
-            committable.addProperty(
-                    PaimonPartitionMarkDone.MARK_DONE_STATE_PROPERTY,
-                    PartitionMarkDoneStateJsonSerde.toJson(newState));
-            return new PaimonCommittable(committable);
-        } catch (Exception e) {
-            LOG.warn(
-                    "Failed to run partition mark-done maintenance for table {}, will retry in a later round.",
-                    tablePath,
-                    e);
-            return null;
-        }
-    }
-
-    @Nullable
-    private PaimonPartitionMarkDone createPartitionMarkDone() {
-        return markDoneTableInfo == null
-                ? null
-                : new PaimonPartitionMarkDone(fileStoreTable, markDoneTableInfo);
+        return stateChanged;
     }
 
     private PartitionMarkDoneState parseMarkDoneState(@Nullable String markDoneStateJson) {
@@ -278,10 +232,8 @@ public class PaimonLakeCommitter
         }
     }
 
-    /**
-     * Commits the manifest and returns the snapshot ID recorded by {@link PaimonCommitCallback}.
-     */
-    private long commitManifest(ManifestCommittable manifestCommittable) throws Exception {
+    /** Commits a Paimon snapshot and returns its ID recorded by {@link PaimonCommitCallback}. */
+    private long commit(ManifestCommittable manifestCommittable) throws Exception {
         // clear any residue left by a previous failed commit on the same thread
         currentCommitSnapshotId.remove();
         try {

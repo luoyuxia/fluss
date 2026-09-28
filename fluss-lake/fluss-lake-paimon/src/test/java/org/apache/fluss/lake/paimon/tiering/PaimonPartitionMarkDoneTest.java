@@ -169,6 +169,34 @@ class PaimonPartitionMarkDoneTest {
     }
 
     @Test
+    void testUnchangedStateAttachedToOffsetsOnlyCommit() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "test_mark_done_unchanged_state");
+        createPaimonTable(tablePath, markDoneOptions());
+        TableInfo tableInfo = tableInfo(tablePath);
+        // An offsets-only commit initializes state without adding any tracked partitions.
+        long snapshot = writeAndCommit(tablePath, tableInfo);
+        String stateJson = getSnapshotProperties(tablePath, snapshot).get(MARK_DONE_STATE_PROPERTY);
+        assertThat(stateJson).isNotNull();
+
+        try (Committer<PaimonWriteResult, PaimonCommittable> lakeCommitter =
+                createLakeCommitter(tablePath, tableInfo)) {
+            PaimonCommittable committable = lakeCommitter.toCommittable(Collections.emptyList());
+            assertThat(lakeCommitter.preparePartitionMarkDone(committable)).isFalse();
+            assertThat(committable.manifestCommittable().properties())
+                    .containsEntry(MARK_DONE_STATE_PROPERTY, stateJson);
+
+            LakeCommitResult result =
+                    lakeCommitter.commit(
+                            committable,
+                            Collections.singletonMap(
+                                    FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, "offsets-2"));
+            assertThat(result.getCommittedSnapshotId()).isEqualTo(snapshot + 1);
+            assertThat(getSnapshotProperties(tablePath, result.getCommittedSnapshotId()))
+                    .containsEntry(MARK_DONE_STATE_PROPERTY, stateJson);
+        }
+    }
+
+    @Test
     void testColdStartBackfill() throws Exception {
         TablePath tablePath = TablePath.of(DATABASE, "test_mark_done_cold_start");
         // First tier data with mark-done disabled.
@@ -199,10 +227,6 @@ class PaimonPartitionMarkDoneTest {
         createPaimonTable(tablePath, markDoneOptions());
         TableInfo tableInfo = tableInfo(tablePath);
 
-        try (Committer<PaimonWriteResult, PaimonCommittable> committer =
-                createLakeCommitter(tablePath, tableInfo)) {
-            assertThat(committer.isPartitionMarkDoneEnabled()).isTrue();
-        }
         long snapshot = writeAndCommit(tablePath, tableInfo, "2024-01-01");
         assertThat(getMarkDoneState(tablePath, snapshot).getTrackedPartitionLastUpdateTimes())
                 .containsOnlyKeys("2024-01-01");
@@ -226,8 +250,10 @@ class PaimonPartitionMarkDoneTest {
                 false);
         try (Committer<PaimonWriteResult, PaimonCommittable> committer =
                 createLakeCommitter(tablePath, staleTableInfo)) {
-            assertThat(committer.isPartitionMarkDoneEnabled()).isFalse();
-            assertThat(committer.markPartitionsDone()).isNull();
+            PaimonCommittable committable = committer.toCommittable(Collections.emptyList());
+            assertThat(committer.preparePartitionMarkDone(committable)).isFalse();
+            assertThat(committable.manifestCommittable().properties())
+                    .doesNotContainKey(MARK_DONE_STATE_PROPERTY);
         }
     }
 
@@ -410,7 +436,6 @@ class PaimonPartitionMarkDoneTest {
         Thread.sleep(50);
         try (Committer<PaimonWriteResult, PaimonCommittable> lakeCommitter =
                 createLakeCommitter(tablePath, tableInfo, new Configuration())) {
-            assertThat(lakeCommitter.isPartitionMarkDoneEnabled()).isFalse();
             assertThat(commitMarkDoneMaintenance(lakeCommitter, "offsets-2")).isNull();
         }
         assertThat(successFile(tablePath, "2024-01-01")).doesNotExist();
@@ -536,7 +561,6 @@ class PaimonPartitionMarkDoneTest {
                 .doesNotContainKey(MARK_DONE_STATE_PROPERTY);
         try (Committer<PaimonWriteResult, PaimonCommittable> committer =
                 createLakeCommitter(tablePath, tableInfo)) {
-            assertThat(committer.isPartitionMarkDoneEnabled()).isFalse();
             assertThat(commitMarkDoneMaintenance(committer, "offsets-2")).isNull();
         }
     }
@@ -616,16 +640,12 @@ class PaimonPartitionMarkDoneTest {
         TablePath tablePath = TablePath.of(DATABASE, "test_mark_done_prepare");
         createPaimonTable(tablePath, markDoneOptions());
         TableInfo tableInfo = tableInfo(tablePath);
-        try (Committer<PaimonWriteResult, PaimonCommittable> lakeCommitter =
-                createLakeCommitter(tablePath, tableInfo)) {
-            assertThat(lakeCommitter.markPartitionsDone()).isNull();
-        }
         long snapshot = writeAndCommit(tablePath, tableInfo, "2024-01-01");
         Thread.sleep(50);
         try (Committer<PaimonWriteResult, PaimonCommittable> lakeCommitter =
                 createLakeCommitter(tablePath, tableInfo)) {
-            PaimonCommittable committable = lakeCommitter.markPartitionsDone();
-            assertThat(committable).isNotNull();
+            PaimonCommittable committable = lakeCommitter.toCommittable(Collections.emptyList());
+            assertThat(lakeCommitter.preparePartitionMarkDone(committable)).isTrue();
             assertThat(committable.manifestCommittable().properties())
                     .containsKey(MARK_DONE_STATE_PROPERTY)
                     .doesNotContainKey(FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY);
@@ -666,13 +686,13 @@ class PaimonPartitionMarkDoneTest {
     private static LakeCommitResult commitMarkDoneMaintenance(
             Committer<PaimonWriteResult, PaimonCommittable> lakeCommitter, String offsetsPath)
             throws IOException {
-        PaimonCommittable committable = lakeCommitter.markPartitionsDone();
-        return committable == null
-                ? null
-                : lakeCommitter.commit(
-                        committable,
-                        Collections.singletonMap(
-                                FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, offsetsPath));
+        PaimonCommittable committable = lakeCommitter.toCommittable(Collections.emptyList());
+        if (!lakeCommitter.preparePartitionMarkDone(committable)) {
+            return null;
+        }
+        return lakeCommitter.commit(
+                committable,
+                Collections.singletonMap(FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, offsetsPath));
     }
 
     private static Map<String, String> markDoneOptions() {
@@ -730,6 +750,7 @@ class PaimonPartitionMarkDoneTest {
         try (Committer<PaimonWriteResult, PaimonCommittable> lakeCommitter =
                 createLakeCommitter(tablePath, tableInfo, lakeTieringConfig)) {
             PaimonCommittable committable = lakeCommitter.toCommittable(writeResults);
+            lakeCommitter.preparePartitionMarkDone(committable);
             return lakeCommitter
                     .commit(
                             committable,

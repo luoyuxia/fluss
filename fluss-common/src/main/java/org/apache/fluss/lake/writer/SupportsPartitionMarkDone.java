@@ -21,8 +21,6 @@ import org.apache.fluss.annotation.Internal;
 import org.apache.fluss.lake.committer.CommitterInitContext;
 import org.apache.fluss.lake.committer.LakeCommitter;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 
 /**
@@ -50,19 +48,27 @@ public interface SupportsPartitionMarkDone<WriteResult, CommittableT>
     interface Committer<WriteResult, CommittableT>
             extends LakeCommitter<WriteResult, CommittableT> {
 
-        /** Returns whether mark-done is enabled for this committer, without additional I/O. */
-        boolean isPartitionMarkDoneEnabled();
-
         /**
-         * Runs idempotent mark-done actions and prepares the state to persist for an empty round.
+         * Executes partition mark-done processing and attaches the resulting state to the given
+         * committable.
          *
-         * <p>The caller prepares fresh offsets metadata only when this returns a committable, then
-         * persists it through {@link LakeCommitter#commit} on this committer. Actions may be
-         * retried after a failure.
+         * <p>If the job or table settings disable mark-done, this method returns {@code false}
+         * without running actions or modifying the committable.
          *
-         * @return a committable containing the updated state, or null if no commit is needed
+         * <p>The caller invokes this once per round, after snapshot recovery and before preparing
+         * offsets metadata. Empty rounds pass a committable created from an empty write-result
+         * list. When enabled, the resulting state must also be attached when unchanged, since a
+         * data or offsets commit may still be required. This method does not commit a lake
+         * snapshot.
+         *
+         * <p>The return value describes only changes to mark-done state. The caller decides whether
+         * to commit based on both this result and the round's data or offsets progress. Mark-done
+         * actions may be retried if subsequent persistence fails and must therefore be idempotent.
+         *
+         * @param committable the current round's committable to update
+         * @return whether the mark-done state changed and requires persistence
+         * @throws IOException if preparation fails
          */
-        @Nullable
-        CommittableT markPartitionsDone() throws IOException;
+        boolean preparePartitionMarkDone(CommittableT committable) throws IOException;
     }
 }

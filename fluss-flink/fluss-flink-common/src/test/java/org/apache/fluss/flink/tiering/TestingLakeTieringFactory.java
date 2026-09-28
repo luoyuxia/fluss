@@ -35,7 +35,6 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -149,7 +148,7 @@ public class TestingLakeTieringFactory
 
         @Nullable private final CommittedLakeSnapshot mockMissingCommittedLakeSnapshot;
 
-        private int maintenanceInvocations;
+        private int markDonePreparations;
 
         private boolean partitionMarkDoneEnabled;
 
@@ -168,17 +167,9 @@ public class TestingLakeTieringFactory
         }
 
         @Override
-        public boolean isPartitionMarkDoneEnabled() {
-            return partitionMarkDoneEnabled;
-        }
-
-        @Nullable
-        @Override
-        public TestingCommittable markPartitionsDone() {
-            maintenanceInvocations++;
-            return maintenanceCommitResult == null
-                    ? null
-                    : new TestingCommittable(Collections.emptyList());
+        public boolean preparePartitionMarkDone(TestingCommittable committable) {
+            markDonePreparations++;
+            return partitionMarkDoneEnabled && maintenanceCommitResult != null;
         }
 
         @Override
@@ -218,8 +209,8 @@ public class TestingLakeTieringFactory
             this.maintenanceCommitResult = maintenanceCommitResult;
         }
 
-        public int getMaintenanceInvocations() {
-            return maintenanceInvocations;
+        public int getMarkDonePreparations() {
+            return markDonePreparations;
         }
 
         @Override
