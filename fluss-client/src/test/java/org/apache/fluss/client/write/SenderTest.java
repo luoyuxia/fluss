@@ -217,6 +217,7 @@ final class SenderTest {
         sender.runOnce();
         assertThat(future).isNotDone();
         assertThat(idempotenceManager.inflightBatchSize(originalBucket)).isZero();
+        assertThat(metadataUpdater.getCluster().getPartitionId(originalPath)).isNotPresent();
 
         // The retry targets the historical bucket while preserving the original partition name.
         sender.runOnce();
@@ -1873,6 +1874,67 @@ final class SenderTest {
     }
 
     @Test
+    void testHistoricalPartitionThrottleAppliesRetryBackoff() throws Exception {
+        sender.destroyResources();
+        ManualClock manualClock = new ManualClock(System.currentTimeMillis());
+        clock = manualClock;
+        TableInfo tableInfo = createHistoricalTableInfo();
+        PhysicalTablePath originalPath = PhysicalTablePath.of(tableInfo.getTablePath(), "20000101");
+        PhysicalTablePath historicalPath =
+                PhysicalTablePath.of(tableInfo.getTablePath(), HISTORICAL_PARTITION_VALUE);
+        TableBucket historicalBucket = new TableBucket(tableInfo.getTableId(), 22L, 0);
+        metadataUpdater =
+                new TestingMetadataUpdater(
+                        Collections.singletonMap(tableInfo.getTablePath(), tableInfo));
+        Cluster cluster =
+                partitionedCluster(
+                        tableInfo, Collections.singletonMap(historicalPath, historicalBucket));
+        metadataUpdater.updateCluster(cluster);
+        IdempotenceManager idempotenceManager = createIdempotenceManager(true);
+        idempotenceManager.setWriterId(0L);
+        sender = setupWithIdempotenceState(idempotenceManager, Integer.MAX_VALUE, 0);
+        accumulator.routeWritesTo(
+                tableInfo, originalPath, historicalPath, historicalBucket.getPartitionId());
+
+        CompletableFuture<Exception> future = appendKvRecord(tableInfo, originalPath, 1, cluster);
+        sender.runOnce();
+
+        TestTabletServerGateway gateway = node1Gateway();
+        gateway.response(
+                0,
+                makePutKvResponse(
+                        Collections.singletonList(
+                                PutKvResultForBucket.historicalFailure(
+                                        historicalBucket,
+                                        Errors.HISTORICAL_PARTITION_THROTTLED.toApiError(),
+                                        originalPath.getPartitionName()))));
+
+        assertThat(accumulator.isThrottled(historicalBucket)).isTrue();
+        assertThat(future).isNotDone();
+
+        manualClock.advanceTime(2999, TimeUnit.MILLISECONDS);
+        sender.runOnce();
+        assertThat(gateway.pendingRequestSize()).isZero();
+
+        manualClock.advanceTime(1, TimeUnit.MILLISECONDS);
+        sender.runOnce();
+        assertThat(gateway.pendingRequestSize()).isOne();
+        PutKvRequest retryRequest = (PutKvRequest) gateway.getRequest(0);
+        List<PutKvDataForBucket> retryData = toPutKvDataForBuckets(retryRequest);
+        assertThat(retryData).hasSize(1);
+        assertThat(retryData.get(0).originalPartitionName())
+                .isEqualTo(originalPath.getPartitionName());
+        assertThat(retryData.get(0).records().batchSequence()).isZero();
+        gateway.response(
+                0,
+                makePutKvResponse(
+                        Collections.singletonList(
+                                PutKvResultForBucket.historicalSuccess(
+                                        historicalBucket, 1L, originalPath.getPartitionName()))));
+        assertThat(future.get()).isNull();
+    }
+
+    @Test
     void testPutKvStorageExceptionResponseRetriesInsteadOfFailing() throws Exception {
         // Rolling-upgrade anchor: an old client receives the server-side downgraded
         // KV_STORAGE_EXCEPTION (instead of the unknown error code 72, which would map to the
@@ -2160,6 +2222,10 @@ final class SenderTest {
             @Override
             public boolean checkAndUpdatePartitionMetadata(PhysicalTablePath physicalTablePath) {
                 if (physicalTablePath.equals(missingPath)) {
+                    // A cached ID suppresses the refresh that would detect the deleted partition.
+                    if (getCluster().getPartitionId(physicalTablePath).isPresent()) {
+                        return true;
+                    }
                     throw new PartitionNotExistException("Partition does not exist.");
                 }
                 return getCluster().getPartitionId(physicalTablePath).isPresent();
