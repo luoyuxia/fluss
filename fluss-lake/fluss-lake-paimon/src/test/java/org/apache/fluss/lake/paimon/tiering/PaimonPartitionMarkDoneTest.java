@@ -22,6 +22,7 @@ import org.apache.fluss.config.Configuration;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.CommitterInitContext;
 import org.apache.fluss.lake.committer.LakeCommitResult;
+import org.apache.fluss.lake.committer.LakeCommitter.CommitContext;
 import org.apache.fluss.lake.committer.PartitionMarkDoneCommitter;
 import org.apache.fluss.lake.paimon.tiering.markdone.PartitionMarkDoneState;
 import org.apache.fluss.lake.paimon.tiering.markdone.PartitionMarkDoneStateJsonSerde;
@@ -656,7 +657,7 @@ class PaimonPartitionMarkDoneTest {
                 createLakeCommitter(tablePath, tableInfo)) {
             lakeCommitter.commit(
                     lakeCommitter.toCommittable(Collections.emptyList()),
-                    Collections.singletonMap(FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, "offsets-2"));
+                    commitContext("offsets-2"));
             assertThat(FlakyMarkDoneAction.invocations.get()).isZero();
             assertThat(getSnapshotProperties(tablePath, snapshot + 1))
                     .doesNotContainKey(MARK_DONE_STATE_PROPERTY);
@@ -669,11 +670,7 @@ class PaimonPartitionMarkDoneTest {
                     .doesNotContainKey(FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY);
             assertThat(table.snapshotManager().latestSnapshotId()).isEqualTo(snapshot + 1);
 
-            LakeCommitResult result =
-                    lakeCommitter.commit(
-                            committable,
-                            Collections.singletonMap(
-                                    FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, "offsets-3"));
+            LakeCommitResult result = lakeCommitter.commit(committable, commitContext("offsets-3"));
             assertThat(result.getCommittedSnapshotId()).isEqualTo(snapshot + 2);
             assertThat(FlakyMarkDoneAction.invocations.get()).isEqualTo(1);
             assertThat(
@@ -719,11 +716,14 @@ class PaimonPartitionMarkDoneTest {
             throws IOException {
         PaimonCommittable committable = lakeCommitter.toCommittable(Collections.emptyList());
         return lakeCommitter.preparePartitionMarkDone(committable)
-                ? lakeCommitter.commit(
-                        committable,
-                        Collections.singletonMap(
-                                FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, offsetsPath))
+                ? lakeCommitter.commit(committable, commitContext(offsetsPath))
                 : null;
+    }
+
+    private static CommitContext commitContext(String offsetsPath) {
+        return new CommitContext(
+                Collections.singletonMap(FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, offsetsPath),
+                Collections.emptyMap());
     }
 
     private static Map<String, String> markDoneOptions() {
@@ -783,10 +783,7 @@ class PaimonPartitionMarkDoneTest {
             PaimonCommittable committable = lakeCommitter.toCommittable(writeResults);
             lakeCommitter.preparePartitionMarkDone(committable);
             return lakeCommitter
-                    .commit(
-                            committable,
-                            Collections.singletonMap(
-                                    FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, "offsets"))
+                    .commit(committable, commitContext("offsets"))
                     .getCommittedSnapshotId();
         }
     }

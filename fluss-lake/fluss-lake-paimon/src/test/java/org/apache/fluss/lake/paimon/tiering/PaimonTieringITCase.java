@@ -22,6 +22,7 @@ import org.apache.fluss.client.table.getter.PartitionGetter;
 import org.apache.fluss.config.AutoPartitionTimeUnit;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.lake.paimon.testutils.FlinkPaimonTieringTestBase;
 import org.apache.fluss.lake.paimon.tiering.markdone.PartitionMarkDoneState;
 import org.apache.fluss.lake.paimon.tiering.markdone.PartitionMarkDoneStateJsonSerde;
@@ -39,6 +40,7 @@ import org.apache.fluss.row.InternalRow;
 import org.apache.fluss.row.TimestampLtz;
 import org.apache.fluss.row.TimestampNtz;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
+import org.apache.fluss.server.zk.data.lake.LakeTable;
 import org.apache.fluss.types.DataTypes;
 import org.apache.fluss.utils.types.Tuple2;
 
@@ -46,6 +48,7 @@ import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.paimon.CoreOptions;
 import org.apache.paimon.Snapshot;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.Identifier;
@@ -82,6 +85,7 @@ import static org.apache.fluss.lake.paimon.tiering.markdone.PaimonPartitionMarkD
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.apache.fluss.testutils.common.CommonTestUtils.retry;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** IT case for tiering tables to paimon. */
 class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
@@ -479,13 +483,18 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
     }
 
     @Test
-    void testTieringToDvEnabledTable() throws Exception {
+    void testTieringCompactsDvTableAndCleansOldSnapshots() throws Exception {
         TablePath t1 = TablePath.of(DEFAULT_DB, "pkTableWithDv");
+        Map<String, String> paimonOptions = new HashMap<>();
+        paimonOptions.put("paimon.deletion-vectors.enabled", "true");
+        // Small test writes do not reliably trigger auto-compaction. Force a COMPACT on each
+        // tiering commit so this test can verify cleanup of the previous Fluss snapshot.
+        paimonOptions.put("paimon." + CoreOptions.COMMIT_FORCE_COMPACT.key(), "true");
         long t1Id =
                 createPkTable(
                         t1,
                         Collections.singletonMap("table.datalake.auto-compaction", "true"),
-                        Collections.singletonMap("paimon.deletion-vectors.enabled", "true"));
+                        paimonOptions);
         // write records
         List<InternalRow> rows = Arrays.asList(row(1, "v1"), row(2, "v2"), row(3, "v3"));
         writeRows(t1, rows, false);
@@ -494,13 +503,70 @@ class PaimonTieringITCase extends FlinkPaimonTieringTestBase {
         // then start tiering job
         JobClient jobClient = buildTieringJob(execEnv);
         try {
+            TableBucket bucket = new TableBucket(t1Id, 0);
             // check the status of replica after synced
-            assertReplicaStatus(new TableBucket(t1Id, 0), 3);
+            assertReplicaStatus(bucket, 3);
             // check data in paimon
             checkDataInPaimonPrimaryKeyTable(t1, rows);
+
+            FileStoreTable paimonTable =
+                    (FileStoreTable)
+                            paimonCatalog.getTable(
+                                    Identifier.create(t1.getDatabaseName(), t1.getTableName()));
+            long previousCompactId =
+                    assertTieringCompactAndSingleZkSnapshot(t1, t1Id, bucket, paimonTable, 3L);
+
+            // Repeated tiering commits must discard the old Fluss snapshot metadata from ZK.
+            for (int round = 2; round <= 3; round++) {
+                rows =
+                        Arrays.asList(
+                                row(1, "v" + round + "1"),
+                                row(2, "v" + round + "2"),
+                                row(3, "v" + round + "3"));
+                writeRows(t1, rows, false);
+                // Each update writes UPDATE_BEFORE and UPDATE_AFTER records.
+                long expectedOffset = 3L + (round - 1) * 6L;
+                assertReplicaStatus(bucket, expectedOffset);
+                checkDataInPaimonPrimaryKeyTable(t1, rows);
+
+                long compactId =
+                        assertTieringCompactAndSingleZkSnapshot(
+                                t1, t1Id, bucket, paimonTable, expectedOffset);
+                // Each new COMPACT must replace the previously registered Fluss snapshot;
+                // otherwise the LakeTable snapshot list in ZK would keep growing.
+                assertThat(compactId).isGreaterThan(previousCompactId);
+                long oldSnapshotId = previousCompactId;
+                assertThatThrownBy(() -> admin.getLakeSnapshot(t1, oldSnapshotId).get())
+                        .rootCause()
+                        .isInstanceOf(LakeTableSnapshotNotExistException.class);
+                previousCompactId = compactId;
+            }
         } finally {
             jobClient.cancel().get();
         }
+    }
+
+    private long assertTieringCompactAndSingleZkSnapshot(
+            TablePath tablePath,
+            long tableId,
+            TableBucket bucket,
+            FileStoreTable paimonTable,
+            long expectedOffset)
+            throws Exception {
+        Snapshot compact = paimonTable.snapshotManager().latestSnapshot();
+        assertThat(compact.commitKind()).isEqualTo(Snapshot.CommitKind.COMPACT);
+        LakeSnapshot readable = admin.getReadableLakeSnapshot(tablePath).get();
+        assertThat(readable.getSnapshotId()).isEqualTo(compact.id());
+        assertThat(readable.getTableBucketsOffset()).containsEntry(bucket, expectedOffset);
+        assertThat(
+                        FLUSS_CLUSTER_EXTENSION
+                                .getZooKeeperClient()
+                                .getLakeTable(tableId)
+                                .get()
+                                .getLakeSnapshotMetadatas())
+                .extracting(LakeTable.LakeSnapshotMetadata::getSnapshotId)
+                .containsExactly(compact.id());
+        return compact.id();
     }
 
     private Tuple2<Long, TableDescriptor> createPartitionedTable(TablePath partitionedTablePath)

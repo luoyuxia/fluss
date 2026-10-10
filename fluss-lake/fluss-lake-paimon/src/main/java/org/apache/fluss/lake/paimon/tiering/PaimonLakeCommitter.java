@@ -118,12 +118,12 @@ public class PaimonLakeCommitter
     }
 
     @Override
-    public LakeCommitResult commit(
-            PaimonCommittable committable, Map<String, String> snapshotProperties)
+    public LakeCommitResult commit(PaimonCommittable committable, CommitContext context)
             throws IOException {
         ManifestCommittable manifestCommittable = committable.manifestCommittable();
-        snapshotProperties.forEach(manifestCommittable::addProperty);
+        context.snapshotProperties().forEach(manifestCommittable::addProperty);
 
+        currentCommitSnapshotId.remove();
         try {
             long committedSnapshotId = commit(manifestCommittable);
 
@@ -139,13 +139,14 @@ public class PaimonLakeCommitter
                         new DvTableReadableSnapshotRetriever(
                                 tablePath, tableId, fileStoreTable, flussClientConfig)) {
                     DvTableReadableSnapshotRetriever.ReadableSnapshotResult readableSnapshotResult =
-                            retriever.getReadableSnapshotAndOffsets(committedSnapshotId);
+                            retriever.getReadableSnapshotAndOffsets(
+                                    committedSnapshotId, context.tieredLogEndOffsets());
                     if (readableSnapshotResult == null) {
                         return LakeCommitResult.unknownReadableSnapshot(committedSnapshotId, stats);
                     } else {
-                        long earliestSnapshotIdToKeep =
+                        Long earliestSnapshotIdToKeep =
                                 readableSnapshotResult.getEarliestSnapshotIdToKeep();
-                        if (earliestSnapshotIdToKeep >= 0) {
+                        if (earliestSnapshotIdToKeep != null && earliestSnapshotIdToKeep >= 0) {
                             LOG.info(
                                     "earliest snapshot ID to keep for table {} is {}. "
                                             + "Snapshots before this ID can be safely deleted from Fluss.",
@@ -164,6 +165,8 @@ public class PaimonLakeCommitter
             }
         } catch (Throwable t) {
             throw new IOException(t);
+        } finally {
+            currentCommitSnapshotId.remove();
         }
     }
 
