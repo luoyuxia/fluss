@@ -28,6 +28,7 @@ import org.apache.fluss.security.acl.FlussPrincipal;
 import javax.annotation.Nullable;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * A catalog interface to modify metadata in external datalake.
@@ -36,6 +37,34 @@ import java.util.List;
  */
 @PublicEvolving
 public interface LakeCatalog extends AutoCloseable {
+
+    /**
+     * Gets the Fluss {@link TableDescriptor} mapped from the metadata of an existing lake table.
+     *
+     * @param tablePath path of the lake table
+     * @return the Fluss table descriptor mapped from the lake table
+     * @throws TableNotExistException if the table does not exist in the lake
+     */
+    default TableDescriptor getTableDescriptor(TablePath tablePath) throws TableNotExistException {
+        throw new UnsupportedOperationException(
+                "This lake catalog does not support mapping lake table metadata to a Fluss table descriptor.");
+    }
+
+    /**
+     * Gets the latest snapshot ID that changed the logical data of a lake table.
+     *
+     * <p>Snapshots that only rewrite physical files or update statistics are ignored.
+     *
+     * @param tablePath path of the lake table
+     * @return the latest data-change snapshot ID, or empty if the table has no data-change snapshot
+     * @throws TableNotExistException if the lake table does not exist
+     * @throws UnsupportedOperationException if reading snapshots is not supported
+     */
+    default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)
+            throws TableNotExistException {
+        throw new UnsupportedOperationException(
+                "Reading data-change snapshots is not supported by this lake catalog.");
+    }
 
     /**
      * Create a new table in lake.
@@ -110,6 +139,15 @@ public interface LakeCatalog extends AutoCloseable {
         @Nullable
         default TablePath getCurrentLakeTablePath() {
             return null;
+        }
+
+        /**
+         * Gets the lake snapshot ID currently registered by Fluss for the table.
+         *
+         * @return the registered snapshot ID, or empty if Fluss has not registered a snapshot
+         */
+        default Optional<Long> getCurrentLakeSnapshotId() {
+            return Optional.empty();
         }
 
         /** Get the expected table info of fluss. */
