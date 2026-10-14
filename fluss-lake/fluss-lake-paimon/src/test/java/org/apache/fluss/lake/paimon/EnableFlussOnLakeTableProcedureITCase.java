@@ -18,9 +18,11 @@
 package org.apache.fluss.lake.paimon;
 
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.lake.paimon.testutils.FlinkPaimonTieringTestBase;
 import org.apache.fluss.metadata.DataLakeFormat;
 import org.apache.fluss.metadata.TableBucket;
+import org.apache.fluss.metadata.TableChange;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.server.testutils.FlussClusterExtension;
@@ -37,6 +39,7 @@ import org.apache.paimon.catalog.Identifier;
 import org.apache.paimon.data.BinaryString;
 import org.apache.paimon.data.GenericRow;
 import org.apache.paimon.schema.Schema;
+import org.apache.paimon.schema.SchemaChange;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
@@ -50,6 +53,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import static org.apache.fluss.config.ConfigOptions.TABLE_DATALAKE_ENABLED;
 import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -192,6 +196,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                                 .getLakeTableSnapshot(created.getTableId(), null))
                 .isEmpty();
 
+        FLUSS_CLUSTER_EXTENSION.waitUntilTableReady(created.getTableId());
+        writeRows(tablePath, Collections.singletonList(row(2L, "fluss")), true);
         assertProcedureSuccess(tablePath, null);
 
         TableInfo enabled = admin.getTableInfo(tablePath).get();
@@ -200,9 +206,127 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
         LakeTableSnapshot registered =
                 FLUSS_CLUSTER_EXTENSION
                         .getZooKeeperClient()
-                        .getLakeTableSnapshot(created.getTableId(), null)
+                        .getLakeTableSnapshot(enabled.getTableId(), null)
                         .get();
         assertThat(registered.getSnapshotId()).isEqualTo(snapshotId);
+        assertThat(registered.getBucketLogEndOffset()).isEmpty();
+
+        TableEnvironment batchTableEnvironment =
+                createTableEnvironment(EnvironmentSettings.inBatchMode());
+        try (CloseableIterator<Row> rows =
+                batchTableEnvironment
+                        .executeSql("SELECT * FROM " + tablePath.getTableName())
+                        .collect()) {
+            assertThat(CollectionUtil.iteratorToList(rows))
+                    .containsExactlyInAnyOrder(Row.of(1L, "paimon"), Row.of(2L, "fluss"));
+        }
+    }
+
+    @Test
+    void testRejectIncompatibleExistingTable() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "procedure_incompatible_existing");
+        createPaimonTable(
+                tablePath,
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column("payload", org.apache.paimon.types.DataTypes.STRING())
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.BUCKET_KEY.key(), "id")
+                        .option("partition.legacy-name", "false")
+                        .build());
+
+        assertProcedureSuccess(tablePath, "'bucket.num=1,table.datalake.freshness=500ms'");
+        assertProcedureSuccess(tablePath, "'bucket.num=1,table.datalake.freshness=500ms'");
+
+        assertThatThrownBy(
+                        () ->
+                                tableEnvironment
+                                        .executeSql(
+                                                procedureSql(
+                                                        tablePath, "'table.datalake.freshness=1s'"))
+                                        .await())
+                .rootCause()
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("definition does not match");
+        assertThatThrownBy(
+                        () ->
+                                tableEnvironment
+                                        .executeSql(procedureSql(tablePath, "'bucket.num=2'"))
+                                        .await())
+                .rootCause()
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("uses 1 buckets");
+
+        paimonCatalog.alterTable(
+                Identifier.create(DATABASE, tablePath.getTableName()),
+                Collections.singletonList(
+                        SchemaChange.addColumn("extra", org.apache.paimon.types.DataTypes.INT())),
+                false);
+        assertThatThrownBy(() -> tableEnvironment.executeSql(procedureSql(tablePath, null)).await())
+                .rootCause()
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("definition does not match");
+    }
+
+    @Test
+    void testReenableExistingTableWithRegisteredSnapshot() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "procedure_reenable_existing");
+        FileStoreTable paimonTable =
+                createPaimonTable(
+                        tablePath,
+                        Schema.newBuilder()
+                                .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                                .column("payload", org.apache.paimon.types.DataTypes.STRING())
+                                .option(CoreOptions.BUCKET.key(), "1")
+                                .option(CoreOptions.BUCKET_KEY.key(), "id")
+                                .option("partition.legacy-name", "false")
+                                .build());
+        long snapshotId = writeSingleRow(paimonTable);
+
+        assertProcedureSuccess(tablePath, "'table.datalake.freshness=500ms'");
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.set(TABLE_DATALAKE_ENABLED.key(), "false")),
+                        false)
+                .get();
+
+        assertThatThrownBy(
+                        () ->
+                                tableEnvironment
+                                        .executeSql(
+                                                procedureSql(
+                                                        tablePath, "'table.datalake.freshness=1s'"))
+                                        .await())
+                .rootCause()
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("definition does not match");
+        assertThat(admin.getTableInfo(tablePath).get().getTableConfig().isDataLakeEnabled())
+                .isFalse();
+
+        assertProcedureSuccess(tablePath, null);
+
+        TableInfo tableInfo = admin.getTableInfo(tablePath).get();
+        assertThat(tableInfo.getTableConfig().isDataLakeEnabled()).isTrue();
+        assertThat(
+                        FLUSS_CLUSTER_EXTENSION
+                                .getZooKeeperClient()
+                                .getLakeTableSnapshot(tableInfo.getTableId(), null)
+                                .get()
+                                .getSnapshotId())
+                .isEqualTo(snapshotId);
+
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.addColumn(
+                                        "extra",
+                                        org.apache.fluss.types.DataTypes.INT(),
+                                        null,
+                                        TableChange.ColumnPosition.last())),
+                        false)
+                .get();
+        assertProcedureSuccess(tablePath, null);
     }
 
     @Test
@@ -234,15 +358,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
     }
 
     private void assertProcedureSuccess(TablePath tablePath, String options) throws Exception {
-        String sql =
-                options == null
-                        ? String.format(
-                                "CALL %s.sys.enable_fluss_on_lake_table('%s')",
-                                CATALOG_NAME, tablePath.getTableName())
-                        : String.format(
-                                "CALL %s.sys.enable_fluss_on_lake_table('%s', %s)",
-                                CATALOG_NAME, tablePath.getTableName(), options);
-        try (CloseableIterator<Row> rows = tableEnvironment.executeSql(sql).collect()) {
+        try (CloseableIterator<Row> rows =
+                tableEnvironment.executeSql(procedureSql(tablePath, options)).collect()) {
             assertThat(rows).hasNext();
             assertThat(rows.next())
                     .isEqualTo(
@@ -252,6 +369,16 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                                             tablePath)));
             assertThat(rows).isExhausted();
         }
+    }
+
+    private static String procedureSql(TablePath tablePath, String options) {
+        return options == null
+                ? String.format(
+                        "CALL %s.sys.enable_fluss_on_lake_table('%s')",
+                        CATALOG_NAME, tablePath.getTableName())
+                : String.format(
+                        "CALL %s.sys.enable_fluss_on_lake_table('%s', %s)",
+                        CATALOG_NAME, tablePath.getTableName(), options);
     }
 
     private static FileStoreTable createPaimonTable(TablePath tablePath, Schema schema)

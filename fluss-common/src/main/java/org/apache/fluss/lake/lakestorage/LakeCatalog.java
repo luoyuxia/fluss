@@ -18,6 +18,7 @@
 package org.apache.fluss.lake.lakestorage;
 
 import org.apache.fluss.annotation.PublicEvolving;
+import org.apache.fluss.exception.InsufficientLakeSnapshotHistoryException;
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.metadata.TableChange;
@@ -53,11 +54,17 @@ public interface LakeCatalog extends AutoCloseable {
     /**
      * Gets the latest snapshot ID that changed the logical data of a lake table.
      *
-     * <p>Snapshots that only rewrite physical files or update statistics are ignored.
+     * <p>Snapshots that only rewrite physical files or update statistics are ignored. The result
+     * must distinguish a table known to have no data-change snapshot from one whose earlier
+     * data-change snapshots may have expired. Return empty only when that absence is known; fail
+     * when the available history cannot establish it.
      *
      * @param tablePath path of the lake table
-     * @return the latest data-change snapshot ID, or empty if the table has no data-change snapshot
+     * @return the latest data-change snapshot ID, or empty if the table is known to have no
+     *     data-change snapshot
      * @throws TableNotExistException if the lake table does not exist
+     * @throws InsufficientLakeSnapshotHistoryException if the available snapshot history cannot
+     *     establish whether a data-change snapshot exists
      * @throws UnsupportedOperationException if reading snapshots is not supported
      */
     default Optional<Long> getLatestDataChangeSnapshotId(TablePath tablePath)

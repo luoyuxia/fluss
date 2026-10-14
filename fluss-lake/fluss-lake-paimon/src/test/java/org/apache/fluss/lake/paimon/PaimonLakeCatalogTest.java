@@ -18,6 +18,7 @@
 package org.apache.fluss.lake.paimon;
 
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.InsufficientLakeSnapshotHistoryException;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.lake.lakestorage.TestingLakeCatalogContext;
@@ -133,6 +134,54 @@ class PaimonLakeCatalogTest {
 
         assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
                 .contains(snapshotId);
+    }
+
+    @Test
+    void testRejectExpiredDataChangeSnapshotHistory() throws Exception {
+        TablePath tablePath = TablePath.of("expired_snapshot_db", "expired_snapshot_table");
+        Schema schema = Schema.newBuilder().column("id", DataTypes.BIGINT()).build();
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder().schema(schema).distributedBy(1, "id").build();
+        createPaimonTable(
+                tablePath,
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT())
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.BUCKET_KEY.key(), "id")
+                        .option(PARTITION_GENERATE_LEGACY_NAME_OPTION_KEY, "false")
+                        .build());
+
+        for (int i = 0; i < 5; i++) {
+            writeSingleRow(tablePath);
+        }
+        FileStoreTable table =
+                (FileStoreTable)
+                        flussPaimonCatalog.getPaimonCatalog().getTable(toPaimon(tablePath));
+        new CompactHelper(table, new File(tempWarehouseDir, "expired-compaction"))
+                .compactBucket(0)
+                .commit();
+        long compactSnapshotId = table.latestSnapshot().get().id();
+        assertThat(table.latestSnapshot().get().commitKind())
+                .isEqualTo(Snapshot.CommitKind.COMPACT);
+
+        // Retain only the COMPACT snapshot after deleting the earlier APPEND snapshots.
+        for (long snapshotId = 1; snapshotId < compactSnapshotId; snapshotId++) {
+            table.snapshotManager().deleteSnapshot(snapshotId);
+        }
+        table.snapshotManager().invalidateCache();
+        assertThat(table.snapshotManager().snapshotExists(compactSnapshotId)).isTrue();
+        assertThatThrownBy(() -> flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
+                .isInstanceOf(InsufficientLakeSnapshotHistoryException.class)
+                .hasMessageContaining("retained snapshots contain no APPEND or OVERWRITE")
+                .hasMessageContaining("perform a Paimon write that creates a new APPEND");
+        assertThatThrownBy(
+                        () ->
+                                flussPaimonCatalog.createTable(
+                                        tablePath,
+                                        tableDescriptor,
+                                        new TestingLakeCatalogContext(
+                                                tableDescriptor, tableDescriptor)))
+                .isInstanceOf(InsufficientLakeSnapshotHistoryException.class);
     }
 
     @Test
@@ -356,7 +405,7 @@ class PaimonLakeCatalogTest {
                                         "1",
                                         "id",
                                         Boolean.TRUE.toString())))
-                .isFalse();
+                .isTrue();
         assertThat(
                         isPaimonSchemaCompatible(
                                 schema,
@@ -365,8 +414,7 @@ class PaimonLakeCatalogTest {
                                         Collections.singletonList("pt"),
                                         "1",
                                         "id")))
-                .isFalse();
-
+                .isTrue();
         assertThat(CoreOptions.IMMUTABLE_OPTIONS).contains(CoreOptions.BUCKET_FUNCTION_TYPE.key());
         org.apache.paimon.schema.Schema schemaWithDifferentImmutableOption =
                 createPaimonSchemaBuilder(

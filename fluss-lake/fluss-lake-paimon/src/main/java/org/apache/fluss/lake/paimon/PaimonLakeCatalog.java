@@ -20,6 +20,7 @@ package org.apache.fluss.lake.paimon;
 import org.apache.fluss.annotation.VisibleForTesting;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.exception.InsufficientLakeSnapshotHistoryException;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.TableAlreadyExistException;
@@ -123,7 +124,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
                 throw new InvalidTableException(
                         String.format("Paimon table %s is not a file store table.", tablePath));
             }
-            return getLatestDataChangeSnapshotId((FileStoreTable) table);
+            return getLatestDataChangeSnapshotId(tablePath, (FileStoreTable) table);
         } catch (Catalog.TableNotExistException e) {
             throw new TableNotExistException("Table " + tablePath + " does not exist in Paimon.");
         }
@@ -330,7 +331,8 @@ public class PaimonLakeCatalog implements LakeCatalog {
                 } else {
                     // An existing Paimon table can be enabled only from the snapshot already
                     // registered by Fluss.
-                    Optional<Long> paimonSnapshotId = getLatestDataChangeSnapshotId(fileStoreTable);
+                    Optional<Long> paimonSnapshotId =
+                            getLatestDataChangeSnapshotId(tablePath, fileStoreTable);
                     Optional<Long> flussSnapshotId = context.getCurrentLakeSnapshotId();
                     if (!paimonSnapshotId.equals(flussSnapshotId)) {
                         throw new InvalidAlterTableException(
@@ -358,12 +360,28 @@ public class PaimonLakeCatalog implements LakeCatalog {
         }
     }
 
-    private static Optional<Long> getLatestDataChangeSnapshotId(FileStoreTable table) {
+    private static Optional<Long> getLatestDataChangeSnapshotId(
+            TablePath tablePath, FileStoreTable table) {
         SnapshotManager snapshotManager = table.snapshotManager();
+        if (snapshotManager.latestSnapshotId() == null) {
+            return Optional.empty();
+        }
         Snapshot snapshot =
                 snapshotManager.traversalSnapshotsFromLatestSafely(
                         PaimonLakeCatalog::isDataChangeSnapshot);
-        return Optional.ofNullable(snapshot).map(Snapshot::id);
+        if (snapshot != null) {
+            return Optional.of(snapshot.id());
+        }
+        throw new InsufficientLakeSnapshotHistoryException(
+                String.format(
+                        "Cannot determine the latest data-change snapshot for Paimon table %s: "
+                                + "the retained snapshots contain no APPEND or OVERWRITE commit. "
+                                + "Earlier data-change snapshots may have expired. For initial "
+                                + "promotion, perform a Paimon write that creates a new APPEND or "
+                                + "OVERWRITE snapshot and retry. If Fluss has already registered a "
+                                + "lake snapshot, restore a matching data-change snapshot before "
+                                + "re-enabling the table.",
+                        tablePath));
     }
 
     private static boolean isDataChangeSnapshot(Snapshot snapshot) {
