@@ -82,11 +82,10 @@ public class EnableFlussOnLakeTableProcedure extends ProcedureBase {
             tableInfo = admin.getTableInfo(tablePath).get();
         }
 
-        // Initial snapshot registration and datalake enablement belong to the transition from
-        // a disabled table; skip both when datalake is already enabled.
+        // An already-enabled table has completed the promotion, so skip registration and alter.
         if (!tableInfo.getTableConfig().isDataLakeEnabled()) {
-            // Newly created Fluss metadata has no registered snapshot. For an existing table,
-            // register only if an earlier attempt left it without a snapshot.
+            // A newly created table has no registered snapshot. On retries, preserve any snapshot
+            // already registered by an earlier attempt for the re-enable consistency check.
             if (flussTableCreated || !hasRegisteredLakeSnapshot(tablePath)) {
                 registerInitialLakeSnapshot(tableInfo);
             }

@@ -531,10 +531,6 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         } else if (authorizer != null) {
             authorizer.authorize(currentSession(), OperationType.CREATE, Resource.cluster());
         }
-        if (databaseExists && metadataManager.tableExists(tablePath)) {
-            throw new TableAlreadyExistException("Table " + tablePath + " already exists.");
-        }
-
         LakeCatalogDynamicLoader.LakeCatalogContainer lakeCatalogContainer =
                 lakeCatalogDynamicLoader.getLakeCatalogContainer();
         if (!lakeCatalogContainer.isClusterDataLakeTableEnabled()
@@ -550,6 +546,12 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
         tableDescriptor =
                 mergeCreateTableFromLakeOptions(
                         tablePath, tableDescriptor, request.getOptionsList());
+
+        if (databaseExists && metadataManager.tableExists(tablePath)) {
+            validateExistingTableFromLake(
+                    tablePath, metadataManager.getTable(tablePath), tableDescriptor);
+            throw new TableAlreadyExistException("Table " + tablePath + " already exists.");
+        }
 
         if (!databaseExists) {
             metadataManager.createDatabase(
@@ -705,6 +707,46 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             mergedDescriptor = mergedDescriptor.withBucketCount(requestedBucketCount);
         }
         return mergedDescriptor;
+    }
+
+    private static void validateExistingTableFromLake(
+            TablePath tablePath, TableInfo tableInfo, TableDescriptor requestedDescriptor) {
+        if (tableInfo.getTableConfig().getDataLakeFormat().orElse(null) != DataLakeFormat.PAIMON
+                || !tableInfo.getLakeTablePath().equals(tablePath)) {
+            throw incompatibleExistingTableFromLake(
+                    tablePath, "it is not mapped to this Paimon table");
+        }
+        TableDescriptor existingDescriptor = tableInfo.toTableDescriptor();
+        int bucketCount =
+                requestedDescriptor
+                        .getTableDistribution()
+                        .flatMap(TableDescriptor.TableDistribution::getBucketCount)
+                        .orElse(tableInfo.getNumBuckets());
+
+        // Keep existing options omitted by the request, including the datalake enabled state.
+        TableDescriptor expectedDescriptor =
+                TableDescriptor.builder(existingDescriptor)
+                        .schema(requestedDescriptor.getSchema())
+                        .partitionedBy(requestedDescriptor.getPartitionKeys())
+                        .distributedBy(bucketCount, requestedDescriptor.getBucketKeys())
+                        .properties(requestedDescriptor.getProperties())
+                        .build();
+        if (!existingDescriptor.equals(expectedDescriptor)) {
+            throw incompatibleExistingTableFromLake(
+                    tablePath,
+                    "its definition does not match the Paimon table and requested options");
+        }
+    }
+
+    private static InvalidTableException incompatibleExistingTableFromLake(
+            TablePath tablePath, String reason) {
+        return new InvalidTableException(
+                "Table "
+                        + tablePath
+                        + " already exists, but "
+                        + reason
+                        + ". If the existing Fluss table can be discarded, drop it and rerun "
+                        + "the promotion procedure.");
     }
 
     private static int parseBucketCount(TablePath tablePath, String value) {

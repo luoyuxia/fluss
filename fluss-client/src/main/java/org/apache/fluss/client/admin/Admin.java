@@ -248,10 +248,15 @@ public interface Admin extends AutoCloseable {
      * does not enable datalake or initialize historical data. If the target Fluss database does not
      * exist, it is created with the default database descriptor.
      *
+     * <p>If a Fluss table already exists, its definition is checked against the lake table and
+     * requested options.
+     *
      * @param tablePath path of the existing lake table
      * @param options Fluss table options to apply to the derived table definition
      * @return a future containing the created Fluss table metadata
-     * @throws InvalidTableException if the table definition or options are invalid
+     * @throws InvalidTableException if the table definition or options are invalid, or an existing
+     *     Fluss table is incompatible with the lake table and requested options
+     * @throws TableAlreadyExistException if a compatible Fluss table already exists
      * @throws InvalidDatabaseException if the database name is invalid
      */
     CompletableFuture<TableInfo> createTableFromLake(
