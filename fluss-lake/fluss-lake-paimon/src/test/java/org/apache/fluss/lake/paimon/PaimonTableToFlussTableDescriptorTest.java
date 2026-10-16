@@ -20,6 +20,7 @@ package org.apache.fluss.lake.paimon;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidTableException;
+import org.apache.fluss.lake.paimon.utils.PaimonConversions;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 
@@ -37,8 +38,8 @@ import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link PaimonToFlussTableDescriptorConverter}. */
-class PaimonToFlussTableDescriptorConverterTest {
+/** Tests conversion of Paimon table metadata to a Fluss table descriptor. */
+class PaimonTableToFlussTableDescriptorTest {
 
     private static final String DATABASE = "converter_db";
 
@@ -318,7 +319,7 @@ class PaimonToFlussTableDescriptorConverterTest {
     private TableDescriptor convert(String tableName, Schema paimonSchema) throws Exception {
         TablePath tablePath = TablePath.of(DATABASE, tableName);
         FileStoreTable table = createPaimonTable(tablePath, paimonSchema);
-        return PaimonToFlussTableDescriptorConverter.convert(tablePath, table);
+        return PaimonConversions.toFlussTableDescriptor(tablePath, table);
     }
 
     private FileStoreTable createPaimonTable(TablePath tablePath, Schema paimonSchema)
@@ -332,7 +333,7 @@ class PaimonToFlussTableDescriptorConverterTest {
             String tableName, Schema paimonSchema, String expectedMessage) throws Exception {
         TablePath tablePath = TablePath.of(DATABASE, tableName);
         FileStoreTable table = createPaimonTable(tablePath, paimonSchema);
-        assertThatThrownBy(() -> PaimonToFlussTableDescriptorConverter.convert(tablePath, table))
+        assertThatThrownBy(() -> PaimonConversions.toFlussTableDescriptor(tablePath, table))
                 .isInstanceOf(InvalidTableException.class)
                 .hasMessageContaining(expectedMessage)
                 .hasMessageContaining(tablePath.toString());

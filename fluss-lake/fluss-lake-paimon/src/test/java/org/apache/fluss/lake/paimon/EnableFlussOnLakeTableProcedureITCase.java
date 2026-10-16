@@ -58,7 +58,7 @@ import static org.apache.fluss.testutils.DataTestUtils.row;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Integration tests for promoting existing Paimon log tables through the Flink procedure. */
+/** Integration tests for enabling Fluss on existing Paimon tables through the Flink procedure. */
 class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
 
     private static final String CATALOG_NAME = "fluss_catalog";
@@ -110,8 +110,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
     }
 
     @Test
-    void testPromoteLogTableWithTieringAndUnionRead() throws Exception {
-        TablePath tablePath = TablePath.of(DATABASE, "procedure_log_table");
+    void testEnableFlussWithTieringAndUnionRead() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "procedure_existing_table");
         FileStoreTable paimonTable =
                 createPaimonTable(
                         tablePath,
@@ -353,7 +353,7 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                                         .await())
                 .rootCause()
                 .hasMessageContaining("primary-key table")
-                .hasMessageContaining("cannot be promoted as a Fluss log table");
+                .hasMessageContaining("to a Fluss table is not supported yet");
         assertThat(admin.tableExists(tablePath).get()).isFalse();
     }
 
