@@ -49,7 +49,7 @@ import java.util.concurrent.ExecutionException;
 
 import static org.apache.fluss.utils.PropertiesUtils.extractAndRemovePrefix;
 
-/** Procedure for promoting an existing Paimon log table to a datalake-enabled Fluss table. */
+/** Procedure for promoting an existing Paimon table to a datalake-enabled Fluss table. */
 public class EnableFlussOnLakeTableProcedure extends ProcedureBase {
 
     private static final String SUCCESS_MESSAGE = "Successfully enabled Fluss on %s table '%s'.";
@@ -82,12 +82,12 @@ public class EnableFlussOnLakeTableProcedure extends ProcedureBase {
             tableInfo = admin.getTableInfo(tablePath).get();
         }
 
-        // An already-enabled table has completed the promotion, so skip registration and alter.
+        // If lake reads are not enabled yet, register any missing snapshot and enable them.
         if (!tableInfo.getTableConfig().isDataLakeEnabled()) {
             // A newly created table has no registered snapshot. On retries, preserve any snapshot
             // already registered by an earlier attempt for the re-enable consistency check.
             if (flussTableCreated || !hasRegisteredLakeSnapshot(tablePath)) {
-                registerInitialLakeSnapshot(tableInfo);
+                registerLakeSnapshot(tableInfo);
             }
 
             admin.alterTable(
@@ -120,7 +120,7 @@ public class EnableFlussOnLakeTableProcedure extends ProcedureBase {
         }
     }
 
-    private void registerInitialLakeSnapshot(TableInfo tableInfo) {
+    private void registerLakeSnapshot(TableInfo tableInfo) {
         try (TemporaryClassLoaderContext ignored =
                         TemporaryClassLoaderContext.of(flussProcedureContext.getClassLoader());
                 LakeCatalog lakeCatalog = createLakeCatalog(tableInfo)) {

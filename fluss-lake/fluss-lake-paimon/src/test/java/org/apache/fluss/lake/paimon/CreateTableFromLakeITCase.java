@@ -241,31 +241,31 @@ class CreateTableFromLakeITCase {
                         .option(CoreOptions.BUCKET_KEY.key(), "id")
                         .build());
 
-        assertPromotionFails(
+        assertCreateTableFromLakeFails(
                 tablePath,
                 ConfigOptions.TABLE_DATALAKE_ENABLED.key(),
                 "false",
-                "managed by the Paimon table promotion flow");
-        assertPromotionFails(
+                "managed by Fluss when creating a table from Paimon");
+        assertCreateTableFromLakeFails(
                 tablePath,
                 ConfigOptions.TABLE_DATALAKE_FORMAT.key(),
                 "iceberg",
                 "must match cluster");
-        assertPromotionFails(
+        assertCreateTableFromLakeFails(
                 tablePath,
                 ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED.key(),
                 "true",
                 ConfigOptions.TABLE_DATALAKE_ENABLED.key());
-        assertPromotionFails(
+        assertCreateTableFromLakeFails(
                 tablePath,
                 ConfigOptions.TABLE_KV_TTL.key(),
                 "1 d",
                 "only supported for primary key tables");
-        assertPromotionFails(
+        assertCreateTableFromLakeFails(
                 tablePath, "paimon.file.format", "parquet", "not a Fluss table property");
-        assertPromotionFails(
+        assertCreateTableFromLakeFails(
                 tablePath, "table.future-option", "value", "not a recognized Fluss table property");
-        assertPromotionFails(tablePath, "bucket.num", "8", "uses 4 buckets");
+        assertCreateTableFromLakeFails(tablePath, "bucket.num", "8", "uses 4 buckets");
 
         assertThat(admin.tableExists(tablePath).get()).isFalse();
     }
@@ -283,7 +283,7 @@ class CreateTableFromLakeITCase {
                         .option(CoreOptions.PARTITION_TIMESTAMP_FORMATTER.key(), "yyyyMMdd")
                         .build());
 
-        assertPromotionFails(
+        assertCreateTableFromLakeFails(
                 tablePath,
                 ConfigOptions.TABLE_AUTO_PARTITION_TIME_FORMAT.key(),
                 "yyyy-MM-dd",
@@ -291,7 +291,7 @@ class CreateTableFromLakeITCase {
         assertThat(admin.tableExists(tablePath).get()).isFalse();
     }
 
-    private void assertPromotionFails(
+    private void assertCreateTableFromLakeFails(
             TablePath tablePath, String key, String value, String expectedMessage) {
         assertThatThrownBy(
                         () ->

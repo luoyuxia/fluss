@@ -24,6 +24,7 @@ import org.apache.fluss.cluster.rebalance.GoalType;
 import org.apache.fluss.cluster.rebalance.ServerTag;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
+import org.apache.fluss.config.ConfigurationUtils;
 import org.apache.fluss.config.FlussConfigUtils;
 import org.apache.fluss.config.cluster.AlterConfig;
 import org.apache.fluss.config.cluster.AlterConfigOpType;
@@ -258,8 +259,8 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     private static final Logger LOG = LoggerFactory.getLogger(CoordinatorService.class);
     private static final String SECURITY_CONFIG_KEY_PREFIX = "security.";
     private static final String BUCKET_NUM_PROPERTY = "bucket.num";
-    // The promotion flow controls when datalake is enabled and must keep the Fluss table mapped to
-    // the Paimon table identified by the request.
+    // The Paimon table path comes from the request. Lake reads are enabled separately after
+    // creating the Fluss table metadata.
     private static final Set<String> CREATE_TABLE_FROM_LAKE_RESERVED_OPTIONS =
             Collections.unmodifiableSet(
                     new HashSet<>(
@@ -669,7 +670,7 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
             if (CREATE_TABLE_FROM_LAKE_RESERVED_OPTIONS.contains(key)) {
                 throw new InvalidTableException(
                         String.format(
-                                "Option '%s' is managed by the Paimon table promotion flow and "
+                                "Option '%s' is managed by Fluss when creating a table from Paimon and "
                                         + "cannot be specified for table %s.",
                                 key, tablePath));
             }
@@ -710,32 +711,46 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
     }
 
     private static void validateExistingTableFromLake(
-            TablePath tablePath, TableInfo tableInfo, TableDescriptor requestedDescriptor) {
-        if (tableInfo.getTableConfig().getDataLakeFormat().orElse(null) != DataLakeFormat.PAIMON
-                || !tableInfo.getLakeTablePath().equals(tablePath)) {
+            TablePath paimonTablePath,
+            TableInfo existingFlussTableInfo,
+            TableDescriptor paimonDerivedFlussDescriptor) {
+        if (existingFlussTableInfo.getTableConfig().getDataLakeFormat().orElse(null)
+                        != DataLakeFormat.PAIMON
+                || !existingFlussTableInfo.getLakeTablePath().equals(paimonTablePath)) {
             throw incompatibleExistingTableFromLake(
-                    tablePath, "it is not mapped to this Paimon table");
+                    paimonTablePath, "it is not mapped to this Paimon table");
         }
-        TableDescriptor existingDescriptor = tableInfo.toTableDescriptor();
-        int bucketCount =
-                requestedDescriptor
+        TableDescriptor existingFlussDescriptor = existingFlussTableInfo.toTableDescriptor();
+        int expectedBucketCount =
+                paimonDerivedFlussDescriptor
                         .getTableDistribution()
                         .flatMap(TableDescriptor.TableDistribution::getBucketCount)
-                        .orElse(tableInfo.getNumBuckets());
+                        .orElse(existingFlussTableInfo.getNumBuckets());
 
         // Keep existing options omitted by the request, including the datalake enabled state.
-        TableDescriptor expectedDescriptor =
-                TableDescriptor.builder(existingDescriptor)
-                        .schema(requestedDescriptor.getSchema())
-                        .partitionedBy(requestedDescriptor.getPartitionKeys())
-                        .distributedBy(bucketCount, requestedDescriptor.getBucketKeys())
-                        .properties(requestedDescriptor.getProperties())
+        TableDescriptor expectedFlussDescriptor =
+                TableDescriptor.builder(existingFlussDescriptor)
+                        .schema(paimonDerivedFlussDescriptor.getSchema())
+                        .partitionedBy(paimonDerivedFlussDescriptor.getPartitionKeys())
+                        .distributedBy(
+                                expectedBucketCount, paimonDerivedFlussDescriptor.getBucketKeys())
+                        .properties(paimonDerivedFlussDescriptor.getProperties())
                         .build();
-        if (!existingDescriptor.equals(expectedDescriptor)) {
+        if (!existingFlussDescriptor.equals(expectedFlussDescriptor)) {
             throw incompatibleExistingTableFromLake(
-                    tablePath,
-                    "its definition does not match the Paimon table and requested options");
+                    paimonTablePath,
+                    String.format(
+                            "its definition does not match the Paimon table and requested options"
+                                    + " (existing Fluss definition: %s; expected Fluss definition: %s)",
+                            redactTableDescriptor(existingFlussDescriptor),
+                            redactTableDescriptor(expectedFlussDescriptor)));
         }
+    }
+
+    private static TableDescriptor redactTableDescriptor(TableDescriptor descriptor) {
+        return descriptor.withProperties(
+                ConfigurationUtils.hideSensitiveValues(descriptor.getProperties()),
+                ConfigurationUtils.hideSensitiveValues(descriptor.getCustomProperties()));
     }
 
     private static InvalidTableException incompatibleExistingTableFromLake(
@@ -745,8 +760,8 @@ public final class CoordinatorService extends RpcServiceBase implements Coordina
                         + tablePath
                         + " already exists, but "
                         + reason
-                        + ". If the existing Fluss table can be discarded, drop it and rerun "
-                        + "the promotion procedure.");
+                        + ". If the existing Fluss table can be discarded, drop it and retry "
+                        + "enabling Fluss on the Paimon table.");
     }
 
     private static int parseBucketCount(TablePath tablePath, String value) {

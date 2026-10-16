@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toFlussTableDescriptor;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimonSchema;
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimonSchemaChanges;
@@ -109,7 +110,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
                 throw new InvalidTableException(
                         String.format("Paimon table %s is not a file store table.", tablePath));
             }
-            return PaimonToFlussTableDescriptorConverter.convert(tablePath, (FileStoreTable) table);
+            return toFlussTableDescriptor(tablePath, (FileStoreTable) table);
         } catch (Catalog.TableNotExistException e) {
             throw new TableNotExistException("Table " + tablePath + " does not exist in Paimon.");
         }
@@ -329,8 +330,8 @@ public class PaimonLakeCatalog implements LakeCatalog {
                 if (context.isCreatingFlussTable()) {
                     checkTableIsEmpty(tablePath, fileStoreTable);
                 } else {
-                    // An existing Paimon table can be enabled only from the snapshot already
-                    // registered by Fluss.
+                    // Enable only when Fluss's current lake snapshot and Paimon's latest
+                    // data-change snapshot match, including when both are absent.
                     Optional<Long> paimonSnapshotId =
                             getLatestDataChangeSnapshotId(tablePath, fileStoreTable);
                     Optional<Long> flussSnapshotId = context.getCurrentLakeSnapshotId();

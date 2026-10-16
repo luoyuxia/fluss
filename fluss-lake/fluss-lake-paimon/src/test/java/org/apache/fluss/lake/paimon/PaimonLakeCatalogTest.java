@@ -137,7 +137,7 @@ class PaimonLakeCatalogTest {
     }
 
     @Test
-    void testRejectExpiredDataChangeSnapshotHistory() throws Exception {
+    void testInsufficientHistoryWhenOnlyCompactionSnapshotRemains() throws Exception {
         TablePath tablePath = TablePath.of("expired_snapshot_db", "expired_snapshot_table");
         Schema schema = Schema.newBuilder().column("id", DataTypes.BIGINT()).build();
         TableDescriptor tableDescriptor =
@@ -185,7 +185,7 @@ class PaimonLakeCatalogTest {
     }
 
     @Test
-    void testAllowEnableAfterCompactionSnapshot() throws Exception {
+    void testDataChangeSnapshotConsistencyAfterCompaction() throws Exception {
         TablePath tablePath = TablePath.of("compact_snapshot_db", "compact_snapshot_table");
         Schema schema = Schema.newBuilder().column("id", DataTypes.BIGINT()).build();
         TableDescriptor tableDescriptor =
