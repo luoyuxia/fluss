@@ -125,7 +125,7 @@ public class EnableFlussOnLakeTableProcedure extends ProcedureBase {
                         TemporaryClassLoaderContext.of(flussProcedureContext.getClassLoader());
                 LakeCatalog lakeCatalog = createLakeCatalog(tableInfo)) {
             Optional<Long> snapshotId =
-                    lakeCatalog.getLatestDataChangeSnapshotId(tableInfo.getLakeTablePath());
+                    lakeCatalog.getLatestSnapshotId(tableInfo.getLakeTablePath());
             if (!snapshotId.isPresent()) {
                 return;
             }

@@ -775,10 +775,9 @@ class LakeEnabledTableCreateITCase {
         assertThatThrownBy(() -> admin.alterTable(logTablePath, finalChanges, false).get())
                 .cause()
                 .isInstanceOf(InvalidAlterTableException.class)
-                .hasMessageContaining(
-                        "snapshot registered by Fluss does not match the latest Paimon data-change snapshot")
+                .hasMessageContaining("Fluss and Paimon snapshot IDs are inconsistent")
                 .hasMessageContaining("Fluss snapshot: none")
-                .hasMessageContaining("Paimon data-change snapshot: " + snapshot.get().id());
+                .hasMessageContaining("Paimon latest snapshot: " + snapshot.get().id());
         assertThat(paimonCatalog.getTable(paimonTablePath).latestSnapshot()).isEqualTo(snapshot);
 
         // The failed alter must leave the Fluss table and its tablets lake-disabled.

@@ -18,7 +18,6 @@
 package org.apache.fluss.lake.paimon;
 
 import org.apache.fluss.config.Configuration;
-import org.apache.fluss.exception.InsufficientLakeSnapshotHistoryException;
 import org.apache.fluss.exception.InvalidAlterTableException;
 import org.apache.fluss.exception.TableNotExistException;
 import org.apache.fluss.lake.lakestorage.TestingLakeCatalogContext;
@@ -115,9 +114,9 @@ class PaimonLakeCatalogTest {
     }
 
     @Test
-    void testGetLatestDataChangeSnapshotId() throws Exception {
+    void testGetLatestSnapshotId() throws Exception {
         TablePath tablePath = TablePath.of("get_snapshot_db", "get_snapshot_table");
-        assertThatThrownBy(() -> flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
+        assertThatThrownBy(() -> flussPaimonCatalog.getLatestSnapshotId(tablePath))
                 .isInstanceOf(TableNotExistException.class)
                 .hasMessage("Table get_snapshot_db.get_snapshot_table does not exist in Paimon.");
 
@@ -128,16 +127,15 @@ class PaimonLakeCatalogTest {
                         .option(CoreOptions.BUCKET.key(), "-1")
                         .build());
 
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath)).isEmpty();
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath)).isEmpty();
 
         long snapshotId = writeSingleRow(tablePath);
 
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
-                .contains(snapshotId);
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath)).contains(snapshotId);
     }
 
     @Test
-    void testInsufficientHistoryWhenOnlyCompactionSnapshotRemains() throws Exception {
+    void testLatestSnapshotWhenOnlyCompactionSnapshotRemains() throws Exception {
         TablePath tablePath = TablePath.of("expired_snapshot_db", "expired_snapshot_table");
         Schema schema = Schema.newBuilder().column("id", DataTypes.BIGINT()).build();
         TableDescriptor tableDescriptor =
@@ -170,10 +168,7 @@ class PaimonLakeCatalogTest {
         }
         table.snapshotManager().invalidateCache();
         assertThat(table.snapshotManager().snapshotExists(compactSnapshotId)).isTrue();
-        assertThatThrownBy(() -> flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
-                .isInstanceOf(InsufficientLakeSnapshotHistoryException.class)
-                .hasMessageContaining("retained snapshots contain no APPEND or OVERWRITE")
-                .hasMessageContaining("perform a Paimon write that creates a new APPEND");
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath)).contains(compactSnapshotId);
         assertThatThrownBy(
                         () ->
                                 flussPaimonCatalog.createTable(
@@ -181,11 +176,22 @@ class PaimonLakeCatalogTest {
                                         tableDescriptor,
                                         new TestingLakeCatalogContext(
                                                 tableDescriptor, tableDescriptor)))
-                .isInstanceOf(InsufficientLakeSnapshotHistoryException.class);
+                .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessageContaining("Fluss and Paimon snapshot IDs are inconsistent");
+
+        // Earlier APPEND snapshots are no longer needed once the COMPACT is registered.
+        TestingLakeCatalogContext compactContext =
+                new TestingLakeCatalogContext(tableDescriptor, tableDescriptor) {
+                    @Override
+                    public Optional<Long> getCurrentLakeSnapshotId() {
+                        return Optional.of(compactSnapshotId);
+                    }
+                };
+        flussPaimonCatalog.createTable(tablePath, tableDescriptor, compactContext);
     }
 
     @Test
-    void testDataChangeSnapshotConsistencyAfterCompaction() throws Exception {
+    void testSnapshotConsistencyAfterCompaction() throws Exception {
         TablePath tablePath = TablePath.of("compact_snapshot_db", "compact_snapshot_table");
         Schema schema = Schema.newBuilder().column("id", DataTypes.BIGINT()).build();
         TableDescriptor tableDescriptor =
@@ -212,8 +218,8 @@ class PaimonLakeCatalogTest {
                 .commit();
         assertThat(table.latestSnapshot().get().commitKind())
                 .isEqualTo(Snapshot.CommitKind.COMPACT);
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
-                .contains(expectedRegisteredSnapshotId);
+        long compactSnapshotId = table.latestSnapshot().get().id();
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath)).contains(compactSnapshotId);
 
         TestingLakeCatalogContext context =
                 new TestingLakeCatalogContext(tableDescriptor, tableDescriptor) {
@@ -224,14 +230,64 @@ class PaimonLakeCatalogTest {
                 };
         flussPaimonCatalog.createTable(tablePath, tableDescriptor, context);
 
+        // A registered COMPACT snapshot also remains valid until another data change.
+        TestingLakeCatalogContext compactContext =
+                new TestingLakeCatalogContext(tableDescriptor, tableDescriptor) {
+                    @Override
+                    public Optional<Long> getCurrentLakeSnapshotId() {
+                        return Optional.of(compactSnapshotId);
+                    }
+                };
+        flussPaimonCatalog.createTable(tablePath, tableDescriptor, compactContext);
+
+        // Expiring the registered snapshot is safe when all subsequent snapshots are COMPACT.
+        table.snapshotManager().deleteSnapshot(expectedRegisteredSnapshotId);
+        table.snapshotManager().invalidateCache();
+        flussPaimonCatalog.createTable(tablePath, tableDescriptor, context);
+
         long unregisteredSnapshotId = writeSingleRow(tablePath);
-        assertThat(flussPaimonCatalog.getLatestDataChangeSnapshotId(tablePath))
+        assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath))
                 .contains(unregisteredSnapshotId);
         assertThatThrownBy(
                         () -> flussPaimonCatalog.createTable(tablePath, tableDescriptor, context))
                 .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessageContaining("changed table data")
                 .hasMessageContaining("Fluss snapshot: " + expectedRegisteredSnapshotId)
-                .hasMessageContaining("Paimon data-change snapshot: " + unregisteredSnapshotId);
+                .hasMessageContaining("Paimon latest snapshot: " + unregisteredSnapshotId);
+        assertThatThrownBy(
+                        () ->
+                                flussPaimonCatalog.createTable(
+                                        tablePath, tableDescriptor, compactContext))
+                .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessageContaining("changed table data")
+                .hasMessageContaining("Fluss snapshot: " + compactSnapshotId)
+                .hasMessageContaining("Paimon latest snapshot: " + unregisteredSnapshotId);
+
+        // A later COMPACT must not hide the unregistered APPEND snapshots.
+        for (int i = 0; i < 4; i++) {
+            writeSingleRow(tablePath);
+        }
+        new CompactHelper(table, new File(tempWarehouseDir, "second-compaction"))
+                .compactBucket(0)
+                .commit();
+        assertThat(table.latestSnapshot().get().commitKind())
+                .isEqualTo(Snapshot.CommitKind.COMPACT);
+        assertThatThrownBy(
+                        () ->
+                                flussPaimonCatalog.createTable(
+                                        tablePath, tableDescriptor, compactContext))
+                .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessageContaining("changed table data");
+
+        long missingSnapshotId = table.latestSnapshot().get().id() - 1;
+        table.snapshotManager().deleteSnapshot(missingSnapshotId);
+        table.snapshotManager().invalidateCache();
+        assertThatThrownBy(
+                        () ->
+                                flussPaimonCatalog.createTable(
+                                        tablePath, tableDescriptor, compactContext))
+                .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessageContaining("Paimon snapshot " + missingSnapshotId + " is missing");
     }
 
     @Test
