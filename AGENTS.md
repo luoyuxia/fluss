@@ -285,6 +285,17 @@ fluss/
 
 **Test naming:** Descriptive method names (`testAppendWithValidData`); classes: `*Test.java` (unit), `*ITCase.java` (integration)
 
+### Avoid Mockito - Use Reusable Test Implementations
+
+- **Do not introduce new Mockito usage unless explicitly requested by the user.** This includes `mock()`, `spy()`, `@Mock`, `@Spy`, and static or constructor mocking. Do not substitute another dynamic mocking framework to bypass this rule.
+- Prefer lightweight real objects and existing `Testing*` implementations, test utilities, and test base classes. Search for reusable test implementations before adding new ones.
+- When no suitable implementation exists, write a minimal fake or stub. Extract reusable behavior into a `Testing*` utility and configure it through explicit state, callbacks, or controllable `CompletableFuture` instances as needed. Avoid duplicating production logic or building a general-purpose mocking framework.
+- Test contracts, results, observable state, and failure behavior. Verify call counts or ordering only when those interactions are part of the contract.
+- When modifying existing tests, do not expand Mockito usage. Existing Mockito usage does not justify new usage, and unrelated Mockito tests do not need to be rewritten.
+- Keep changes focused; do not introduce unrelated production refactoring solely to avoid Mockito.
+
+**Reference:** [Flink testing guidelines: Avoid Mockito - Use reusable test implementations](https://flink.apache.org/zh/how-to-contribute/code-style-and-quality-common/#avoid-mockito---use-reusable-test-implementations).
+
 ### Assertions
 
 ```java
