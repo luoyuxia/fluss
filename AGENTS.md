@@ -294,8 +294,6 @@ fluss/
 - When modifying existing tests, do not expand Mockito usage. Existing Mockito usage does not justify new usage, and unrelated Mockito tests do not need to be rewritten.
 - Keep changes focused; do not introduce unrelated production refactoring solely to avoid Mockito.
 
-**Reference:** [Flink testing guidelines: Avoid Mockito - Use reusable test implementations](https://flink.apache.org/zh/how-to-contribute/code-style-and-quality-common/#avoid-mockito---use-reusable-test-implementations).
-
 ### Assertions
 
 ```java
