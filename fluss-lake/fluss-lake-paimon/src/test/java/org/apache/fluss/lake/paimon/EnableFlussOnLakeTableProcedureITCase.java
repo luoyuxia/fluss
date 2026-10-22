@@ -124,12 +124,10 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                                 .build());
         long snapshotId = writeSingleRow(paimonTable);
 
-        assertProcedureSuccess(
-                tablePath,
-                "'bucket.num=1,table.log.format=compacted,table.datalake.freshness=500ms'");
-
-        TableInfo tableInfo = admin.getTableInfo(tablePath).get();
-        assertThat(tableInfo.getTableConfig().isDataLakeEnabled()).isTrue();
+        TableInfo tableInfo =
+                assertEnableFlussProcedureSucceeds(
+                        tablePath,
+                        "'bucket.num=1,table.log.format=compacted,table.datalake.freshness=500ms'");
         assertThat(tableInfo.getTableConfig().getDataLakeFormat()).contains(DataLakeFormat.PAIMON);
         assertThat(tableInfo.getNumBuckets()).isEqualTo(1);
 
@@ -141,7 +139,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
         assertThat(registeredSnapshot.getSnapshotId()).isEqualTo(snapshotId);
         assertThat(registeredSnapshot.getBucketLogEndOffset()).isEmpty();
 
-        assertProcedureSuccess(tablePath, null);
+        // Repeating the procedure must leave the registered snapshot unchanged.
+        assertEnableFlussProcedureSucceeds(tablePath, null);
         LakeTableSnapshot snapshotAfterRetry =
                 FLUSS_CLUSTER_EXTENSION
                         .getZooKeeperClient()
@@ -175,6 +174,76 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
     }
 
     @Test
+    void testEnableFlussWithVarCharAndVarBinary() throws Exception {
+        TablePath tablePath = TablePath.of(DATABASE, "procedure_bounded_types");
+        createPaimonTable(
+                tablePath,
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column("name", org.apache.paimon.types.DataTypes.VARCHAR(20).notNull())
+                        .column("payload", org.apache.paimon.types.DataTypes.VARBINARY(128))
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.BUCKET_KEY.key(), "id")
+                        .build());
+
+        TableInfo tableInfo = assertEnableFlussProcedureSucceeds(tablePath, null);
+        assertThat(tableInfo.getSchema().getRowType().getField("name").getType())
+                .isEqualTo(org.apache.fluss.types.DataTypes.STRING().copy(false));
+        assertThat(tableInfo.getSchema().getRowType().getField("payload").getType())
+                .isEqualTo(org.apache.fluss.types.DataTypes.BYTES());
+    }
+
+    @Test
+    void testEnableFlussSucceedsWhenEffectivePaimonOptionsMatch() throws Exception {
+        // The existing Paimon table may omit bucket or explicitly set bucket=-1. Both resolve
+        // to -1, while the proposed Paimon schema built from the Fluss descriptor explicitly
+        // sets bucket=-1. Enablement should succeed for either existing form.
+        for (boolean explicitBucket : new boolean[] {false, true}) {
+            TablePath tablePath =
+                    TablePath.of(
+                            DATABASE,
+                            explicitBucket
+                                    ? "procedure_explicit_bucket_unaware"
+                                    : "procedure_implicit_bucket_unaware");
+            Schema.Builder schemaBuilder =
+                    Schema.newBuilder()
+                            .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                            .column("payload", org.apache.paimon.types.DataTypes.STRING());
+            if (explicitBucket) {
+                schemaBuilder.option(CoreOptions.BUCKET.key(), "-1");
+            }
+            createPaimonTable(tablePath, schemaBuilder.build());
+
+            assertEnableFlussProcedureSucceeds(tablePath, null);
+        }
+
+        // The existing fixed-bucket table may omit bucket-function.type or set it to "default".
+        // Both resolve to the default bucket function, while the proposed Paimon schema built
+        // from the Fluss descriptor omits this option. Enablement should succeed for both.
+        for (boolean explicitFunction : new boolean[] {false, true}) {
+            TablePath tablePath =
+                    TablePath.of(
+                            DATABASE,
+                            explicitFunction
+                                    ? "procedure_explicit_default_bucket_function"
+                                    : "procedure_implicit_default_bucket_function");
+            Schema.Builder schemaBuilder =
+                    Schema.newBuilder()
+                            .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                            .column("payload", org.apache.paimon.types.DataTypes.STRING())
+                            .option(CoreOptions.BUCKET.key(), "2")
+                            .option(CoreOptions.BUCKET_KEY.key(), "id");
+            if (explicitFunction) {
+                schemaBuilder.option(CoreOptions.BUCKET_FUNCTION_TYPE.key(), "default");
+            }
+            createPaimonTable(tablePath, schemaBuilder.build());
+
+            TableInfo tableInfo = assertEnableFlussProcedureSucceeds(tablePath, null);
+            assertThat(tableInfo.getNumBuckets()).isEqualTo(2);
+        }
+    }
+
+    @Test
     void testRetryAfterTableCreationBeforeSnapshotRegistration() throws Exception {
         TablePath tablePath = TablePath.of(DATABASE, "procedure_retry_before_snapshot");
         FileStoreTable paimonTable =
@@ -198,11 +267,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
 
         FLUSS_CLUSTER_EXTENSION.waitUntilTableReady(created.getTableId());
         writeRows(tablePath, Collections.singletonList(row(2L, "fluss")), true);
-        assertProcedureSuccess(tablePath, null);
-
-        TableInfo enabled = admin.getTableInfo(tablePath).get();
+        TableInfo enabled = assertEnableFlussProcedureSucceeds(tablePath, null);
         assertThat(enabled.getTableId()).isEqualTo(created.getTableId());
-        assertThat(enabled.getTableConfig().isDataLakeEnabled()).isTrue();
         LakeTableSnapshot registered =
                 FLUSS_CLUSTER_EXTENSION
                         .getZooKeeperClient()
@@ -235,8 +301,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                         .option("partition.legacy-name", "false")
                         .build());
 
-        assertProcedureSuccess(tablePath, "'bucket.num=1,table.datalake.freshness=500ms'");
-        assertProcedureSuccess(tablePath, "'bucket.num=1,table.datalake.freshness=500ms'");
+        assertEnableFlussProcedureSucceeds(
+                tablePath, "'bucket.num=1,table.datalake.freshness=500ms'");
 
         assertThatThrownBy(
                         () ->
@@ -283,7 +349,7 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                                 .build());
         long snapshotId = writeSingleRow(paimonTable);
 
-        assertProcedureSuccess(tablePath, "'table.datalake.freshness=500ms'");
+        assertEnableFlussProcedureSucceeds(tablePath, "'table.datalake.freshness=500ms'");
         admin.alterTable(
                         tablePath,
                         Collections.singletonList(
@@ -304,10 +370,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
         assertThat(admin.getTableInfo(tablePath).get().getTableConfig().isDataLakeEnabled())
                 .isFalse();
 
-        assertProcedureSuccess(tablePath, null);
-
-        TableInfo tableInfo = admin.getTableInfo(tablePath).get();
-        assertThat(tableInfo.getTableConfig().isDataLakeEnabled()).isTrue();
+        // Re-enabling must reuse the snapshot registered before lake reads were disabled.
+        TableInfo tableInfo = assertEnableFlussProcedureSucceeds(tablePath, null);
         assertThat(
                         FLUSS_CLUSTER_EXTENSION
                                 .getZooKeeperClient()
@@ -326,7 +390,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                                         TableChange.ColumnPosition.last())),
                         false)
                 .get();
-        assertProcedureSuccess(tablePath, null);
+        // Repeating the procedure after a schema change should still succeed.
+        assertEnableFlussProcedureSucceeds(tablePath, null);
     }
 
     @Test
@@ -357,7 +422,8 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
         assertThat(admin.tableExists(tablePath).get()).isFalse();
     }
 
-    private void assertProcedureSuccess(TablePath tablePath, String options) throws Exception {
+    private TableInfo assertEnableFlussProcedureSucceeds(TablePath tablePath, String options)
+            throws Exception {
         try (CloseableIterator<Row> rows =
                 tableEnvironment.executeSql(procedureSql(tablePath, options)).collect()) {
             assertThat(rows).hasNext();
@@ -369,6 +435,9 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                                             tablePath)));
             assertThat(rows).isExhausted();
         }
+        TableInfo tableInfo = admin.getTableInfo(tablePath).get();
+        assertThat(tableInfo.getTableConfig().isDataLakeEnabled()).isTrue();
+        return tableInfo;
     }
 
     private static String procedureSql(TablePath tablePath, String options) {

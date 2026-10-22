@@ -358,6 +358,14 @@ public class PaimonLakeCatalog implements LakeCatalog {
             @Nullable Long registeredLakeSnapshotId) {
         SnapshotManager snapshotManager = fileStoreTable.snapshotManager();
         Long latestPaimonSnapshotId = snapshotManager.latestSnapshotId();
+        if (registeredLakeSnapshotId != null
+                && !snapshotManager.snapshotExists(registeredLakeSnapshotId)) {
+            throw invalidSnapshotForEnablement(
+                    tablePath,
+                    registeredLakeSnapshotId,
+                    latestPaimonSnapshotId,
+                    "The registered Paimon snapshot has expired");
+        }
         if (Objects.equals(registeredLakeSnapshotId, latestPaimonSnapshotId)) {
             return;
         }
@@ -379,7 +387,7 @@ public class PaimonLakeCatalog implements LakeCatalog {
                     "Fluss and Paimon snapshot IDs are inconsistent");
         }
 
-        // The registered snapshot may have expired, but later snapshots must not change data.
+        // Subsequent snapshots must exist and must not change data.
         for (long snapshotId = latestPaimonSnapshotId;
                 snapshotId > registeredLakeSnapshotId;
                 snapshotId--) {

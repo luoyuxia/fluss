@@ -240,20 +240,19 @@ class PaimonLakeCatalogTest {
                 };
         flussPaimonCatalog.createTable(tablePath, tableDescriptor, compactContext);
 
-        // Expiring the registered snapshot is safe when all subsequent snapshots are COMPACT.
+        // The registered snapshot must still exist even when later snapshots are only COMPACT.
         table.snapshotManager().deleteSnapshot(expectedRegisteredSnapshotId);
         table.snapshotManager().invalidateCache();
-        flussPaimonCatalog.createTable(tablePath, tableDescriptor, context);
+        assertThatThrownBy(
+                        () -> flussPaimonCatalog.createTable(tablePath, tableDescriptor, context))
+                .isInstanceOf(InvalidAlterTableException.class)
+                .hasMessageContaining("The registered Paimon snapshot has expired")
+                .hasMessageContaining("Fluss snapshot: " + expectedRegisteredSnapshotId)
+                .hasMessageContaining("Paimon latest snapshot: " + compactSnapshotId);
 
         long unregisteredSnapshotId = writeSingleRow(tablePath);
         assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath))
                 .contains(unregisteredSnapshotId);
-        assertThatThrownBy(
-                        () -> flussPaimonCatalog.createTable(tablePath, tableDescriptor, context))
-                .isInstanceOf(InvalidAlterTableException.class)
-                .hasMessageContaining("changed table data")
-                .hasMessageContaining("Fluss snapshot: " + expectedRegisteredSnapshotId)
-                .hasMessageContaining("Paimon latest snapshot: " + unregisteredSnapshotId);
         assertThatThrownBy(
                         () ->
                                 flussPaimonCatalog.createTable(
@@ -472,6 +471,15 @@ class PaimonLakeCatalogTest {
                                         "id")))
                 .isTrue();
         assertThat(CoreOptions.IMMUTABLE_OPTIONS).contains(CoreOptions.BUCKET_FUNCTION_TYPE.key());
+        org.apache.paimon.schema.Schema schemaWithExplicitDefault =
+                createPaimonSchemaBuilder(
+                                Arrays.asList("id", "pt"),
+                                Collections.singletonList("pt"),
+                                "1",
+                                "id")
+                        .option(CoreOptions.ROW_TRACKING_ENABLED.key(), "false")
+                        .build();
+        assertThat(isPaimonSchemaCompatible(schemaWithExplicitDefault, schema)).isTrue();
         org.apache.paimon.schema.Schema schemaWithDifferentImmutableOption =
                 createPaimonSchemaBuilder(
                                 Arrays.asList("id", "pt"),
@@ -482,6 +490,49 @@ class PaimonLakeCatalogTest {
                         .option(CoreOptions.BUCKET_FUNCTION_TYPE.key(), "mod")
                         .build();
         assertThat(isPaimonSchemaCompatible(schema, schemaWithDifferentImmutableOption)).isFalse();
+    }
+
+    @Test
+    void testPaimonSchemaCompatibilityWithVarCharAndVarBinary() {
+        org.apache.paimon.schema.Schema existingSchema =
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column("name", org.apache.paimon.types.DataTypes.VARCHAR(20).notNull())
+                        .column("payload", org.apache.paimon.types.DataTypes.VARBINARY(128))
+                        .build();
+        org.apache.paimon.schema.Schema convertedSchema =
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column("name", org.apache.paimon.types.DataTypes.STRING().notNull())
+                        .column("payload", org.apache.paimon.types.DataTypes.BYTES())
+                        .build();
+
+        // Fluss loses the declared lengths, but the converted types retain nullability.
+        assertThat(isPaimonSchemaCompatible(existingSchema, convertedSchema)).isTrue();
+
+        // Changing nullability in either column must still make the schemas incompatible.
+        assertThat(
+                        isPaimonSchemaCompatible(
+                                existingSchema,
+                                org.apache.paimon.schema.Schema.newBuilder()
+                                        .column("name", org.apache.paimon.types.DataTypes.STRING())
+                                        .column(
+                                                "payload",
+                                                org.apache.paimon.types.DataTypes.BYTES())
+                                        .build()))
+                .isFalse();
+
+        assertThat(
+                        isPaimonSchemaCompatible(
+                                existingSchema,
+                                org.apache.paimon.schema.Schema.newBuilder()
+                                        .column(
+                                                "name",
+                                                org.apache.paimon.types.DataTypes.STRING()
+                                                        .notNull())
+                                        .column(
+                                                "payload",
+                                                org.apache.paimon.types.DataTypes.BYTES().notNull())
+                                        .build()))
+                .isFalse();
     }
 
     @Test
