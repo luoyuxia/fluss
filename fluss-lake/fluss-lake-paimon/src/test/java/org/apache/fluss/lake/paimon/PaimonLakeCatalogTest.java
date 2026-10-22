@@ -39,6 +39,7 @@ import org.apache.paimon.table.Table;
 import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.table.sink.BatchWriteBuilder;
+import org.apache.paimon.types.DataType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -533,6 +534,107 @@ class PaimonLakeCatalogTest {
                                                 org.apache.paimon.types.DataTypes.BYTES().notNull())
                                         .build()))
                 .isFalse();
+    }
+
+    @Test
+    void testPaimonSchemaCompatibilityWithNestedVarCharAndVarBinary() {
+        org.apache.paimon.schema.Schema existingSchema =
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column(
+                                "names",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.VARCHAR(20).notNull()))
+                        .column(
+                                "payloads",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.VARBINARY(128)))
+                        .column(
+                                "attributes",
+                                org.apache.paimon.types.DataTypes.MAP(
+                                        org.apache.paimon.types.DataTypes.VARCHAR(20),
+                                        org.apache.paimon.types.DataTypes.VARBINARY(128)))
+                        .column(
+                                "person",
+                                org.apache.paimon.types.DataTypes.ROW(
+                                        org.apache.paimon.types.DataTypes.FIELD(
+                                                0,
+                                                "name",
+                                                org.apache.paimon.types.DataTypes.VARCHAR(20))))
+                        .build();
+        org.apache.paimon.schema.Schema convertedSchema =
+                org.apache.paimon.schema.Schema.newBuilder()
+                        .column(
+                                "names",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.STRING().notNull()))
+                        .column(
+                                "payloads",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.BYTES()))
+                        .column(
+                                "attributes",
+                                org.apache.paimon.types.DataTypes.MAP(
+                                        org.apache.paimon.types.DataTypes.STRING().notNull(),
+                                        org.apache.paimon.types.DataTypes.BYTES()))
+                        .column(
+                                "person",
+                                org.apache.paimon.types.DataTypes.ROW(
+                                        org.apache.paimon.types.DataTypes.FIELD(
+                                                1,
+                                                "name",
+                                                org.apache.paimon.types.DataTypes.STRING())))
+                        .build();
+
+        // Conversion drops bounded lengths and ROW field ids; Fluss also makes MAP keys non-null.
+        assertThat(isPaimonSchemaCompatible(existingSchema, convertedSchema)).isTrue();
+
+        // Nullable changes at an ARRAY element, MAP value, ROW field, or container remain
+        // incompatible even when the bounded lengths are normalized.
+        DataType[][] mismatchedTypes =
+                new DataType[][] {
+                    {
+                        org.apache.paimon.types.DataTypes.ARRAY(
+                                org.apache.paimon.types.DataTypes.VARCHAR(20).notNull()),
+                        org.apache.paimon.types.DataTypes.ARRAY(
+                                org.apache.paimon.types.DataTypes.STRING())
+                    },
+                    {
+                        org.apache.paimon.types.DataTypes.MAP(
+                                org.apache.paimon.types.DataTypes.VARCHAR(20),
+                                org.apache.paimon.types.DataTypes.VARBINARY(128)),
+                        org.apache.paimon.types.DataTypes.MAP(
+                                org.apache.paimon.types.DataTypes.STRING().notNull(),
+                                org.apache.paimon.types.DataTypes.BYTES().notNull())
+                    },
+                    {
+                        org.apache.paimon.types.DataTypes.ROW(
+                                org.apache.paimon.types.DataTypes.FIELD(
+                                        0, "name", org.apache.paimon.types.DataTypes.VARCHAR(20))),
+                        org.apache.paimon.types.DataTypes.ROW(
+                                org.apache.paimon.types.DataTypes.FIELD(
+                                        1,
+                                        "name",
+                                        org.apache.paimon.types.DataTypes.STRING().notNull()))
+                    },
+                    {
+                        org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.VARBINARY(128))
+                                .notNull(),
+                        org.apache.paimon.types.DataTypes.ARRAY(
+                                org.apache.paimon.types.DataTypes.BYTES())
+                    }
+                };
+        for (DataType[] types : mismatchedTypes) {
+            assertThat(
+                            isPaimonSchemaCompatible(
+                                    org.apache.paimon.schema.Schema.newBuilder()
+                                            .column("value", types[0])
+                                            .build(),
+                                    org.apache.paimon.schema.Schema.newBuilder()
+                                            .column("value", types[1])
+                                            .build()))
+                    .isFalse();
+        }
     }
 
     @Test

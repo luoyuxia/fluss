@@ -25,9 +25,12 @@ import org.apache.paimon.options.ConfigOption;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.types.ArrayType;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
+import org.apache.paimon.types.DataTypeDefaultVisitor;
 import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.MapType;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.types.VarBinaryType;
 import org.apache.paimon.types.VarCharType;
@@ -198,15 +201,54 @@ public class PaimonTableValidation {
             return false;
         }
 
-        DataType existingType = existingField.type();
-        // Fluss maps VARCHAR(n) to STRING and VARBINARY(n) to BYTES. Converting the Fluss
-        // descriptor back to Paimon yields unbounded types, so ignore length but keep nullability.
-        if (existingType instanceof VarCharType) {
-            existingType = DataTypes.STRING().copy(existingType.isNullable());
-        } else if (existingType instanceof VarBinaryType) {
-            existingType = DataTypes.BYTES().copy(existingType.isNullable());
+        return existingField
+                .type()
+                .accept(PaimonTypeNormalizer.INSTANCE)
+                .equalsIgnoreFieldId(newField.type());
+    }
+
+    /**
+     * Normalizes existing Paimon types for comparison with the schema generated from Fluss. Fluss
+     * drops VARCHAR/VARBINARY lengths in nested types, so this visitor applies the same mapping.
+     */
+    private static final class PaimonTypeNormalizer extends DataTypeDefaultVisitor<DataType> {
+        private static final PaimonTypeNormalizer INSTANCE = new PaimonTypeNormalizer();
+
+        @Override
+        public DataType visit(VarCharType type) {
+            return DataTypes.STRING().copy(type.isNullable());
         }
-        return existingType.equalsIgnoreFieldId(newField.type());
+
+        @Override
+        public DataType visit(VarBinaryType type) {
+            return DataTypes.BYTES().copy(type.isNullable());
+        }
+
+        @Override
+        public DataType visit(ArrayType type) {
+            return type.newElementType(type.getElementType().accept(this));
+        }
+
+        @Override
+        public DataType visit(MapType type) {
+            // Fluss MAP always makes its key non-nullable during conversion.
+            return type.newKeyValueType(
+                    type.getKeyType().accept(this).copy(false), type.getValueType().accept(this));
+        }
+
+        @Override
+        public DataType visit(RowType type) {
+            List<DataField> fields = new ArrayList<>(type.getFieldCount());
+            for (DataField field : type.getFields()) {
+                fields.add(field.newType(field.type().accept(this)));
+            }
+            return type.copy(fields);
+        }
+
+        @Override
+        protected DataType defaultMethod(DataType type) {
+            return type;
+        }
     }
 
     public static void checkTableIsEmpty(TablePath tablePath, FileStoreTable table) {

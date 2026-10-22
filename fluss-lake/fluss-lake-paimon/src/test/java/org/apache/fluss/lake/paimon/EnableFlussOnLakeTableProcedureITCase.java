@@ -194,6 +194,105 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
     }
 
     @Test
+    void testEnableFlussWithNestedVarCharAndVarBinary() throws Exception {
+        TablePath compatibleTablePath = TablePath.of(DATABASE, "procedure_nested_bounded_types");
+        createPaimonTable(
+                compatibleTablePath,
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column(
+                                "names",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.VARCHAR(20).notNull()))
+                        .column(
+                                "payloads",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.VARBINARY(128)))
+                        .column(
+                                "attributes",
+                                org.apache.paimon.types.DataTypes.MAP(
+                                        org.apache.paimon.types.DataTypes.VARCHAR(20),
+                                        org.apache.paimon.types.DataTypes.VARBINARY(128)))
+                        .column(
+                                "person",
+                                org.apache.paimon.types.DataTypes.ROW(
+                                        org.apache.paimon.types.DataTypes.FIELD(
+                                                0,
+                                                "name",
+                                                org.apache.paimon.types.DataTypes.VARCHAR(20))))
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.BUCKET_KEY.key(), "id")
+                        .build());
+
+        TableInfo tableInfo = assertEnableFlussProcedureSucceeds(compatibleTablePath, null);
+        assertThat(tableInfo.getSchema().getRowType().getField("names").getType())
+                .isEqualTo(
+                        org.apache.fluss.types.DataTypes.ARRAY(
+                                org.apache.fluss.types.DataTypes.STRING().copy(false)));
+        assertThat(tableInfo.getSchema().getRowType().getField("payloads").getType())
+                .isEqualTo(
+                        org.apache.fluss.types.DataTypes.ARRAY(
+                                org.apache.fluss.types.DataTypes.BYTES()));
+        assertThat(tableInfo.getSchema().getRowType().getField("attributes").getType())
+                .isEqualTo(
+                        org.apache.fluss.types.DataTypes.MAP(
+                                org.apache.fluss.types.DataTypes.STRING(),
+                                org.apache.fluss.types.DataTypes.BYTES()));
+        assertThat(tableInfo.getSchema().getRowType().getField("person").getType())
+                .isEqualTo(
+                        org.apache.fluss.types.DataTypes.ROW(
+                                org.apache.fluss.types.DataTypes.FIELD(
+                                        "name", org.apache.fluss.types.DataTypes.STRING())));
+
+        TablePath mismatchedTablePath =
+                TablePath.of(DATABASE, "procedure_nested_nullability_mismatch");
+        createPaimonTable(
+                mismatchedTablePath,
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column(
+                                "names",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.VARCHAR(20).notNull()))
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.BUCKET_KEY.key(), "id")
+                        .build());
+
+        // Recreate the empty Paimon table after Fluss metadata is recorded with a non-nullable
+        // element. The procedure must reject the changed lake schema before enabling reads.
+        admin.createTableFromLake(mismatchedTablePath, Collections.<String, String>emptyMap())
+                .get();
+        paimonCatalog.dropTable(
+                Identifier.create(DATABASE, mismatchedTablePath.getTableName()), false);
+        createPaimonTable(
+                mismatchedTablePath,
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column(
+                                "names",
+                                org.apache.paimon.types.DataTypes.ARRAY(
+                                        org.apache.paimon.types.DataTypes.VARCHAR(20)))
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.BUCKET_KEY.key(), "id")
+                        .build());
+
+        assertThatThrownBy(
+                        () ->
+                                tableEnvironment
+                                        .executeSql(procedureSql(mismatchedTablePath, null))
+                                        .await())
+                .rootCause()
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("definition does not match");
+        assertThat(
+                        admin.getTableInfo(mismatchedTablePath)
+                                .get()
+                                .getTableConfig()
+                                .isDataLakeEnabled())
+                .isFalse();
+    }
+
+    @Test
     void testEnableFlussSucceedsWhenEffectivePaimonOptionsMatch() throws Exception {
         // The existing Paimon table may omit bucket or explicitly set bucket=-1. Both resolve
         // to -1, while the proposed Paimon schema built from the Fluss descriptor explicitly
