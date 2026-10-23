@@ -248,7 +248,9 @@ class PaimonLakeCatalogTest {
                 .isInstanceOf(InvalidAlterTableException.class)
                 .hasMessageContaining("The registered Paimon snapshot has expired")
                 .hasMessageContaining("Fluss snapshot: " + expectedRegisteredSnapshotId)
-                .hasMessageContaining("Paimon latest snapshot: " + compactSnapshotId);
+                .hasMessageContaining("Paimon latest snapshot: " + compactSnapshotId)
+                .hasMessageContaining("drop only the Fluss table")
+                .hasMessageContaining("Do not drop the Paimon table");
 
         long unregisteredSnapshotId = writeSingleRow(tablePath);
         assertThat(flussPaimonCatalog.getLatestSnapshotId(tablePath))

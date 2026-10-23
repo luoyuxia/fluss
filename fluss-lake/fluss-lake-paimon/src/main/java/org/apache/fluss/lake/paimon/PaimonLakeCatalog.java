@@ -416,7 +416,11 @@ public class PaimonLakeCatalog implements LakeCatalog {
         return new InvalidAlterTableException(
                 String.format(
                         "Cannot enable datalake on existing Paimon table %s: %s. "
-                                + "Fluss snapshot: %s, Paimon latest snapshot: %s.",
+                                + "Fluss snapshot: %s, Paimon latest snapshot: %s. "
+                                + "Stop writes to the Paimon table. If the Fluss table has no "
+                                + "data to preserve, drop only the Fluss table and rerun the "
+                                + "promotion to register the current Paimon snapshot. Do not "
+                                + "drop the Paimon table or a Fluss table with data to preserve.",
                         tablePath,
                         reason,
                         registeredLakeSnapshotId == null
