@@ -22,7 +22,6 @@ import org.apache.fluss.client.metadata.LakeSnapshot;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
-import org.apache.fluss.fs.FSDataInputStream;
 import org.apache.fluss.fs.FsPath;
 import org.apache.fluss.lake.committer.CommittedLakeSnapshot;
 import org.apache.fluss.lake.committer.LakeCommitResult;
@@ -32,15 +31,12 @@ import org.apache.fluss.lake.writer.LakeTieringFactory;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableInfo;
 import org.apache.fluss.metadata.TablePath;
-import org.apache.fluss.utils.IOUtils;
-import org.apache.fluss.utils.json.TableBucketOffsets;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
@@ -305,14 +301,10 @@ public class TieringCommitter<WriteResult, Committable> {
                             tableId));
         }
 
-        FsPath offsetsFilePath = new FsPath(lakeSnapshotOffsetPath);
-        long snapshotTableId;
-        try (FSDataInputStream inputStream = offsetsFilePath.getFileSystem().open(offsetsFilePath);
-                ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
-            IOUtils.copyBytes(inputStream, outputStream, false);
-            snapshotTableId =
-                    TableBucketOffsets.fromJsonBytes(outputStream.toByteArray()).getTableId();
-        }
+        // Offsets path: .../lake/{database}/{tableName}-{tableId}/metadata/{uuid}.offsets.
+        String tableDirName = new FsPath(lakeSnapshotOffsetPath).getParent().getParent().getName();
+        long snapshotTableId =
+                Long.parseLong(tableDirName.substring(tableDirName.lastIndexOf('-') + 1));
         // A recreated Fluss table can reuse a lake table containing the old table's snapshots.
         if (snapshotTableId != tableId) {
             LOG.warn(

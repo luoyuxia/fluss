@@ -33,7 +33,7 @@ import org.apache.fluss.lake.committer.LakeCommitResult;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.testutils.common.MultiVersionTest;
-import org.apache.fluss.utils.json.TableBucketOffsets;
+import org.apache.fluss.utils.FlussPaths;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.jobgraph.OperatorID;
@@ -52,14 +52,11 @@ import org.apache.flink.streaming.util.MockStreamConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.annotation.Nullable;
 
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -432,25 +429,21 @@ class TieringCommitOperatorTest extends FlinkTestBase {
                                         .containsExactly(2, 0, 1));
     }
 
-    @Test
-    void testIgnoreMissingLakeSnapshotFromPreviousTable(@TempDir Path tempDir) throws Exception {
-        TablePath tablePath = TablePath.of("fluss", "test_ignore_previous_table_lake_snapshot");
+    @ParameterizedTest
+    @ValueSource(strings = {"file:///unused", "s3://bucket/fluss"})
+    void testIgnoreMissingLakeSnapshotFromPreviousTable(String remoteDataDir) throws Exception {
+        TablePath tablePath = TablePath.of("fluss", "test-ignore-previous-table-lake-snapshot");
         long oldTableId = createTable(tablePath, DEFAULT_LOG_TABLE_DESCRIPTOR);
-        // Keep the old offsets outside the table directory so asynchronous drop cleanup
-        // cannot remove them before the recovery check reads them.
-        Path oldOffsetsFile = tempDir.resolve("old-table.offsets");
-        Files.write(
-                oldOffsetsFile,
-                new TableBucketOffsets(
-                                oldTableId,
-                                Collections.singletonMap(new TableBucket(oldTableId, 0), 10000L))
-                        .toJsonBytes());
+        // Only construct the path: recovery must identify the old table without accessing
+        // the offsets file or requiring a filesystem plugin for its URI scheme.
+        String oldOffsetsPath =
+                FlussPaths.remoteLakeTableSnapshotOffsetPath(remoteDataDir, tablePath, oldTableId)
+                        .toString();
         CommittedLakeSnapshot oldSnapshot =
                 new CommittedLakeSnapshot(
                         5,
                         Collections.singletonMap(
-                                FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY,
-                                oldOffsetsFile.toUri().toString()));
+                                FLUSS_LAKE_SNAP_BUCKET_OFFSET_PROPERTY, oldOffsetsPath));
 
         admin.dropTable(tablePath, false).get();
         long tableId = createTable(tablePath, DEFAULT_LOG_TABLE_DESCRIPTOR);
