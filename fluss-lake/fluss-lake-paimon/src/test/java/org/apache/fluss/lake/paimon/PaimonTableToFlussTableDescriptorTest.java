@@ -21,18 +21,34 @@ import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.lake.paimon.utils.PaimonConversions;
+import org.apache.fluss.metadata.AggFunctions;
+import org.apache.fluss.metadata.DeleteBehavior;
+import org.apache.fluss.metadata.MergeEngineType;
 import org.apache.fluss.metadata.TableDescriptor;
 import org.apache.fluss.metadata.TablePath;
 
 import org.apache.paimon.CoreOptions;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.table.FileStoreTable;
+import org.apache.paimon.types.DataField;
+import org.apache.paimon.types.DataType;
+import org.apache.paimon.types.DataTypes;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.File;
+import java.time.Duration;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.apache.fluss.lake.paimon.utils.PaimonConversions.toPaimon;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,6 +62,7 @@ class PaimonTableToFlussTableDescriptorTest {
     @TempDir private File tempWarehouseDir;
 
     private PaimonLakeCatalog lakeCatalog;
+    private int primaryKeyTableCount;
 
     @BeforeEach
     void setUp() {
@@ -117,16 +134,6 @@ class PaimonTableToFlussTableDescriptorTest {
     @Test
     void testRejectUnsupportedTableDefinitions() throws Exception {
         assertInvalidTableDescriptor(
-                "primary_key_table",
-                Schema.newBuilder()
-                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
-                        .column("name", org.apache.paimon.types.DataTypes.STRING())
-                        .primaryKey("id")
-                        .option(CoreOptions.BUCKET.key(), "4")
-                        .build(),
-                "primary-key table");
-
-        assertInvalidTableDescriptor(
                 "mod_bucket_table",
                 Schema.newBuilder()
                         .column("id", org.apache.paimon.types.DataTypes.BIGINT())
@@ -191,31 +198,44 @@ class PaimonTableToFlussTableDescriptorTest {
                 "column 'id' has a default value");
     }
 
-    @Test
-    void testConvertSingleStringTimePartition() throws Exception {
-        TableDescriptor descriptor =
-                convert(
-                        "single_time_partition",
-                        Schema.newBuilder()
-                                .column("id", org.apache.paimon.types.DataTypes.BIGINT())
-                                .column("dt", org.apache.paimon.types.DataTypes.STRING())
-                                .partitionKeys("dt")
-                                .option(CoreOptions.BUCKET.key(), "-1")
-                                .option(CoreOptions.PARTITION_TIMESTAMP_FORMATTER.key(), "yyyyMMdd")
-                                .option("sink.process-time-zone", "UTC")
-                                .build());
+    @ParameterizedTest
+    @CsvSource({"false, yyyyMMdd", "false, yyyy-MM-dd", "true, yyyyMMdd", "true, yyyy-MM-dd"})
+    void testConvertSingleStringTimePartition(boolean primaryKey, String formatter)
+            throws Exception {
+        Schema.Builder schema =
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column("dt", org.apache.paimon.types.DataTypes.STRING().notNull())
+                        .partitionKeys("dt")
+                        .option(CoreOptions.BUCKET.key(), primaryKey ? "4" : "-1")
+                        .option(CoreOptions.PARTITION_TIMESTAMP_FORMATTER.key(), formatter)
+                        .option(CoreOptions.PARTITION_EXPIRATION_TIME.key(), "7 d")
+                        .option("sink.process-time-zone", "UTC");
+        if (primaryKey) {
+            schema.primaryKey("id", "dt");
+        }
+        TableDescriptor descriptor = convert("single_time_partition", schema.build());
 
         assertThat(descriptor.getPartitionKeys()).containsExactly("dt");
+        assertThat(descriptor.hasPrimaryKey()).isEqualTo(primaryKey);
+        if (primaryKey) {
+            assertThat(descriptor.getSchema().getPrimaryKeyColumnNames())
+                    .containsExactly("id", "dt");
+            assertThat(descriptor.getBucketKeys()).containsExactly("id");
+        } else {
+            assertThat(descriptor.getBucketKeys()).isEmpty();
+        }
         assertThat(descriptor.getProperties())
                 .hasSize(5)
                 .containsEntry(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED.key(), "true")
                 .containsEntry(ConfigOptions.TABLE_AUTO_PARTITION_KEY.key(), "dt")
                 .containsEntry(ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT.key(), "DAY")
-                .containsEntry(ConfigOptions.TABLE_AUTO_PARTITION_TIME_FORMAT.key(), "yyyyMMdd")
+                .containsEntry(ConfigOptions.TABLE_AUTO_PARTITION_TIME_FORMAT.key(), formatter)
                 .containsEntry(ConfigOptions.TABLE_AUTO_PARTITION_TIMEZONE.key(), "UTC")
                 .doesNotContainKeys(
                         ConfigOptions.TABLE_AUTO_PARTITION_NUM_PRECREATE.key(),
-                        ConfigOptions.TABLE_AUTO_PARTITION_NUM_RETENTION.key());
+                        ConfigOptions.TABLE_AUTO_PARTITION_NUM_RETENTION.key(),
+                        ConfigOptions.TABLE_DATALAKE_HISTORICAL_PARTITION_ENABLED.key());
     }
 
     @Test
@@ -314,6 +334,367 @@ class PaimonTableToFlussTableDescriptorTest {
                                 .build());
         assertThat(compositePatternDescriptor.getPartitionKeys()).containsExactly("year", "month");
         assertThat(compositePatternDescriptor.getProperties()).isEmpty();
+    }
+
+    @Test
+    void testPreservePrimaryKeyAndPartitionOrder() throws Exception {
+        TableDescriptor descriptor =
+                convert(
+                        "primary_key_table",
+                        Schema.newBuilder()
+                                .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                                .column(
+                                        "region",
+                                        org.apache.paimon.types.DataTypes.STRING().notNull())
+                                .column("dt", org.apache.paimon.types.DataTypes.STRING().notNull())
+                                .column("payload", org.apache.paimon.types.DataTypes.STRING())
+                                .primaryKey("region", "id", "dt")
+                                .partitionKeys("dt", "region")
+                                .option(CoreOptions.BUCKET.key(), "4")
+                                .build());
+
+        assertThat(descriptor.getSchema().getPrimaryKeyColumnNames())
+                .containsExactly("region", "id", "dt");
+        assertThat(descriptor.getPartitionKeys()).containsExactly("dt", "region");
+        assertThat(descriptor.getBucketKeys()).containsExactly("id");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "deduplicate, false, false, true, , allow",
+        "deduplicate, true, false, true, , ignore",
+        "first-row, false, false, true, first_row, disable",
+        "first-row, true, false, true, first_row, ignore",
+        "partial-update, false, false, true, aggregation, disable",
+        "partial-update, false, true, true, aggregation, allow",
+        "partial-update, true, false, true, aggregation, ignore",
+        "aggregation, false, true, true, aggregation, allow",
+        "aggregation, true, false, false, aggregation, ignore"
+    })
+    void testConvertMergeAndDeleteSemantics(
+            String engine,
+            boolean ignoreDelete,
+            boolean removeOnDelete,
+            boolean ignoreUpdateBefore,
+            String flussEngine,
+            String deleteBehavior)
+            throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), engine);
+        options.put(CoreOptions.IGNORE_DELETE.key(), Boolean.toString(ignoreDelete));
+        options.put(CoreOptions.IGNORE_UPDATE_BEFORE.key(), Boolean.toString(ignoreUpdateBefore));
+        options.put(
+                CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE.key(),
+                Boolean.toString(removeOnDelete));
+        options.put(
+                CoreOptions.AGGREGATION_REMOVE_RECORD_ON_DELETE.key(),
+                Boolean.toString(removeOnDelete));
+        TableDescriptor descriptor = convertPrimaryKeyTable(options);
+        Configuration configuration = Configuration.fromMap(descriptor.getProperties());
+        DeleteBehavior expectedDeleteBehavior = DeleteBehavior.fromString(deleteBehavior);
+        DeleteBehavior defaultDeleteBehavior =
+                flussEngine == null ? DeleteBehavior.ALLOW : DeleteBehavior.IGNORE;
+        if (expectedDeleteBehavior == defaultDeleteBehavior) {
+            assertThat(descriptor.getProperties())
+                    .doesNotContainKey(ConfigOptions.TABLE_DELETE_BEHAVIOR.key());
+        } else {
+            assertThat(configuration.get(ConfigOptions.TABLE_DELETE_BEHAVIOR))
+                    .isEqualTo(expectedDeleteBehavior);
+        }
+        if (flussEngine == null) {
+            assertThat(descriptor.getProperties())
+                    .doesNotContainKey(ConfigOptions.TABLE_MERGE_ENGINE.key());
+        } else {
+            assertThat(configuration.get(ConfigOptions.TABLE_MERGE_ENGINE))
+                    .isEqualTo(MergeEngineType.fromString(flussEngine));
+        }
+        if ("aggregation".equals(flussEngine)) {
+            assertThat(descriptor.getSchema().getAggFunction("payload"))
+                    .contains(AggFunctions.LAST_VALUE_IGNORE_NULLS());
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "sum,sum",
+        "product,product",
+        "min,min",
+        "max,max",
+        "last_value,last_value",
+        "last_non_null_value,last_value_ignore_nulls",
+        "first_value,first_value",
+        "first_non_null_value,first_value_ignore_nulls",
+        "bool_and,bool_and",
+        "bool_or,bool_or",
+        "rbm32,rbm32",
+        "rbm64,rbm64"
+    })
+    void testConvertFieldAggregations(String paimonFunction, String flussFunction)
+            throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), "aggregation");
+        options.put(CoreOptions.IGNORE_DELETE.key(), "true");
+        options.put(CoreOptions.FIELDS_DEFAULT_AGG_FUNC.key(), "max");
+        options.put("fields.payload.aggregate-function", paimonFunction);
+        TableDescriptor descriptor = convertPrimaryKeyTable(options);
+
+        assertThat(descriptor.getSchema().getAggFunction("payload"))
+                .get()
+                .satisfies(
+                        function ->
+                                assertThat(function.getType().toString()).isEqualTo(flussFunction));
+        assertThat(descriptor.getSchema().getAggFunction("version")).contains(AggFunctions.MAX());
+        assertThat(descriptor.getSchema().getAggFunction("id")).isEmpty();
+    }
+
+    @Test
+    void testConvertVersionedTable() throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.SEQUENCE_FIELD.key(), "version");
+        options.put(CoreOptions.IGNORE_DELETE.key(), "true");
+        TableDescriptor descriptor = convertPrimaryKeyTable(options);
+        Configuration configuration = Configuration.fromMap(descriptor.getProperties());
+        assertThat(configuration.get(ConfigOptions.TABLE_MERGE_ENGINE))
+                .isEqualTo(MergeEngineType.VERSIONED);
+        assertThat(configuration.get(ConfigOptions.TABLE_MERGE_ENGINE_VERSION_COLUMN))
+                .isEqualTo("version");
+        assertThat(descriptor.getProperties())
+                .doesNotContainKey(ConfigOptions.TABLE_DELETE_BEHAVIOR.key());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"event_time", "version"})
+    void testConvertRecordExpiration(String timeColumn) throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.RECORD_LEVEL_EXPIRE_TIME.key(), "7 d");
+        options.put(CoreOptions.RECORD_LEVEL_TIME_FIELD.key(), timeColumn);
+        TableDescriptor descriptor = convertPrimaryKeyTable(options);
+        assertThat(descriptor.getProperties())
+                .containsEntry(ConfigOptions.TABLE_KV_TTL_TIME_COLUMN.key(), timeColumn);
+        assertThat(
+                        Configuration.fromMap(descriptor.getProperties())
+                                .get(ConfigOptions.TABLE_KV_TTL))
+                .isEqualTo(Duration.ofDays(7));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0 ms", "1 ns", "999999 ns"})
+    void testRejectInvalidRecordExpirationDuration(String ttl) {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.RECORD_LEVEL_EXPIRE_TIME.key(), ttl);
+        options.put(CoreOptions.RECORD_LEVEL_TIME_FIELD.key(), "event_time");
+        assertInvalidPrimaryKeyOptions(
+                options,
+                "Invalid value '" + ttl + "'",
+                CoreOptions.RECORD_LEVEL_EXPIRE_TIME.key(),
+                "at least 1 millisecond");
+    }
+
+    @Test
+    void testConvertMinimumRecordExpirationDuration() throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.RECORD_LEVEL_EXPIRE_TIME.key(), "1 ms");
+        options.put(CoreOptions.RECORD_LEVEL_TIME_FIELD.key(), "event_time");
+        TableDescriptor descriptor = convertPrimaryKeyTable(options);
+        assertThat(
+                        Configuration.fromMap(descriptor.getProperties())
+                                .get(ConfigOptions.TABLE_KV_TTL))
+                .isEqualTo(Duration.ofMillis(1));
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "bucket,-1,bucket mode",
+        "bucket,-2,bucket mode",
+        "bucket-function.type,mod,bucket function",
+        "rowkind.field,payload,rowkind.field",
+        "sequence.snapshot-ordering,true,sequence.snapshot-ordering",
+        "fields.version.sequence-group,payload,sequence-group",
+        "partial-update.remove-record-on-sequence-group,version,remove-record-on-sequence-group",
+        "fields.payload.ignore-retract,true,ignore-retract"
+    })
+    void testRejectUnsupportedPrimaryKeyDefinition(String key, String value, String message)
+            throws Exception {
+        assertInvalidPrimaryKeyOptions(Collections.singletonMap(key, value), message);
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "listagg",
+                "collect",
+                "nested_update",
+                "merge_map",
+                "hll_sketch",
+                "first_non_null_value_legacy"
+            })
+    void testRejectUnsupportedAggregations(String function) throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), "aggregation");
+        options.put(CoreOptions.IGNORE_DELETE.key(), "true");
+        options.put("fields.payload.aggregate-function", function);
+        assertInvalidPrimaryKeyOptions(options, "fields.payload.aggregate-function");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "sequence.field,version,sequence.field",
+        "sequence.field,payload,nullable sequence.field",
+        "sequence.field.sort-order,descending,sequence.field",
+        "sequence.field,'version,id',sequence.field"
+    })
+    void testRejectUnsupportedSequenceRules(String key, String value, String message)
+            throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.SEQUENCE_FIELD.key(), "version");
+        options.put(CoreOptions.IGNORE_DELETE.key(), "true");
+        if ("version".equals(value)) {
+            options.put(CoreOptions.IGNORE_DELETE.key(), "false");
+        }
+        options.put(key, value);
+        assertInvalidPrimaryKeyOptions(options, message);
+    }
+
+    @Test
+    void testRejectUnsupportedAggregationRetraction() throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), "aggregation");
+        assertInvalidPrimaryKeyOptions(
+                options,
+                "merge-engine=aggregation",
+                "ignore-delete=false",
+                "aggregation.remove-record-on-delete=true",
+                "Fluss aggregation supports whole-row DELETE semantics only",
+                "whole-row deletion");
+        options.put(CoreOptions.AGGREGATION_REMOVE_RECORD_ON_DELETE.key(), "true");
+        assertInvalidPrimaryKeyOptions(
+                options,
+                "merge-engine=aggregation",
+                "ignore-delete=false",
+                "ignore-update-before=true",
+                "Fluss aggregation requires UPDATE_BEFORE records to be ignored",
+                "UPDATE_BEFORE");
+    }
+
+    @ParameterizedTest
+    @MethodSource("unsupportedPrimaryKeySchemas")
+    void testRejectUnsupportedPrimaryKeySchema(
+            String tableName, Schema schema, String expectedMessage) throws Exception {
+        assertInvalidTableDescriptor(tableName, schema, expectedMessage);
+    }
+
+    private static Stream<Arguments> unsupportedPrimaryKeySchemas() {
+        return Stream.of(
+                Arguments.of(
+                        "nullable_primary_key",
+                        Schema.newBuilder()
+                                .column("id", DataTypes.BIGINT())
+                                .primaryKey("id")
+                                .option(CoreOptions.BUCKET.key(), "4")
+                                .option("primary-key.nullable", "true")
+                                .build(),
+                        "nullable primary key"),
+                // Paimon accepts INT seconds, while Fluss TTL requires milliseconds or a timestamp.
+                Arguments.of(
+                        "expiration_int_time",
+                        Schema.newBuilder()
+                                .column("id", DataTypes.BIGINT().notNull())
+                                .column("event_time", DataTypes.INT())
+                                .primaryKey("id")
+                                .option(CoreOptions.BUCKET.key(), "4")
+                                .option(CoreOptions.RECORD_LEVEL_EXPIRE_TIME.key(), "1 d")
+                                .option(CoreOptions.RECORD_LEVEL_TIME_FIELD.key(), "event_time")
+                                .build(),
+                        "Fluss row-level TTL supports only BIGINT, TIMESTAMP and TIMESTAMP_LTZ"),
+                // Paimon checks the missing time field when writing, after accepting the schema.
+                Arguments.of(
+                        "expiration_missing_time_field",
+                        Schema.newBuilder()
+                                .column("id", DataTypes.BIGINT().notNull())
+                                .primaryKey("id")
+                                .option(CoreOptions.BUCKET.key(), "4")
+                                .option(CoreOptions.RECORD_LEVEL_EXPIRE_TIME.key(), "1 d")
+                                .build(),
+                        "Fluss event-time TTL requires 'record-level.time-field' to be specified"));
+    }
+
+    private TableDescriptor convertPrimaryKeyTable(Map<String, String> options) throws Exception {
+        TablePath path = TablePath.of(DATABASE, "primary_key_options_" + primaryKeyTableCount++);
+        FileStoreTable table =
+                createPaimonTable(
+                        path,
+                        Schema.newBuilder()
+                                .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                                .column(
+                                        "version",
+                                        org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                                .column("payload", org.apache.paimon.types.DataTypes.STRING())
+                                .column(
+                                        "event_time",
+                                        org.apache.paimon.types.DataTypes
+                                                .TIMESTAMP_WITH_LOCAL_TIME_ZONE(3))
+                                .primaryKey("id")
+                                .option(CoreOptions.BUCKET.key(), "4")
+                                .build());
+        // Build a schema copy to exercise our validation independently of Paimon's DDL checks.
+        Map<String, String> sourceOptions = new HashMap<>(table.options());
+        sourceOptions.putAll(options);
+        return PaimonConversions.toFlussTableDescriptor(
+                path, table.copy(table.schema().copy(sourceOptions)));
+    }
+
+    private void assertInvalidPrimaryKeyOptions(Map<String, String> options, String... messages) {
+        assertThatThrownBy(() -> convertPrimaryKeyTable(options))
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContainingAll(messages);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"row", "array", "map_key", "map_value", "deep_nested"})
+    void testRejectNestedColumnDefaultValues(String container) throws Exception {
+        DataType rowWithDefault =
+                DataTypes.ROW(new DataField(0, "count", DataTypes.INT(), null, "1"));
+        DataType payloadType;
+        String defaultColumn;
+        switch (container) {
+            case "array":
+                payloadType = DataTypes.ARRAY(rowWithDefault);
+                defaultColumn = "payload.element.count";
+                break;
+            case "map_key":
+                payloadType = DataTypes.MAP(rowWithDefault, DataTypes.STRING());
+                defaultColumn = "payload.key.count";
+                break;
+            case "map_value":
+                payloadType = DataTypes.MAP(DataTypes.STRING(), rowWithDefault);
+                defaultColumn = "payload.value.count";
+                break;
+            case "deep_nested":
+                payloadType =
+                        DataTypes.ARRAY(
+                                DataTypes.MAP(
+                                        DataTypes.STRING(),
+                                        DataTypes.ROW(new DataField(0, "inner", rowWithDefault))));
+                defaultColumn = "payload.element.value.inner.count";
+                break;
+            default:
+                payloadType = rowWithDefault;
+                defaultColumn = "payload.count";
+        }
+        TablePath tablePath = TablePath.of(DATABASE, "nested_default_" + container);
+        FileStoreTable table =
+                createPaimonTable(
+                        tablePath,
+                        Schema.newBuilder()
+                                .column("payload", payloadType)
+                                .option(CoreOptions.BUCKET.key(), "-1")
+                                .build());
+
+        // Verify Paimon persists the nested default before checking our rejection.
+        assertThat(table.rowType().getField("payload").type().asSQLString()).contains("DEFAULT 1");
+        assertThatThrownBy(() -> PaimonConversions.toFlussTableDescriptor(tablePath, table))
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining("column '" + defaultColumn + "' has a default value");
     }
 
     private TableDescriptor convert(String tableName, Schema paimonSchema) throws Exception {
