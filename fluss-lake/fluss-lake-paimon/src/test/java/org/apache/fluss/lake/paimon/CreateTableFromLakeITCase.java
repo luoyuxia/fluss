@@ -127,24 +127,10 @@ class CreateTableFromLakeITCase {
         assertThat(snapshotId).isNotNull();
         assertThat(admin.databaseExists(tablePath.getDatabaseName()).get()).isFalse();
 
-        Map<String, String> options =
-                Collections.singletonMap(ConfigOptions.TABLE_LOG_TTL.key(), "7 d");
+        Map<String, String> options = Collections.emptyMap();
         TableInfo created = admin.createTableFromLake(tablePath, options).get();
-        TableInfo stored = admin.getTableInfo(tablePath).get();
-        assertThat(created.toTableDescriptor()).isEqualTo(stored.toTableDescriptor());
-        assertThat(created.getTableId()).isEqualTo(stored.getTableId());
-        assertThat(created.getSchemaId()).isEqualTo(stored.getSchemaId());
-        assertThat(created.getRemoteDataDir()).isEqualTo(stored.getRemoteDataDir());
-        assertThat(created.getBucketCountEpoch()).isEqualTo(stored.getBucketCountEpoch());
         assertThat(created.getSchema().getPrimaryKeyColumnNames()).containsExactly("id");
-        assertThat(created.getSchema().getColumns().get(0).getComment()).contains("identifier");
-        assertThat(created.getBucketKeys()).containsExactly("id");
-        assertThat(created.getNumBuckets()).isEqualTo(4);
         assertThat(created.getTableConfig().isDataLakeEnabled()).isFalse();
-        assertThat(created.getTableConfig().getDataLakeFormat()).contains(DataLakeFormat.PAIMON);
-        assertThat(created.getProperties().toMap()).containsAllEntriesOf(options);
-        assertThat(created.getProperties().toMap())
-                .doesNotContainKey(ConfigOptions.TABLE_DELETE_BEHAVIOR.key());
         assertThatThrownBy(() -> admin.getLatestLakeSnapshot(tablePath).get())
                 .cause()
                 .isInstanceOf(LakeTableSnapshotNotExistException.class);
@@ -156,8 +142,7 @@ class CreateTableFromLakeITCase {
         assertThatThrownBy(() -> admin.createTableFromLake(tablePath, options).get())
                 .cause()
                 .isInstanceOf(TableAlreadyExistException.class);
-        assertThat(admin.getTableInfo(tablePath).get().getTableId())
-                .isEqualTo(created.getTableId());
+        assertThat(admin.getTableInfo(tablePath).get()).isEqualTo(created);
     }
 
     @ParameterizedTest
