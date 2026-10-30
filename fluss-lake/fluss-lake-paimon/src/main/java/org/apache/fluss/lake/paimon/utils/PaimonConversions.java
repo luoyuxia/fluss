@@ -687,6 +687,17 @@ public class PaimonConversions {
         if (engine != CoreOptions.MergeEngine.AGGREGATE) {
             return;
         }
+        String defaultFunction = options.fieldsDefaultFunc();
+        if (defaultFunction != null
+                && !FieldLastValueAggFactory.NAME.equals(defaultFunction)
+                && !FieldLastNonNullValueAggFactory.NAME.equals(defaultFunction)) {
+            throw unsupportedPrimaryKeyDefinition(
+                    tablePath,
+                    CoreOptions.FIELDS_DEFAULT_AGG_FUNC.key() + "=" + defaultFunction,
+                    "Fluss supports only last_value or last_non_null_value as the default aggregate "
+                            + "function. Newly added columns inherit this function without field-level "
+                            + "retraction settings, so other defaults may be incompatible with Fluss changelog.");
+        }
         for (DataField field : table.schema().fields()) {
             AggFunction function = derivePrimaryKeyAggregateFunction(table, field);
             if (function == null) {
