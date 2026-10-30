@@ -54,6 +54,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import javax.annotation.Nullable;
 
 import java.nio.file.Files;
 import java.time.Duration;
@@ -198,14 +201,12 @@ class CreateTableFromLakeITCase {
                 .cause()
                 .isInstanceOf(TableAlreadyExistException.class);
         // Request the opposite DELETE behavior when reusing the existing Fluss table.
-        // With ignoreDelete=true, IGNORE is the aggregation default and is omitted from derived
-        // properties, so ALLOW fails the existing table definition check. Otherwise, ALLOW is
-        // explicitly derived, so IGNORE fails the derived-option override check.
+        // IGNORE and ALLOW are both explicitly derived, so neither can be overridden.
         assertCreateTableFromLakeFails(
                 tablePath,
                 ConfigOptions.TABLE_DELETE_BEHAVIOR.key(),
                 ignoreDelete ? "allow" : "ignore",
-                ignoreDelete ? "definition does not match" : "cannot be set");
+                "cannot be set");
     }
 
     @ParameterizedTest
@@ -225,7 +226,7 @@ class CreateTableFromLakeITCase {
             String engine,
             boolean ignoreDelete,
             boolean removeOnDelete,
-            String function,
+            @Nullable String function,
             boolean ignoreRetract,
             String expectedMessage)
             throws Exception {
@@ -275,12 +276,15 @@ class CreateTableFromLakeITCase {
                 Schema.newBuilder()
                         .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
                         .column("version", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column(
+                                "event_time",
+                                org.apache.paimon.types.DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(3))
                         .primaryKey("id")
                         .option(CoreOptions.BUCKET.key(), "4")
                         .option(CoreOptions.SEQUENCE_FIELD.key(), "version")
                         .option(CoreOptions.IGNORE_DELETE.key(), "true")
                         .option(CoreOptions.RECORD_LEVEL_EXPIRE_TIME.key(), "7 d")
-                        .option(CoreOptions.RECORD_LEVEL_TIME_FIELD.key(), "version")
+                        .option(CoreOptions.RECORD_LEVEL_TIME_FIELD.key(), "event_time")
                         .build());
 
         assertCreateTableFromLakeFails(
@@ -316,8 +320,8 @@ class CreateTableFromLakeITCase {
 
     @ParameterizedTest
     @CsvSource({", allow", ", ignore", "first_row, ignore", "versioned, ignore"})
-    void testSetPrimaryKeyOptionsNotDerivedFromLake(String mergeEngine, String deleteBehavior)
-            throws Exception {
+    void testSetPrimaryKeyOptionsNotDerivedFromLake(
+            @Nullable String mergeEngine, String deleteBehavior) throws Exception {
         TablePath tablePath =
                 TablePath.of(DATABASE, "primary_key_options_" + mergeEngine + "_" + deleteBehavior);
         createPaimonTable(
@@ -341,24 +345,34 @@ class CreateTableFromLakeITCase {
         assertThat(created.getProperties().toMap()).containsAllEntriesOf(options);
     }
 
-    @Test
-    void testCreatePrimaryKeyAutoPartitionWithMultipleKeys() throws Exception {
-        TablePath tablePath = TablePath.of(DATABASE, "promote_multi_key_auto_partition");
-        createPaimonTable(
-                tablePath,
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void testCreatePartitionedPrimaryKeyTable(boolean inferAutoPartition) throws Exception {
+        TablePath tablePath =
+                TablePath.of(DATABASE, "promote_partitioned_primary_key_" + inferAutoPartition);
+        Schema.Builder schema =
                 Schema.newBuilder()
                         .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
                         .column("dt", org.apache.paimon.types.DataTypes.STRING().notNull())
                         .column("region", org.apache.paimon.types.DataTypes.STRING().notNull())
-                        .primaryKey("id", "dt", "region")
+                        .primaryKey("region", "id", "dt")
                         .partitionKeys("dt", "region")
-                        .option(CoreOptions.BUCKET.key(), "4")
-                        .option(CoreOptions.PARTITION_TIMESTAMP_PATTERN.key(), "$dt")
-                        .option(CoreOptions.PARTITION_TIMESTAMP_FORMATTER.key(), "yyyy-MM-dd")
-                        .build());
+                        .option(CoreOptions.BUCKET.key(), "4");
+        Map<String, String> options = new HashMap<>();
+        if (inferAutoPartition) {
+            schema.option(CoreOptions.PARTITION_TIMESTAMP_PATTERN.key(), "$dt")
+                    .option(CoreOptions.PARTITION_TIMESTAMP_FORMATTER.key(), "yyyy-MM-dd");
+        } else {
+            options.put(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED.key(), "true");
+            options.put(ConfigOptions.TABLE_AUTO_PARTITION_KEY.key(), "dt");
+            options.put(ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT.key(), "DAY");
+            options.put(ConfigOptions.TABLE_AUTO_PARTITION_NUM_PRECREATE.key(), "0");
+        }
+        createPaimonTable(tablePath, schema.build());
 
-        TableInfo created =
-                admin.createTableFromLake(tablePath, Collections.<String, String>emptyMap()).get();
+        TableInfo created = admin.createTableFromLake(tablePath, options).get();
+        assertThat(created.getSchema().getPrimaryKeyColumnNames())
+                .containsExactly("region", "id", "dt");
         assertThat(created.getPartitionKeys()).containsExactly("dt", "region");
         assertThat(created.getBucketKeys()).containsExactly("id");
         assertThat(created.getProperties().get(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED))
@@ -367,33 +381,6 @@ class CreateTableFromLakeITCase {
                 .isEqualTo("dt");
         assertThat(created.getProperties().get(ConfigOptions.TABLE_AUTO_PARTITION_NUM_PRECREATE))
                 .isZero();
-    }
-
-    @Test
-    void testCreatePartitionedPrimaryKeyTable() throws Exception {
-        TablePath tablePath = TablePath.of(DATABASE, "promote_partitioned_primary_key");
-        createPaimonTable(
-                tablePath,
-                Schema.newBuilder()
-                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
-                        .column("dt", org.apache.paimon.types.DataTypes.STRING().notNull())
-                        .column("region", org.apache.paimon.types.DataTypes.STRING().notNull())
-                        .primaryKey("region", "id", "dt")
-                        .partitionKeys("dt", "region")
-                        .option(CoreOptions.BUCKET.key(), "4")
-                        .build());
-
-        Map<String, String> options = new HashMap<>();
-        options.put(ConfigOptions.TABLE_AUTO_PARTITION_ENABLED.key(), "true");
-        options.put(ConfigOptions.TABLE_AUTO_PARTITION_KEY.key(), "dt");
-        options.put(ConfigOptions.TABLE_AUTO_PARTITION_TIME_UNIT.key(), "DAY");
-        options.put(ConfigOptions.TABLE_AUTO_PARTITION_NUM_PRECREATE.key(), "0");
-
-        TableInfo created = admin.createTableFromLake(tablePath, options).get();
-        assertThat(created.getSchema().getPrimaryKeyColumnNames())
-                .containsExactly("region", "id", "dt");
-        assertThat(created.getPartitionKeys()).containsExactly("dt", "region");
-        assertThat(created.getBucketKeys()).containsExactly("id");
         assertThat(created.getTableConfig().isDataLakeEnabled()).isFalse();
     }
 

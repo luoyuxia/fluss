@@ -648,24 +648,27 @@ public class PaimonConversions {
         validatePrimaryKeyRecordExpiration(tablePath, table, options);
         for (DataField field : table.schema().fields()) {
             if (!table.primaryKeys().contains(field.name())) {
-                validatePrimaryKeyAggregateFunction(tablePath, options, field.name());
+                validatePrimaryKeyAggregateFunction(tablePath, options, field);
             }
         }
         validateMergeEngineCompatibility(tablePath, table, options);
     }
 
     /**
-     * Validates that the Paimon merge engine can consume Fluss's full changelog.
+     * Validates Paimon merge settings for the changelog produced by the mapped Fluss merge engine.
      *
      * <p>Tiering bypasses Paimon's TableWriteImpl.RowKindFilter, so UPDATE_BEFORE and undo DELETE
-     * reach the original merge engine regardless of the table-level ignore options. SUM and PRODUCT
-     * must retract the previous aggregate result before accumulating the next result. Functions
-     * without retraction support must ignore these records at field level; otherwise Paimon throws
-     * UnsupportedOperationException when merging them, for example during flush.
+     * reach the original merge engine regardless of the table-level ignore options. SUM must
+     * retract the previous aggregate result before accumulating the next result. PRODUCT cannot
+     * safely retract zero-valued results and is rejected. Functions without retraction support must
+     * ignore these records at field level; otherwise Paimon throws UnsupportedOperationException
+     * when merging them, for example during flush.
      *
-     * <p>Ignoring an undo record or a restored NULL may temporarily retain a later value. We
-     * require compatibility after complete deterministic replay, not at every intermediate undo
-     * state.
+     * <p>The recovery assumption is limited to undo followed by complete deterministic replay of
+     * the original input. Ignoring an undo record or a restored NULL may retain a later value while
+     * recovery is in progress. Arbitrary user-issued OVERWRITE writes are outside this scope:
+     * lowering MAX or overwriting a partial-update field with NULL can leave the lake state
+     * inconsistent even after tiering catches up. Such writes are not blocked by this validation.
      */
     private static void validateMergeEngineCompatibility(
             TablePath tablePath, FileStoreTable table, CoreOptions options) {
@@ -692,14 +695,20 @@ public class PaimonConversions {
             boolean ignoreRetract = options.fieldAggIgnoreRetract(field.name());
             String key = FIELDS_PREFIX + "." + field.name() + "." + IGNORE_RETRACT;
             switch (function.getType()) {
-                case SUM:
                 case PRODUCT:
+                    throw unsupportedPrimaryKeyDefinition(
+                            tablePath,
+                            FIELDS_PREFIX + "." + field.name() + "." + AGG_FUNCTION,
+                            "Fluss tiering retracts complete aggregate results. Paimon PRODUCT "
+                                    + "retracts by division, so zero-valued results can cause "
+                                    + "division by zero or NaN and cannot be safely supported.");
+                case SUM:
                     if (ignoreRetract) {
                         throw unsupportedPrimaryKeyDefinition(
                                 tablePath,
                                 key,
-                                "Fluss tiering writes complete aggregate results. SUM and PRODUCT "
-                                        + "require 'ignore-retract=false' to retract the previous "
+                                "Fluss tiering writes complete aggregate results. SUM "
+                                        + "requires 'ignore-retract=false' to retract the previous "
                                         + "result before accumulating the next result.");
                     }
                     break;
@@ -780,8 +789,14 @@ public class PaimonConversions {
         DataType type = table.rowType().getField(timeField).type();
         switch (type.getTypeRoot()) {
             case BIGINT:
-                // BIGINT values must represent epoch milliseconds in both systems.
-                break;
+                throw unsupportedPrimaryKeyDefinition(
+                        tablePath,
+                        CoreOptions.RECORD_LEVEL_TIME_FIELD.key(),
+                        String.format(
+                                "Fluss row-level TTL cannot safely use BIGINT time column '%s': "
+                                        + "Paimon accepts both epoch seconds and milliseconds, while Fluss "
+                                        + "requires milliseconds. Use TIMESTAMP_LTZ instead.",
+                                timeField));
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 // TabletServers must use UTC to preserve Paimon's internal millisecond value.
                 break;
@@ -807,7 +822,8 @@ public class PaimonConversions {
     }
 
     private static void validatePrimaryKeyAggregateFunction(
-            TablePath tablePath, CoreOptions options, String fieldName) {
+            TablePath tablePath, CoreOptions options, DataField field) {
+        String fieldName = field.name();
         String function = getPaimonAggregateFunction(options, fieldName);
         String fieldPrefix = FIELDS_PREFIX + "." + fieldName + ".";
         String key = fieldPrefix + AGG_FUNCTION;
@@ -825,6 +841,13 @@ public class PaimonConversions {
                     tablePath,
                     key + "=" + function,
                     "No supported Fluss aggregation mapping preserves this Paimon function's semantics.");
+        }
+        if (FieldFirstValueAggFactory.NAME.equals(function) && field.type().isNullable()) {
+            throw unsupportedPrimaryKeyDefinition(
+                    tablePath,
+                    key,
+                    "Fluss FIRST_VALUE retains the first non-null value, while Paimon first_value "
+                            + "retains an initial NULL. Only NOT NULL columns can preserve these semantics.");
         }
         if (FieldSumAggFactory.NAME.equals(function)
                 && options.fieldSumAggFailOnOverflow(fieldName)) {
@@ -871,9 +894,8 @@ public class PaimonConversions {
         if (mergeEngine != null) {
             configuration.set(ConfigOptions.TABLE_MERGE_ENGINE, mergeEngine);
         }
-        DeleteBehavior defaultDeleteBehavior =
-                mergeEngine == null ? DeleteBehavior.ALLOW : DeleteBehavior.IGNORE;
-        if (deleteBehavior != defaultDeleteBehavior) {
+        // Keep DELETE explicit for mapped merge engines so source defaults cannot be overridden.
+        if (mergeEngine != null || deleteBehavior != DeleteBehavior.ALLOW) {
             configuration.set(ConfigOptions.TABLE_DELETE_BEHAVIOR, deleteBehavior);
         }
 
