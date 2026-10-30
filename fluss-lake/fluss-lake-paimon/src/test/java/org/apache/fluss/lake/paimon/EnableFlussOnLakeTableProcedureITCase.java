@@ -605,6 +605,72 @@ class EnableFlussOnLakeTableProcedureITCase extends FlinkPaimonTieringTestBase {
                 .isInstanceOf(LakeTableSnapshotNotExistException.class);
     }
 
+    @ParameterizedTest
+    @CsvSource({
+        "first-row,true,false,first_row",
+        "partial-update,true,false,aggregation",
+        "partial-update,false,true,aggregation",
+        "aggregation,true,false,aggregation",
+        "aggregation,false,true,aggregation"
+    })
+    void testEnableNativePrimaryKeyMergeEngine(
+            String engine, boolean ignoreDelete, boolean removeOnDelete, String flussEngine)
+            throws Exception {
+        TablePath tablePath =
+                TablePath.of(DATABASE, "native_" + engine.replace('-', '_') + "_" + ignoreDelete);
+        Schema.Builder schema =
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column("amount", org.apache.paimon.types.DataTypes.BIGINT())
+                        .primaryKey("id")
+                        .option(CoreOptions.BUCKET.key(), "1")
+                        .option(CoreOptions.BUCKET_KEY.key(), "id")
+                        .option(CoreOptions.MERGE_ENGINE.key(), engine)
+                        .option(CoreOptions.IGNORE_DELETE.key(), Boolean.toString(ignoreDelete))
+                        .option(CoreOptions.IGNORE_UPDATE_BEFORE.key(), "true");
+        if ("aggregation".equals(engine)) {
+            schema.option("fields.amount.aggregate-function", "sum")
+                    .option(
+                            CoreOptions.AGGREGATION_REMOVE_RECORD_ON_DELETE.key(),
+                            Boolean.toString(removeOnDelete));
+        } else if ("partial-update".equals(engine)) {
+            schema.option(
+                    CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE.key(),
+                    Boolean.toString(removeOnDelete));
+        }
+        Map<String, String> nativeOptions = createPaimonTable(tablePath, schema.build()).options();
+
+        TableInfo enabled = assertEnableFlussProcedureSucceeds(tablePath, null);
+        assertThat(enabled.getTableConfig().getMergeEngineType())
+                .contains(MergeEngineType.fromString(flussEngine));
+
+        // Re-enable and subsequent schema changes must also retain the native merge settings.
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.set(
+                                        ConfigOptions.TABLE_DATALAKE_ENABLED.key(), "false")),
+                        false)
+                .get();
+        assertThat(assertEnableFlussProcedureSucceeds(tablePath, null).getTableId())
+                .isEqualTo(enabled.getTableId());
+        admin.alterTable(
+                        tablePath,
+                        Collections.singletonList(
+                                TableChange.addColumn(
+                                        "extra",
+                                        org.apache.fluss.types.DataTypes.INT(),
+                                        null,
+                                        TableChange.ColumnPosition.last())),
+                        false)
+                .get();
+        Identifier identifier = Identifier.create(DATABASE, tablePath.getTableName());
+        paimonCatalog.invalidateTable(identifier);
+        FileStoreTable paimonTable = (FileStoreTable) paimonCatalog.getTable(identifier);
+        assertThat(paimonTable.options()).containsAllEntriesOf(nativeOptions);
+        assertThat(paimonTable.rowType().getFieldNames()).containsExactly("id", "amount", "extra");
+    }
+
     private TableInfo assertEnableFlussProcedureSucceeds(TablePath tablePath, String options)
             throws Exception {
         try (CloseableIterator<Row> rows =

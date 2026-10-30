@@ -23,6 +23,7 @@ import org.apache.fluss.client.admin.Admin;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.exception.FlussRuntimeException;
+import org.apache.fluss.exception.InvalidTableException;
 import org.apache.fluss.exception.LakeTableSnapshotNotExistException;
 import org.apache.fluss.exception.TableAlreadyExistException;
 import org.apache.fluss.metadata.AggFunctions;
@@ -53,7 +54,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.time.Duration;
@@ -161,9 +161,17 @@ class CreateTableFromLakeITCase {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"partial-update", "aggregation"})
-    void testCreatePrimaryKeyTableWithMergeSemantics(String engine) throws Exception {
-        TablePath tablePath = TablePath.of(DATABASE, "promote_" + engine.replace('-', '_'));
+    @CsvSource({
+        "partial-update,true",
+        "partial-update,false",
+        "aggregation,true",
+        "aggregation,false"
+    })
+    void testCreatePrimaryKeyTableWithMergeSemantics(String engine, boolean ignoreDelete)
+            throws Exception {
+        TablePath tablePath =
+                TablePath.of(DATABASE, "promote_" + engine.replace('-', '_') + "_" + ignoreDelete);
+        boolean aggregation = "aggregation".equals(engine);
         Schema.Builder schema =
                 Schema.newBuilder()
                         .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
@@ -172,8 +180,15 @@ class CreateTableFromLakeITCase {
                         .primaryKey("id")
                         .option(CoreOptions.BUCKET.key(), "4")
                         .option(CoreOptions.MERGE_ENGINE.key(), engine)
-                        .option(CoreOptions.IGNORE_DELETE.key(), "true");
-        if ("aggregation".equals(engine)) {
+                        .option(CoreOptions.IGNORE_DELETE.key(), Boolean.toString(ignoreDelete))
+                        .option(CoreOptions.IGNORE_UPDATE_BEFORE.key(), "true")
+                        .option(
+                                CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE.key(),
+                                Boolean.toString(!ignoreDelete))
+                        .option(
+                                CoreOptions.AGGREGATION_REMOVE_RECORD_ON_DELETE.key(),
+                                Boolean.toString(!ignoreDelete));
+        if (aggregation) {
             schema.option("fields.amount.aggregate-function", "sum");
         }
         createPaimonTable(tablePath, schema.build());
@@ -182,12 +197,11 @@ class CreateTableFromLakeITCase {
                 admin.createTableFromLake(tablePath, Collections.<String, String>emptyMap()).get();
         assertThat(created.getTableConfig().getMergeEngineType())
                 .contains(MergeEngineType.AGGREGATION);
-        assertThat(created.getTableConfig().getDeleteBehavior()).contains(DeleteBehavior.IGNORE);
+        assertThat(created.getTableConfig().getDeleteBehavior())
+                .contains(ignoreDelete ? DeleteBehavior.IGNORE : DeleteBehavior.ALLOW);
         assertThat(created.getSchema().getAggFunction("amount"))
                 .contains(
-                        "aggregation".equals(engine)
-                                ? AggFunctions.SUM()
-                                : AggFunctions.LAST_VALUE_IGNORE_NULLS());
+                        aggregation ? AggFunctions.SUM() : AggFunctions.LAST_VALUE_IGNORE_NULLS());
         assertThat(created.getSchema().getAggFunction("payload"))
                 .contains(AggFunctions.LAST_VALUE_IGNORE_NULLS());
         assertThat(created.getTableConfig().isDataLakeEnabled()).isFalse();
@@ -198,11 +212,74 @@ class CreateTableFromLakeITCase {
                                         .get())
                 .cause()
                 .isInstanceOf(TableAlreadyExistException.class);
+        // Request the opposite DELETE behavior when reusing the existing Fluss table.
+        // With ignoreDelete=true, IGNORE is the aggregation default and is omitted from derived
+        // properties, so ALLOW fails the existing table definition check. Otherwise, ALLOW is
+        // explicitly derived, so IGNORE fails the derived-option override check.
         assertCreateTableFromLakeFails(
                 tablePath,
                 ConfigOptions.TABLE_DELETE_BEHAVIOR.key(),
-                "allow",
-                "definition does not match");
+                ignoreDelete ? "allow" : "ignore",
+                ignoreDelete ? "definition does not match" : "cannot be set");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        // engine, ignoreDelete, removeOnDelete, function, ignoreRetract, expectedMessage
+        // Partial-update cannot accept tiering retractions with both options disabled.
+        "partial-update, false, false, , false, partial-update.remove-record-on-delete",
+        // Aggregation's default DELETE retracts field contributions, which Fluss cannot map.
+        "aggregation, false, false, sum, false, aggregation.remove-record-on-delete",
+        // SUM must retract the previous aggregate result before accumulating the next one.
+        "aggregation, true, false, sum, true, fields.amount.ignore-retract",
+        // MAX must ignore retractions, including when whole-row DELETE is enabled.
+        "aggregation, true, false, max, false, fields.amount.ignore-retract",
+        "aggregation, false, true, max, false, fields.amount.ignore-retract"
+    })
+    void testRejectUnsafePrimaryKeyMergeSemantics(
+            String engine,
+            boolean ignoreDelete,
+            boolean removeOnDelete,
+            String function,
+            boolean ignoreRetract,
+            String expectedMessage)
+            throws Exception {
+        TablePath tablePath =
+                TablePath.of(
+                        DATABASE,
+                        String.format(
+                                "unsafe_merge_%s_%s_%s_%s",
+                                engine.replace('-', '_'), ignoreDelete, removeOnDelete, function));
+        Schema.Builder schema =
+                Schema.newBuilder()
+                        .column("id", org.apache.paimon.types.DataTypes.BIGINT().notNull())
+                        .column("amount", org.apache.paimon.types.DataTypes.BIGINT())
+                        .primaryKey("id")
+                        .option(CoreOptions.BUCKET.key(), "4")
+                        .option(CoreOptions.MERGE_ENGINE.key(), engine)
+                        .option(CoreOptions.IGNORE_DELETE.key(), Boolean.toString(ignoreDelete))
+                        .option(CoreOptions.IGNORE_UPDATE_BEFORE.key(), "true")
+                        .option(
+                                CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE.key(),
+                                Boolean.toString(removeOnDelete))
+                        .option(
+                                CoreOptions.AGGREGATION_REMOVE_RECORD_ON_DELETE.key(),
+                                Boolean.toString(removeOnDelete));
+        if (function != null) {
+            schema.option("fields.amount.aggregate-function", function)
+                    .option("fields.amount.ignore-retract", Boolean.toString(ignoreRetract));
+        }
+        createPaimonTable(tablePath, schema.build());
+
+        assertThatThrownBy(
+                        () ->
+                                admin.createTableFromLake(
+                                                tablePath, Collections.<String, String>emptyMap())
+                                        .get())
+                .cause()
+                .isInstanceOf(InvalidTableException.class)
+                .hasMessageContaining(expectedMessage);
+        assertThat(admin.tableExists(tablePath).get()).isFalse();
     }
 
     @Test

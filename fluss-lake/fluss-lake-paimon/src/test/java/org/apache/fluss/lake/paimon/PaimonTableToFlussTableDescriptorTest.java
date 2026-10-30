@@ -365,10 +365,11 @@ class PaimonTableToFlussTableDescriptorTest {
         "deduplicate, true, false, true, , ignore",
         "first-row, false, false, true, first_row, disable",
         "first-row, true, false, true, first_row, ignore",
-        "partial-update, false, false, true, aggregation, disable",
+        "partial-update, true, false, false, aggregation, ignore",
+        "partial-update, false, true, false, aggregation, allow",
         "partial-update, false, true, true, aggregation, allow",
-        "partial-update, true, false, true, aggregation, ignore",
         "aggregation, false, true, true, aggregation, allow",
+        "aggregation, true, true, false, aggregation, ignore",
         "aggregation, true, false, false, aggregation, ignore"
     })
     void testConvertMergeAndDeleteSemantics(
@@ -416,34 +417,47 @@ class PaimonTableToFlussTableDescriptorTest {
 
     @ParameterizedTest
     @CsvSource({
-        "sum,sum",
-        "product,product",
-        "min,min",
-        "max,max",
-        "last_value,last_value",
-        "last_non_null_value,last_value_ignore_nulls",
-        "first_value,first_value",
-        "first_non_null_value,first_value_ignore_nulls",
-        "bool_and,bool_and",
-        "bool_or,bool_or",
-        "rbm32,rbm32",
-        "rbm64,rbm64"
+        "sum,sum,false",
+        "product,product,false",
+        "min,min,true",
+        "max,max,true",
+        "first_value,first_value,true",
+        "first_non_null_value,first_value_ignore_nulls,true",
+        "last_value,last_value,false",
+        "last_value,last_value,true",
+        "last_non_null_value,last_value_ignore_nulls,false",
+        "last_non_null_value,last_value_ignore_nulls,true",
+        "bool_and,bool_and,true",
+        "bool_or,bool_or,true",
+        "rbm32,rbm32,true",
+        "rbm64,rbm64,true"
     })
-    void testConvertFieldAggregations(String paimonFunction, String flussFunction)
-            throws Exception {
+    void testConvertFieldAggregations(
+            String paimonFunction, String flussFunction, boolean ignoreRetract) throws Exception {
         Map<String, String> options = new HashMap<>();
         options.put(CoreOptions.MERGE_ENGINE.key(), "aggregation");
         options.put(CoreOptions.IGNORE_DELETE.key(), "true");
-        options.put(CoreOptions.FIELDS_DEFAULT_AGG_FUNC.key(), "max");
+        options.put(CoreOptions.FIELDS_DEFAULT_AGG_FUNC.key(), "last_value");
         options.put("fields.payload.aggregate-function", paimonFunction);
-        TableDescriptor descriptor = convertPrimaryKeyTable(options);
+        options.put("fields.payload.ignore-retract", Boolean.toString(ignoreRetract));
+        options.put("fields.version.aggregate-function", "last_non_null_value");
+        DataType payloadType = DataTypes.BIGINT();
+        if (paimonFunction.startsWith("bool_")) {
+            payloadType = DataTypes.BOOLEAN();
+        } else if (paimonFunction.startsWith("rbm")) {
+            payloadType = DataTypes.BYTES();
+        }
+        TableDescriptor descriptor = convertPrimaryKeyTable(options, payloadType);
 
         assertThat(descriptor.getSchema().getAggFunction("payload"))
                 .get()
                 .satisfies(
                         function ->
                                 assertThat(function.getType().toString()).isEqualTo(flussFunction));
-        assertThat(descriptor.getSchema().getAggFunction("version")).contains(AggFunctions.MAX());
+        assertThat(descriptor.getSchema().getAggFunction("version"))
+                .contains(AggFunctions.LAST_VALUE_IGNORE_NULLS());
+        assertThat(descriptor.getSchema().getAggFunction("event_time"))
+                .contains(AggFunctions.LAST_VALUE());
         assertThat(descriptor.getSchema().getAggFunction("id")).isEmpty();
     }
 
@@ -510,8 +524,7 @@ class PaimonTableToFlussTableDescriptorTest {
         "rowkind.field,payload,rowkind.field",
         "sequence.snapshot-ordering,true,sequence.snapshot-ordering",
         "fields.version.sequence-group,payload,sequence-group",
-        "partial-update.remove-record-on-sequence-group,version,remove-record-on-sequence-group",
-        "fields.payload.ignore-retract,true,ignore-retract"
+        "partial-update.remove-record-on-sequence-group,version,remove-record-on-sequence-group"
     })
     void testRejectUnsupportedPrimaryKeyDefinition(String key, String value, String message)
             throws Exception {
@@ -531,9 +544,64 @@ class PaimonTableToFlussTableDescriptorTest {
     void testRejectUnsupportedAggregations(String function) throws Exception {
         Map<String, String> options = new HashMap<>();
         options.put(CoreOptions.MERGE_ENGINE.key(), "aggregation");
-        options.put(CoreOptions.IGNORE_DELETE.key(), "true");
+        options.put(CoreOptions.AGGREGATION_REMOVE_RECORD_ON_DELETE.key(), "true");
+        options.put(CoreOptions.IGNORE_UPDATE_BEFORE.key(), "true");
+        options.put(CoreOptions.FIELDS_DEFAULT_AGG_FUNC.key(), "last_value");
         options.put("fields.payload.aggregate-function", function);
         assertInvalidPrimaryKeyOptions(options, "fields.payload.aggregate-function");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        // engine, function, ignoreRetract, expectedOption
+        "partial-update, , false, partial-update.remove-record-on-delete",
+        "aggregation, sum, true, fields.version.ignore-retract",
+        "aggregation, product, true, fields.version.ignore-retract",
+        "aggregation, min, false, fields.version.ignore-retract",
+        "aggregation, max, false, fields.version.ignore-retract",
+        "aggregation, first_value, false, fields.version.ignore-retract",
+        "aggregation, first_non_null_value, false, fields.version.ignore-retract"
+    })
+    void testRejectIncompatibleMergeRetraction(
+            String engine, String function, boolean ignoreRetract, String expectedOption) {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), engine);
+        // Tiering bypasses the table-level filter, so ignoring UPDATE_BEFORE there is insufficient.
+        options.put(CoreOptions.IGNORE_UPDATE_BEFORE.key(), "true");
+        if (function != null) {
+            options.put(CoreOptions.IGNORE_DELETE.key(), "true");
+            options.put("fields.version.aggregate-function", function);
+            options.put("fields.version.ignore-retract", Boolean.toString(ignoreRetract));
+        }
+        assertInvalidPrimaryKeyOptions(
+                options,
+                expectedOption,
+                "Fluss tiering",
+                function == null ? "UPDATE_BEFORE" : "ignore-retract=" + !ignoreRetract);
+    }
+
+    @Test
+    void testConvertMixedAggregations() throws Exception {
+        Map<String, String> options = new HashMap<>();
+        options.put(CoreOptions.MERGE_ENGINE.key(), "aggregation");
+        options.put(CoreOptions.IGNORE_DELETE.key(), "true");
+        options.put("fields.version.aggregate-function", "sum");
+        options.put("fields.payload.aggregate-function", "max");
+        options.put("fields.payload.ignore-retract", "true");
+        TableDescriptor descriptor = convertPrimaryKeyTable(options);
+        assertThat(descriptor.getSchema().getAggFunction("version")).contains(AggFunctions.SUM());
+        assertThat(descriptor.getSchema().getAggFunction("payload")).contains(AggFunctions.MAX());
+
+        // Whole-row deletion cannot be combined with field-level ignore-retract in Paimon.
+        // Without that field policy, the current tiering path cannot write this mixed changelog.
+        options.put(CoreOptions.IGNORE_DELETE.key(), "false");
+        options.put(CoreOptions.IGNORE_UPDATE_BEFORE.key(), "true");
+        options.put(CoreOptions.AGGREGATION_REMOVE_RECORD_ON_DELETE.key(), "true");
+        options.remove("fields.payload.ignore-retract");
+        assertInvalidPrimaryKeyOptions(
+                options,
+                "fields.payload.ignore-retract",
+                "aggregation.remove-record-on-delete=true");
     }
 
     @ParameterizedTest
@@ -559,6 +627,7 @@ class PaimonTableToFlussTableDescriptorTest {
     void testRejectUnsupportedAggregationRetraction() throws Exception {
         Map<String, String> options = new HashMap<>();
         options.put(CoreOptions.MERGE_ENGINE.key(), "aggregation");
+        options.put("fields.version.aggregate-function", "sum");
         assertInvalidPrimaryKeyOptions(
                 options,
                 "merge-engine=aggregation",
@@ -619,6 +688,11 @@ class PaimonTableToFlussTableDescriptorTest {
     }
 
     private TableDescriptor convertPrimaryKeyTable(Map<String, String> options) throws Exception {
+        return convertPrimaryKeyTable(options, DataTypes.STRING());
+    }
+
+    private TableDescriptor convertPrimaryKeyTable(
+            Map<String, String> options, DataType payloadType) throws Exception {
         TablePath path = TablePath.of(DATABASE, "primary_key_options_" + primaryKeyTableCount++);
         FileStoreTable table =
                 createPaimonTable(
@@ -628,11 +702,8 @@ class PaimonTableToFlussTableDescriptorTest {
                                 .column(
                                         "version",
                                         org.apache.paimon.types.DataTypes.BIGINT().notNull())
-                                .column("payload", org.apache.paimon.types.DataTypes.STRING())
-                                .column(
-                                        "event_time",
-                                        org.apache.paimon.types.DataTypes
-                                                .TIMESTAMP_WITH_LOCAL_TIME_ZONE(3))
+                                .column("payload", payloadType)
+                                .column("event_time", DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(3))
                                 .primaryKey("id")
                                 .option(CoreOptions.BUCKET.key(), "4")
                                 .build());

@@ -603,14 +603,11 @@ public class PaimonConversions {
         for (String key : table.options().keySet()) {
             if (key.startsWith(FIELDS_PREFIX + ".")
                     && (key.endsWith("." + SEQUENCE_GROUP)
-                            || key.endsWith("." + SEQUENCE_GROUP + ".sort-order")
-                            || key.endsWith("." + IGNORE_RETRACT))) {
+                            || key.endsWith("." + SEQUENCE_GROUP + ".sort-order"))) {
                 throw unsupportedPrimaryKeyDefinition(
                         tablePath,
                         key,
-                        key.endsWith("." + IGNORE_RETRACT)
-                                ? "Fluss does not support per-field retraction policies."
-                                : "Fluss does not support Paimon sequence groups or their field-level ordering rules.");
+                        "Fluss does not support Paimon sequence groups or their field-level ordering rules.");
             }
         }
         if (table.options()
@@ -652,6 +649,76 @@ public class PaimonConversions {
         for (DataField field : table.schema().fields()) {
             if (!table.primaryKeys().contains(field.name())) {
                 validatePrimaryKeyAggregateFunction(tablePath, options, field.name());
+            }
+        }
+        validateMergeEngineCompatibility(tablePath, table, options);
+    }
+
+    /**
+     * Validates that the Paimon merge engine can consume Fluss's full changelog.
+     *
+     * <p>Tiering bypasses Paimon's TableWriteImpl.RowKindFilter, so UPDATE_BEFORE and undo DELETE
+     * reach the original merge engine regardless of the table-level ignore options. SUM and PRODUCT
+     * must retract the previous aggregate result before accumulating the next result. Functions
+     * without retraction support must ignore these records at field level; otherwise Paimon throws
+     * UnsupportedOperationException when merging them, for example during flush.
+     *
+     * <p>Ignoring an undo record or a restored NULL may temporarily retain a later value. We
+     * require compatibility after complete deterministic replay, not at every intermediate undo
+     * state.
+     */
+    private static void validateMergeEngineCompatibility(
+            TablePath tablePath, FileStoreTable table, CoreOptions options) {
+        CoreOptions.MergeEngine engine = options.mergeEngine();
+        if (engine == CoreOptions.MergeEngine.PARTIAL_UPDATE
+                && !options.ignoreDelete()
+                && !options.toConfiguration()
+                        .get(CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE)) {
+            throw unsupportedPrimaryKeyDefinition(
+                    tablePath,
+                    CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE.key(),
+                    "Fluss tiering writes UPDATE_BEFORE and undo DELETE records. "
+                            + "Paimon partial-update requires 'ignore-delete=true' or "
+                            + "'partial-update.remove-record-on-delete=true' to accept these records.");
+        }
+        if (engine != CoreOptions.MergeEngine.AGGREGATE) {
+            return;
+        }
+        for (DataField field : table.schema().fields()) {
+            AggFunction function = derivePrimaryKeyAggregateFunction(table, field);
+            if (function == null) {
+                continue;
+            }
+            boolean ignoreRetract = options.fieldAggIgnoreRetract(field.name());
+            String key = FIELDS_PREFIX + "." + field.name() + "." + IGNORE_RETRACT;
+            switch (function.getType()) {
+                case SUM:
+                case PRODUCT:
+                    if (ignoreRetract) {
+                        throw unsupportedPrimaryKeyDefinition(
+                                tablePath,
+                                key,
+                                "Fluss tiering writes complete aggregate results. SUM and PRODUCT "
+                                        + "require 'ignore-retract=false' to retract the previous "
+                                        + "result before accumulating the next result.");
+                    }
+                    break;
+                case LAST_VALUE:
+                case LAST_VALUE_IGNORE_NULLS:
+                    break;
+                default:
+                    // Preserve Paimon's rejection of unsupported retractions and fail early.
+                    if (!ignoreRetract) {
+                        throw unsupportedPrimaryKeyDefinition(
+                                tablePath,
+                                key,
+                                "Fluss tiering writes UPDATE_BEFORE records. This Paimon aggregation "
+                                        + "function throws UnsupportedOperationException when merging "
+                                        + "these records. Field-level "
+                                        + "'ignore-retract=true' is required and cannot be combined "
+                                        + "with 'aggregation.remove-record-on-delete=true'.");
+                    }
+                    break;
             }
         }
     }
@@ -793,15 +860,6 @@ public class PaimonConversions {
         } else if (paimonMergeEngine == CoreOptions.MergeEngine.PARTIAL_UPDATE
                 || paimonMergeEngine == CoreOptions.MergeEngine.AGGREGATE) {
             mergeEngine = MergeEngineType.AGGREGATION;
-            if (paimonMergeEngine == CoreOptions.MergeEngine.PARTIAL_UPDATE && !ignoreDelete) {
-                // Without sequence groups, Paimon partial-update rejects deletes unless
-                // partial-update.remove-record-on-delete is enabled.
-                deleteBehavior =
-                        options.toConfiguration()
-                                        .get(CoreOptions.PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE)
-                                ? DeleteBehavior.ALLOW
-                                : DeleteBehavior.DISABLE;
-            }
         }
         // A supported sequence field turns deduplicate into the versioned merge engine.
         List<String> sequenceFields = options.sequenceField();
